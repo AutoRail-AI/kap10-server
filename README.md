@@ -1,105 +1,157 @@
+# AppealGen AI
 
-# [Next.js Enterprise Boilerplate](https://blazity.com/open-source/nextjs-enterprise-boilerplate) 
+**The AI-Powered Medical Denial Appeal Agent**
 
-A production-ready template for building enterprise applications with Next.js. This boilerplate provides a solid foundation with carefully selected technologies and ready-to-go infrastructure to help you develop high-quality applications efficiently.
+Transform 45-minute manual appeals into 60-second AI-generated, citation-backed letters that win.
 
-## Motivation
+---
 
-While most Next.js boilerplates focus on individual developer needs with excessive complexity, **next-enterprise** prioritizes strategic simplicity for enterprise teams. It offers a streamlined foundation with high-impact features that maximize developer productivity and accelerate time-to-market for business-critical applications.
+## The Problem
 
-<a href="https://blazity.com/">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="/assets/blazity-logo-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="/assets/blazity-logo-light.svg">
-  <img alt="Logo" align="right" height="80" src="/assets/blazity-logo-light.svg">
-</picture>
-</a>
+Medical claim denials are a $19 billion annual problem in the US healthcare system:
 
-> [!NOTE]
-> **Blazity** is a group of Next.js architects. We help organizations architect, optimize, and deploy high-performance Next.js applications at scale. Contact us at [contact@blazity.com](https://blazity.com) if you’d like to talk about your project.
+- **10-17%** of all claims are denied (up 77% since 2022)
+- **45-60 minutes** to manually research and write a single appeal
+- **70%** of difficult appeals are simply written off due to time constraints
+- **1M+ medical billers** in small practices struggle daily with this burden
 
+Medical Necessity denials (CO-50) are the hardest to fight—they require matching clinical notes against payer-specific policies buried in dense 20+ page PDFs.
 
+## The Solution
+
+AppealGen AI is a specialized "Robo-Lawyer" that instantly generates citation-backed appeal letters by matching clinical documentation against payer-specific policies.
+
+### How It Works
+
+1. **Input**: Paste the denial reason and anonymized clinical notes
+2. **Process**: AI retrieves relevant payer policies via RAG and compares against clinical documentation
+3. **Output**: Professional appeal letter with precise policy citations
+
+### Example Output
+
+> *"Pursuant to Aetna Policy #0451, coverage is mandated when the patient demonstrates functional impairment. As noted in the chart dated 3/15/2025, the patient cannot climb stairs, satisfying this requirement. Therefore, the denial is invalid under your own published guidelines."*
+
+## Key Features
+
+- **50%+ Overturn Rate**: AI-generated appeals with policy citations dramatically improve success
+- **Citation-First Architecture**: Every claim links to actual payer policy PDFs
+- **HIPAA Compliant**: Zero-retention data handling for patient privacy
+- **Top 5 Payers Supported**: UnitedHealthcare, Anthem, Aetna, Cigna, Humana
+
+## Target Denial Types
+
+| Phase | Denial Code | Description | AppealGen Fit |
+|-------|-------------|-------------|---------------|
+| MVP | CO-50 | Medical Necessity | Core focus - 50%+ overturn rate |
+| Phase 2 | CO-11 | Diagnosis doesn't justify procedure | Same architecture as CO-50 |
+| Phase 2 | CO-197 | Prior Authorization Retro | Emergency/urgent care appeals |
+| Phase 2 | CO-97 | Bundled services | Modifier justification letters |
+| Phase 3 | CO-96 | Non-covered charge | Coverage exception arguments |
+
+## Tech Stack
+
+- **Framework**: Next.js 16 with App Router
+- **UI**: React 19, Tailwind CSS v4, Radix UI
+- **AI/LLM**: GPT-4o / Claude Sonnet
+- **RAG System**: Vector database of payer Clinical Policy Bulletins
+- **Testing**: Vitest, Playwright, Storybook
+- **Type Safety**: Strict TypeScript with ts-reset
+
+## Getting Started
+
+### Prerequisites
+
+- Node.js >= 20.9.0
+- pnpm (via Corepack)
+
+### Installation
+
+```bash
+# Enable Corepack for pnpm
+corepack enable
+
+# Install dependencies
+pnpm install
+
+# Start development server
+pnpm dev
+```
+
+### Available Commands
+
+```bash
+pnpm dev              # Start dev server with Turbopack
+pnpm build            # Production build
+pnpm test             # Run unit tests
+pnpm e2e:headless     # Run E2E tests
+pnpm storybook        # Component development
+pnpm lint             # Code linting
+```
+
+## Market Opportunity
+
+| Metric | Value |
+|--------|-------|
+| Total Addressable Market | $19B annually |
+| Target Segment | Small practices (1-10 doctors) |
+| Users | 1M+ medical billers |
+| Current Denial Rate | 10-17% of all claims |
+| Manual Appeal Time | 45-60 minutes |
+| AppealGen Time | ~60 seconds |
+
+## Product Roadmap
+
+### Phase 1: MVP (Months 1-3)
+- Medical Necessity (CO-50) appeals
+- Top 5 payer policy database
+- Core appeal generation engine
+
+### Phase 2: Growth (Months 4-6)
+- CO-11 (Diagnosis Mismatch)
+- CO-197 (Prior Auth Retro-Appeals)
+- CO-97 (Bundling/Modifier)
+
+### Phase 3: Enterprise (Months 7-12)
+- Level of Care / Downcoding appeals
+- Hospital system integrations
+- Milliman/InterQual criteria support
+
+### Phase 4: Advocacy (Year 2+)
+- Experimental/Investigational denials
+- PubMed integration for research citations
+- Patient advocacy features
+
+## Brand
+
+AppealGen AI brand assets are located in:
+- `brand/` - Complete brand guidelines
+- `public/logos/` - Logo variations for all backgrounds
+- `public/icons/` - App icons and decorative elements
+
+### Brand Colors
+
+| Color | Hex | Usage |
+|-------|-----|-------|
+| Cornflower Blue | `#568AFF` | Primary brand color |
+| Green-Blue | `#0665BA` | Secondary / gradients |
+| Rich Black | `#001320` | Text / dark backgrounds |
 
 ## Documentation
 
-There is a separate documentation that explains its functionality, highlights core business values and technical decisions, provides guidelines for future development, and includes architectural diagrams.
+### Implementation Guides
+- [Implementation Plan](docs/IMPLEMENTATION_PLAN.md) - Step-by-step development guide
+- [Decision Log](docs/DECISION_LOG.md) - Architectural decisions and rationale
+- [Progress Tracker](docs/PROGRESS_TRACKER.md) - Current status and next steps
 
-We encourage you to [visit our docs (docs.blazity.com)](https://docs.blazity.com) to learn more
-
-## Integrated features
-
-### Boilerplate
-With this template you will get all the boilerplate features included:
-
-* [Next.js 15](https://nextjs.org/) - Performance-optimized configuration using App Directory
-* [Tailwind CSS v4](https://tailwindcss.com/) - Utility-first CSS framework for efficient UI development
-* [ESlint 9](https://eslint.org/) and [Prettier](https://prettier.io/) - Code consistency and error prevention
-* [Corepack](https://github.com/nodejs/corepack) & [pnpm](https://pnpm.io/) as the package manager - For project management without compromises 
-* [Strict TypeScript](https://www.typescriptlang.org/) - Enhanced type safety with carefully crafted config and [ts-reset](https://github.com/total-typescript/ts-reset) library
-* [GitHub Actions](https://github.com/features/actions) - Pre-configured workflows including bundle size and performance tracking
-* Perfect Lighthouse score - Optimized performance metrics
-* [Bundle analyzer](https://www.npmjs.com/package/@next/bundle-analyzer) - Monitor and manage bundle size during development
-* Testing suite - [Vitest](https://vitest.dev), [React Testing Library](https://testing-library.com/react), and [Playwright](https://playwright.dev/) for comprehensive testing
-* [Storybook](https://storybook.js.org/) - Component development and documentation
-* Advanced testing - Smoke and acceptance testing capabilities
-* [Conventional commits](https://www.conventionalcommits.org/) - Standardized commit history management
-* [Observability](https://opentelemetry.io/) - Open Telemetry integration
-* [Absolute imports](https://nextjs.org/docs/advanced-features/module-path-aliases) - Simplified import structure
-* [Health checks](https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/) - Kubernetes-compatible monitoring
-* [Radix UI](https://www.radix-ui.com/) - Headless components for customization
-* [CVA](http://cva.style/) (Class Variance Authority) - Consistent design system creation
-* [Renovate BOT](https://www.whitesourcesoftware.com/free-developer-tools/renovate) - Automated dependency and security updates
-* [Patch-package](https://www.npmjs.com/package/patch-package) - External dependency fixes without compromises
-* Component relationship tools - Graph for managing coupling and cohesion
-* [Semantic Release](https://github.com/semantic-release/semantic-release) - Automated changelog generation
-* [T3 Env](https://env.t3.gg/) - Streamlined environment variable management
-
-### Infrastructure & deployments
-
-#### Vercel
-
-Easily deploy your Next.js app with [Vercel](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=github&utm_campaign=next-enterprise) by clicking the button below:
-
-[![Vercel](https://vercel.com/button)](https://vercel.com/new/git/external?repository-url=https://github.com/Blazity/next-enterprise)
-
-#### Custom cloud infrastructure
-
-**next-enterprise** offers dedicated infrastructure as code (IaC) solutions built with Terraform, designed specifically for deploying Next.js applications based on our extensive experience working with enterprise clients.
-
-Learn more in our [documentation (docs.blazity.com)][docs] how to quickstart with the deployments using simple CLI.
-
-#### Available cloud providers and theirs features:
-
-* **AWS (Amazon Web Services)**
-  * Automated provisioning of AWS infrastructure
-  * Scalable & secure setup using:
-     * VPC - Isolated network infrastructure
-     * Elastic Container Service (ECS) - Container orchestration
-     * Elastic Container Registry (ECR) - Container image storage
-     * Application Load Balancer - Traffic distribution
-     * S3 + CloudFront - Static asset delivery and caching
-     * AWS WAF - Web Application Firewall protection
-     * Redis Cluster - Caching
-  * CI/CD ready - Continuous integration and deployment pipeline
-
-*... more coming soon*
-
-### Team & maintenance
-
-**next-enterprise** is backed and maintained by [Blazity](https://blazity.com), providing up to date security features and integrated feature updates.
-
-#### Active maintainers
-
-- Igor Klepacki ([neg4n](https://github.com/neg4n)) - Open Source Software Developer
-- Tomasz Czechowski ([tomaszczechowski](https://github.com/tomaszczechowski)) - Solutions Architect & DevOps
-- Jakub Jabłoński ([jjablonski-it](https://github.com/jjablonski-it)) - Head of Integrations
-
-#### All-time contributors
-[bmstefanski](https://github.com/bmstefanski)
+### Brand Assets
+- [Brand Guidelines](brand/brand.md) - Complete visual identity guide
+- [Logo Documentation](public/logos/logo.md) - Logo usage guidelines
+- [Icon Documentation](public/icons/icons.md) - Icon specifications
 
 ## License
 
-MIT
+Proprietary - All Rights Reserved
 
+---
 
-[docs]: https://docs.blazity.com/next-enterprise/deployments/enterprise-cli
+**AppealGen AI** - Fighting denied claims, one appeal at a time.
