@@ -101,22 +101,25 @@ pnpm lint             # Code linting
 
 ## Product Roadmap
 
-### Phase 1: MVP (Months 1-3)
+### Phase 1: MVP
 - Medical Necessity (CO-50) appeals
 - Top 5 payer policy database
 - Core appeal generation engine
+- ChatGPT-like conversational interface
 
-### Phase 2: Growth (Months 4-6)
+### Phase 2: Growth
 - CO-11 (Diagnosis Mismatch)
 - CO-197 (Prior Auth Retro-Appeals)
 - CO-97 (Bundling/Modifier)
+- Document upload and versioning
 
-### Phase 3: Enterprise (Months 7-12)
+### Phase 3: Enterprise
 - Level of Care / Downcoding appeals
 - Hospital system integrations
 - Milliman/InterQual criteria support
+- Team features and API access
 
-### Phase 4: Advocacy (Year 2+)
+### Phase 4: Advocacy
 - Experimental/Investigational denials
 - PubMed integration for research citations
 - Patient advocacy features

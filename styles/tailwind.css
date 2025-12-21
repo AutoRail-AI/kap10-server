@@ -1,19 +1,332 @@
 @import 'tailwindcss';
 
-/*
-  The default border color has changed to `currentColor` in Tailwind CSS v4,
-  so we've added these compatibility styles to make sure everything still
-  looks the same as it did with Tailwind CSS v3.
+/* ============================================================================
+   AppealGen AI - A 10XR Product
+   Brand Theme based on 10XR brand guidelines (brand/brand.md)
 
-  If we ever want to remove these styles, we need to add an explicit border
-  color utility to any element that depends on these defaults.
-*/
+   Brand Hierarchy:
+   - 10XR (https://10xr.co): Parent startup/company
+   - AppealGen AI: Medical denial appeal generator product
+
+   Tailwind CSS v4 + shadcn/ui compatible
+   ============================================================================ */
+
+@theme inline {
+  /* ==========================================================================
+     Brand Colors (from brand.md)
+     ========================================================================== */
+
+  /* Primary: Cornflower Blue - Main interactive elements, headlines */
+  --color-brand-primary: #568AFF;
+
+  /* Secondary: Green-Blue - Supporting elements, gradients, depth */
+  --color-brand-secondary: #0665BA;
+
+  /* Base: Rich Black - Text, dark backgrounds */
+  --color-brand-dark: #001320;
+
+  /* Accent: French Sky Blue - Highlights, notifications */
+  --color-brand-accent: #66ABFE;
+
+  /* Gradient endpoints */
+  --color-brand-gradient-start: #559EFF;
+  --color-brand-gradient-end: #0065BA;
+
+  /* ==========================================================================
+     shadcn/ui Semantic Colors (mapped to brand)
+     ========================================================================== */
+
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  /* Chart colors */
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+
+  /* ==========================================================================
+     Border Radius (shadcn defaults)
+     ========================================================================== */
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* ==========================================================================
+     Typography (from brand.md)
+     ========================================================================== */
+
+  /* Font families - Using Next.js font CSS variables */
+  --font-sans: var(--font-poppins), ui-sans-serif, system-ui, sans-serif;
+  --font-accent: var(--font-sofia), ui-sans-serif, sans-serif;
+
+  /* Font sizes matching brand guidelines */
+  --text-h1: 3rem;      /* 48px */
+  --text-h2: 2.25rem;   /* 36px */
+  --text-h3: 1.75rem;   /* 28px */
+  --text-large: 1.5rem; /* 24px */
+  --text-body-lg: 1.125rem; /* 18px */
+  --text-body: 1rem;    /* 16px */
+  --text-small: 0.875rem; /* 14px */
+  --text-caption: 0.75rem; /* 12px */
+}
+
+/* =============================================================================
+   CSS Variables - Light Mode (Default)
+   Primary: Cornflower Blue (#568AFF) → HSL: 220 100% 67%
+   Secondary: Green-Blue (#0665BA) → HSL: 207 95% 38%
+   Rich Black (#001320) → HSL: 207 100% 6%
+   ============================================================================= */
+
+:root {
+  /* Background & Foreground */
+  --background: 0 0% 100%;
+  --foreground: 207 100% 6%;  /* Rich Black */
+
+  /* Cards & Popovers */
+  --card: 0 0% 100%;
+  --card-foreground: 207 100% 6%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 207 100% 6%;
+
+  /* Primary: Cornflower Blue */
+  --primary: 220 100% 67%;
+  --primary-foreground: 0 0% 100%;
+
+  /* Secondary: Lighter blue tint */
+  --secondary: 210 40% 96%;
+  --secondary-foreground: 207 100% 6%;
+
+  /* Muted */
+  --muted: 210 40% 96%;
+  --muted-foreground: 207 30% 45%;
+
+  /* Accent: French Sky Blue */
+  --accent: 212 98% 70%;
+  --accent-foreground: 207 100% 6%;
+
+  /* Destructive */
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+
+  /* Borders & Inputs */
+  --border: 210 30% 90%;
+  --input: 210 30% 90%;
+  --ring: 220 100% 67%;  /* Cornflower Blue */
+
+  /* Radius */
+  --radius: 0.5rem;
+
+  /* Chart colors - Brand aligned */
+  --chart-1: 220 100% 67%;  /* Cornflower Blue */
+  --chart-2: 207 95% 38%;   /* Green-Blue */
+  --chart-3: 212 98% 70%;   /* French Sky Blue */
+  --chart-4: 173 58% 39%;
+  --chart-5: 43 74% 66%;
+
+  /* Sidebar (for chat interface) */
+  --sidebar-background: 207 100% 6%;  /* Rich Black */
+  --sidebar-foreground: 0 0% 100%;
+  --sidebar-primary: 220 100% 67%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 207 50% 15%;
+  --sidebar-accent-foreground: 0 0% 100%;
+  --sidebar-border: 207 50% 15%;
+  --sidebar-ring: 220 100% 67%;
+}
+
+/* =============================================================================
+   CSS Variables - Dark Mode
+   Background: Rich Black (#001320)
+   ============================================================================= */
+
+.dark {
+  /* Background & Foreground */
+  --background: 207 100% 6%;  /* Rich Black */
+  --foreground: 0 0% 98%;
+
+  /* Cards & Popovers */
+  --card: 207 80% 8%;
+  --card-foreground: 0 0% 98%;
+  --popover: 207 80% 8%;
+  --popover-foreground: 0 0% 98%;
+
+  /* Primary: Cornflower Blue */
+  --primary: 220 100% 67%;
+  --primary-foreground: 207 100% 6%;
+
+  /* Secondary */
+  --secondary: 207 50% 15%;
+  --secondary-foreground: 0 0% 98%;
+
+  /* Muted */
+  --muted: 207 50% 15%;
+  --muted-foreground: 210 20% 65%;
+
+  /* Accent: French Sky Blue */
+  --accent: 212 98% 70%;
+  --accent-foreground: 207 100% 6%;
+
+  /* Destructive */
+  --destructive: 0 62% 30%;
+  --destructive-foreground: 0 0% 98%;
+
+  /* Borders & Inputs */
+  --border: 207 50% 15%;
+  --input: 207 50% 15%;
+  --ring: 220 100% 67%;
+
+  /* Chart colors - Brand aligned */
+  --chart-1: 220 100% 67%;
+  --chart-2: 212 98% 70%;
+  --chart-3: 207 95% 50%;
+  --chart-4: 280 65% 60%;
+  --chart-5: 340 75% 55%;
+
+  /* Sidebar (for chat interface) */
+  --sidebar-background: 207 100% 4%;
+  --sidebar-foreground: 0 0% 98%;
+  --sidebar-primary: 220 100% 67%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 207 50% 12%;
+  --sidebar-accent-foreground: 0 0% 98%;
+  --sidebar-border: 207 50% 12%;
+  --sidebar-ring: 220 100% 67%;
+}
+
+/* =============================================================================
+   Base Styles
+   ============================================================================= */
+
 @layer base {
-  *,
-  ::after,
-  ::before,
-  ::backdrop,
-  ::file-selector-button {
-    border-color: var(--color-gray-200, currentColor);
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-sans);
+    font-weight: 400;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Typography hierarchy from brand.md */
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-sans);
+    font-weight: 600;
+    line-height: 1.2;
+    letter-spacing: -0.02em;
+  }
+
+  h1 {
+    font-size: var(--text-h1);
+  }
+
+  h2 {
+    font-size: var(--text-h2);
+  }
+
+  h3 {
+    font-size: var(--text-h3);
+  }
+}
+
+/* =============================================================================
+   Brand Utility Classes
+   ============================================================================= */
+
+@layer utilities {
+  /* Brand gradient backgrounds */
+  .bg-brand-gradient {
+    background: linear-gradient(135deg, #559EFF 0%, #0065BA 100%);
+  }
+
+  .bg-brand-gradient-vertical {
+    background: linear-gradient(180deg, #559EFF 0%, #0065BA 100%);
+  }
+
+  .bg-brand-gradient-horizontal {
+    background: linear-gradient(90deg, #559EFF 0%, #0065BA 100%);
+  }
+
+  /* Brand text gradient */
+  .text-brand-gradient {
+    background: linear-gradient(135deg, #559EFF 0%, #0065BA 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Accent font */
+  .font-accent {
+    font-family: var(--font-accent);
+    font-weight: 400;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  /* Brand shadows */
+  .shadow-brand {
+    box-shadow: 0 4px 14px 0 rgba(86, 138, 255, 0.25);
+  }
+
+  .shadow-brand-lg {
+    box-shadow: 0 10px 40px 0 rgba(86, 138, 255, 0.3);
+  }
+
+  /* Focus ring with brand color */
+  .ring-brand {
+    --tw-ring-color: #568AFF;
+  }
+}
+
+/* =============================================================================
+   Component Overrides (shadcn/ui brand alignment)
+   ============================================================================= */
+
+@layer components {
+  /* Primary button with brand gradient on hover */
+  .btn-brand {
+    background-color: #568AFF;
+    color: white;
+    transition: all 0.2s ease;
+  }
+
+  .btn-brand:hover {
+    background: linear-gradient(135deg, #559EFF 0%, #0065BA 100%);
+  }
+
+  /* Card with brand accent border */
+  .card-brand {
+    border-left: 4px solid #568AFF;
+  }
+
+  /* Input focus with brand ring */
+  .input-brand:focus {
+    --tw-ring-color: #568AFF;
+    border-color: #568AFF;
   }
 }
