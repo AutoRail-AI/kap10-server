@@ -3,6 +3,7 @@
 import { type ReactNode } from "react"
 import { Toaster } from "@/components/ui/sonner"
 import { AuthProvider } from "./auth-provider"
+import { AnalyticsProvider } from "./analytics-provider"
 
 interface ProvidersProps {
   children: ReactNode
@@ -11,8 +12,10 @@ interface ProvidersProps {
 export function Providers({ children }: ProvidersProps) {
   return (
     <AuthProvider>
-      {children}
-      <Toaster position="top-right" richColors />
+      <AnalyticsProvider>
+        {children}
+        <Toaster position="top-right" richColors />
+      </AnalyticsProvider>
     </AuthProvider>
   )
 }

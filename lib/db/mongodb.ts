@@ -1,53 +1,23 @@
-import { MongoClient, type Db, type Collection, type Document } from "mongodb"
+// This file is kept for backward compatibility
+// New code should use Mongoose models instead
+// See lib/db/mongoose.ts for the Mongoose connection
 
-declare global {
-  // eslint-disable-next-line no-var
-  var _mongoClientPromise: Promise<MongoClient> | undefined
+import mongoose from "mongoose"
+import connectDB from "./mongoose"
+
+// Re-export Mongoose connection
+export { default as connectDB } from "./mongoose"
+
+// Helper to get a Mongoose model (for backward compatibility)
+export async function getModel<T>(modelName: string): Promise<mongoose.Model<T>> {
+  await connectDB()
+  return mongoose.model<T>(modelName)
 }
 
-const MONGODB_URI = process.env.MONGODB_URI
-
-if (!MONGODB_URI) {
-  console.warn("MONGODB_URI is not defined in environment variables")
-}
-
-let client: MongoClient
-let clientPromise: Promise<MongoClient>
-
-function getClientPromise(): Promise<MongoClient> {
-  if (!MONGODB_URI) {
-    throw new Error(
-      "Please define the MONGODB_URI environment variable inside .env.local"
-    )
-  }
-
-  if (process.env.NODE_ENV === "development") {
-    // In development, use a global variable to preserve connection across hot reloads
-    if (!global._mongoClientPromise) {
-      client = new MongoClient(MONGODB_URI)
-      global._mongoClientPromise = client.connect()
-    }
-    return global._mongoClientPromise
-  }
-
-  // In production, don't use a global variable
-  if (!clientPromise) {
-    client = new MongoClient(MONGODB_URI)
-    clientPromise = client.connect()
-  }
-  return clientPromise
-}
-
-export async function getDb(): Promise<Db> {
-  const client = await getClientPromise()
-  return client.db("appealgen")
-}
-
-export async function getCollection<T extends Document>(
+// Legacy exports (deprecated - use Mongoose models instead)
+export async function getCollection<T>(
   name: string
-): Promise<Collection<T>> {
-  const db = await getDb()
-  return db.collection<T>(name)
+): Promise<mongoose.Collection<T>> {
+  await connectDB()
+  return mongoose.connection.collection<T>(name)
 }
-
-export default getClientPromise

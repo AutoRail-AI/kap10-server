@@ -1,48 +1,8 @@
 import { betterAuth } from "better-auth"
-import { mongodbAdapter } from "better-auth/adapters/mongodb"
-import { MongoClient, type Db } from "mongodb"
+import { prismaAdapter } from "better-auth/adapters/prisma"
+import { organization } from "better-auth/plugins"
+import { prisma } from "@/lib/db/prisma"
 import { Resend } from "resend"
-
-// Cached MongoDB client and database
-let cachedClient: MongoClient | null = null
-let cachedDb: Db | null = null
-
-async function getMongoDb(): Promise<Db> {
-  if (cachedDb) {
-    return cachedDb
-  }
-
-  const uri = process.env.MONGODB_URI
-  if (!uri) {
-    throw new Error("MONGODB_URI is not defined")
-  }
-
-  if (!cachedClient) {
-    cachedClient = new MongoClient(uri)
-    await cachedClient.connect()
-  }
-
-  cachedDb = cachedClient.db("appealgen")
-  return cachedDb
-}
-
-// For build time, we need a dummy/mock approach
-// Better Auth requires sync db access, so we use a workaround
-function getMongoDbSync(): Db {
-  const uri = process.env.MONGODB_URI
-  if (!uri) {
-    // During build, return a mock that won't be used
-    // This is safe because the route handlers are only called at runtime
-    console.warn("MONGODB_URI not set - auth features will not work until configured")
-    return new MongoClient("mongodb://localhost:27017").db("appealgen")
-  }
-
-  if (!cachedClient) {
-    cachedClient = new MongoClient(uri)
-  }
-
-  return cachedClient.db("appealgen")
-}
 
 // Lazy Resend client
 function getResendClient(): Resend | null {
@@ -56,13 +16,94 @@ const getEmailFrom = () =>
   process.env.EMAIL_FROM || "AppealGen AI <noreply@appealgen.ai>"
 
 export const auth = betterAuth({
-  // Database adapter
-  database: mongodbAdapter(getMongoDbSync()),
+  // Database adapter - Using Prisma with MongoDB
+  database: prismaAdapter(prisma, {
+    provider: "mongodb",
+  }),
 
   // App configuration
   appName: "AppealGen AI",
   baseURL: process.env.BETTER_AUTH_URL || "http://localhost:3000",
   secret: process.env.BETTER_AUTH_SECRET,
+
+  // Plugins
+  plugins: [
+    organization({
+      // Configuration options
+      allowUserToCreateOrganization: true,
+      organizationLimit: parseInt(process.env.ORGANIZATION_LIMIT || "5", 10),
+      membershipLimit: parseInt(process.env.MEMBERSHIP_LIMIT || "100", 10),
+      creatorRole: "owner",
+      
+      // Invitation email handler
+      async sendInvitationEmail(data) {
+        const resend = getResendClient()
+        if (!resend) {
+          console.warn("Resend not configured, skipping invitation email")
+          console.log("Invitation link:", `${process.env.BETTER_AUTH_URL}/accept-invitation/${data.id}`)
+          return
+        }
+
+        const inviteLink = `${process.env.BETTER_AUTH_URL}/accept-invitation/${data.id}`
+        
+        try {
+          await resend.emails.send({
+            from: getEmailFrom(),
+            to: data.email,
+            subject: `Invitation to join ${data.organization.name}`,
+            html: `
+              <!DOCTYPE html>
+              <html>
+                <head>
+                  <meta charset="utf-8">
+                  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                  <title>Organization Invitation</title>
+                </head>
+                <body style="font-family: 'Poppins', Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f4f5;">
+                  <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f5; padding: 40px 20px;">
+                    <tr>
+                      <td align="center">
+                        <table width="100%" max-width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                          <tr>
+                            <td style="background: linear-gradient(135deg, #559EFF 0%, #0065BA 100%); padding: 32px; border-radius: 8px 8px 0 0; text-align: center;">
+                              <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 600;">Organization Invitation</h1>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td style="padding: 40px 32px;">
+                              <h2 style="color: #001320; margin: 0 0 16px 0; font-size: 20px; font-weight: 600;">You've been invited!</h2>
+                              <p style="color: #52525b; margin: 0 0 24px 0; font-size: 16px; line-height: 1.6;">
+                                ${data.inviter.user.name || data.inviter.user.email} invited you to join <strong>${data.organization.name}</strong>.
+                              </p>
+                              <table width="100%" cellpadding="0" cellspacing="0">
+                                <tr>
+                                  <td align="center" style="padding: 16px 0;">
+                                    <a href="${inviteLink}" style="display: inline-block; background-color: #568AFF; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 6px; font-size: 16px; font-weight: 600;">
+                                      Accept Invitation
+                                    </a>
+                                  </td>
+                                </tr>
+                              </table>
+                              <p style="color: #71717a; margin: 24px 0 0 0; font-size: 14px; line-height: 1.6;">
+                                This invitation will expire in 48 hours.
+                              </p>
+                            </td>
+                          </tr>
+                        </table>
+                      </td>
+                    </tr>
+                  </table>
+                </body>
+              </html>
+            `,
+          })
+        } catch (error) {
+          console.error("Failed to send invitation email:", error)
+          throw error
+        }
+      },
+    }),
+  ],
 
   // Email & Password authentication
   emailAndPassword: {
@@ -208,6 +249,3 @@ export const auth = betterAuth({
 // Export types
 export type Session = typeof auth.$Infer.Session
 export type User = typeof auth.$Infer.Session.user
-
-// Export getMongoDb for other uses
-export { getMongoDb }

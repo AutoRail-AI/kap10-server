@@ -1,0 +1,18 @@
+// This is your Prisma schema file for Better Auth
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("MONGODB_URI")
+}
+
+// Better Auth will generate the schema when you run:
+// npx @better-auth/cli@latest generate
+//
+// For now, this is a placeholder. After running the CLI command,
+// this file will be populated with the necessary models.
+

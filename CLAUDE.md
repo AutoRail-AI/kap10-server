@@ -133,10 +133,23 @@ Protected routes are configured in `middleware.ts`. Add routes to `protectedRout
 
 ### Database
 
-MongoDB connection is managed in `lib/db/mongodb.ts`. Uses:
-- Connection pooling with singleton pattern
-- Type-safe collection access with generics
-- Cloud MongoDB (Atlas) for all environments
+This boilerplate uses a **hybrid database approach**:
+
+**Prisma (Better Auth)**:
+- Managed in `lib/db/prisma.ts`
+- Used exclusively by Better Auth for authentication
+- Schema generated via Better Auth CLI
+- Type-safe with auto-generated Prisma client
+
+**Mongoose (Application Features)**:
+- Connection managed in `lib/db/mongoose.ts`
+- Used for AI agents, custom features, and application data
+- Models defined in `lib/models/`
+- Rich schema validation and middleware support
+
+Both use the same MongoDB database (Atlas recommended).
+
+**Note**: See [UPGRADE_GUIDE.md](UPGRADE_GUIDE.md) for detailed setup instructions and architecture overview.
 
 ### Background Job Processing
 
@@ -298,3 +311,9 @@ docker compose up
 | `EMAIL_FROM` | No | From email address |
 | `UPLOADTHING_TOKEN` | No | Uploadthing API token |
 | `NEXT_PUBLIC_APP_URL` | No | Public app URL |
+
+## Additional Documentation
+
+- [README.md](README.md) - **Complete setup and usage guide** - Installation, configuration, and how to use all features
+- [ARCHITECTURE.md](ARCHITECTURE.md) - **Architecture documentation** - Database architecture, multi-tenancy, AI agents, billing, analytics, and system design
+- [brand/brand.md](brand/brand.md) - Complete brand guidelines and assets
