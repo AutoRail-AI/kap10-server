@@ -11,11 +11,13 @@ export interface AgentMessage {
 export interface ToolCall {
   id: string
   name: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   arguments: Record<string, any>
 }
 
 export interface ToolResult {
   toolCallId: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   result: any
   error?: string
 }
@@ -24,6 +26,7 @@ export interface AgentState {
   messages: AgentMessage[]
   currentTask?: string
   tools: AgentTool[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata?: Record<string, any>
 }
 
@@ -39,6 +42,7 @@ export interface AgentTool {
     }>
     required?: string[]
   }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: (args: Record<string, any>) => Promise<any>
 }
 

@@ -1,5 +1,5 @@
-import { connectDB } from "@/lib/db/mongoose"
 import mongoose, { Schema } from "mongoose"
+import { connectDB } from "@/lib/db/mongoose"
 
 export type ActivityType =
   | "user.created"
@@ -25,6 +25,7 @@ export interface IActivity extends mongoose.Document {
   action: string // Human-readable action
   resource: string // Resource type
   resourceId?: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata?: Record<string, any>
   createdAt: Date
 }
@@ -60,11 +61,13 @@ export async function createActivity(
     action: string
     resource: string
     resourceId?: string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     metadata?: Record<string, any>
   }
 ): Promise<IActivity> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (Activity as any).create({
     userId: data.userId,
     organizationId: data.organizationId,
@@ -89,6 +92,7 @@ export async function getActivityFeed(
 ): Promise<IActivity[]> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = { organizationId }
   if (options.userId) {
     query.userId = options.userId
@@ -103,6 +107,7 @@ export async function getActivityFeed(
     query.createdAt = { $lt: options.before }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (Activity as any).find(query)
     .sort({ createdAt: -1 })
     .limit(options.limit || 50)
@@ -118,11 +123,13 @@ export async function getUserActivity(
 ): Promise<IActivity[]> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = { userId }
   if (options.organizationId) {
     query.organizationId = options.organizationId
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (Activity as any).find(query)
     .sort({ createdAt: -1 })
     .limit(options.limit || 50)

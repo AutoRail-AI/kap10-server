@@ -1,6 +1,6 @@
-import { connectDB } from "@/lib/db/mongoose"
 import mongoose, { Schema } from "mongoose"
 import crypto from "crypto"
+import { connectDB } from "@/lib/db/mongoose"
 
 export interface IApiKey extends mongoose.Document {
   userId: string
@@ -62,6 +62,7 @@ export async function verifyApiKey(
   await connectDB()
 
   const hashedKey = hashApiKey(key)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const apiKey = await (ApiKey as any).findOne({ key: hashedKey, enabled: true })
 
   if (!apiKey) return null
@@ -95,6 +96,7 @@ export async function createApiKey(
   const hashedKey = hashApiKey(plainKey)
   const keyPrefix = plainKey.substring(0, 12) // "sk_live_ab"
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const apiKey = await (ApiKey as any).create({
     userId,
     organizationId: options.organizationId,
@@ -117,11 +119,13 @@ export async function listApiKeys(
 ): Promise<IApiKey[]> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = { userId }
   if (organizationId) {
     query.organizationId = organizationId
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (ApiKey as any).find(query).sort({ createdAt: -1 })
 }
 
@@ -132,6 +136,7 @@ export async function revokeApiKey(
 ): Promise<void> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (ApiKey as any).findOneAndUpdate(
     { _id: keyId, userId },
     { enabled: false }

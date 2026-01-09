@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
-import { isFeatureEnabled, getEnabledFeatures } from "../features/flags"
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { connectDB } from "../db/mongoose"
+import { getEnabledFeatures, isFeatureEnabled } from "../features/flags"
 
 vi.mock("../db/mongoose", () => ({
   connectDB: vi.fn(),

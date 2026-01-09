@@ -1,5 +1,5 @@
-import { connectDB } from "@/lib/db/mongoose"
 import mongoose, { Schema } from "mongoose"
+import { connectDB } from "@/lib/db/mongoose"
 
 export type TemplateType = "prompt" | "workflow" | "agent" | "form"
 
@@ -11,6 +11,7 @@ export interface ITemplate extends mongoose.Document {
   type: TemplateType
   category?: string
   tags?: string[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   content: Record<string, any> // Template content (varies by type)
   variables?: Array<{
     name: string
@@ -74,6 +75,7 @@ export async function createTemplate(
     type: TemplateType
     category?: string
     tags?: string[]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     content: Record<string, any>
     variables?: Array<{
       name: string
@@ -86,6 +88,7 @@ export async function createTemplate(
 ): Promise<ITemplate> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (Template as any).create({
     userId: data.userId,
     organizationId: data.organizationId,
@@ -97,7 +100,9 @@ export async function createTemplate(
     content: data.content,
     variables: data.variables,
     public: data.public || false,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     featured: false as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     usageCount: 0 as any,
   })
 }
@@ -117,6 +122,7 @@ export async function getTemplates(
 ): Promise<ITemplate[]> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = {}
 
   if (options.publicOnly) {
@@ -140,6 +146,7 @@ export async function getTemplates(
   }
   if (options.featured !== undefined) query.featured = options.featured
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (Template as any).find(query)
     .sort({ featured: -1, usageCount: -1, createdAt: -1 })
     .limit(options.limit || 50)
@@ -149,6 +156,7 @@ export async function getTemplates(
 export async function useTemplate(templateId: string): Promise<void> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (Template as any).findByIdAndUpdate(templateId, {
     $inc: { usageCount: 1 },
   })
@@ -158,6 +166,7 @@ export async function useTemplate(templateId: string): Promise<void> {
 export async function getTemplate(templateId: string): Promise<ITemplate | null> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (Template as any).findById(templateId)
 }
 

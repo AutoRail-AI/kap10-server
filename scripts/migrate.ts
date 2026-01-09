@@ -4,8 +4,8 @@
  * Usage: pnpm tsx scripts/migrate.ts
  */
 
-import { connectDB } from "../lib/db/mongoose"
 import mongoose from "mongoose"
+import { connectDB } from "../lib/db/mongoose"
 
 async function migrate() {
   console.log("🔄 Starting migration...")

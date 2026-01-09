@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server"
 import { headers } from "next/headers"
+import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { getTemplates, createTemplate, useTemplate, getTemplate, type TemplateType } from "@/lib/templates/manager"
+import { createTemplate, getTemplate, getTemplates, type TemplateType, useTemplate } from "@/lib/templates/manager"
 
 export async function GET(req: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -30,6 +30,7 @@ export async function GET(req: NextRequest) {
   const templates = await getTemplates({
     userId: session.user.id,
     organizationId: organizationId || undefined,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     type: type as any,
     category: category || undefined,
     tags,

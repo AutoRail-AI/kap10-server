@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
-import { GET, POST, DELETE } from "../api-keys/route"
-import { auth } from "@/lib/auth"
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   createApiKey,
   listApiKeys,
   revokeApiKey,
 } from "@/lib/api-keys/manager"
+import { auth } from "@/lib/auth"
+import { DELETE, GET, POST } from "../api-keys/route"
 
 vi.mock("@/lib/auth", () => ({
   auth: {

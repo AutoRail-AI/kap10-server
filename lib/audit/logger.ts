@@ -1,5 +1,5 @@
-import { connectDB } from "@/lib/db/mongoose"
 import mongoose, { Schema } from "mongoose"
+import { connectDB } from "@/lib/db/mongoose"
 
 export type AuditAction =
   | "create"
@@ -19,6 +19,7 @@ export interface IAuditLog extends mongoose.Document {
   action: AuditAction
   resource: string
   resourceId?: string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata?: Record<string, any>
   ipAddress?: string
   userAgent?: string
@@ -56,6 +57,7 @@ export async function logAction(
     userId?: string
     organizationId?: string
     resourceId?: string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     metadata?: Record<string, any>
     ipAddress?: string
     userAgent?: string
@@ -63,6 +65,7 @@ export async function logAction(
 ): Promise<void> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (AuditLog as any).create({
     action,
     resource,
@@ -89,6 +92,7 @@ export async function getAuditLogs(
 ): Promise<IAuditLog[]> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = {}
 
   if (filters.userId) query.userId = filters.userId
@@ -102,6 +106,7 @@ export async function getAuditLogs(
     if (filters.endDate) query.createdAt.$lte = filters.endDate
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (AuditLog as any).find(query)
     .sort({ createdAt: -1 })
     .limit(filters.limit || 100)

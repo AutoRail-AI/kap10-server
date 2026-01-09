@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useCallback, useState } from "react"
 import type { AgentMessage } from "@/lib/ai/types"
 
 export function useAgent() {

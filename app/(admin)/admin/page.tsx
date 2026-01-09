@@ -1,18 +1,19 @@
 import { headers } from "next/headers"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { getAuditLogs } from "@/lib/audit/logger"
 import { auth } from "@/lib/auth"
 import { connectDB } from "@/lib/db/mongoose"
 import { prisma } from "@/lib/db/prisma"
-import { getAuditLogs } from "@/lib/audit/logger"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 export default async function AdminDashboard() {
-  const session = await auth.api.getSession({ headers: await headers() })
+  await auth.api.getSession({ headers: await headers() })
   await connectDB()
 
   // Get stats
   const userCount = await prisma.user.count()
   let orgCount = 0
   try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     orgCount = await (prisma as any).organization?.count() || 0
   } catch {
     // Organization model might not exist yet

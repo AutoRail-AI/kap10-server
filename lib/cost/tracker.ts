@@ -1,5 +1,5 @@
-import { connectDB } from "@/lib/db/mongoose"
 import mongoose, { Schema } from "mongoose"
+import { connectDB } from "@/lib/db/mongoose"
 
 export interface ICost extends Omit<mongoose.Document, "model"> {
   userId: string
@@ -10,6 +10,7 @@ export interface ICost extends Omit<mongoose.Document, "model"> {
   outputTokens: number
   totalTokens: number
   cost: number // Cost in cents
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata?: Record<string, any>
   timestamp: Date
   createdAt: Date
@@ -79,6 +80,7 @@ export async function trackCost(
     model: string
     inputTokens: number
     outputTokens: number
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     metadata?: Record<string, any>
   }
 ): Promise<ICost> {
@@ -92,6 +94,7 @@ export async function trackCost(
     data.outputTokens
   )
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (Cost as any).create({
     userId: data.userId,
     organizationId: data.organizationId,
@@ -128,6 +131,7 @@ export async function getCostSummary(
 }> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = {}
 
   if (filters.userId) query.userId = filters.userId
@@ -141,9 +145,12 @@ export async function getCostSummary(
     if (filters.endDate) query.timestamp.$lte = filters.endDate
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const costs = await (Cost as any).find(query)
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const totalCost = costs.reduce((sum: number, c: any) => sum + c.cost, 0)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const totalTokens = costs.reduce((sum: number, c: any) => sum + c.totalTokens, 0)
 
   // Breakdown by provider and model

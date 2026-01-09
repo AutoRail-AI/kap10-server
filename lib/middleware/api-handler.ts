@@ -1,10 +1,11 @@
-import { NextRequest, NextResponse } from "next/server"
 import { headers } from "next/headers"
+import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
+import { errorResponse, serverErrorResponse } from "@/lib/utils/api-response"
 import { AppError } from "@/lib/utils/errors"
 import { logger } from "@/lib/utils/logger"
-import { errorResponse, serverErrorResponse } from "@/lib/utils/api-response"
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ApiHandler<T = any> = (
   req: NextRequest,
   context: {
@@ -37,6 +38,7 @@ export function withOptionalAuth(handler: ApiHandler) {
     try {
       const session = await auth.api.getSession({ headers: await headers() })
       return handler(req, {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         session: session || null as any,
         userId: session?.user.id || "",
       })

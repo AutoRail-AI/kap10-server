@@ -1,5 +1,5 @@
-import { connectDB } from "@/lib/db/mongoose"
 import mongoose, { Schema } from "mongoose"
+import { connectDB } from "@/lib/db/mongoose"
 
 // Feature flag model
 export interface IFeatureFlag extends mongoose.Document {
@@ -41,6 +41,7 @@ export async function isFeatureEnabled(
 ): Promise<boolean> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const flag = await (FeatureFlag as any).findOne({ key })
   if (!flag) return false
 
@@ -79,6 +80,7 @@ export async function getEnabledFeatures(
 ): Promise<string[]> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const flags = await (FeatureFlag as any).find({ enabled: true })
   const enabled: string[] = []
 

@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, beforeEach, vi } from "vitest"
+import { afterAll, beforeAll, beforeEach, vi } from "vitest"
 
 // Mock MongoDB connection for tests
 beforeAll(async () => {

@@ -1,5 +1,5 @@
-import { connectDB } from "@/lib/db/mongoose"
 import mongoose, { Schema } from "mongoose"
+import { connectDB } from "@/lib/db/mongoose"
 import { queueEmail } from "@/lib/queue"
 
 export type NotificationType =
@@ -20,6 +20,7 @@ export interface INotification extends mongoose.Document {
   link?: string
   read: boolean
   readAt?: Date
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata?: Record<string, any>
   createdAt: Date
 }
@@ -61,12 +62,14 @@ export async function createNotification(
     title: string
     message: string
     link?: string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     metadata?: Record<string, any>
     sendEmail?: boolean
   }
 ): Promise<INotification> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const notification = await (Notification as any).create({
     userId: data.userId,
     organizationId: data.organizationId,
@@ -113,6 +116,7 @@ export async function getNotifications(
 ): Promise<INotification[]> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = { userId }
   if (options.unreadOnly) {
     query.read = false
@@ -121,6 +125,7 @@ export async function getNotifications(
     query.organizationId = options.organizationId
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (Notification as any).find(query)
     .sort({ createdAt: -1 })
     .limit(options.limit || 50)
@@ -133,6 +138,7 @@ export async function markAsRead(
 ): Promise<void> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (Notification as any).findOneAndUpdate(
     { _id: notificationId, userId },
     { read: true, readAt: new Date() }
@@ -146,12 +152,14 @@ export async function markAllAsRead(
 ): Promise<void> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = { userId, read: false }
   if (organizationId) {
     query.organizationId = organizationId
   }
 
-  await Notification.updateMany(query, {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (Notification as any).updateMany(query, {
     read: true,
     readAt: new Date(),
   })
@@ -164,11 +172,13 @@ export async function getUnreadCount(
 ): Promise<number> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = { userId, read: false }
   if (organizationId) {
     query.organizationId = organizationId
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (Notification as any).countDocuments(query)
 }
 

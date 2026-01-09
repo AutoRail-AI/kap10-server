@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server"
 import { headers } from "next/headers"
+import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { updateOnboardingStep, getOnboardingProgress } from "@/lib/onboarding/flow"
+import { getOnboardingProgress, updateOnboardingStep } from "@/lib/onboarding/flow"
 import type { OnboardingStep } from "@/lib/onboarding/flow"
 
 const stepOrder: OnboardingStep[] = ["welcome", "profile", "organization", "preferences", "complete"]

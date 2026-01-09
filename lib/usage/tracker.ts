@@ -1,5 +1,5 @@
-import { connectDB } from "@/lib/db/mongoose"
 import mongoose, { Schema } from "mongoose"
+import { connectDB } from "@/lib/db/mongoose"
 
 export type UsageType =
   | "api_call"
@@ -16,6 +16,7 @@ export interface IUsage extends mongoose.Document {
   resource: string // e.g., "openai.gpt-4", "storage.files"
   quantity: number // e.g., tokens, bytes, requests
   cost?: number // Cost in cents
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata?: Record<string, any>
   timestamp: Date
   createdAt: Date
@@ -60,11 +61,13 @@ export async function trackUsage(
     resource: string
     quantity: number
     cost?: number
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     metadata?: Record<string, any>
   }
 ): Promise<void> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (Usage as any).create({
     userId: data.userId,
     organizationId: data.organizationId,
@@ -96,6 +99,7 @@ export async function getUsageStats(
 }> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = {}
 
   if (filters.userId) query.userId = filters.userId
@@ -109,9 +113,12 @@ export async function getUsageStats(
     if (filters.endDate) query.timestamp.$lte = filters.endDate
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const usage = await (Usage as any).find(query)
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const totalQuantity = usage.reduce((sum: number, u: any) => sum + u.quantity, 0)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const totalCost = usage.reduce((sum: number, u: any) => sum + (u.cost || 0), 0)
 
   // Breakdown by resource
@@ -155,6 +162,7 @@ export async function checkQuota(
   const now = new Date()
   const windowStart = new Date(now.getTime() - quota.windowMs)
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = {
     userId,
     type: quota.type,

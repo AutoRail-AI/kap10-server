@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export interface ApiResponse<T = any> {
   success: boolean
   data?: T
@@ -25,6 +26,7 @@ export function successResponse<T>(
 export function errorResponse(
   error: string | Error,
   status: number = 400,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   details?: any
 ): NextResponse<ApiResponse> {
   const errorMessage = error instanceof Error ? error.message : error
@@ -59,6 +61,7 @@ export function notFoundResponse(
 
 export function serverErrorResponse(
   error: string | Error = "Internal server error",
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   details?: any
 ): NextResponse<ApiResponse> {
   return errorResponse(error, 500, details)

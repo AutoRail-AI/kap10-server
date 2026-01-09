@@ -12,7 +12,7 @@
  * In production, run this as a separate service/container.
  */
 
-import { startWorkers, stopWorkers, closeRedis } from "../lib/queue"
+import { closeRedis, startWorkers, stopWorkers } from "../lib/queue"
 
 console.log("Starting background job worker...")
 

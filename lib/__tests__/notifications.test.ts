@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { connectDB } from "../db/mongoose"
 import {
   createNotification,
   getNotifications,
-  markAsRead,
   getUnreadCount,
+  markAsRead,
 } from "../notifications/manager"
-import { connectDB } from "../db/mongoose"
 import { queueEmail } from "../queue"
 
 vi.mock("../db/mongoose", () => ({
@@ -134,7 +135,7 @@ describe("Notifications Manager", () => {
         },
       }))
 
-      const result = await getNotifications("user-123", {
+      const _result = await getNotifications("user-123", {
         unreadOnly: true,
       })
 

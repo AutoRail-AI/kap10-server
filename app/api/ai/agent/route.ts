@@ -1,9 +1,9 @@
-import { NextRequest, NextResponse } from "next/server"
 import { headers } from "next/headers"
-import { auth } from "@/lib/auth"
+import { NextRequest, NextResponse } from "next/server"
 import { AgentRunner } from "@/lib/ai/agent-runner"
 import { defaultTools } from "@/lib/ai/tools"
 import type { AgentState } from "@/lib/ai/types"
+import { auth } from "@/lib/auth"
 
 export async function POST(request: NextRequest) {
   try {

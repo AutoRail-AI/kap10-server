@@ -3,6 +3,7 @@ export class AppError extends Error {
     message: string,
     public statusCode: number = 400,
     public code?: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     public details?: any
   ) {
     super(message)

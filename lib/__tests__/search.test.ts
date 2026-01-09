@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { connectDB } from "../db/mongoose"
 import {
   indexDocument,
   removeFromIndex,
   search,
   simpleSearch,
 } from "../search/engine"
-import { connectDB } from "../db/mongoose"
 
 vi.mock("../db/mongoose", () => ({
   connectDB: vi.fn(),
@@ -76,7 +77,7 @@ describe("Search Engine", () => {
         },
       }))
 
-      const results = await search("test", {
+      const _results = await search("test", {
         organizationId: "org-123",
       })
 
@@ -108,7 +109,7 @@ describe("Search Engine", () => {
         },
       }))
 
-      const results = await simpleSearch("test", {
+      const _results = await simpleSearch("test", {
         organizationId: "org-123",
       })
 

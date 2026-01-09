@@ -1,13 +1,13 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import { useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Progress } from "@/components/ui/progress"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Progress } from "@/components/ui/progress"
 import type { OnboardingStep } from "@/lib/onboarding/flow"
-import { useRouter } from "next/navigation"
 
 const steps: { key: OnboardingStep; title: string; description: string }[] = [
   { key: "welcome", title: "Welcome", description: "Get started with your account" },
@@ -18,7 +18,7 @@ const steps: { key: OnboardingStep; title: string; description: string }[] = [
 
 export function OnboardingFlow({
   initialStep,
-  userId,
+  userId: _userId,
 }: {
   initialStep: OnboardingStep
   userId: string
@@ -26,6 +26,7 @@ export function OnboardingFlow({
   const router = useRouter()
   const [currentStep, setCurrentStep] = useState(initialStep)
   const [loading, setLoading] = useState(false)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [formData, setFormData] = useState<Record<string, any>>({})
 
   const currentStepIndex = steps.findIndex((s) => s.key === currentStep)

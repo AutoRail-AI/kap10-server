@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { stripe } from "@/lib/billing/stripe"
 import { connectDB } from "@/lib/db/mongoose"
-import { triggerWebhook } from "@/lib/webhooks/manager"
 import type { ISubscription } from "@/lib/models/billing"
+import { triggerWebhook } from "@/lib/webhooks/manager"
 
 export async function POST(req: NextRequest) {
   const body = await req.text()
@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
     switch (event.type) {
       case "customer.subscription.created":
       case "customer.subscription.updated": {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const subscription = event.data.object as any
         const { Subscription } = await import("@/lib/models/billing")
         const updateData: Partial<ISubscription> = {
@@ -37,6 +38,7 @@ export async function POST(req: NextRequest) {
           planId: getPlanIdFromPriceId(subscription.items.data[0]?.price.id as string),
         }
         
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await (Subscription as any).findOneAndUpdate(
           { stripeSubscriptionId: subscription.id },
           updateData,
@@ -52,9 +54,11 @@ export async function POST(req: NextRequest) {
       }
 
       case "customer.subscription.deleted": {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const subscription = event.data.object as any
         const { Subscription } = await import("@/lib/models/billing")
         
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await (Subscription as any).findOneAndUpdate(
           { stripeSubscriptionId: subscription.id },
           { status: "canceled" }
@@ -69,6 +73,7 @@ export async function POST(req: NextRequest) {
       }
 
       case "invoice.payment_succeeded": {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const invoice = event.data.object as any
 
         await triggerWebhook(
@@ -80,6 +85,7 @@ export async function POST(req: NextRequest) {
       }
 
       case "invoice.payment_failed": {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const invoice = event.data.object as any
 
         await triggerWebhook(

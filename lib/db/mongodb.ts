@@ -16,6 +16,7 @@ export async function getModel<T extends mongoose.Document>(modelName: string): 
 }
 
 // Legacy exports (deprecated - use Mongoose models instead)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function getCollection<T = any>(
   name: string
 ): Promise<mongoose.Collection> {

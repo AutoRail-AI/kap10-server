@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/* eslint-disable no-console */
+ 
 /**
  * Copyright (c) HashiCorp, Inc.
  * SPDX-License-Identifier: MPL-2.0
@@ -7,6 +7,7 @@
 
 // edited to work with the appdir by @raphaelbadia
 
+/* eslint-disable @typescript-eslint/no-require-imports */
 const gzSize = require("gzip-size")
 const mkdirp = require("mkdirp")
 const fs = require("fs")
@@ -20,7 +21,7 @@ const BUILD_OUTPUT_DIRECTORY = getBuildOutputDirectory(options)
 const nextMetaRoot = path.join(process.cwd(), BUILD_OUTPUT_DIRECTORY)
 try {
   fs.accessSync(nextMetaRoot, fs.constants.R_OK)
-} catch (err) {
+} catch (_err) {
   console.error(
     `No build output found at "${nextMetaRoot}" - you may not have your working directory set correctly, or not have run "next build".`
   )
@@ -38,11 +39,11 @@ const memoryCache = {}
 // since _app is the template that all other pages are rendered into,
 // every page must load its scripts. we'll measure its size here
 const globalBundle = buildMeta.pages["/_app"]
-const globalBundleSizes = getScriptSizes(globalBundle)
+const _globalBundleSizes = getScriptSizes(globalBundle)
 
 // next, we calculate the size of each page's scripts, after
 // subtracting out the global scripts
-const allPageSizes = Object.values(buildMeta.pages).reduce((acc, scriptPaths, i) => {
+const _allPageSizes = Object.values(buildMeta.pages).reduce((acc, scriptPaths, i) => {
   const pagePath = Object.keys(buildMeta.pages)[i]
   const scriptSizes = getScriptSizes(scriptPaths.filter((scriptPath) => !globalBundle.includes(scriptPath)))
 
@@ -117,6 +118,7 @@ function getScriptSize(scriptPath) {
  * Reads options from `package.json`
  */
 function getOptions(pathPrefix = process.cwd()) {
+   
   const pkg = require(path.join(pathPrefix, "package.json"))
 
   return { ...pkg.nextBundleAnalysis, name: pkg.name }

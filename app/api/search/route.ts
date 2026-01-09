@@ -1,5 +1,5 @@
-import { NextRequest, NextResponse } from "next/server"
 import { headers } from "next/headers"
+import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { search, simpleSearch } from "@/lib/search/engine"
 
@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
     })
 
     return NextResponse.json(results)
-  } catch (error) {
+  } catch (_error) {
     // Fallback to simple search if text index not available
     const results = await simpleSearch(q, {
       organizationId: organizationId || undefined,

@@ -1,12 +1,13 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
-import {
-  loadRoleConfig,
-  getRole,
-  hasPermission,
-  getAllRoles,
-} from "../config/roles"
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import fs from "fs"
 import yaml from "js-yaml"
+import {
+  getAllRoles,
+  getRole,
+  hasPermission,
+  loadRoleConfig,
+} from "../config/roles"
 
 vi.mock("fs")
 vi.mock("js-yaml")

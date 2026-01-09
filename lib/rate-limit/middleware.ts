@@ -1,8 +1,8 @@
+import mongoose, { Schema } from "mongoose"
+import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { headers } from "next/headers"
 import { connectDB } from "@/lib/db/mongoose"
-import mongoose, { Schema } from "mongoose"
 
 export interface IRateLimit extends mongoose.Document {
   key: string
@@ -58,9 +58,11 @@ export async function rateLimit(
   const resetAt = new Date(now.getTime() + options.windowMs)
 
   // Get or create rate limit record
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let rateLimit = await (RateLimit as any).findOne({ key })
 
   if (!rateLimit) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     rateLimit = await (RateLimit as any).create({
       key,
       count: 1,

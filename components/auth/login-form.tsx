@@ -1,14 +1,14 @@
 "use client"
 
-import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { AlertCircle, Loader2, Lock, Mail } from "lucide-react"
 import Link from "next/link"
-import { signIn } from "@/lib/auth/client"
+import { useRouter } from "next/navigation"
+import { useState } from "react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Loader2, Mail, Lock, AlertCircle } from "lucide-react"
+import { signIn } from "@/lib/auth/client"
 
 export function LoginForm() {
   const router = useRouter()

@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
-import { trackUsage, getUsageStats, checkQuota } from "../usage/tracker"
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { connectDB } from "../db/mongoose"
+import { checkQuota, getUsageStats, trackUsage } from "../usage/tracker"
 
 vi.mock("../db/mongoose", () => ({
   connectDB: vi.fn(),

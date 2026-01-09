@@ -1,12 +1,16 @@
 // Lazy import to allow Better Auth CLI to read config without Prisma client
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let PrismaClient: any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let prismaInstance: any
 
 try {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const prismaModule = require("@prisma/client")
   PrismaClient = prismaModule.PrismaClient
   
   const globalForPrisma = globalThis as unknown as {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     prisma: any | undefined
   }
 
@@ -17,7 +21,7 @@ try {
     })
 
   if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prismaInstance
-} catch (error) {
+} catch (_error) {
   // Prisma client not generated yet - this is expected during initial setup
   // Better Auth CLI will generate the schema, then we can generate the client
   if (process.env.NODE_ENV !== "test") {

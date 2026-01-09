@@ -5,7 +5,6 @@
  */
 
 import { connectDB } from "../lib/db/mongoose"
-import { prisma } from "../lib/db/prisma"
 import { createTemplate } from "../lib/templates/manager"
 
 async function seed() {

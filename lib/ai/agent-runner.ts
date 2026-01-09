@@ -1,5 +1,5 @@
 import { OpenAI } from "openai"
-import type { AgentConfig, AgentState, AgentMessage, AgentTool, ToolCall } from "./types"
+import type { AgentConfig, AgentMessage, AgentState, AgentTool, ToolCall } from "./types"
 
 export class AgentRunner {
   private client: OpenAI
@@ -91,7 +91,9 @@ export class AgentRunner {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private formatMessages(messages: AgentMessage[]): any[] {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const formatted: any[] = []
     
     // Add system prompt if provided
@@ -104,6 +106,7 @@ export class AgentRunner {
 
     // Format user/assistant messages
     for (const msg of messages) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const formattedMsg: any = {
         role: msg.role,
         content: msg.content,
@@ -138,6 +141,7 @@ export class AgentRunner {
     return formatted
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private formatTools(): any[] {
     if (this.tools.size === 0) return []
     

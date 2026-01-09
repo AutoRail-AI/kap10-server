@@ -22,6 +22,7 @@ export function getPostHogServer(): PostHog | null {
 export async function trackEvent(
   distinctId: string,
   event: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   properties?: Record<string, any>
 ): Promise<void> {
   const client = getPostHogServer()
@@ -40,6 +41,7 @@ export async function trackEvent(
 // Identify user
 export async function identifyUser(
   distinctId: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   properties?: Record<string, any>
 ): Promise<void> {
   const client = getPostHogServer()
@@ -55,6 +57,7 @@ export async function identifyUser(
 export async function identifyGroup(
   groupType: string,
   groupKey: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   properties?: Record<string, any>
 ): Promise<void> {
   const client = getPostHogServer()

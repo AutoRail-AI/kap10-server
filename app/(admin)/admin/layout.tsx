@@ -1,6 +1,6 @@
+import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 import { auth } from "@/lib/auth"
-import { headers } from "next/headers"
 import { hasPermission } from "@/lib/config/roles"
 
 export default async function AdminLayout({

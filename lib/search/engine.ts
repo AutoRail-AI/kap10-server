@@ -1,5 +1,5 @@
-import { connectDB } from "@/lib/db/mongoose"
 import mongoose, { Schema } from "mongoose"
+import { connectDB } from "@/lib/db/mongoose"
 
 export interface ISearchIndex extends mongoose.Document {
   organizationId?: string
@@ -8,6 +8,7 @@ export interface ISearchIndex extends mongoose.Document {
   title: string
   content: string
   tags?: string[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata?: Record<string, any>
   createdAt: Date
   updatedAt: Date
@@ -49,11 +50,13 @@ export async function indexDocument(
     title: string
     content: string
     tags?: string[]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     metadata?: Record<string, any>
   }
 ): Promise<ISearchIndex> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (SearchIndex as any).findOneAndUpdate(
     {
       resource: data.resource,
@@ -79,6 +82,7 @@ export async function removeFromIndex(
 ): Promise<void> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (SearchIndex as any).deleteOne({ resource, resourceId })
 }
 
@@ -94,6 +98,7 @@ export async function search(
 ): Promise<ISearchIndex[]> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const searchQuery: any = {
     $text: { $search: query },
   }
@@ -108,6 +113,7 @@ export async function search(
     searchQuery.tags = { $in: options.tags }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (SearchIndex as any).find(searchQuery, { score: { $meta: "textScore" } })
     .sort({ score: { $meta: "textScore" } })
     .limit(options.limit || 20)
@@ -124,6 +130,7 @@ export async function simpleSearch(
 ): Promise<ISearchIndex[]> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const searchQuery: any = {
     $or: [
       { title: { $regex: query, $options: "i" } },
@@ -138,6 +145,7 @@ export async function simpleSearch(
     searchQuery.resource = options.resource
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (SearchIndex as any).find(searchQuery)
     .sort({ createdAt: -1 })
     .limit(options.limit || 20)

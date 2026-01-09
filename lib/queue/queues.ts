@@ -1,9 +1,9 @@
 import { Queue, type QueueOptions } from "bullmq"
 import { getRedis } from "./redis"
 import {
-  QUEUE_NAMES,
   type EmailJobData,
   type ProcessingJobData,
+  QUEUE_NAMES,
   type WebhookJobData,
 } from "./types"
 

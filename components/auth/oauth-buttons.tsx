@@ -1,9 +1,9 @@
 "use client"
 
-import { useState } from "react"
-import { signIn } from "@/lib/auth/client"
-import { Button } from "@/components/ui/button"
 import { Loader2 } from "lucide-react"
+import { useState } from "react"
+import { Button } from "@/components/ui/button"
+import { signIn } from "@/lib/auth/client"
 
 // Google icon SVG
 function GoogleIcon({ className }: { className?: string }) {

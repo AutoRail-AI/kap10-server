@@ -1,7 +1,7 @@
 "use client"
 
-import { PostHogProvider } from "@/lib/analytics/client"
 import { useEffect } from "react"
+import { PostHogProvider } from "@/lib/analytics/client"
 import { authClient } from "@/lib/auth/client"
 
 export function AnalyticsProvider({ children }: { children: React.ReactNode }) {
@@ -9,6 +9,7 @@ export function AnalyticsProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (session?.user) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const { identifyUser } = require("@/lib/analytics/client")
       identifyUser(session.user.id, {
         email: session.user.email,

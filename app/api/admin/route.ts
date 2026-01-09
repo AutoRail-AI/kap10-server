@@ -1,10 +1,10 @@
-import { NextRequest, NextResponse } from "next/server"
 import { headers } from "next/headers"
+import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import { hasPermission } from "@/lib/config/roles"
 
 // Middleware to check admin access
-export async function requireAdmin(req: NextRequest) {
+export async function requireAdmin(_req: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -30,8 +30,6 @@ export async function GET(req: NextRequest) {
   // Get stats from database
   const { connectDB } = await import("@/lib/db/mongoose")
   await connectDB()
-
-  const { default: mongoose } = await import("mongoose")
   const { prisma } = await import("@/lib/db/prisma")
 
   // Get user count

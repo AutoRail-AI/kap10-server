@@ -1,13 +1,12 @@
 "use client"
 
-import { Suspense } from "react"
-import { useEffect, useState } from "react"
-import { useRouter, useSearchParams } from "next/navigation"
+import { CheckCircle2, Loader2, Mail, XCircle } from "lucide-react"
 import Link from "next/link"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
+import { useRouter, useSearchParams } from "next/navigation"
+import { Suspense , useEffect, useState } from "react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Loader2, CheckCircle2, XCircle, Mail } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 function VerifyEmailContent() {
   const router = useRouter()
@@ -39,7 +38,7 @@ function VerifyEmailContent() {
           setError(data.message || "Verification failed")
           setStatus("error")
         }
-      } catch (err) {
+      } catch (_err) {
         setError("An error occurred during verification")
         setStatus("error")
       }

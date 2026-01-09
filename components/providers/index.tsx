@@ -2,8 +2,8 @@
 
 import { type ReactNode } from "react"
 import { Toaster } from "@/components/ui/sonner"
-import { AuthProvider } from "./auth-provider"
 import { AnalyticsProvider } from "./analytics-provider"
+import { AuthProvider } from "./auth-provider"
 
 interface ProvidersProps {
   children: ReactNode

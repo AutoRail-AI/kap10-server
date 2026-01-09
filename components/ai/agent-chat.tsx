@@ -1,11 +1,11 @@
 "use client"
 
+import { Loader2, Send } from "lucide-react"
 import { useState } from "react"
-import { useAgent } from "@/hooks/use-agent"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { Loader2, Send } from "lucide-react"
+import { useAgent } from "@/hooks/use-agent"
 
 export function AgentChat({ organizationId }: { organizationId?: string }) {
   const [input, setInput] = useState("")

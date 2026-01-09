@@ -1,6 +1,6 @@
-import type { AgentTool } from "../types"
-import { connectDB } from "@/lib/db/mongodb"
 import mongoose from "mongoose"
+import { connectDB } from "@/lib/db/mongodb"
+import type { AgentTool } from "../types"
 
 export const databaseTool: AgentTool = {
   name: "query_database",
@@ -103,7 +103,7 @@ export const webSearchTool: AgentTool = {
     },
     required: ["query"],
   },
-  handler: async ({ query, maxResults = 5 }) => {
+  handler: async ({ query: _query, maxResults: _maxResults = 5 }) => {
     // Placeholder implementation
     // In production, integrate with a search API like Tavily, Serper, or Google Custom Search
     try {

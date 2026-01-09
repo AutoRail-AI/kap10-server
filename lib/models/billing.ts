@@ -11,6 +11,7 @@ export interface ISubscription extends mongoose.Document {
   currentPeriodEnd: Date
   cancelAtPeriodEnd: boolean
   planId: "free" | "pro" | "enterprise"
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata?: Record<string, any>
   createdAt: Date
   updatedAt: Date

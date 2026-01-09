@@ -1,17 +1,17 @@
 "use client"
 
-import { useState } from "react"
-import { useRouter } from "next/navigation"
+import { AlertCircle, CheckCircle2, Loader2, Lock, Mail, User } from "lucide-react"
 import Link from "next/link"
-import { signUp } from "@/lib/auth/client"
+import { useRouter } from "next/navigation"
+import { useState } from "react"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Loader2, Mail, Lock, User, AlertCircle, CheckCircle2 } from "lucide-react"
+import { signUp } from "@/lib/auth/client"
 
 export function RegisterForm() {
-  const router = useRouter()
+  const _router = useRouter()
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")

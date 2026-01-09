@@ -1,7 +1,7 @@
-import { redirect } from "next/navigation"
 import { headers } from "next/headers"
-import { auth } from "@/lib/auth"
+import { redirect } from "next/navigation"
 import { SubscriptionCard } from "@/components/billing/subscription-card"
+import { auth } from "@/lib/auth"
 import { connectDB } from "@/lib/db/mongoose"
 import { Subscription } from "@/lib/models/billing"
 
@@ -14,6 +14,7 @@ export default async function BillingPage() {
   await connectDB()
 
   // Get user's subscription
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const subscription = await (Subscription as any).findOne({
     userId: session.user.id,
     status: "active",

@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
-import { calculateCost, trackCost, getCostSummary } from "../cost/tracker"
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { calculateCost, getCostSummary, trackCost } from "../cost/tracker"
 import { connectDB } from "../db/mongoose"
 
 vi.mock("../db/mongoose", () => ({

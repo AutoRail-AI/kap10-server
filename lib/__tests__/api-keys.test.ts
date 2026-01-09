@@ -1,14 +1,15 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import mongoose from "mongoose"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
+  createApiKey,
   generateApiKey,
   hashApiKey,
-  createApiKey,
-  verifyApiKey,
   listApiKeys,
   revokeApiKey,
+  verifyApiKey,
 } from "../api-keys/manager"
 import { connectDB } from "../db/mongoose"
-import mongoose from "mongoose"
 
 // Mock mongoose
 vi.mock("../db/mongoose", () => ({

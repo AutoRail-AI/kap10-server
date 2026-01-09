@@ -1,11 +1,11 @@
-import { NextRequest, NextResponse } from "next/server"
 import { headers } from "next/headers"
-import { auth } from "@/lib/auth"
+import { NextRequest, NextResponse } from "next/server"
 import {
   createApiKey,
   listApiKeys,
   revokeApiKey,
 } from "@/lib/api-keys/manager"
+import { auth } from "@/lib/auth"
 
 export async function GET(req: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() })

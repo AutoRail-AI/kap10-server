@@ -1,11 +1,12 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import Stripe from "stripe"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
-  getOrCreateCustomer,
   createCheckoutSession,
   createPortalSession,
+  getOrCreateCustomer,
   PLANS,
 } from "../billing/stripe"
-import Stripe from "stripe"
 
 vi.mock("stripe", () => {
   return {

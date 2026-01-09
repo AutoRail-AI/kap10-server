@@ -1,5 +1,5 @@
-import { connectDB } from "@/lib/db/mongoose"
 import mongoose, { Schema } from "mongoose"
+import { connectDB } from "@/lib/db/mongoose"
 
 export type OnboardingStep =
   | "welcome"
@@ -13,6 +13,7 @@ export interface IOnboarding extends mongoose.Document {
   organizationId?: string
   currentStep: OnboardingStep
   completedSteps: OnboardingStep[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: Record<string, any>
   completed: boolean
   completedAt?: Date
@@ -45,8 +46,10 @@ export const Onboarding =
 export async function getOnboarding(userId: string): Promise<IOnboarding> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let onboarding = await (Onboarding as any).findOne({ userId })
   if (!onboarding) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     onboarding = await (Onboarding as any).create({
       userId,
       currentStep: "welcome",
@@ -62,10 +65,12 @@ export async function getOnboarding(userId: string): Promise<IOnboarding> {
 export async function updateOnboardingStep(
   userId: string,
   step: OnboardingStep,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data?: Record<string, any>
 ): Promise<IOnboarding> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const onboarding = await (Onboarding as any).findOne({ userId })
   if (!onboarding) {
     throw new Error("Onboarding not found")
@@ -92,6 +97,7 @@ export async function updateOnboardingStep(
 export async function isOnboardingComplete(userId: string): Promise<boolean> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const onboarding = await (Onboarding as any).findOne({ userId })
   return onboarding?.completed || false
 }

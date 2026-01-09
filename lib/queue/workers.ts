@@ -1,11 +1,11 @@
-import { Worker, type Job } from "bullmq"
+import { type Job, Worker } from "bullmq"
 import { createRedisConnection } from "./redis"
 import {
-  QUEUE_NAMES,
   type EmailJobData,
-  type ProcessingJobData,
-  type WebhookJobData,
   type JobResult,
+  type ProcessingJobData,
+  QUEUE_NAMES,
+  type WebhookJobData,
 } from "./types"
 
 // Worker instances
@@ -16,7 +16,7 @@ const workers: Worker[] = []
  * Customize this function to send emails via your email provider
  */
 async function processEmailJob(job: Job<EmailJobData>): Promise<JobResult> {
-  const { to, subject, body, templateId, variables } = job.data
+  const { to, subject: _subject, body: _body, templateId: _templateId, variables: _variables } = job.data
 
   console.log(`Processing email job ${job.id}: sending to ${to}`)
 

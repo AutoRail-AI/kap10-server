@@ -12,6 +12,7 @@ export interface IAgentConversation extends mongoose.Document {
     content: string
     timestamp: Date
   }>
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   metadata?: Record<string, any>
   createdAt: Date
   updatedAt: Date

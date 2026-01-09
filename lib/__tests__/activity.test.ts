@@ -1,10 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
+ 
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   createActivity,
   getActivityFeed,
-  getUserActivity,
 } from "../activity/feed"
-import { connectDB } from "../db/mongoose"
 
 vi.mock("../db/mongoose", () => ({
   connectDB: vi.fn(),
@@ -38,14 +37,14 @@ describe("Activity Feed", () => {
         },
       }))
 
-      const result = await createActivity({
+      const _result = await createActivity({
         organizationId: "org-123",
         type: "project.created",
         action: "created a project",
         resource: "project",
       })
 
-      expect(result).toBeDefined()
+      expect(_result).toBeDefined()
       expect(Activity.create).toHaveBeenCalled()
     })
   })
@@ -75,7 +74,7 @@ describe("Activity Feed", () => {
         },
       }))
 
-      const result = await getActivityFeed("org-123", {
+      const _result = await getActivityFeed("org-123", {
         limit: 50,
       })
 

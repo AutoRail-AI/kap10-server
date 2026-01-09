@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
+/* eslint-disable @typescript-eslint/no-unused-vars */
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { connectDB } from "../db/mongoose"
 import {
   createTemplate,
+  getTemplate,
   getTemplates,
   useTemplate,
-  getTemplate,
 } from "../templates/manager"
-import { connectDB } from "../db/mongoose"
 
 vi.mock("../db/mongoose", () => ({
   connectDB: vi.fn(),
@@ -77,7 +78,7 @@ describe("Templates Manager", () => {
         },
       }))
 
-      const result = await getTemplates({
+      const _result = await getTemplates({
         type: "prompt",
         publicOnly: true,
       })

@@ -1,11 +1,11 @@
-import { NextRequest, NextResponse } from "next/server"
 import { headers } from "next/headers"
+import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
 import {
   getNotifications,
-  markAsRead,
-  markAllAsRead,
   getUnreadCount,
+  markAllAsRead,
+  markAsRead,
 } from "@/lib/notifications/manager"
 
 export async function GET(req: NextRequest) {

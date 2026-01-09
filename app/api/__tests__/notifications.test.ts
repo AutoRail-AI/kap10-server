@@ -1,12 +1,13 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
-import { GET, PATCH, HEAD } from "../notifications/route"
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { auth } from "@/lib/auth"
 import {
   getNotifications,
-  markAsRead,
-  markAllAsRead,
   getUnreadCount,
+  markAllAsRead,
+  markAsRead,
 } from "@/lib/notifications/manager"
+import { GET, HEAD, PATCH } from "../notifications/route"
 
 vi.mock("@/lib/auth", () => ({
   auth: {

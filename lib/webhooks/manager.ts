@@ -1,6 +1,6 @@
-import { connectDB } from "@/lib/db/mongoose"
 import mongoose, { Schema } from "mongoose"
 import crypto from "crypto"
+import { connectDB } from "@/lib/db/mongoose"
 import { queueWebhook } from "@/lib/queue"
 
 export type WebhookEvent =
@@ -72,11 +72,13 @@ export function verifyWebhookSignature(
 // Trigger webhook
 export async function triggerWebhook(
   event: WebhookEvent,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: Record<string, any>,
   organizationId?: string
 ): Promise<void> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const query: any = {
     enabled: true,
     events: event,
@@ -88,6 +90,7 @@ export async function triggerWebhook(
     query.organizationId = { $exists: false } // Global webhooks
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const webhooks = await (Webhook as any).find(query)
 
   for (const webhook of webhooks) {
@@ -120,6 +123,7 @@ export async function updateWebhookStatus(
 ): Promise<void> {
   await connectDB()
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const update: any = {
     lastTriggeredAt: new Date(),
   }
@@ -130,6 +134,7 @@ export async function updateWebhookStatus(
     update.$inc = { failureCount: 1 }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (Webhook as any).findByIdAndUpdate(webhookId, update)
 }
 

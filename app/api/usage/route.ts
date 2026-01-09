@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server"
 import { headers } from "next/headers"
+import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { getUsageStats, checkQuota, type UsageType } from "@/lib/usage/tracker"
+import { checkQuota, getUsageStats, type UsageType } from "@/lib/usage/tracker"
 
 export async function GET(req: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -23,6 +23,7 @@ export async function GET(req: NextRequest) {
   const stats = await getUsageStats({
     userId: session.user.id,
     organizationId: organizationId || undefined,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     type: type as any,
     resource: resource || undefined,
     startDate,
