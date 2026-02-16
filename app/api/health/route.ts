@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server"
-import { connectDB } from "@/lib/db/mongoose"
-import { prisma } from "@/lib/db/prisma"
+import { supabase } from "@/lib/db"
 import { successResponse } from "@/lib/utils/api-response"
 
 export async function GET() {
   try {
-    // Check database connections
-    await connectDB()
-    await prisma.$connect()
+    // Check Supabase connection
+    const { error } = await supabase.from("feature_flags").select("id").limit(1)
+    const dbStatus = error ? "error" : "connected"
 
     // Check Redis (if available)
     let redisStatus = "unknown"
@@ -25,7 +24,7 @@ export async function GET() {
         status: "ok",
         timestamp: new Date().toISOString(),
         services: {
-          database: "connected",
+          database: dbStatus,
           redis: redisStatus,
         },
       },

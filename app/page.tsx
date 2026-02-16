@@ -39,7 +39,7 @@ export default function HomePage() {
           Boilerplate
         </h1>
         <p className="mb-8 max-w-2xl text-sm text-foreground">
-          A production-ready starter with authentication, MongoDB, background
+          A production-ready starter with authentication, Supabase, background
           job processing, and all the essentials to build your next project
           faster.
         </p>

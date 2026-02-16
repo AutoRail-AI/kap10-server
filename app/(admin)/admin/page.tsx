@@ -3,27 +3,25 @@ import { ContentBlock, ContentBlockDescription, ContentBlockHeader, ContentBlock
 import { Metric, MetricGrid } from "@/components/ui/metric"
 import { getAuditLogs } from "@/lib/audit/logger"
 import { auth } from "@/lib/auth"
-import { connectDB } from "@/lib/db/mongoose"
-import { prisma } from "@/lib/db/prisma"
+import { supabase } from "@/lib/db"
 
 export default async function AdminDashboard() {
   await auth.api.getSession({ headers: await headers() })
-  await connectDB()
 
-  // Get stats
-  const userCount = await prisma.user.count()
-  let orgCount = 0
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    orgCount = await (prisma as any).organization?.count() || 0
-  } catch {
-    // Organization model might not exist yet
-  }
+  // Get stats from Supabase
+  // user and organization tables are managed by Better Auth, not our app Database type
+  const { count: userCount } = await (supabase as any)
+    .from("user")
+    .select("id", { count: "exact", head: true })
 
-  const { Subscription } = await import("@/lib/models/billing")
-  const subscriptionCount = await Subscription.countDocuments({
-    status: "active",
-  })
+  const { count: orgCount } = await (supabase as any)
+    .from("organization")
+    .select("id", { count: "exact", head: true })
+
+  const { count: subscriptionCount } = await supabase
+    .from("subscriptions")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "active")
 
   const recentActivity = await getAuditLogs({ limit: 10 })
 
@@ -37,17 +35,17 @@ export default async function AdminDashboard() {
       <MetricGrid>
         <Metric
           label="Users"
-          value={userCount}
+          value={userCount || 0}
           description="Total registered users"
         />
         <Metric
           label="Organizations"
-          value={orgCount}
+          value={orgCount || 0}
           description="Total organizations"
         />
         <Metric
           label="Active Subscriptions"
-          value={subscriptionCount}
+          value={subscriptionCount || 0}
           description="Currently active subscriptions"
         />
       </MetricGrid>
@@ -59,12 +57,12 @@ export default async function AdminDashboard() {
         </ContentBlockHeader>
         <div className="space-y-2">
           {recentActivity.map((log) => (
-            <div key={log._id.toString()} className="flex justify-between text-sm">
+            <div key={log.id} className="flex justify-between text-sm">
               <span className="text-foreground">
                 {log.action} {log.resource}
               </span>
               <span className="text-muted-foreground">
-                {new Date(log.createdAt).toLocaleString()}
+                {new Date(log.created_at).toLocaleString()}
               </span>
             </div>
           ))}
@@ -73,4 +71,3 @@ export default async function AdminDashboard() {
     </div>
   )
 }
-

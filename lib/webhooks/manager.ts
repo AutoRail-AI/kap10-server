@@ -1,140 +1,146 @@
-import mongoose, { Schema } from "mongoose"
-import crypto from "crypto"
-import { connectDB } from "@/lib/db/mongoose"
-import { queueWebhook } from "@/lib/queue"
+import { supabase } from "@/lib/db"
+import crypto from "node:crypto"
+import type { Database, Json } from "@/lib/db/types"
 
-export type WebhookEvent =
-  | "user.created"
-  | "user.updated"
-  | "organization.created"
-  | "organization.updated"
-  | "subscription.created"
-  | "subscription.updated"
-  | "subscription.cancelled"
-  | "payment.succeeded"
-  | "payment.failed"
+export type Webhook = Database["public"]["Tables"]["webhooks"]["Row"]
+export type WebhookInsert = Database["public"]["Tables"]["webhooks"]["Insert"]
+export type WebhookUpdate = Database["public"]["Tables"]["webhooks"]["Update"]
 
-export interface IWebhook extends mongoose.Document {
+// Webhook Manager functions
+
+export async function createWebhook(
+  organizationId: string,
+  url: string,
+  events: string[]
+): Promise<Webhook> {
+  const secret = `whsec_${crypto.randomBytes(24).toString("hex")}`
+
+  const { data: webhook, error } = await supabase
+    .from("webhooks")
+    .insert({
+      organization_id: organizationId,
+      url,
+      secret,
+      events,
+      enabled: true,
+      failure_count: 0,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+  return webhook
+}
+
+export async function getWebhooks(organizationId: string): Promise<Webhook[]> {
+  const { data, error } = await supabase
+    .from("webhooks")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .order("created_at", { ascending: false })
+
+  if (error) throw error
+  return data || []
+}
+
+export async function getWebhook(id: string): Promise<Webhook | null> {
+  const { data, error } = await supabase
+    .from("webhooks")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle()
+
+  if (error) throw error
+  return data
+}
+
+export async function updateWebhook(
+  id: string,
+  updates: WebhookUpdate
+): Promise<Webhook> {
+  const { data: webhook, error } = await supabase
+    .from("webhooks")
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .select()
+    .single()
+
+  if (error) throw error
+  return webhook
+}
+
+export async function deleteWebhook(id: string): Promise<void> {
+  const { error } = await supabase
+    .from("webhooks")
+    .delete()
+    .eq("id", id)
+
+  if (error) throw error
+}
+
+export async function getWebhooksForEvent(
+  event: string,
   organizationId?: string
-  url: string
-  secret: string
-  events: WebhookEvent[]
-  enabled: boolean
-  lastTriggeredAt?: Date
-  failureCount: number
-  createdAt: Date
-  updatedAt: Date
+): Promise<Webhook[]> {
+  let query = supabase
+    .from("webhooks")
+    .select("*")
+    .eq("enabled", true)
+    .contains("events", [event])
+
+  if (organizationId) {
+    query = query.eq("organization_id", organizationId)
+  }
+
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
 }
 
-const WebhookSchema = new Schema<IWebhook>(
-  {
-    organizationId: { type: String, index: true },
-    url: { type: String, required: true },
-    secret: { type: String, required: true },
-    events: [{ type: String, required: true }],
-    enabled: { type: Boolean, default: true },
-    lastTriggeredAt: { type: Date },
-    failureCount: { type: Number, default: 0 },
-  },
-  { timestamps: true }
-)
-
-export const Webhook =
-  mongoose.models.Webhook ||
-  mongoose.model<IWebhook>("Webhook", WebhookSchema)
-
-// Generate webhook secret
-export function generateWebhookSecret(): string {
-  return crypto.randomBytes(32).toString("hex")
+export function generateSignature(payload: string, secret: string): string {
+  return crypto
+    .createHmac("sha256", secret)
+    .update(payload)
+    .digest("hex")
 }
 
-// Create webhook signature
-export function createWebhookSignature(
-  payload: string,
-  secret: string
-): string {
-  return crypto.createHmac("sha256", secret).update(payload).digest("hex")
-}
-
-// Verify webhook signature
-export function verifyWebhookSignature(
+export function verifySignature(
   payload: string,
   signature: string,
   secret: string
 ): boolean {
-  const expectedSignature = createWebhookSignature(payload, secret)
+  const expected = generateSignature(payload, secret)
   return crypto.timingSafeEqual(
     Buffer.from(signature),
-    Buffer.from(expectedSignature)
+    Buffer.from(expected)
   )
 }
 
-// Trigger webhook
-export async function triggerWebhook(
-  event: WebhookEvent,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  data: Record<string, any>,
-  organizationId?: string
-): Promise<void> {
-  await connectDB()
+export async function recordWebhookFailure(id: string): Promise<void> {
+  const webhook = await getWebhook(id)
+  if (!webhook) return
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const query: any = {
-    enabled: true,
-    events: event,
+  const newCount = (webhook.failure_count || 0) + 1
+  const updates: WebhookUpdate = {
+    failure_count: newCount,
+    updated_at: new Date().toISOString(),
   }
 
-  if (organizationId) {
-    query.organizationId = organizationId
-  } else {
-    query.organizationId = { $exists: false } // Global webhooks
+  // Auto-disable after 10 consecutive failures
+  if (newCount >= 10) {
+    updates.enabled = false
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const webhooks = await (Webhook as any).find(query)
+  await supabase.from("webhooks").update(updates).eq("id", id)
+}
 
-  for (const webhook of webhooks) {
-    const payloadData = {
-      event,
-      data,
-      timestamp: new Date().toISOString(),
-    }
-    const payload = JSON.stringify(payloadData)
-
-    const signature = createWebhookSignature(payload, webhook.secret)
-
-    // Queue webhook delivery
-    await queueWebhook({
-      url: webhook.url,
-      method: "POST",
-      headers: {
-        "X-Webhook-Signature": signature,
-        "X-Webhook-Event": event,
-      },
-      body: payloadData,
+export async function recordWebhookSuccess(id: string): Promise<void> {
+  await supabase
+    .from("webhooks")
+    .update({
+      failure_count: 0,
+      last_triggered_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     })
-  }
+    .eq("id", id)
 }
-
-// Update webhook status
-export async function updateWebhookStatus(
-  webhookId: string,
-  success: boolean
-): Promise<void> {
-  await connectDB()
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const update: any = {
-    lastTriggeredAt: new Date(),
-  }
-
-  if (success) {
-    update.failureCount = 0
-  } else {
-    update.$inc = { failureCount: 1 }
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (Webhook as any).findByIdAndUpdate(webhookId, update)
-}
-

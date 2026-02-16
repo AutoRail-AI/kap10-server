@@ -1,145 +1,119 @@
-import mongoose, { Schema } from "mongoose"
-import crypto from "crypto"
-import { connectDB } from "@/lib/db/mongoose"
+import { supabase } from "@/lib/db"
+import crypto from "node:crypto"
+import type { Database, Json } from "@/lib/db/types"
 
-export interface IApiKey extends mongoose.Document {
-  userId: string
-  organizationId?: string
-  name: string
-  key: string // Hashed key
-  keyPrefix: string // First 8 chars for display (e.g., "sk_live_ab")
-  lastUsedAt?: Date
-  expiresAt?: Date
-  scopes: string[]
-  rateLimit?: {
-    requests: number
-    windowMs: number
+export type ApiKey = Database["public"]["Tables"]["api_keys"]["Row"]
+export type ApiKeyInsert = Database["public"]["Tables"]["api_keys"]["Insert"]
+export type ApiKeyUpdate = Database["public"]["Tables"]["api_keys"]["Update"]
+
+// API Key Manager functions
+
+function generateApiKey(): { key: string; prefix: string } {
+  const key = `sk_${crypto.randomBytes(32).toString("hex")}`
+  const prefix = key.substring(0, 12)
+  return { key, prefix }
+}
+
+export async function createApiKey(
+  userId: string,
+  name: string,
+  options?: {
+    organizationId?: string
+    scopes?: string[]
+    expiresAt?: string
+    rateLimit?: { windowMs: number; maxRequests: number }
   }
-  enabled: boolean
-  createdAt: Date
-  updatedAt: Date
+): Promise<ApiKey & { rawKey: string }> {
+  const { key, prefix } = generateApiKey()
+  const hashedKey = crypto.createHash("sha256").update(key).digest("hex")
+
+  const { data: apiKey, error } = await supabase
+    .from("api_keys")
+    .insert({
+      user_id: userId,
+      organization_id: options?.organizationId || null,
+      name,
+      key: hashedKey,
+      key_prefix: prefix,
+      scopes: options?.scopes || ["read", "write"],
+      expires_at: options?.expiresAt || null,
+      rate_limit: (options?.rateLimit as Json) || null,
+      enabled: true,
+    })
+    .select()
+    .single()
+
+  if (error) throw error
+  return { ...apiKey, rawKey: key }
 }
 
-const ApiKeySchema = new Schema<IApiKey>(
-  {
-    userId: { type: String, required: true, index: true },
-    organizationId: { type: String, index: true },
-    name: { type: String, required: true },
-    key: { type: String, required: true, unique: true, index: true },
-    keyPrefix: { type: String, required: true },
-    lastUsedAt: { type: Date },
-    expiresAt: { type: Date },
-    scopes: [{ type: String }],
-    rateLimit: {
-      requests: { type: Number },
-      windowMs: { type: Number },
-    },
-    enabled: { type: Boolean, default: true },
-  },
-  { timestamps: true }
-)
-
-export const ApiKey =
-  mongoose.models.ApiKey ||
-  mongoose.model<IApiKey>("ApiKey", ApiKeySchema)
-
-// Generate API key
-export function generateApiKey(prefix: string = "sk_live"): string {
-  const randomBytes = crypto.randomBytes(32)
-  const key = randomBytes.toString("base64url")
-  return `${prefix}_${key}`
-}
-
-// Hash API key for storage
-export function hashApiKey(key: string): string {
-  return crypto.createHash("sha256").update(key).digest("hex")
-}
-
-// Verify API key
 export async function verifyApiKey(
-  key: string
-): Promise<IApiKey | null> {
-  await connectDB()
+  rawKey: string
+): Promise<ApiKey | null> {
+  const hashedKey = crypto.createHash("sha256").update(rawKey).digest("hex")
 
-  const hashedKey = hashApiKey(key)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const apiKey = await (ApiKey as any).findOne({ key: hashedKey, enabled: true })
+  const { data: apiKey, error } = await supabase
+    .from("api_keys")
+    .select("*")
+    .eq("key", hashedKey)
+    .eq("enabled", true)
+    .maybeSingle()
 
+  if (error) throw error
   if (!apiKey) return null
 
   // Check expiration
-  if (apiKey.expiresAt && apiKey.expiresAt < new Date()) {
+  if (apiKey.expires_at && new Date(apiKey.expires_at) < new Date()) {
     return null
   }
 
-  // Update last used
-  apiKey.lastUsedAt = new Date()
-  await apiKey.save()
+  // Update last used timestamp
+  await supabase
+    .from("api_keys")
+    .update({ last_used_at: new Date().toISOString() })
+    .eq("id", apiKey.id)
 
   return apiKey
 }
 
-// Create API key
-export async function createApiKey(
-  userId: string,
-  name: string,
-  options: {
-    organizationId?: string
-    scopes?: string[]
-    expiresAt?: Date
-    rateLimit?: { requests: number; windowMs: number }
-  }
-): Promise<{ apiKey: IApiKey; plainKey: string }> {
-  await connectDB()
+export async function getApiKeys(userId: string): Promise<ApiKey[]> {
+  const { data, error } = await supabase
+    .from("api_keys")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
 
-  const plainKey = generateApiKey()
-  const hashedKey = hashApiKey(plainKey)
-  const keyPrefix = plainKey.substring(0, 12) // "sk_live_ab"
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const apiKey = await (ApiKey as any).create({
-    userId,
-    organizationId: options.organizationId,
-    name,
-    key: hashedKey,
-    keyPrefix,
-    scopes: options.scopes || ["read", "write"],
-    expiresAt: options.expiresAt,
-    rateLimit: options.rateLimit,
-    enabled: true,
-  })
-
-  return { apiKey, plainKey }
+  if (error) throw error
+  return data || []
 }
 
-// List API keys
-export async function listApiKeys(
-  userId: string,
-  organizationId?: string
-): Promise<IApiKey[]> {
-  await connectDB()
+export async function getApiKeysByOrganization(
+  organizationId: string
+): Promise<ApiKey[]> {
+  const { data, error } = await supabase
+    .from("api_keys")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .order("created_at", { ascending: false })
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const query: any = { userId }
-  if (organizationId) {
-    query.organizationId = organizationId
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (ApiKey as any).find(query).sort({ createdAt: -1 })
+  if (error) throw error
+  return data || []
 }
 
-// Revoke API key
-export async function revokeApiKey(
-  keyId: string,
-  userId: string
-): Promise<void> {
-  await connectDB()
+export async function revokeApiKey(id: string): Promise<void> {
+  const { error } = await supabase
+    .from("api_keys")
+    .update({ enabled: false, updated_at: new Date().toISOString() })
+    .eq("id", id)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (ApiKey as any).findOneAndUpdate(
-    { _id: keyId, userId },
-    { enabled: false }
-  )
+  if (error) throw error
 }
 
+export async function deleteApiKey(id: string): Promise<void> {
+  const { error } = await supabase
+    .from("api_keys")
+    .delete()
+    .eq("id", id)
+
+  if (error) throw error
+}

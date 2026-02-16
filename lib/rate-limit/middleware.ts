@@ -1,31 +1,10 @@
-import mongoose, { Schema } from "mongoose"
+import { supabase } from "@/lib/db"
 import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { connectDB } from "@/lib/db/mongoose"
+import type { Database } from "@/lib/db/types"
 
-export interface IRateLimit extends mongoose.Document {
-  key: string
-  count: number
-  resetAt: Date
-  createdAt: Date
-}
-
-const RateLimitSchema = new Schema<IRateLimit>(
-  {
-    key: { type: String, required: true, unique: true, index: true },
-    count: { type: Number, default: 0 },
-    resetAt: { type: Date, required: true, index: true },
-  },
-  { timestamps: true }
-)
-
-// TTL index for auto-cleanup
-RateLimitSchema.index({ resetAt: 1 }, { expireAfterSeconds: 0 })
-
-export const RateLimit =
-  mongoose.models.RateLimit ||
-  mongoose.model<IRateLimit>("RateLimit", RateLimitSchema)
+export type RateLimitRow = Database["public"]["Tables"]["rate_limits"]["Row"]
 
 export interface RateLimitOptions {
   windowMs: number // Time window in milliseconds
@@ -38,8 +17,6 @@ export async function rateLimit(
   req: NextRequest,
   options: RateLimitOptions
 ): Promise<{ success: boolean; remaining: number; resetAt: Date }> {
-  await connectDB()
-
   // Generate rate limit key
   let key: string
   if (options.keyGenerator) {
@@ -47,44 +24,57 @@ export async function rateLimit(
   } else {
     // Default: use user ID or IP address
     const session = await auth.api.getSession({ headers: await headers() })
-    // Get IP from headers (NextRequest doesn't have .ip property)
-    const ip = req.headers.get("x-forwarded-for")?.split(",")[0] || 
-               req.headers.get("x-real-ip") || 
-               "anonymous"
+    const ip =
+      req.headers.get("x-forwarded-for")?.split(",")[0] ||
+      req.headers.get("x-real-ip") ||
+      "anonymous"
     key = session?.user?.id || ip
   }
 
   const now = new Date()
   const resetAt = new Date(now.getTime() + options.windowMs)
 
-  // Get or create rate limit record
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let rateLimit = await (RateLimit as any).findOne({ key })
+  // Try to get existing rate limit record
+  const { data: existing } = await supabase
+    .from("rate_limits")
+    .select("*")
+    .eq("key", key)
+    .maybeSingle()
 
-  if (!rateLimit) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    rateLimit = await (RateLimit as any).create({
+  let count: number
+
+  if (!existing) {
+    // Create new record
+    await supabase.from("rate_limits").insert({
       key,
       count: 1,
-      resetAt,
+      reset_at: resetAt.toISOString(),
     })
-  } else if (rateLimit.resetAt < now) {
+    count = 1
+  } else if (new Date(existing.reset_at) < now) {
     // Reset window
-    rateLimit.count = 1
-    rateLimit.resetAt = resetAt
-    await rateLimit.save()
+    await supabase
+      .from("rate_limits")
+      .update({ count: 1, reset_at: resetAt.toISOString() })
+      .eq("id", existing.id)
+    count = 1
   } else {
     // Increment count
-    rateLimit.count += 1
-    await rateLimit.save()
+    count = (existing.count || 0) + 1
+    await supabase
+      .from("rate_limits")
+      .update({ count })
+      .eq("id", existing.id)
   }
 
-  const remaining = Math.max(0, options.maxRequests - rateLimit.count)
+  const remaining = Math.max(0, options.maxRequests - count)
 
   return {
-    success: rateLimit.count <= options.maxRequests,
+    success: count <= options.maxRequests,
     remaining,
-    resetAt: rateLimit.resetAt,
+    resetAt: existing && new Date(existing.reset_at) >= now
+      ? new Date(existing.reset_at)
+      : resetAt,
   }
 }
 
@@ -123,4 +113,3 @@ export function withRateLimit(
     return response
   }
 }
-

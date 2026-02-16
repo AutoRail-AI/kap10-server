@@ -1,7 +1,8 @@
 import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { createTemplate, getTemplate, getTemplates, type TemplateType, useTemplate } from "@/lib/templates/manager"
+import { createTemplate, getTemplate, getTemplates, incrementUsageCount } from "@/lib/templates/manager"
+import type { Json } from "@/lib/db/types"
 
 export async function GET(req: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -30,8 +31,7 @@ export async function GET(req: NextRequest) {
   const templates = await getTemplates({
     userId: session.user.id,
     organizationId: organizationId || undefined,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    type: type as any,
+    type: type || undefined,
     category: category || undefined,
     tags,
     publicOnly,
@@ -90,20 +90,20 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const parsedContent = typeof content === "string" 
+  const parsedContent = typeof content === "string"
     ? (JSON.parse(content) as Record<string, unknown>)
     : (content as Record<string, unknown>)
 
   const template = await createTemplate({
-    userId: session.user.id,
-    organizationId: organizationId || undefined,
+    user_id: session.user.id,
+    organization_id: organizationId || undefined,
     name,
     description,
-    type: type as TemplateType,
+    type,
     category,
     tags,
-    content: parsedContent,
-    variables,
+    content: parsedContent as Json,
+    variables: variables as any,
     public: isPublic,
   })
 
@@ -128,8 +128,7 @@ export async function PATCH(req: NextRequest) {
     )
   }
 
-  await useTemplate(templateId)
+  await incrementUsageCount(templateId)
 
   return NextResponse.json({ success: true })
 }
-

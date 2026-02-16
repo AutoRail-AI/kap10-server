@@ -1,7 +1,7 @@
 import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { checkQuota, getUsageStats, type UsageType } from "@/lib/usage/tracker"
+import { checkQuota as checkUsageQuota, getUsageSummary } from "@/lib/usage/tracker"
 
 export async function GET(req: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -11,26 +11,17 @@ export async function GET(req: NextRequest) {
 
   const { searchParams } = new URL(req.url)
   const organizationId = searchParams.get("organizationId")
-  const type = searchParams.get("type")
-  const resource = searchParams.get("resource")
-  const startDate = searchParams.get("startDate")
-    ? new Date(searchParams.get("startDate")!)
-    : undefined
-  const endDate = searchParams.get("endDate")
-    ? new Date(searchParams.get("endDate")!)
-    : undefined
+  const startDate = searchParams.get("startDate") || undefined
+  const endDate = searchParams.get("endDate") || undefined
 
-  const stats = await getUsageStats({
+  const summary = await getUsageSummary({
     userId: session.user.id,
     organizationId: organizationId || undefined,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    type: type as any,
-    resource: resource || undefined,
     startDate,
     endDate,
   })
 
-  return NextResponse.json(stats)
+  return NextResponse.json(summary)
 }
 
 export async function POST(req: NextRequest) {
@@ -40,34 +31,25 @@ export async function POST(req: NextRequest) {
   }
 
   const body = (await req.json()) as {
-    limit?: number
-    windowMs?: number
+    maxQuantity?: number
     type?: string
-    resource?: string
-    organizationId?: string
+    windowStartDate?: string
   }
-  const { limit, windowMs, type, resource, organizationId } = body
+  const { maxQuantity, type, windowStartDate } = body
 
-  if (!limit || !windowMs || !type) {
+  if (!maxQuantity || !type || !windowStartDate) {
     return NextResponse.json(
-      { error: "limit, windowMs, and type are required" },
+      { error: "maxQuantity, type, and windowStartDate are required" },
       { status: 400 }
     )
   }
 
-  if (!limit || !windowMs || !type) {
-    return NextResponse.json(
-      { error: "limit, windowMs, and type are required" },
-      { status: 400 }
-    )
-  }
-
-  const result = await checkQuota(
+  const result = await checkUsageQuota(
     session.user.id,
-    organizationId,
-    { limit: limit!, windowMs: windowMs!, type: type! as UsageType, resource }
+    type,
+    maxQuantity,
+    windowStartDate
   )
 
   return NextResponse.json(result)
 }
-

@@ -1,153 +1,78 @@
-import mongoose, { Schema } from "mongoose"
-import { connectDB } from "@/lib/db/mongoose"
+import { supabase } from "@/lib/db"
+import type { Database, Json } from "@/lib/db/types"
 
-export interface ISearchIndex extends mongoose.Document {
-  organizationId?: string
-  resource: string // e.g., "project", "document", "ai_agent"
-  resourceId: string
-  title: string
-  content: string
-  tags?: string[]
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  metadata?: Record<string, any>
-  createdAt: Date
-  updatedAt: Date
+export type SearchIndexEntry = Database["public"]["Tables"]["search_index"]["Row"]
+export type SearchIndexInsert = Database["public"]["Tables"]["search_index"]["Insert"]
+export type SearchIndexUpdate = Database["public"]["Tables"]["search_index"]["Update"]
+
+// Search Engine functions
+
+export async function indexDocument(data: SearchIndexInsert): Promise<SearchIndexEntry> {
+  // Upsert: if resource+resource_id exists, update it
+  const { data: entry, error } = await supabase
+    .from("search_index")
+    .upsert(data, { onConflict: "resource,resource_id" })
+    .select()
+    .single()
+
+  if (error) throw error
+  return entry
 }
 
-const SearchIndexSchema = new Schema<ISearchIndex>(
-  {
-    organizationId: { type: String, index: true },
-    resource: { type: String, required: true, index: true },
-    resourceId: { type: String, required: true, index: true },
-    title: { type: String, required: true },
-    content: { type: String, required: true },
-    tags: [{ type: String, index: true }],
-    metadata: { type: Schema.Types.Mixed },
-  },
-  { timestamps: true }
-)
-
-// Text index for full-text search
-SearchIndexSchema.index({
-  title: "text",
-  content: "text",
-  tags: "text",
-})
-
-// Compound index
-SearchIndexSchema.index({ organizationId: 1, resource: 1 })
-
-export const SearchIndex =
-  mongoose.models.SearchIndex ||
-  mongoose.model<ISearchIndex>("SearchIndex", SearchIndexSchema)
-
-// Index a document
-export async function indexDocument(
-  data: {
-    organizationId?: string
-    resource: string
-    resourceId: string
-    title: string
-    content: string
-    tags?: string[]
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    metadata?: Record<string, any>
-  }
-): Promise<ISearchIndex> {
-  await connectDB()
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (SearchIndex as any).findOneAndUpdate(
-    {
-      resource: data.resource,
-      resourceId: data.resourceId,
-    },
-    {
-      organizationId: data.organizationId,
-      resource: data.resource,
-      resourceId: data.resourceId,
-      title: data.title,
-      content: data.content,
-      tags: data.tags,
-      metadata: data.metadata,
-    },
-    { upsert: true, new: true }
-  )
-}
-
-// Remove from index
 export async function removeFromIndex(
   resource: string,
   resourceId: string
 ): Promise<void> {
-  await connectDB()
+  const { error } = await supabase
+    .from("search_index")
+    .delete()
+    .eq("resource", resource)
+    .eq("resource_id", resourceId)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (SearchIndex as any).deleteOne({ resource, resourceId })
+  if (error) throw error
 }
 
-// Search
 export async function search(
   query: string,
-  options: {
+  options?: {
     organizationId?: string
     resource?: string
     tags?: string[]
     limit?: number
-  } = {}
-): Promise<ISearchIndex[]> {
-  await connectDB()
+    offset?: number
+  }
+): Promise<SearchIndexEntry[]> {
+  let dbQuery = supabase
+    .from("search_index")
+    .select("*")
+    .or(`title.ilike.%${query}%,content.ilike.%${query}%`)
+    .order("updated_at", { ascending: false })
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const searchQuery: any = {
-    $text: { $search: query },
+  if (options?.organizationId) {
+    dbQuery = dbQuery.eq("organization_id", options.organizationId)
+  }
+  if (options?.resource) {
+    dbQuery = dbQuery.eq("resource", options.resource)
+  }
+  if (options?.tags?.length) {
+    dbQuery = dbQuery.overlaps("tags", options.tags)
   }
 
-  if (options.organizationId) {
-    searchQuery.organizationId = options.organizationId
-  }
-  if (options.resource) {
-    searchQuery.resource = options.resource
-  }
-  if (options.tags && options.tags.length > 0) {
-    searchQuery.tags = { $in: options.tags }
-  }
+  const limit = options?.limit || 20
+  const offset = options?.offset || 0
+  dbQuery = dbQuery.range(offset, offset + limit - 1)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (SearchIndex as any).find(searchQuery, { score: { $meta: "textScore" } })
-    .sort({ score: { $meta: "textScore" } })
-    .limit(options.limit || 20)
+  const { data, error } = await dbQuery
+  if (error) throw error
+  return data || []
 }
 
-// Simple text search (fallback if text index not available)
-export async function simpleSearch(
-  query: string,
-  options: {
-    organizationId?: string
-    resource?: string
-    limit?: number
-  } = {}
-): Promise<ISearchIndex[]> {
-  await connectDB()
+export async function reindexOrganization(organizationId: string): Promise<void> {
+  // Remove all entries for this organization — caller should re-index after
+  const { error } = await supabase
+    .from("search_index")
+    .delete()
+    .eq("organization_id", organizationId)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const searchQuery: any = {
-    $or: [
-      { title: { $regex: query, $options: "i" } },
-      { content: { $regex: query, $options: "i" } },
-    ],
-  }
-
-  if (options.organizationId) {
-    searchQuery.organizationId = options.organizationId
-  }
-  if (options.resource) {
-    searchQuery.resource = options.resource
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (SearchIndex as any).find(searchQuery)
-    .sort({ createdAt: -1 })
-    .limit(options.limit || 20)
+  if (error) throw error
 }
-

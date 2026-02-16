@@ -7,8 +7,11 @@ export const env = createEnv({
       .enum(["true", "false"])
       .optional()
       .transform((value) => value === "true"),
-    // Database
-    MONGODB_URI: z.string().refine((val) => !val || /^mongodb(\+srv)?:\/\//.test(val), "Invalid MongoDB URI").optional(),
+    // Database (Supabase)
+    SUPABASE_URL: z.string().url().optional(),
+    SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
+    SUPABASE_SECRET_KEY: z.string().optional(),
+    SUPABASE_DB_URL: z.string().optional(),
     // Redis (for job queues)
     REDIS_URL: z.string().refine((val) => !val || /^redis(s)?:\/\//.test(val), "Invalid Redis URL").optional(),
     // Better Auth
@@ -46,12 +49,18 @@ export const env = createEnv({
   },
   client: {
     NEXT_PUBLIC_APP_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
+    NEXT_PUBLIC_SUPABASE_URL: z.string().url().optional(),
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().optional(),
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z.string().optional(),
     NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
     NEXT_PUBLIC_POSTHOG_HOST: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
   },
   runtimeEnv: {
     ANALYZE: process.env.ANALYZE,
-    MONGODB_URI: process.env.MONGODB_URI,
+    SUPABASE_URL: process.env.SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    SUPABASE_SECRET_KEY: process.env.SUPABASE_SECRET_KEY,
+    SUPABASE_DB_URL: process.env.SUPABASE_DB_URL,
     REDIS_URL: process.env.REDIS_URL,
     BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
     BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
@@ -61,6 +70,9 @@ export const env = createEnv({
     EMAIL_FROM: process.env.EMAIL_FROM,
     UPLOADTHING_TOKEN: process.env.UPLOADTHING_TOKEN,
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+    NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
     // AI Agent Configuration
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
@@ -82,7 +94,5 @@ export const env = createEnv({
     SENTRY_AUTH_TOKEN: process.env.SENTRY_AUTH_TOKEN,
     // Feature Flags
     FEATURE_FLAGS_ENABLED: process.env.FEATURE_FLAGS_ENABLED,
-    NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY,
-    NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST,
   },
 })

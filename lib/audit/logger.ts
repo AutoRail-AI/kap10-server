@@ -1,115 +1,102 @@
-import mongoose, { Schema } from "mongoose"
-import { connectDB } from "@/lib/db/mongoose"
+import { supabase } from "@/lib/db"
+import type { Database, Json } from "@/lib/db/types"
 
-export type AuditAction =
-  | "create"
-  | "read"
-  | "update"
-  | "delete"
-  | "login"
-  | "logout"
-  | "invite"
-  | "subscribe"
-  | "cancel"
-  | "admin_action"
+export type AuditLog = Database["public"]["Tables"]["audit_logs"]["Row"]
+export type AuditLogInsert = Database["public"]["Tables"]["audit_logs"]["Insert"]
 
-export interface IAuditLog extends mongoose.Document {
+// Audit Logger functions
+
+export async function logAction(data: AuditLogInsert): Promise<AuditLog> {
+  const { data: log, error } = await supabase
+    .from("audit_logs")
+    .insert(data)
+    .select()
+    .single()
+
+  if (error) throw error
+  return log
+}
+
+export async function getAuditLogs(options?: {
   userId?: string
   organizationId?: string
-  action: AuditAction
-  resource: string
-  resourceId?: string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  metadata?: Record<string, any>
-  ipAddress?: string
-  userAgent?: string
-  createdAt: Date
+  action?: string
+  resource?: string
+  limit?: number
+  offset?: number
+  startDate?: string
+  endDate?: string
+}): Promise<AuditLog[]> {
+  let query = supabase
+    .from("audit_logs")
+    .select("*")
+    .order("created_at", { ascending: false })
+
+  if (options?.userId) {
+    query = query.eq("user_id", options.userId)
+  }
+  if (options?.organizationId) {
+    query = query.eq("organization_id", options.organizationId)
+  }
+  if (options?.action) {
+    query = query.eq("action", options.action)
+  }
+  if (options?.resource) {
+    query = query.eq("resource", options.resource)
+  }
+  if (options?.startDate) {
+    query = query.gte("created_at", options.startDate)
+  }
+  if (options?.endDate) {
+    query = query.lte("created_at", options.endDate)
+  }
+
+  const limit = options?.limit || 50
+  const offset = options?.offset || 0
+  query = query.range(offset, offset + limit - 1)
+
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
 }
 
-const AuditLogSchema = new Schema<IAuditLog>(
-  {
-    userId: { type: String, index: true },
-    organizationId: { type: String, index: true },
-    action: { type: String, required: true, index: true },
-    resource: { type: String, required: true, index: true },
-    resourceId: { type: String, index: true },
-    metadata: { type: Schema.Types.Mixed },
-    ipAddress: { type: String },
-    userAgent: { type: String },
-  },
-  { timestamps: true }
-)
+export async function getAuditLogCount(options?: {
+  userId?: string
+  organizationId?: string
+  action?: string
+}): Promise<number> {
+  let query = supabase
+    .from("audit_logs")
+    .select("id", { count: "exact", head: true })
 
-// Index for common queries
-AuditLogSchema.index({ userId: 1, createdAt: -1 })
-AuditLogSchema.index({ organizationId: 1, createdAt: -1 })
-AuditLogSchema.index({ action: 1, resource: 1, createdAt: -1 })
-
-export const AuditLog =
-  mongoose.models.AuditLog ||
-  mongoose.model<IAuditLog>("AuditLog", AuditLogSchema)
-
-// Log an action
-export async function logAction(
-  action: AuditAction,
-  resource: string,
-  options: {
-    userId?: string
-    organizationId?: string
-    resourceId?: string
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    metadata?: Record<string, any>
-    ipAddress?: string
-    userAgent?: string
+  if (options?.userId) {
+    query = query.eq("user_id", options.userId)
   }
+  if (options?.organizationId) {
+    query = query.eq("organization_id", options.organizationId)
+  }
+  if (options?.action) {
+    query = query.eq("action", options.action)
+  }
+
+  const { count, error } = await query
+  if (error) throw error
+  return count || 0
+}
+
+export async function deleteAuditLogs(
+  organizationId: string,
+  olderThan?: string
 ): Promise<void> {
-  await connectDB()
+  let query = supabase
+    .from("audit_logs")
+    .delete()
+    .eq("organization_id", organizationId)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (AuditLog as any).create({
-    action,
-    resource,
-    userId: options.userId,
-    organizationId: options.organizationId,
-    resourceId: options.resourceId,
-    metadata: options.metadata,
-    ipAddress: options.ipAddress,
-    userAgent: options.userAgent,
-  })
-}
-
-// Get audit logs
-export async function getAuditLogs(
-  filters: {
-    userId?: string
-    organizationId?: string
-    action?: AuditAction
-    resource?: string
-    startDate?: Date
-    endDate?: Date
-    limit?: number
-  }
-): Promise<IAuditLog[]> {
-  await connectDB()
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const query: any = {}
-
-  if (filters.userId) query.userId = filters.userId
-  if (filters.organizationId) query.organizationId = filters.organizationId
-  if (filters.action) query.action = filters.action
-  if (filters.resource) query.resource = filters.resource
-
-  if (filters.startDate || filters.endDate) {
-    query.createdAt = {}
-    if (filters.startDate) query.createdAt.$gte = filters.startDate
-    if (filters.endDate) query.createdAt.$lte = filters.endDate
+  if (olderThan) {
+    query = query.lt("created_at", olderThan)
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (AuditLog as any).find(query)
-    .sort({ createdAt: -1 })
-    .limit(filters.limit || 100)
-    .lean()
+  const { error } = await query
+  if (error) throw error
 }
-

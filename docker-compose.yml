@@ -1,5 +1,5 @@
 # Docker Compose for Development
-# Uses cloud MongoDB (MongoDB Atlas) and local Redis
+# Uses cloud Supabase (PostgreSQL) and local Redis
 
 services:
   # Next.js Application

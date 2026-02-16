@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Modern Next.js Boilerplate** - A production-ready Next.js starter with authentication, MongoDB, background job processing, and modern tooling. Built with Next.js 16, React 19, and Tailwind CSS v4.
+**Modern Next.js Boilerplate** - A production-ready Next.js starter with authentication, Supabase (PostgreSQL), background job processing, and modern tooling. Built with Next.js 16, React 19, and Tailwind CSS v4.
 
 ### What This Boilerplate Provides
 
 | Feature | Technology | Description |
 |---------|------------|-------------|
 | **Authentication** | Better Auth | Email/password + Google OAuth with session management |
-| **Database** | MongoDB | Type-safe operations with singleton connection pattern |
+| **Database** | Supabase (PostgreSQL) | Type-safe operations with singleton client pattern |
 | **Job Queues** | BullMQ + Redis | Reliable background job processing with retries |
 | **UI Components** | shadcn/ui | Pre-built accessible components with Radix UI |
 | **Styling** | Tailwind CSS v4 | Utility-first CSS with CVA variants |
@@ -23,8 +23,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Tech Stack
 - **Framework**: Next.js 16 (App Router), React 19
 - **Styling**: Tailwind CSS v4, shadcn/ui, Radix UI
-- **Auth**: Better Auth with MongoDB adapter
-- **Database**: MongoDB (Atlas recommended)
+- **Auth**: Better Auth with PostgreSQL (pg Pool)
+- **Database**: Supabase (PostgreSQL)
 - **Job Queue**: BullMQ with Redis
 - **Testing**: Vitest, Playwright, Storybook
 - **Package Manager**: pnpm (via Corepack)
@@ -85,7 +85,7 @@ components/
 
 lib/
 ├── auth/               # Better Auth configuration
-├── db/                 # MongoDB connection and utilities
+├── db/                 # Supabase client and type definitions
 ├── queue/              # BullMQ job queue system
 │   ├── redis.ts        # Redis connection singleton
 │   ├── types.ts        # Job type definitions
@@ -127,29 +127,20 @@ Better Auth is pre-configured with:
 - Email/password authentication
 - Google OAuth (optional)
 - Email verification via Resend
-- MongoDB session storage
+- PostgreSQL session storage (via Supabase)
 
 Protected routes are configured in `proxy.ts`. Add routes to `protectedRoutes` array.
 
 ### Database
 
-This boilerplate uses a **hybrid database approach**:
+This boilerplate uses **Supabase (PostgreSQL)** for all data storage:
 
-**Prisma (Better Auth)**:
-- Managed in `lib/db/prisma.ts`
-- Used exclusively by Better Auth for authentication
-- Schema generated via Better Auth CLI
-- Type-safe with auto-generated Prisma client
+- **Server client**: `lib/db/supabase.ts` — singleton Supabase client with service role key
+- **Browser client**: `lib/db/supabase-browser.ts` — browser-side client using `@supabase/ssr`
+- **Type definitions**: `lib/db/types.ts` — full TypeScript Database type with Row/Insert/Update generics
+- **Migrations**: `supabase/migrations/` — SQL migration files for schema management
 
-**Mongoose (Application Features)**:
-- Connection managed in `lib/db/mongoose.ts`
-- Used for AI agents, custom features, and application data
-- Models defined in `lib/models/`
-- Rich schema validation and middleware support
-
-Both use the same MongoDB database (Atlas recommended).
-
-**Note**: See [UPGRADE_GUIDE.md](UPGRADE_GUIDE.md) for detailed setup instructions and architecture overview.
+Better Auth connects directly via `pg` Pool to the same Supabase PostgreSQL database.
 
 ### Background Job Processing
 
@@ -213,7 +204,7 @@ Strict mode enabled with `noUncheckedIndexedAccess`. Uses ts-reset for enhanced 
 All mandatory code patterns and rules are documented in [RULESETS.md](RULESETS.md). Please reference that file when generating code to ensure compatibility with our tech stack and prevent known build issues.
 
 The rules cover:
-- Mongoose operations patterns
+- Supabase query patterns
 - Zod v4 validation syntax
 - JSON parsing type assertions
 - File extension requirements (JSX)
@@ -282,7 +273,7 @@ Full brand guidelines are in `brand/brand.md`. Key resources:
 # 1. Copy environment file
 cp .env.example .env.local
 
-# 2. Fill in required values (MongoDB URI, Better Auth secret)
+# 2. Fill in required values (Supabase URL/keys, Better Auth secret)
 
 # 3. Install dependencies
 pnpm install
@@ -320,7 +311,9 @@ docker compose up
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MONGODB_URI` | Yes | MongoDB connection string |
+| `SUPABASE_URL` | Yes | Supabase project URL |
+| `SUPABASE_SECRET_KEY` | Yes | Supabase service role key |
+| `SUPABASE_DB_URL` | Yes | PostgreSQL connection string |
 | `BETTER_AUTH_SECRET` | Yes | Auth secret (32+ chars) |
 | `BETTER_AUTH_URL` | Yes | App URL for auth |
 | `REDIS_URL` | No | Redis URL (default: localhost:6379) |

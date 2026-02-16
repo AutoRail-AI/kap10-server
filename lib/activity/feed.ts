@@ -1,137 +1,94 @@
-import mongoose, { Schema } from "mongoose"
-import { connectDB } from "@/lib/db/mongoose"
+import { supabase } from "@/lib/db"
+import type { Database, Json } from "@/lib/db/types"
 
-export type ActivityType =
-  | "user.created"
-  | "user.updated"
-  | "organization.created"
-  | "organization.updated"
-  | "member.invited"
-  | "member.joined"
-  | "project.created"
-  | "project.updated"
-  | "project.deleted"
-  | "ai_agent.run"
-  | "document.created"
-  | "document.updated"
-  | "comment.created"
-  | "subscription.created"
-  | "subscription.updated"
+export type Activity = Database["public"]["Tables"]["activities"]["Row"]
+export type ActivityInsert = Database["public"]["Tables"]["activities"]["Insert"]
 
-export interface IActivity extends mongoose.Document {
-  userId?: string
-  organizationId?: string
-  type: ActivityType
-  action: string // Human-readable action
-  resource: string // Resource type
-  resourceId?: string
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  metadata?: Record<string, any>
-  createdAt: Date
+// Activity Feed functions
+
+export async function createActivity(data: ActivityInsert): Promise<Activity> {
+  const { data: activity, error } = await supabase
+    .from("activities")
+    .insert(data)
+    .select()
+    .single()
+
+  if (error) throw error
+  return activity
 }
 
-const ActivitySchema = new Schema<IActivity>(
-  {
-    userId: { type: String, index: true },
-    organizationId: { type: String, required: true, index: true },
-    type: { type: String, required: true, index: true },
-    action: { type: String, required: true },
-    resource: { type: String, required: true },
-    resourceId: { type: String, index: true },
-    metadata: { type: Schema.Types.Mixed },
-  },
-  { timestamps: true }
-)
-
-// Indexes for efficient queries
-ActivitySchema.index({ organizationId: 1, createdAt: -1 })
-ActivitySchema.index({ userId: 1, createdAt: -1 })
-ActivitySchema.index({ resource: 1, resourceId: 1 })
-
-export const Activity =
-  mongoose.models.Activity ||
-  mongoose.model<IActivity>("Activity", ActivitySchema)
-
-// Create activity
-export async function createActivity(
-  data: {
-    userId?: string
-    organizationId: string
-    type: ActivityType
-    action: string
-    resource: string
-    resourceId?: string
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    metadata?: Record<string, any>
-  }
-): Promise<IActivity> {
-  await connectDB()
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (Activity as any).create({
-    userId: data.userId,
-    organizationId: data.organizationId,
-    type: data.type,
-    action: data.action,
-    resource: data.resource,
-    resourceId: data.resourceId,
-    metadata: data.metadata,
-  })
-}
-
-// Get activity feed
-export async function getActivityFeed(
+export async function getActivities(
   organizationId: string,
-  options: {
+  options?: {
+    limit?: number
+    offset?: number
+    type?: string
     userId?: string
-    resource?: string
-    resourceId?: string
-    limit?: number
-    before?: Date
-  } = {}
-): Promise<IActivity[]> {
-  await connectDB()
+  }
+): Promise<Activity[]> {
+  let query = supabase
+    .from("activities")
+    .select("*")
+    .eq("organization_id", organizationId)
+    .order("created_at", { ascending: false })
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const query: any = { organizationId }
-  if (options.userId) {
-    query.userId = options.userId
+  if (options?.type) {
+    query = query.eq("type", options.type)
   }
-  if (options.resource) {
-    query.resource = options.resource
+  if (options?.userId) {
+    query = query.eq("user_id", options.userId)
   }
-  if (options.resourceId) {
-    query.resourceId = options.resourceId
+  if (options?.limit) {
+    query = query.limit(options.limit)
   }
-  if (options.before) {
-    query.createdAt = { $lt: options.before }
+  if (options?.offset) {
+    query = query.range(options.offset, options.offset + (options.limit || 50) - 1)
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (Activity as any).find(query)
-    .sort({ createdAt: -1 })
-    .limit(options.limit || 50)
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
 }
 
-// Get user activity
-export async function getUserActivity(
+export async function getActivitiesByUser(
   userId: string,
-  options: {
-    organizationId?: string
-    limit?: number
-  } = {}
-): Promise<IActivity[]> {
-  await connectDB()
+  limit = 50
+): Promise<Activity[]> {
+  const { data, error } = await supabase
+    .from("activities")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const query: any = { userId }
-  if (options.organizationId) {
-    query.organizationId = options.organizationId
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (Activity as any).find(query)
-    .sort({ createdAt: -1 })
-    .limit(options.limit || 50)
+  if (error) throw error
+  return data || []
 }
 
+export async function getActivitiesByResource(
+  resource: string,
+  resourceId: string,
+  limit = 50
+): Promise<Activity[]> {
+  const { data, error } = await supabase
+    .from("activities")
+    .select("*")
+    .eq("resource", resource)
+    .eq("resource_id", resourceId)
+    .order("created_at", { ascending: false })
+    .limit(limit)
+
+  if (error) throw error
+  return data || []
+}
+
+export async function deleteActivitiesForOrganization(
+  organizationId: string
+): Promise<void> {
+  const { error } = await supabase
+    .from("activities")
+    .delete()
+    .eq("organization_id", organizationId)
+
+  if (error) throw error
+}

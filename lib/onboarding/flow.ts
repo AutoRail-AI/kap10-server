@@ -1,123 +1,118 @@
-import mongoose, { Schema } from "mongoose"
-import { connectDB } from "@/lib/db/mongoose"
+import { supabase } from "@/lib/db"
+import type { Database, Json } from "@/lib/db/types"
 
-export type OnboardingStep =
-  | "welcome"
-  | "profile"
-  | "organization"
-  | "preferences"
-  | "complete"
+export type Onboarding = Database["public"]["Tables"]["onboarding"]["Row"]
+export type OnboardingInsert = Database["public"]["Tables"]["onboarding"]["Insert"]
+export type OnboardingUpdate = Database["public"]["Tables"]["onboarding"]["Update"]
 
-export interface IOnboarding extends mongoose.Document {
-  userId: string
-  organizationId?: string
-  currentStep: OnboardingStep
-  completedSteps: OnboardingStep[]
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  data: Record<string, any>
-  completed: boolean
-  completedAt?: Date
-  createdAt: Date
-  updatedAt: Date
+// Steps definition
+export const ONBOARDING_STEPS = [
+  "welcome",
+  "profile",
+  "organization",
+  "preferences",
+  "complete",
+] as const
+
+export type OnboardingStep = typeof ONBOARDING_STEPS[number]
+
+// Onboarding Flow functions
+
+export async function getOnboarding(userId: string): Promise<Onboarding | null> {
+  const { data, error } = await supabase
+    .from("onboarding")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data
 }
 
-const OnboardingSchema = new Schema<IOnboarding>(
-  {
-    userId: { type: String, required: true, unique: true, index: true },
-    organizationId: { type: String, index: true },
-    currentStep: {
-      type: String,
-      enum: ["welcome", "profile", "organization", "preferences", "complete"],
-      default: "welcome",
-    },
-    completedSteps: [{ type: String }],
-    data: { type: Schema.Types.Mixed, default: {} },
-    completed: { type: Boolean, default: false },
-    completedAt: { type: Date },
-  },
-  { timestamps: true }
-)
-
-export const Onboarding =
-  mongoose.models.Onboarding ||
-  mongoose.model<IOnboarding>("Onboarding", OnboardingSchema)
-
-// Get or create onboarding
-export async function getOnboarding(userId: string): Promise<IOnboarding> {
-  await connectDB()
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let onboarding = await (Onboarding as any).findOne({ userId })
-  if (!onboarding) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    onboarding = await (Onboarding as any).create({
-      userId,
-      currentStep: "welcome",
-      completedSteps: [],
-      data: {},
+export async function createOnboarding(userId: string): Promise<Onboarding> {
+  const { data: onboarding, error } = await supabase
+    .from("onboarding")
+    .insert({
+      user_id: userId,
+      current_step: "welcome",
+      completed_steps: [],
+      data: {} as Json,
+      completed: false,
     })
-  }
+    .select()
+    .single()
 
+  if (error) throw error
   return onboarding
 }
 
-// Update onboarding step
-export async function updateOnboardingStep(
+export async function getOrCreateOnboarding(userId: string): Promise<Onboarding> {
+  const existing = await getOnboarding(userId)
+  if (existing) return existing
+  return createOnboarding(userId)
+}
+
+export async function advanceOnboardingStep(
   userId: string,
-  step: OnboardingStep,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  data?: Record<string, any>
-): Promise<IOnboarding> {
-  await connectDB()
+  step: string,
+  stepData?: Record<string, unknown>
+): Promise<Onboarding> {
+  const onboarding = await getOrCreateOnboarding(userId)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const onboarding = await (Onboarding as any).findOne({ userId })
-  if (!onboarding) {
-    throw new Error("Onboarding not found")
+  const completedSteps = [...(onboarding.completed_steps || [])]
+  if (!completedSteps.includes(step)) {
+    completedSteps.push(step)
   }
 
-  onboarding.currentStep = step
-  if (!onboarding.completedSteps.includes(step)) {
-    onboarding.completedSteps.push(step)
-  }
-  if (data) {
-    onboarding.data = { ...onboarding.data, ...data }
-  }
+  const stepIndex = ONBOARDING_STEPS.indexOf(step as typeof ONBOARDING_STEPS[number])
+  const nextStep =
+    stepIndex >= 0 && stepIndex < ONBOARDING_STEPS.length - 1
+      ? ONBOARDING_STEPS[stepIndex + 1]
+      : "complete"
 
-  if (step === "complete") {
-    onboarding.completed = true
-    onboarding.completedAt = new Date()
-  }
+  const isComplete = nextStep === "complete"
 
-  await onboarding.save()
+  const existingData = (onboarding.data as Record<string, unknown>) || {}
+  const mergedData = stepData ? { ...existingData, [step]: stepData } : existingData
+
+  const { data: updated, error } = await supabase
+    .from("onboarding")
+    .update({
+      current_step: nextStep,
+      completed_steps: completedSteps,
+      data: mergedData as Json,
+      completed: isComplete,
+      completed_at: isComplete ? new Date().toISOString() : null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", userId)
+    .select()
+    .single()
+
+  if (error) throw error
+  return updated
+}
+
+export async function resetOnboarding(userId: string): Promise<Onboarding> {
+  const { data: onboarding, error } = await supabase
+    .from("onboarding")
+    .update({
+      current_step: "welcome",
+      completed_steps: [],
+      data: {} as Json,
+      completed: false,
+      completed_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", userId)
+    .select()
+    .single()
+
+  if (error) throw error
   return onboarding
 }
 
-// Check if onboarding is complete
 export async function isOnboardingComplete(userId: string): Promise<boolean> {
-  await connectDB()
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const onboarding = await (Onboarding as any).findOne({ userId })
-  return onboarding?.completed || false
-}
-
-// Get onboarding progress
-export async function getOnboardingProgress(userId: string): Promise<{
-  currentStep: OnboardingStep
-  completedSteps: OnboardingStep[]
-  progress: number
-}> {
-  await connectDB()
-
   const onboarding = await getOnboarding(userId)
-  const totalSteps = 4 // welcome, profile, organization, preferences
-  const progress = (onboarding.completedSteps.length / totalSteps) * 100
-
-  return {
-    currentStep: onboarding.currentStep,
-    completedSteps: onboarding.completedSteps,
-    progress: Math.round(progress),
-  }
+  return onboarding?.completed ?? false
 }
-

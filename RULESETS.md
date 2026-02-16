@@ -7,7 +7,7 @@ This file contains mandatory code patterns that must be followed. These rules pr
 ## Quick Reference
 
 Before generating code, check these common patterns:
-- [Mongoose Operations](#mongoose-model-operations) - Always use `(Model as any).method()`
+- [Supabase Queries](#supabase-query-patterns) - Always use typed query functions
 - [Zod Validation](#zod-v4-validation) - Use `.refine()` for URLs/emails, `z.record(keyType, valueType)`
 - [JSON Parsing](#json-parsing) - Always type assert `await request.json()`
 - [File Extensions](#jsx-in-typescript-files) - Use `.tsx` for JSX, never `.ts`
@@ -36,27 +36,38 @@ export function proxy() { ... }
 
 ---
 
-## 2. Mongoose Model Operations
+## 2. Supabase Query Patterns
 
-**Rule**: Always use `(Model as any).method()` pattern for Mongoose operations
+**Rule**: Use the typed Supabase client from `@/lib/db` for all database operations
 
-TypeScript cannot infer Mongoose model method signatures correctly.
+All queries should import the singleton `supabase` client and use typed table names.
 
 ```typescript
-// ❌ WRONG
-const notification = await Notification.create({ ... })
-const user = await User.findOne({ email })
-const count = await Post.countDocuments({ published: true })
+import { supabase } from "@/lib/db"
 
-// ✅ CORRECT
-const notification = await (Notification as any).create({ ... })
-const user = await (User as any).findOne({ email })
-const count = await (Post as any).countDocuments({ published: true })
+// ❌ WRONG - Raw SQL or untyped queries
+const result = await pool.query('SELECT * FROM users')
+
+// ✅ CORRECT - Typed Supabase client
+const { data, error } = await supabase
+  .from("notifications")
+  .select("*")
+  .eq("user_id", userId)
+  .order("created_at", { ascending: false })
+  .limit(50)
+
+if (error) throw error
+return data || []
 ```
 
-**Apply to these methods**: `create()`, `find()`, `findOne()`, `findById()`, `findOneAndUpdate()`, `findByIdAndUpdate()`, `countDocuments()`, `deleteOne()`, `deleteMany()`, `updateOne()`, `updateMany()`
+**Common patterns**:
+- `supabase.from('table').insert(data).select().single()` — Create and return
+- `supabase.from('table').select('*').eq('id', id).maybeSingle()` — Get one (nullable)
+- `supabase.from('table').update(data).eq('id', id).select().single()` — Update and return
+- `supabase.from('table').delete().eq('id', id)` — Delete
+- `supabase.from('table').select('id', { count: 'exact', head: true })` — Count
 
-**When to apply**: Any Mongoose model operation
+**When to apply**: All database operations
 
 ---
 
@@ -176,23 +187,22 @@ export function MyComponent() {
 
 ---
 
-## 7. Mongoose Document Property Conflicts
+## 7. Supabase Error Handling
 
-**Rule**: Use `Omit<mongoose.Document, "conflictingProperty">` when interface properties conflict
+**Rule**: Always check for `error` in Supabase query results before using `data`
 
 ```typescript
-// ❌ WRONG
-export interface ICost extends mongoose.Document {
-  model: string // Conflicts with Document.model
-}
+// ❌ WRONG - Ignoring error
+const { data } = await supabase.from("users").select("*")
+return data // Could be null if error occurred
 
-// ✅ CORRECT
-export interface ICost extends Omit<mongoose.Document, "model"> {
-  model: string // Now safe
-}
+// ✅ CORRECT - Check error first
+const { data, error } = await supabase.from("users").select("*")
+if (error) throw error
+return data || []
 ```
 
-**When to apply**: Defining Mongoose document interfaces with properties that conflict with Document interface (e.g., `model`, `constructor`, `save`, etc.)
+**When to apply**: All Supabase queries
 
 ---
 
@@ -285,20 +295,18 @@ secret: process.env.BETTER_AUTH_SECRET || "development-secret-change-in-producti
 
 ---
 
-## 13. Template Interface Mismatch
+## 13. Supabase Type Imports
 
-**Rule**: Use type assertions for additional Mongoose model properties
+**Rule**: Import row/insert/update types from `@/lib/db/types` for type safety
 
 ```typescript
-// ✅ CORRECT - Use type assertion for additional properties
-return (Template as any).create({
-  ...data,
-  featured: false as any,
-  usageCount: 0 as any,
-})
+import type { Database } from "@/lib/db/types"
+
+type Notification = Database["public"]["Tables"]["notifications"]["Row"]
+type NotificationInsert = Database["public"]["Tables"]["notifications"]["Insert"]
 ```
 
-**When to apply**: Creating documents with properties not in function signature but required by model
+**When to apply**: Defining types for Supabase table rows
 
 ---
 
@@ -376,25 +384,22 @@ export function getRedis(): Redis {
 
 ---
 
-## 15. Mongoose Duplicate Index Warnings
+## 15. Supabase Client Initialization
 
-**Rule**: Use only one indexing method - either `index: true` OR `Schema.index()`, not both
+**Rule**: Use lazy singleton pattern for Supabase client to support CI builds
+
+The Supabase client supports builds without env vars via placeholder URLs.
 
 ```typescript
-// ❌ WRONG - Duplicate index definition
-const Schema = new Schema({
-  tags: [{ type: String, index: true }], // Index defined here
+// ✅ CORRECT - Lazy proxy pattern in lib/db/supabase.ts
+export const supabase = new Proxy({} as SupabaseClient<Database>, {
+  get(_target, prop) {
+    return getSupabase()[prop as keyof SupabaseClient<Database>]
+  },
 })
-Schema.index({ tags: 1 }) // And here - causes duplicate
-
-// ✅ CORRECT - Use only one method
-const Schema = new Schema({
-  tags: [{ type: String }], // No index here
-})
-Schema.index({ tags: 1 }) // Only here
 ```
 
-**When to apply**: Defining Mongoose schemas with indexes
+**When to apply**: Importing or initializing Supabase client
 
 ---
 
@@ -459,7 +464,7 @@ const emailWorker = new Worker(QUEUE_NAMES.EMAIL, processEmailJob, {
 Before committing code, verify:
 
 - [ ] No `middleware.ts` file exists (use `proxy.ts`)
-- [ ] All Mongoose model calls use `(Model as any).method()` pattern
+- [ ] All Supabase queries check for `error` before using `data`
 - [ ] All `request.json()` and `response.json()` have type assertions
 - [ ] All Zod validations use v4-compatible syntax (`.refine()` for URLs/emails, `z.record(keyType, valueType)`)
 - [ ] No JSX in `.ts` files (use `.tsx`)
@@ -467,7 +472,7 @@ Before committing code, verify:
 - [ ] IP addresses extracted from headers, not `req.ip`
 - [ ] Reduce callbacks have explicit type annotations
 - [ ] Third-party clients (Stripe, Redis, etc.) use lazy initialization
-- [ ] No duplicate Mongoose index definitions
+- [ ] Database types imported from `@/lib/db/types`
 - [ ] Catch blocks type errors as `unknown`
 - [ ] BullMQ connections use type assertions
 

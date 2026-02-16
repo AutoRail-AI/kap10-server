@@ -1,7 +1,7 @@
 import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { search, simpleSearch } from "@/lib/search/engine"
+import { search } from "@/lib/search/engine"
 
 export async function GET(req: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -20,24 +20,12 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Query is required" }, { status: 400 })
   }
 
-  try {
-    const results = await search(q, {
-      organizationId: organizationId || undefined,
-      resource: resource || undefined,
-      tags,
-      limit,
-    })
+  const results = await search(q, {
+    organizationId: organizationId || undefined,
+    resource: resource || undefined,
+    tags,
+    limit,
+  })
 
-    return NextResponse.json(results)
-  } catch (_error) {
-    // Fallback to simple search if text index not available
-    const results = await simpleSearch(q, {
-      organizationId: organizationId || undefined,
-      resource: resource || undefined,
-      limit,
-    })
-
-    return NextResponse.json(results)
-  }
+  return NextResponse.json(results)
 }
-

@@ -1,10 +1,10 @@
 import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { getOnboardingProgress, updateOnboardingStep } from "@/lib/onboarding/flow"
-import type { OnboardingStep } from "@/lib/onboarding/flow"
+import { advanceOnboardingStep, getOnboarding } from "@/lib/onboarding/flow"
 
-const stepOrder: OnboardingStep[] = ["welcome", "profile", "organization", "preferences", "complete"]
+const stepOrder = ["welcome", "profile", "organization", "preferences", "complete"] as const
+type OnboardingStep = typeof stepOrder[number]
 
 export async function POST(req: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -13,12 +13,12 @@ export async function POST(req: NextRequest) {
   }
 
   const body = (await req.json()) as {
-    step?: OnboardingStep
+    step?: string
     data?: Record<string, unknown>
   }
   const { step, data } = body
 
-  if (!step || !stepOrder.includes(step)) {
+  if (!step || !stepOrder.includes(step as OnboardingStep)) {
     return NextResponse.json(
       { error: "Invalid step" },
       { status: 400 }
@@ -26,17 +26,18 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    await updateOnboardingStep(session.user.id, step, data)
+    const updated = await advanceOnboardingStep(session.user.id, step, data)
 
-    // Get next step
-    const currentIndex = stepOrder.indexOf(step)
-    const nextStep = currentIndex < stepOrder.length - 1 ? stepOrder[currentIndex + 1] : "complete"
-
-    const progress = await getOnboardingProgress(session.user.id)
+    // Get next step from the updated result
+    const nextStep = updated.current_step
 
     return NextResponse.json({
       nextStep,
-      progress,
+      progress: {
+        currentStep: updated.current_step,
+        completedSteps: updated.completed_steps,
+        completed: updated.completed,
+      },
     })
   } catch (error) {
     console.error("Onboarding update error:", error)
@@ -46,4 +47,3 @@ export async function POST(req: NextRequest) {
     )
   }
 }
-

@@ -1,21 +1,11 @@
 import { betterAuth } from "better-auth"
-import { prismaAdapter } from "better-auth/adapters/prisma"
 import { organization } from "better-auth/plugins"
+import { Pool } from "pg"
 import { Resend } from "resend"
+import dns from "node:dns"
 
-// Lazy import prisma to allow Better Auth CLI to read config without Prisma client
-function getPrisma() {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const prismaModule = require("@/lib/db/prisma")
-    return prismaModule.prisma
-  } catch {
-    // Prisma not available yet - Better Auth CLI will handle this
-    return null
-  }
-}
-
-const prisma = getPrisma()
+// Prefer IPv4 when connecting to Supabase/Postgres (avoids ECONNREFUSED on IPv6-only resolutions)
+dns.setDefaultResultOrder("ipv4first")
 
 // Lazy Resend client
 function getResendClient(): Resend | null {
@@ -28,47 +18,47 @@ function getResendClient(): Resend | null {
 const getEmailFrom = () =>
   process.env.EMAIL_FROM || "AppealGen AI <noreply@appealgen.ai>"
 
-// Build auth config - conditionally include database adapter
-const authConfig: Parameters<typeof betterAuth>[0] = {
-  // Database adapter - Using Prisma with MongoDB
-  // Only include if prisma is available (after client generation)
-  ...(prisma ? {
-    database: prismaAdapter(prisma, {
-      provider: "mongodb",
-    }),
-  } : {}),
+// Build auth config (database is set dynamically in getAuth - see below)
+function buildAuthConfig(database: Parameters<typeof betterAuth>[0]["database"]) {
+  return {
+    database,
 
-  // App configuration
-  appName: "AppealGen AI",
-  baseURL: process.env.BETTER_AUTH_URL || "http://localhost:3000",
-  secret: process.env.BETTER_AUTH_SECRET || "development-secret-change-in-production-min-32-chars",
+    // App configuration
+    appName: "AppealGen AI",
+    baseURL: process.env.BETTER_AUTH_URL || "http://localhost:3000",
+    secret:
+      process.env.BETTER_AUTH_SECRET ||
+      "development-secret-change-in-production-min-32-chars",
 
-  // Plugins
-  plugins: [
-    organization({
-      // Configuration options
-      allowUserToCreateOrganization: true,
-      organizationLimit: parseInt(process.env.ORGANIZATION_LIMIT || "5", 10),
-      membershipLimit: parseInt(process.env.MEMBERSHIP_LIMIT || "100", 10),
-      creatorRole: "owner",
-      
-      // Invitation email handler
-      async sendInvitationEmail(data) {
-        const resend = getResendClient()
-        if (!resend) {
-          console.warn("Resend not configured, skipping invitation email")
-          console.log("Invitation link:", `${process.env.BETTER_AUTH_URL}/accept-invitation/${data.id}`)
-          return
-        }
+    // Plugins
+    plugins: [
+      organization({
+        // Configuration options
+        allowUserToCreateOrganization: true,
+        organizationLimit: parseInt(process.env.ORGANIZATION_LIMIT || "5", 10),
+        membershipLimit: parseInt(process.env.MEMBERSHIP_LIMIT || "100", 10),
+        creatorRole: "owner",
 
-        const inviteLink = `${process.env.BETTER_AUTH_URL}/accept-invitation/${data.id}`
-        
-        try {
-          await resend.emails.send({
-            from: getEmailFrom(),
-            to: data.email,
-            subject: `Invitation to join ${data.organization.name}`,
-            html: `
+        // Invitation email handler
+        async sendInvitationEmail(data) {
+          const resend = getResendClient()
+          if (!resend) {
+            console.warn("Resend not configured, skipping invitation email")
+            console.log(
+              "Invitation link:",
+              `${process.env.BETTER_AUTH_URL}/accept-invitation/${data.id}`
+            )
+            return
+          }
+
+          const inviteLink = `${process.env.BETTER_AUTH_URL}/accept-invitation/${data.id}`
+
+          try {
+            await resend.emails.send({
+              from: getEmailFrom(),
+              to: data.email,
+              subject: `Invitation to join ${data.organization.name}`,
+              html: `
               <!DOCTYPE html>
               <html>
                 <head>
@@ -113,41 +103,41 @@ const authConfig: Parameters<typeof betterAuth>[0] = {
                 </body>
               </html>
             `,
-          })
-        } catch (error) {
-          console.error("Failed to send invitation email:", error)
-          throw error
+            })
+          } catch (error) {
+            console.error("Failed to send invitation email:", error)
+            throw error
+          }
+        },
+      }),
+    ],
+
+    // Email & Password authentication
+    emailAndPassword: {
+      enabled: true,
+      requireEmailVerification: true,
+      minPasswordLength: 8,
+      maxPasswordLength: 128,
+    },
+
+    // Email verification
+    emailVerification: {
+      sendOnSignUp: true,
+      autoSignInAfterVerification: true,
+      sendVerificationEmail: async ({ user, url }: { user: { email: string; name?: string | null }; url: string }) => {
+        const resend = getResendClient()
+        if (!resend) {
+          console.warn("Resend not configured, skipping verification email")
+          console.log("Verification URL:", url)
+          return
         }
-      },
-    }),
-  ],
 
-  // Email & Password authentication
-  emailAndPassword: {
-    enabled: true,
-    requireEmailVerification: true,
-    minPasswordLength: 8,
-    maxPasswordLength: 128,
-  },
-
-  // Email verification
-  emailVerification: {
-    sendOnSignUp: true,
-    autoSignInAfterVerification: true,
-    sendVerificationEmail: async ({ user, url }) => {
-      const resend = getResendClient()
-      if (!resend) {
-        console.warn("Resend not configured, skipping verification email")
-        console.log("Verification URL:", url)
-        return
-      }
-
-      try {
-        await resend.emails.send({
-          from: getEmailFrom(),
-          to: user.email,
-          subject: "Verify your AppealGen AI account",
-          html: `
+        try {
+          await resend.emails.send({
+            from: getEmailFrom(),
+            to: user.email,
+            subject: "Verify your AppealGen AI account",
+            html: `
             <!DOCTYPE html>
             <html>
               <head>
@@ -212,59 +202,133 @@ const authConfig: Parameters<typeof betterAuth>[0] = {
               </body>
             </html>
           `,
-        })
-      } catch (error) {
-        console.error("Failed to send verification email:", error)
-        throw error
-      }
-    },
-  },
-
-  // Social providers
-  socialProviders: {
-    google: {
-      clientId: process.env.GOOGLE_CLIENT_ID || "",
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
-    },
-  },
-
-  // Session configuration
-  session: {
-    expiresIn: 60 * 60 * 24 * 7, // 7 days
-    updateAge: 60 * 60 * 24, // Update session every 24 hours
-    cookieCache: {
-      enabled: true,
-      maxAge: 60 * 5, // 5 minutes
-    },
-  },
-
-  // User configuration
-  user: {
-    additionalFields: {
-      tier: {
-        type: "string",
-        defaultValue: "free",
+          })
+        } catch (error) {
+          console.error("Failed to send verification email:", error)
+          throw error
+        }
       },
     },
-  },
 
-  // Account configuration
-  account: {
-    accountLinking: {
-      enabled: true,
-      trustedProviders: ["google"],
+    // Social providers (only enable when credentials are configured)
+    socialProviders: {
+      ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+        ? {
+          google: {
+            clientId: process.env.GOOGLE_CLIENT_ID,
+            clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+          },
+        }
+        : {}),
     },
-  },
 
-  // Rate limiting
-  rateLimit: {
-    window: 60, // 60 seconds
-    max: 10, // 10 requests per window
-  },
+    // Session configuration
+    session: {
+      expiresIn: 60 * 60 * 24 * 7, // 7 days
+      updateAge: 60 * 60 * 24, // Update session every 24 hours
+      cookieCache: {
+        enabled: true,
+        maxAge: 60 * 5, // 5 minutes
+      },
+    },
+
+    // User configuration
+    user: {
+      additionalFields: {
+        tier: {
+          type: "string",
+          defaultValue: "free",
+        },
+      },
+    },
+
+    // Account configuration
+    account: {
+      accountLinking: {
+        enabled: true,
+        trustedProviders: ["google"],
+      },
+    },
+
+    // Rate limiting
+    rateLimit: {
+      window: 60, // 60 seconds
+      max: 10, // 10 requests per window
+    },
+  } as Parameters<typeof betterAuth>[0]
 }
 
-export const auth = betterAuth(authConfig)
+// Lazy init: Only create real auth when database is configured (avoids build-time errors in CI)
+let authInstance: ReturnType<typeof betterAuth> | null = null
+
+function getAuth(): ReturnType<typeof betterAuth> {
+  if (authInstance) return authInstance
+
+  // During build (e.g. CI), SUPABASE_DB_URL may be unset - use stub to avoid "Failed to initialize database adapter"
+  if (!process.env.SUPABASE_DB_URL) {
+    authInstance = createAuthStub()
+    return authInstance
+  }
+
+  try {
+    const dbUrl = process.env.SUPABASE_DB_URL
+    // Explicitly use public schema to avoid "Schema '$user' does not exist" warning
+    const connectionString =
+      dbUrl +
+      (dbUrl?.includes("?") ? "&" : "?") +
+      "options=-c%20search_path%3Dpublic"
+    // Better Auth's Kysely adapter requires a pg Pool (with "connect" method), not { provider, url }
+    const pool = new Pool({
+      connectionString,
+      ssl: dbUrl?.includes("supabase.co")
+        ? { rejectUnauthorized: false }
+        : undefined,
+    })
+    const config = buildAuthConfig(pool)
+    authInstance = betterAuth(config)
+    return authInstance
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error("[Better Auth] Failed to initialize:", message)
+    // Fallback stub if betterAuth throws (e.g. DB connection fails during build)
+    authInstance = createAuthStub()
+    return authInstance
+  }
+}
+
+function createAuthStub() {
+  const stub = {
+    api: {
+      getSession: async () => null,
+      getSessionFromToken: async () => null,
+    },
+    handler: (_req: Request) =>
+      new Response(
+        JSON.stringify({
+          error: "Auth not configured",
+          message:
+            "SUPABASE_DB_URL is required. Set environment variables and restart.",
+        }),
+        { status: 503, headers: { "Content-Type": "application/json" } }
+      ),
+    $Infer: { Session: { user: {} } },
+  }
+  return stub as unknown as ReturnType<typeof betterAuth>
+}
+
+export const auth = new Proxy({} as ReturnType<typeof betterAuth>, {
+  get(_, prop) {
+    return getAuth()[prop as keyof ReturnType<typeof betterAuth>]
+  },
+  has(_, prop) {
+    // toNextJsHandler checks "handler" in auth to choose auth.handler vs auth(request)
+    return prop in getAuth()
+  },
+})
 
 // Export types
-export type Session = typeof auth.$Infer.Session
-export type User = typeof auth.$Infer.Session.user
+export type Session = {
+  user: { id: string; email: string; name?: string | null; image?: string | null }
+  session: { id: string; expiresAt: Date; token: string; userId: string }
+} | null
+export type User = NonNullable<Session>["user"]

@@ -1,172 +1,122 @@
-import mongoose, { Schema } from "mongoose"
-import { connectDB } from "@/lib/db/mongoose"
+import { supabase } from "@/lib/db"
+import type { Database, Json } from "@/lib/db/types"
 
-export type TemplateType = "prompt" | "workflow" | "agent" | "form"
+export type Template = Database["public"]["Tables"]["templates"]["Row"]
+export type TemplateInsert = Database["public"]["Tables"]["templates"]["Insert"]
+export type TemplateUpdate = Database["public"]["Tables"]["templates"]["Update"]
 
-export interface ITemplate extends mongoose.Document {
+// Template Manager functions
+
+export async function createTemplate(data: TemplateInsert): Promise<Template> {
+  const { data: template, error } = await supabase
+    .from("templates")
+    .insert(data)
+    .select()
+    .single()
+
+  if (error) throw error
+  return template
+}
+
+export async function getTemplate(id: string): Promise<Template | null> {
+  const { data, error } = await supabase
+    .from("templates")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle()
+
+  if (error) throw error
+  return data
+}
+
+export async function getTemplates(options?: {
   userId?: string
   organizationId?: string
-  name: string
-  description?: string
-  type: TemplateType
+  type?: string
   category?: string
+  publicOnly?: boolean
+  featured?: boolean
   tags?: string[]
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  content: Record<string, any> // Template content (varies by type)
-  variables?: Array<{
-    name: string
-    description: string
-    required: boolean
-    default?: string
-  }>
-  public: boolean
-  featured: boolean
-  usageCount: number
-  createdAt: Date
-  updatedAt: Date
-}
+  limit?: number
+  offset?: number
+  search?: string
+}): Promise<Template[]> {
+  let query = supabase
+    .from("templates")
+    .select("*")
+    .order("created_at", { ascending: false })
 
-const TemplateSchema = new Schema<ITemplate>(
-  {
-    userId: { type: String, index: true },
-    organizationId: { type: String, index: true },
-    name: { type: String, required: true },
-    description: { type: String },
-    type: {
-      type: String,
-      enum: ["prompt", "workflow", "agent", "form"],
-      required: true,
-      index: true,
-    },
-    category: { type: String, index: true },
-    tags: [{ type: String }],
-    content: { type: Schema.Types.Mixed, required: true },
-    variables: [
-      {
-        name: String,
-        description: String,
-        required: Boolean,
-        default: String,
-      },
-    ],
-    public: { type: Boolean, default: false, index: true },
-    featured: { type: Boolean, default: false, index: true },
-    usageCount: { type: Number, default: 0 },
-  },
-  { timestamps: true }
-)
-
-// Indexes
-TemplateSchema.index({ type: 1, public: 1, featured: 1 })
-TemplateSchema.index({ organizationId: 1, type: 1 })
-TemplateSchema.index({ tags: 1 })
-
-export const Template =
-  mongoose.models.Template ||
-  mongoose.model<ITemplate>("Template", TemplateSchema)
-
-// Create template
-export async function createTemplate(
-  data: {
-    userId?: string
-    organizationId?: string
-    name: string
-    description?: string
-    type: TemplateType
-    category?: string
-    tags?: string[]
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    content: Record<string, any>
-    variables?: Array<{
-      name: string
-      description: string
-      required: boolean
-      default?: string
-    }>
-    public?: boolean
-  }
-): Promise<ITemplate> {
-  await connectDB()
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (Template as any).create({
-    userId: data.userId,
-    organizationId: data.organizationId,
-    name: data.name,
-    description: data.description,
-    type: data.type,
-    category: data.category,
-    tags: data.tags,
-    content: data.content,
-    variables: data.variables,
-    public: data.public || false,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    featured: false as any,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    usageCount: 0 as any,
-  })
-}
-
-// Get templates
-export async function getTemplates(
-  options: {
-    userId?: string
-    organizationId?: string
-    type?: TemplateType
-    category?: string
-    tags?: string[]
-    publicOnly?: boolean
-    featured?: boolean
-    limit?: number
-  } = {}
-): Promise<ITemplate[]> {
-  await connectDB()
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const query: any = {}
-
-  if (options.publicOnly) {
-    query.public = true
-  } else if (options.userId) {
-    query.$or = [
-      { userId: options.userId },
-      { organizationId: options.organizationId },
-      { public: true },
-    ]
-  } else if (options.organizationId) {
-    query.$or = [{ organizationId: options.organizationId }, { public: true }]
-  } else {
-    query.public = true
+  if (options?.userId) query = query.eq("user_id", options.userId)
+  if (options?.organizationId) query = query.eq("organization_id", options.organizationId)
+  if (options?.type) query = query.eq("type", options.type)
+  if (options?.category) query = query.eq("category", options.category)
+  if (options?.publicOnly) query = query.eq("public", true)
+  if (options?.featured) query = query.eq("featured", true)
+  if (options?.tags?.length) query = query.overlaps("tags", options.tags)
+  if (options?.search) {
+    query = query.or(`name.ilike.%${options.search}%,description.ilike.%${options.search}%`)
   }
 
-  if (options.type) query.type = options.type
-  if (options.category) query.category = options.category
-  if (options.tags && options.tags.length > 0) {
-    query.tags = { $in: options.tags }
-  }
-  if (options.featured !== undefined) query.featured = options.featured
+  const limit = options?.limit || 50
+  const offset = options?.offset || 0
+  query = query.range(offset, offset + limit - 1)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (Template as any).find(query)
-    .sort({ featured: -1, usageCount: -1, createdAt: -1 })
-    .limit(options.limit || 50)
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
 }
 
-// Use template (increment usage count)
-export async function useTemplate(templateId: string): Promise<void> {
-  await connectDB()
+export async function updateTemplate(
+  id: string,
+  updates: TemplateUpdate
+): Promise<Template> {
+  const { data: template, error } = await supabase
+    .from("templates")
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .select()
+    .single()
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  await (Template as any).findByIdAndUpdate(templateId, {
-    $inc: { usageCount: 1 },
-  })
+  if (error) throw error
+  return template
 }
 
-// Get template by ID
-export async function getTemplate(templateId: string): Promise<ITemplate | null> {
-  await connectDB()
+export async function deleteTemplate(id: string): Promise<void> {
+  const { error } = await supabase
+    .from("templates")
+    .delete()
+    .eq("id", id)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (Template as any).findById(templateId)
+  if (error) throw error
 }
 
+export async function incrementUsageCount(id: string): Promise<void> {
+  const template = await getTemplate(id)
+  if (!template) return
+
+  await supabase
+    .from("templates")
+    .update({
+      usage_count: (template.usage_count || 0) + 1,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+}
+
+export async function getPopularTemplates(
+  limit = 10,
+  type?: string
+): Promise<Template[]> {
+  let query = supabase
+    .from("templates")
+    .select("*")
+    .eq("public", true)
+    .order("usage_count", { ascending: false })
+    .limit(limit)
+
+  if (type) query = query.eq("type", type)
+
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
+}

@@ -1,50 +1,99 @@
-import mongoose, { Schema } from "mongoose"
+import { supabase } from "@/lib/db"
+import type { Database, Json } from "@/lib/db/types"
 
-export interface ISubscription extends mongoose.Document {
-  userId: string
-  organizationId?: string
-  stripeCustomerId: string
-  stripeSubscriptionId: string
-  stripePriceId: string
-  status: "active" | "canceled" | "past_due" | "trialing" | "incomplete"
-  currentPeriodStart: Date
-  currentPeriodEnd: Date
-  cancelAtPeriodEnd: boolean
-  planId: "free" | "pro" | "enterprise"
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  metadata?: Record<string, any>
-  createdAt: Date
-  updatedAt: Date
+export type Subscription = Database["public"]["Tables"]["subscriptions"]["Row"]
+export type SubscriptionInsert = Database["public"]["Tables"]["subscriptions"]["Insert"]
+export type SubscriptionUpdate = Database["public"]["Tables"]["subscriptions"]["Update"]
+
+// Billing / Subscription model functions
+
+export async function getSubscription(userId: string): Promise<Subscription | null> {
+  const { data, error } = await supabase
+    .from("subscriptions")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw error
+  return data
 }
 
-const SubscriptionSchema = new Schema<ISubscription>(
-  {
-    userId: { type: String, required: true, index: true },
-    organizationId: { type: String, index: true },
-    stripeCustomerId: { type: String, required: true, unique: true, index: true },
-    stripeSubscriptionId: { type: String, required: true, unique: true, index: true },
-    stripePriceId: { type: String, required: true },
-    status: {
-      type: String,
-      enum: ["active", "canceled", "past_due", "trialing", "incomplete"],
-      required: true,
-      index: true,
-    },
-    currentPeriodStart: { type: Date, required: true },
-    currentPeriodEnd: { type: Date, required: true },
-    cancelAtPeriodEnd: { type: Boolean, default: false },
-    planId: {
-      type: String,
-      enum: ["free", "pro", "enterprise"],
-      required: true,
-      index: true,
-    },
-    metadata: { type: Schema.Types.Mixed },
-  },
-  { timestamps: true }
-)
+export async function getSubscriptionByStripeCustomerId(
+  stripeCustomerId: string
+): Promise<Subscription | null> {
+  const { data, error } = await supabase
+    .from("subscriptions")
+    .select("*")
+    .eq("stripe_customer_id", stripeCustomerId)
+    .maybeSingle()
 
-export const Subscription =
-  mongoose.models.Subscription ||
-  mongoose.model<ISubscription>("Subscription", SubscriptionSchema)
+  if (error) throw error
+  return data
+}
 
+export async function getSubscriptionByStripeSubId(
+  stripeSubscriptionId: string
+): Promise<Subscription | null> {
+  const { data, error } = await supabase
+    .from("subscriptions")
+    .select("*")
+    .eq("stripe_subscription_id", stripeSubscriptionId)
+    .maybeSingle()
+
+  if (error) throw error
+  return data
+}
+
+export async function createSubscription(
+  data: SubscriptionInsert
+): Promise<Subscription> {
+  const { data: subscription, error } = await supabase
+    .from("subscriptions")
+    .insert(data)
+    .select()
+    .single()
+
+  if (error) throw error
+  return subscription
+}
+
+export async function updateSubscription(
+  id: string,
+  updates: SubscriptionUpdate
+): Promise<Subscription> {
+  const { data: subscription, error } = await supabase
+    .from("subscriptions")
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .select()
+    .single()
+
+  if (error) throw error
+  return subscription
+}
+
+export async function updateSubscriptionByStripeSubId(
+  stripeSubscriptionId: string,
+  updates: SubscriptionUpdate
+): Promise<Subscription> {
+  const { data: subscription, error } = await supabase
+    .from("subscriptions")
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq("stripe_subscription_id", stripeSubscriptionId)
+    .select()
+    .single()
+
+  if (error) throw error
+  return subscription
+}
+
+export async function deleteSubscription(id: string): Promise<void> {
+  const { error } = await supabase
+    .from("subscriptions")
+    .delete()
+    .eq("id", id)
+
+  if (error) throw error
+}

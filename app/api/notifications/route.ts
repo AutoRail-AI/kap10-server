@@ -17,12 +17,10 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const unreadOnly = searchParams.get("unreadOnly") === "true"
   const limit = parseInt(searchParams.get("limit") || "50", 10)
-  const organizationId = searchParams.get("organizationId") || undefined
 
   const notifications = await getNotifications(session.user.id, {
     unreadOnly,
     limit,
-    organizationId,
   })
 
   return NextResponse.json(notifications)
@@ -37,12 +35,11 @@ export async function PATCH(req: NextRequest) {
   const body = (await req.json()) as {
     notificationId?: string
     markAll?: boolean
-    organizationId?: string
   }
-  const { notificationId, markAll, organizationId } = body
+  const { notificationId, markAll } = body
 
   if (markAll) {
-    await markAllAsRead(session.user.id, organizationId)
+    await markAllAsRead(session.user.id)
     return NextResponse.json({ success: true })
   }
 
@@ -53,7 +50,7 @@ export async function PATCH(req: NextRequest) {
     )
   }
 
-  await markAsRead(notificationId, session.user.id)
+  await markAsRead(notificationId)
 
   return NextResponse.json({ success: true })
 }
@@ -64,11 +61,7 @@ export async function HEAD(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const { searchParams } = new URL(req.url)
-  const organizationId = searchParams.get("organizationId") || undefined
-
-  const count = await getUnreadCount(session.user.id, organizationId)
+  const count = await getUnreadCount(session.user.id)
 
   return NextResponse.json({ count })
 }
-

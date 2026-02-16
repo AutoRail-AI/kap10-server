@@ -4,15 +4,12 @@
  * Usage: pnpm tsx scripts/seed.ts
  */
 
-import { connectDB } from "../lib/db/mongoose"
 import { createTemplate } from "../lib/templates/manager"
 
 async function seed() {
   console.log("🌱 Starting seed...")
 
   try {
-    await connectDB()
-
     // Seed templates
     console.log("📝 Seeding templates...")
     await createTemplate({
@@ -44,7 +41,7 @@ async function seed() {
           description: "The topic to write about",
           required: true,
         },
-      ],
+      ] as any,
       public: true,
     })
 
@@ -58,4 +55,3 @@ async function seed() {
 }
 
 seed()
-

@@ -1,8 +1,6 @@
-import type { ObjectId } from "mongodb"
-
-// User Types
+// User Types (Supabase)
 export interface User {
-  _id: ObjectId
+  id: string
   email: string
   name: string
   emailVerified: boolean

@@ -4,8 +4,7 @@ import { SubscriptionCard } from "@/components/billing/subscription-card"
 import { Button } from "@/components/ui/button"
 import { ContentBlock, ContentBlockDescription, ContentBlockHeader, ContentBlockTitle } from "@/components/ui/content-block"
 import { auth } from "@/lib/auth"
-import { connectDB } from "@/lib/db/mongoose"
-import { Subscription } from "@/lib/models/billing"
+import { getSubscription } from "@/lib/models/billing"
 
 export default async function BillingPage() {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -13,14 +12,8 @@ export default async function BillingPage() {
     redirect("/login")
   }
 
-  await connectDB()
-
-  // Get user's subscription
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const subscription = await (Subscription as any).findOne({
-    userId: session.user.id,
-    status: "active",
-  })
+  // Get user's active subscription via Supabase
+  const subscription = await getSubscription(session.user.id)
 
   return (
     <div className="container mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 space-y-6">
@@ -29,7 +22,7 @@ export default async function BillingPage() {
         <p className="mt-0.5 text-sm text-foreground">Manage your subscription and billing</p>
       </div>
 
-      <SubscriptionCard currentPlan={subscription?.planId} />
+      <SubscriptionCard currentPlan={subscription?.plan_id} />
 
       {subscription && (
         <ContentBlock>
@@ -38,14 +31,14 @@ export default async function BillingPage() {
           </ContentBlockHeader>
           <div className="space-y-2">
             <p className="text-sm text-foreground">
-              <strong>Plan:</strong> {subscription.planId}
+              <strong>Plan:</strong> {subscription.plan_id}
             </p>
             <p className="text-sm text-foreground">
               <strong>Status:</strong> {subscription.status}
             </p>
             <p className="text-sm text-foreground">
               <strong>Renews:</strong>{" "}
-              {new Date(subscription.currentPeriodEnd).toLocaleDateString()}
+              {new Date(subscription.current_period_end).toLocaleDateString()}
             </p>
           </div>
           <form action="/api/billing/portal" method="POST" className="pt-4">
@@ -58,4 +51,3 @@ export default async function BillingPage() {
     </div>
   )
 }
-

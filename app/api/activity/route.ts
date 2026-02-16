@@ -1,6 +1,6 @@
 import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
-import { getActivityFeed, getUserActivity } from "@/lib/activity/feed"
+import { getActivities, getActivitiesByUser, getActivitiesByResource } from "@/lib/activity/feed"
 import { auth } from "@/lib/auth"
 
 export async function GET(req: NextRequest) {
@@ -15,9 +15,6 @@ export async function GET(req: NextRequest) {
   const resource = searchParams.get("resource")
   const resourceId = searchParams.get("resourceId")
   const limit = parseInt(searchParams.get("limit") || "50", 10)
-  const before = searchParams.get("before")
-    ? new Date(searchParams.get("before")!)
-    : undefined
 
   if (!organizationId && !userId) {
     return NextResponse.json(
@@ -28,20 +25,13 @@ export async function GET(req: NextRequest) {
 
   let activities
 
-  if (userId) {
-    activities = await getUserActivity(userId, {
-      organizationId: organizationId || undefined,
-      limit,
-    })
+  if (resource && resourceId) {
+    activities = await getActivitiesByResource(resource, resourceId, limit)
+  } else if (userId) {
+    activities = await getActivitiesByUser(userId, limit)
   } else {
-    activities = await getActivityFeed(organizationId!, {
-      resource: resource || undefined,
-      resourceId: resourceId || undefined,
-      limit,
-      before,
-    })
+    activities = await getActivities(organizationId!, { limit })
   }
 
   return NextResponse.json(activities)
 }
-

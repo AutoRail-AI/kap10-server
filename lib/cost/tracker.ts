@@ -1,185 +1,101 @@
-import mongoose, { Schema } from "mongoose"
-import { connectDB } from "@/lib/db/mongoose"
+import { supabase } from "@/lib/db"
+import type { Database, Json } from "@/lib/db/types"
 
-export interface ICost extends Omit<mongoose.Document, "model"> {
-  userId: string
+export type Cost = Database["public"]["Tables"]["costs"]["Row"]
+export type CostInsert = Database["public"]["Tables"]["costs"]["Insert"]
+
+// Cost Tracker functions
+
+export async function trackCost(data: CostInsert): Promise<Cost> {
+  const { data: cost, error } = await supabase
+    .from("costs")
+    .insert(data)
+    .select()
+    .single()
+
+  if (error) throw error
+  return cost
+}
+
+export async function getCosts(options?: {
+  userId?: string
   organizationId?: string
-  provider: string // e.g., "openai", "anthropic"
-  model: string // e.g., "gpt-4", "claude-3"
-  inputTokens: number
-  outputTokens: number
-  totalTokens: number
-  cost: number // Cost in cents
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  metadata?: Record<string, any>
-  timestamp: Date
-  createdAt: Date
+  provider?: string
+  model?: string
+  startDate?: string
+  endDate?: string
+  limit?: number
+  offset?: number
+}): Promise<Cost[]> {
+  let query = supabase
+    .from("costs")
+    .select("*")
+    .order("timestamp", { ascending: false })
+
+  if (options?.userId) query = query.eq("user_id", options.userId)
+  if (options?.organizationId) query = query.eq("organization_id", options.organizationId)
+  if (options?.provider) query = query.eq("provider", options.provider)
+  if (options?.model) query = query.eq("model", options.model)
+  if (options?.startDate) query = query.gte("timestamp", options.startDate)
+  if (options?.endDate) query = query.lte("timestamp", options.endDate)
+
+  const limit = options?.limit || 50
+  const offset = options?.offset || 0
+  query = query.range(offset, offset + limit - 1)
+
+  const { data, error } = await query
+  if (error) throw error
+  return data || []
 }
 
-const CostSchema = new Schema<ICost>(
-  {
-    userId: { type: String, required: true, index: true },
-    organizationId: { type: String, index: true },
-    provider: { type: String, required: true, index: true },
-    model: { type: String, required: true, index: true },
-    inputTokens: { type: Number, default: 0 },
-    outputTokens: { type: Number, default: 0 },
-    totalTokens: { type: Number, required: true },
-    cost: { type: Number, required: true }, // Cost in cents
-    metadata: { type: Schema.Types.Mixed },
-    timestamp: { type: Date, default: Date.now, index: true },
-  },
-  { timestamps: true }
-)
+export async function getTotalCost(options?: {
+  userId?: string
+  organizationId?: string
+  startDate?: string
+  endDate?: string
+}): Promise<{ totalCost: number; totalTokens: number; count: number }> {
+  let query = supabase.from("costs").select("cost, total_tokens")
 
-// Indexes
-CostSchema.index({ userId: 1, timestamp: -1 })
-CostSchema.index({ organizationId: 1, timestamp: -1 })
-CostSchema.index({ provider: 1, model: 1, timestamp: -1 })
+  if (options?.userId) query = query.eq("user_id", options.userId)
+  if (options?.organizationId) query = query.eq("organization_id", options.organizationId)
+  if (options?.startDate) query = query.gte("timestamp", options.startDate)
+  if (options?.endDate) query = query.lte("timestamp", options.endDate)
 
-export const Cost =
-  mongoose.models.Cost ||
-  mongoose.model<ICost>("Cost", CostSchema)
+  const { data, error } = await query
+  if (error) throw error
 
-// Pricing per 1M tokens (in cents)
-const PRICING: Record<string, Record<string, { input: number; output: number }>> = {
-  openai: {
-    "gpt-4-turbo-preview": { input: 10, output: 30 }, // $0.01/$0.03 per 1K tokens
-    "gpt-4": { input: 30, output: 60 },
-    "gpt-3.5-turbo": { input: 0.5, output: 1.5 },
-  },
-  anthropic: {
-    "claude-3-opus": { input: 15, output: 75 },
-    "claude-3-sonnet": { input: 3, output: 15 },
-    "claude-3-haiku": { input: 0.25, output: 1.25 },
-  },
-}
-
-// Calculate cost
-export function calculateCost(
-  provider: string,
-  model: string,
-  inputTokens: number,
-  outputTokens: number
-): number {
-  const pricing = PRICING[provider]?.[model]
-  if (!pricing) return 0
-
-  const inputCost = (inputTokens / 1_000_000) * pricing.input
-  const outputCost = (outputTokens / 1_000_000) * pricing.output
-
-  return Math.round((inputCost + outputCost) * 100) // Convert to cents
-}
-
-// Track cost
-export async function trackCost(
-  data: {
-    userId: string
-    organizationId?: string
-    provider: string
-    model: string
-    inputTokens: number
-    outputTokens: number
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    metadata?: Record<string, any>
-  }
-): Promise<ICost> {
-  await connectDB()
-
-  const totalTokens = data.inputTokens + data.outputTokens
-  const cost = calculateCost(
-    data.provider,
-    data.model,
-    data.inputTokens,
-    data.outputTokens
-  )
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (Cost as any).create({
-    userId: data.userId,
-    organizationId: data.organizationId,
-    provider: data.provider,
-    model: data.model,
-    inputTokens: data.inputTokens,
-    outputTokens: data.outputTokens,
-    totalTokens,
-    cost,
-    metadata: data.metadata,
-    timestamp: new Date(),
-  })
-}
-
-// Get cost summary
-export async function getCostSummary(
-  filters: {
-    userId?: string
-    organizationId?: string
-    provider?: string
-    model?: string
-    startDate?: Date
-    endDate?: Date
-  }
-): Promise<{
-  totalCost: number // In cents
-  totalTokens: number
-  breakdown: Array<{
-    provider: string
-    model: string
-    cost: number
-    tokens: number
-  }>
-}> {
-  await connectDB()
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const query: any = {}
-
-  if (filters.userId) query.userId = filters.userId
-  if (filters.organizationId) query.organizationId = filters.organizationId
-  if (filters.provider) query.provider = filters.provider
-  if (filters.model) query.model = filters.model
-
-  if (filters.startDate || filters.endDate) {
-    query.timestamp = {}
-    if (filters.startDate) query.timestamp.$gte = filters.startDate
-    if (filters.endDate) query.timestamp.$lte = filters.endDate
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const costs = await (Cost as any).find(query)
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const totalCost = costs.reduce((sum: number, c: any) => sum + c.cost, 0)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const totalTokens = costs.reduce((sum: number, c: any) => sum + c.totalTokens, 0)
-
-  // Breakdown by provider and model
-  const breakdownMap = new Map<
-    string,
-    { provider: string; model: string; cost: number; tokens: number }
-  >()
-
-  for (const cost of costs) {
-    const key = `${cost.provider}:${cost.model}`
-    const existing = breakdownMap.get(key) || {
-      provider: cost.provider,
-      model: cost.model,
-      cost: 0,
-      tokens: 0,
-    }
-    breakdownMap.set(key, {
-      ...existing,
-      cost: existing.cost + cost.cost,
-      tokens: existing.tokens + cost.totalTokens,
-    })
-  }
-
-  const breakdown = Array.from(breakdownMap.values())
-
+  const rows = data || []
   return {
-    totalCost,
-    totalTokens,
-    breakdown,
+    totalCost: rows.reduce((sum, r) => sum + (r.cost || 0), 0),
+    totalTokens: rows.reduce((sum, r) => sum + (r.total_tokens || 0), 0),
+    count: rows.length,
   }
 }
 
+export async function getCostsByProvider(options?: {
+  userId?: string
+  organizationId?: string
+  startDate?: string
+  endDate?: string
+}): Promise<Record<string, { cost: number; tokens: number; count: number }>> {
+  let query = supabase.from("costs").select("provider, cost, total_tokens")
+
+  if (options?.userId) query = query.eq("user_id", options.userId)
+  if (options?.organizationId) query = query.eq("organization_id", options.organizationId)
+  if (options?.startDate) query = query.gte("timestamp", options.startDate)
+  if (options?.endDate) query = query.lte("timestamp", options.endDate)
+
+  const { data, error } = await query
+  if (error) throw error
+
+  const result: Record<string, { cost: number; tokens: number; count: number }> = {}
+  for (const row of data || []) {
+    if (!result[row.provider]) {
+      result[row.provider] = { cost: 0, tokens: 0, count: 0 }
+    }
+    result[row.provider]!.cost += row.cost || 0
+    result[row.provider]!.tokens += row.total_tokens || 0
+    result[row.provider]!.count += 1
+  }
+  return result
+}

@@ -2,7 +2,7 @@ import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
 import {
   createApiKey,
-  listApiKeys,
+  getApiKeys,
   revokeApiKey,
 } from "@/lib/api-keys/manager"
 import { auth } from "@/lib/auth"
@@ -13,22 +13,19 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const { searchParams } = new URL(req.url)
-  const organizationId = searchParams.get("organizationId") || undefined
-
-  const keys = await listApiKeys(session.user.id, organizationId)
+  const keys = await getApiKeys(session.user.id)
 
   // Don't expose full keys, only prefixes
   return NextResponse.json(
     keys.map((key) => ({
-      id: key._id.toString(),
+      id: key.id,
       name: key.name,
-      keyPrefix: key.keyPrefix,
-      lastUsedAt: key.lastUsedAt,
-      expiresAt: key.expiresAt,
+      keyPrefix: key.key_prefix,
+      lastUsedAt: key.last_used_at,
+      expiresAt: key.expires_at,
       scopes: key.scopes,
       enabled: key.enabled,
-      createdAt: key.createdAt,
+      createdAt: key.created_at,
     }))
   )
 }
@@ -44,7 +41,7 @@ export async function POST(req: NextRequest) {
     organizationId?: string
     scopes?: string[]
     expiresAt?: string
-    rateLimit?: { requests: number; windowMs: number }
+    rateLimit?: { windowMs: number; maxRequests: number }
   }
   const { name, organizationId, scopes, expiresAt, rateLimit } = body
 
@@ -52,22 +49,22 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Name is required" }, { status: 400 })
   }
 
-  const { apiKey, plainKey } = await createApiKey(session.user.id, name, {
+  const result = await createApiKey(session.user.id, name, {
     organizationId,
     scopes,
-    expiresAt: expiresAt ? new Date(expiresAt) : undefined,
+    expiresAt: expiresAt || undefined,
     rateLimit,
   })
 
-  // Return plain key only once (user should save it)
+  // Return raw key only once (user should save it)
   return NextResponse.json({
-    id: apiKey._id.toString(),
-    name: apiKey.name,
-    key: plainKey, // Only returned once
-    keyPrefix: apiKey.keyPrefix,
-    scopes: apiKey.scopes,
-    expiresAt: apiKey.expiresAt,
-    createdAt: apiKey.createdAt,
+    id: result.id,
+    name: result.name,
+    key: result.rawKey,
+    keyPrefix: result.key_prefix,
+    scopes: result.scopes,
+    expiresAt: result.expires_at,
+    createdAt: result.created_at,
   })
 }
 
@@ -84,8 +81,7 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ error: "Key ID is required" }, { status: 400 })
   }
 
-  await revokeApiKey(keyId, session.user.id)
+  await revokeApiKey(keyId)
 
   return NextResponse.json({ success: true })
 }
-

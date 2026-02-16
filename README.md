@@ -13,21 +13,21 @@ Production-ready Next.js starter for building full-stack SaaS applications. Incl
 | **AI Agents** | OpenAI + Custom Framework | Modern AI agent workflows with tool calling |
 | **Billing** | Stripe | Subscription management and payments |
 | **Analytics** | PostHog | User analytics and event tracking |
-| **Feature Flags** | Custom | A/B testing and gradual rollouts |
+| **Feature Flags** | Supabase | A/B testing and gradual rollouts |
 | **Admin Dashboard** | Custom | Platform administration and monitoring |
-| **Audit Logging** | Custom | Compliance-ready activity logging |
-| **Webhooks** | Custom | Event delivery system |
-| **Onboarding** | Custom | Step-by-step user onboarding |
-| **Rate Limiting** | Custom | API protection and abuse prevention |
+| **Audit Logging** | Supabase | Compliance-ready activity logging |
+| **Webhooks** | Supabase | Event delivery system |
+| **Onboarding** | Supabase | Step-by-step user onboarding |
+| **Rate Limiting** | Supabase | API protection and abuse prevention |
 | **Error Tracking** | Sentry | Production error monitoring |
-| **API Keys** | Custom | User API keys for integrations |
-| **Usage Tracking** | Custom | Track API calls and enforce quotas |
-| **Notifications** | Custom | In-app and email notifications |
-| **Activity Feed** | Custom | Real-time activity streams |
-| **Search** | MongoDB Text Index | Full-text search across platform |
-| **Cost Tracking** | Custom | Track AI API costs per user/org |
-| **Templates** | Custom | Shareable prompts and workflows |
-| **Database** | MongoDB | Hybrid: Prisma (auth) + Mongoose (app) |
+| **API Keys** | Supabase | User API keys for integrations |
+| **Usage Tracking** | Supabase | Track API calls and enforce quotas |
+| **Notifications** | Supabase | In-app and email notifications |
+| **Activity Feed** | Supabase | Real-time activity streams |
+| **Search** | Supabase | Full-text search across platform |
+| **Cost Tracking** | Supabase | Track AI API costs per user/org |
+| **Templates** | Supabase | Shareable prompts and workflows |
+| **Database** | Supabase (PostgreSQL) | Unified database for everything |
 | **Job Queues** | BullMQ + Redis | Reliable background job processing |
 | **UI Components** | shadcn/ui | Pre-built accessible components |
 | **Styling** | Tailwind CSS v4 | Utility-first CSS with CVA variants |
@@ -43,7 +43,7 @@ Production-ready Next.js starter for building full-stack SaaS applications. Incl
 ### Prerequisites
 
 - Node.js >= 20.9.0
-- MongoDB database (Atlas recommended)
+- Supabase project
 - pnpm (via Corepack)
 - Docker (optional, for Redis)
 
@@ -60,11 +60,11 @@ pnpm install
 
 # 3. Configure environment
 cp .env.example .env.local
-# Edit .env.local with your MongoDB URI and Better Auth secret
+# Edit .env.local with your Supabase URL, Key and Better Auth secret
 
-# 4. Generate Prisma schema for Better Auth
-npx @better-auth/cli@latest generate
-npx prisma generate
+# 4. Initialize Database
+# Run the migration script to set up schema (or use Supabase Dashboard)
+pnpm migrate
 
 # 5. Start development server
 pnpm dev
@@ -77,7 +77,7 @@ pnpm dev
 ```bash
 # Copy environment file
 cp .env.example .env.local
-# Edit .env.local with your MongoDB URI and secrets
+# Edit .env.local with your Supabase secrets
 
 # Start all services (app + worker + redis)
 docker compose up
@@ -94,7 +94,12 @@ Create `.env.local` with these variables:
 ### Required
 
 ```bash
-MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/database?retryWrites=true&w=majority
+# Supabase
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# Better Auth
 BETTER_AUTH_SECRET=your-32-character-secret-here
 BETTER_AUTH_URL=http://localhost:3000
 ```
@@ -152,15 +157,15 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 │   ├── api/                # API routes
 │   │   ├── admin/          # Admin API
 │   │   ├── ai/             # AI agent endpoints
-│   │   ├── api-keys/        # API keys management
+│   │   ├── api-keys/       # API keys management
 │   │   ├── auth/           # Better Auth endpoints
 │   │   ├── billing/        # Billing API
-│   │   ├── notifications/   # Notifications API
-│   │   ├── activity/        # Activity feed API
-│   │   ├── search/          # Search API
-│   │   ├── usage/           # Usage tracking API
-│   │   ├── cost/            # Cost tracking API
-│   │   ├── templates/       # Templates API
+│   │   ├── notifications/  # Notifications API
+│   │   ├── activity/       # Activity feed API
+│   │   ├── search/         # Search API
+│   │   ├── usage/          # Usage tracking API
+│   │   ├── cost/           # Cost tracking API
+│   │   ├── templates/      # Templates API
 │   │   ├── onboarding/     # Onboarding API
 │   │   └── webhooks/       # Webhook handlers
 │   ├── billing/            # Billing page
@@ -180,14 +185,14 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 │   ├── ai/                 # AI agent framework
 │   ├── analytics/          # PostHog analytics
 │   ├── audit/              # Audit logging
-│   ├── auth/               # Better Auth configuration
+│   ├── auth/               # Better Auth configuration (Supabase adapter)
 │   ├── billing/            # Stripe billing
 │   ├── config/             # Configuration (roles)
 │   ├── db/                 # Database connections
-│   │   ├── prisma.ts       # Prisma client (Better Auth)
-│   │   └── mongoose.ts     # Mongoose connection (App)
+│   │   ├── supabase.ts     # Supabase client (Server)
+│   │   ├── supabase-browser.ts # Supabase client (Browser)
+│   │   └── types.ts        # Database types
 │   ├── features/           # Feature flags
-│   ├── models/             # Mongoose models
 │   ├── onboarding/         # Onboarding flow
 │   ├── queue/              # BullMQ job queues
 │   ├── rate-limit/         # Rate limiting
@@ -200,8 +205,8 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
 │   ├── cost/               # Cost tracking
 │   ├── templates/          # Templates library
 │   └── utils/              # Utilities
-├── prisma/
-│   └── schema.prisma       # Prisma schema (auto-generated by Better Auth)
+├── supabase/
+│   └── migrations/         # SQL Migrations
 ├── hooks/                  # React hooks
 └── scripts/
     └── worker.ts           # Background worker
@@ -233,83 +238,33 @@ pnpm prettier         # Check formatting
 pnpm prettier:fix     # Fix formatting
 
 # Database
-# First, generate Prisma client with placeholder schema
-npx prisma generate
-# Then, generate Better Auth schema (will overwrite placeholder)
-npx @better-auth/cli@latest generate
-# Finally, regenerate Prisma client with Better Auth models
-npx prisma generate
+pnpm migrate          # Run database migrations
 ```
 
 ---
 
 ## Database Setup
 
-This boilerplate uses a **hybrid database approach**:
+This boilerplate uses **Supabase (PostgreSQL)** for all data storage.
 
-### Prisma (Better Auth)
+### Schema Management
 
-Prisma handles all authentication-related data. The schema is automatically generated:
+1. **Application Tables**: Managed via SQL migrations in `supabase/migrations/`
+2. **Auth Tables**: Managed automatically by Better Auth using the PostgreSQL adapter
+
+### Migrations
+
+To apply the schema to your Supabase project:
 
 ```bash
-# Step 1: Generate Prisma client with placeholder schema (required for Better Auth CLI)
-npx prisma generate
-
-# Step 2: Generate Better Auth schema (overwrites placeholder)
-npx @better-auth/cli@latest generate
-
-# Step 3: Regenerate Prisma client with Better Auth models
-npx prisma generate
+pnpm migrate
 ```
 
-**Usage**: Prisma is used automatically by Better Auth. You don't need to interact with it directly.
+This will run the SQL migrations to create all necessary application tables (activities, onboarding, subscriptions, etc.).
 
-### Mongoose (Application Features)
+### Type Generation
 
-Mongoose handles all application data (AI agents, custom features, etc.):
-
-```typescript
-// In API routes or server components
-import { connectDB } from "@/lib/db/mongoose"
-import { AgentConversation } from "@/lib/models"
-
-export async function POST() {
-  await connectDB() // Always connect first
-  
-  const conversation = await AgentConversation.create({
-    userId: "user-123",
-    messages: [{ role: "user", content: "Hello" }],
-  })
-  
-  return Response.json(conversation)
-}
-```
-
-**Creating Models**:
-
-```typescript
-// lib/models/example.ts
-import mongoose, { Schema } from "mongoose"
-
-export interface IExample extends mongoose.Document {
-  name: string
-  organizationId?: string
-  createdAt: Date
-  updatedAt: Date
-}
-
-const ExampleSchema = new Schema<IExample>(
-  {
-    name: { type: String, required: true },
-    organizationId: { type: String, index: true },
-  },
-  { timestamps: true }
-)
-
-export const Example =
-  mongoose.models.Example ||
-  mongoose.model<IExample>("Example", ExampleSchema)
-```
+Database types in `lib/db/types.ts` are automatically generated and aligned with your Supabase schema.
 
 ---
 
@@ -320,6 +275,7 @@ Better Auth is pre-configured with:
 - Google OAuth (optional)
 - Email verification
 - Session management
+- Supabase / PostgreSQL Adapter
 
 ### Using Auth
 
@@ -349,241 +305,12 @@ export function Component() {
 }
 ```
 
-### Protecting Routes
-
-Edit `middleware.ts`:
-
-```typescript
-const protectedRoutes = [
-  "/dashboard",
-  "/settings",
-  "/billing",
-  "/admin",
-]
-```
-
----
-
-## Multi-Tenancy (Organizations)
-
-Organizations are already configured. See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed usage.
-
-**Quick Example**:
-
-```typescript
-// Create organization
-const org = await authClient.organization.create({
-  name: "My Company",
-  slug: "my-company",
-})
-
-// Get active organization
-const { data: activeOrg } = authClient.useActiveOrganization()
-
-// Invite member
-await authClient.organization.invite({
-  email: "user@example.com",
-  role: "member",
-})
-```
-
----
-
-## Billing & Subscriptions
-
-Stripe integration is ready to use:
-
-```typescript
-// Create checkout session
-const response = await fetch("/api/billing/checkout", {
-  method: "POST",
-  body: JSON.stringify({ planId: "pro" }),
-})
-const { url } = await response.json()
-window.location.href = url
-
-// Open billing portal
-const response = await fetch("/api/billing/portal", {
-  method: "POST",
-})
-const { url } = await response.json()
-window.location.href = url
-```
-
-**Setup**:
-1. Create Stripe account
-2. Create products and prices
-3. Add price IDs to `.env.local`
-4. Set up webhook: `https://yourdomain.com/api/webhooks/stripe`
-
----
-
-## Analytics (PostHog)
-
-PostHog is integrated and tracks events automatically:
-
-```typescript
-// Server-side
-import { trackEvent } from "@/lib/analytics/posthog"
-await trackEvent(userId, "feature_used", { feature: "ai_agent" })
-
-// Client-side
-import { trackEvent } from "@/lib/analytics/client"
-trackEvent("button_clicked", { button: "subscribe" })
-```
-
-**Setup**: Add `NEXT_PUBLIC_POSTHOG_KEY` and `NEXT_PUBLIC_POSTHOG_HOST` to `.env.local`
-
----
-
-## Feature Flags
-
-Check if a feature is enabled:
-
-```typescript
-import { isFeatureEnabled } from "@/lib/features/flags"
-
-const enabled = await isFeatureEnabled("new_dashboard", userId, organizationId)
-if (enabled) {
-  // Show new feature
-}
-```
-
-**Management**: Create flags via API or directly in MongoDB.
-
----
-
-## Role Configuration
-
-Roles are configured in `config/roles.yaml`:
-
-```yaml
-roles:
-  admin:
-    name: "Admin"
-    permissions:
-      project: ["create", "read", "update", "delete"]
-```
-
-Check permissions:
-
-```typescript
-import { hasPermission } from "@/lib/config/roles"
-
-const canDelete = hasPermission("admin", "project", "delete")
-```
-
----
-
-## Background Job Processing
-
-BullMQ + Redis for reliable background tasks:
-
-```typescript
-import { queueEmail, queueProcessing, queueWebhook } from "@/lib/queue"
-
-// Queue an email
-await queueEmail({
-  to: "user@example.com",
-  subject: "Welcome!",
-  body: "<p>Thanks for signing up</p>",
-})
-
-// Queue a processing task
-await queueProcessing({
-  userId: "user-123",
-  taskId: "task-456",
-  payload: { data: "your-data" },
-})
-
-// Queue a webhook
-await queueWebhook({
-  url: "https://api.example.com/webhook",
-  method: "POST",
-  body: { event: "user.created" },
-})
-```
-
-**Running Workers**:
-
-```bash
-# Local development (separate terminal)
-pnpm worker
-
-# With Docker (automatically included)
-docker compose up
-```
-
----
-
-## Docker Services
-
-The `docker-compose.yml` includes:
-
-| Service | Port | Description |
-|---------|------|-------------|
-| `app` | 3000 | Next.js dev server |
-| `worker` | - | Background job processor |
-| `redis` | 6379 | Redis for job queues |
-
-```bash
-# Start all services
-docker compose up
-
-# Start in background
-docker compose up -d
-
-# View logs
-docker compose logs -f worker
-
-# Stop services
-docker compose down
-```
-
----
-
-## Troubleshooting
-
-### Prisma Client Not Generated
-
-```bash
-npx prisma generate
-```
-
-### Mongoose Connection Errors
-
-1. Check `MONGODB_URI` is set correctly
-2. Verify MongoDB is accessible
-3. Check network/firewall settings
-
-### Better Auth Schema Not Generated
-
-```bash
-npx @better-auth/cli@latest generate
-```
-
-### Type Errors
-
-1. Regenerate Prisma client: `npx prisma generate`
-2. Restart TypeScript server in your IDE
-3. Check that imports are correct
-
----
-
-## Next Steps
-
-1. ✅ Set up environment variables
-2. ✅ Generate Prisma schema
-3. 📖 Read [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture
-4. 🚀 Start building your features!
-
 ---
 
 ## Resources
 
+- [Supabase Documentation](https://supabase.com/docs)
 - [Better Auth Docs](https://better-auth.com/docs)
-- [Prisma MongoDB Docs](https://www.prisma.io/docs/concepts/database-connectors/mongodb)
-- [Mongoose Docs](https://mongoosejs.com/docs/)
 - [Next.js Docs](https://nextjs.org/docs)
 - [Tailwind CSS v4](https://tailwindcss.com/docs)
 
@@ -592,7 +319,3 @@ npx @better-auth/cli@latest generate
 ## License
 
 MIT
-
----
-
-**Modern Next.js Boilerplate** - Built for rapid development.

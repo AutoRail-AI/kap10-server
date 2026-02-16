@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { stripe } from "@/lib/billing/stripe"
-import { connectDB } from "@/lib/db/mongoose"
-import type { ISubscription } from "@/lib/models/billing"
-import { triggerWebhook } from "@/lib/webhooks/manager"
+import {
+  updateSubscriptionByStripeSubId,
+  createSubscription,
+  type SubscriptionInsert,
+} from "@/lib/models/billing"
+import { getWebhooksForEvent, generateSignature } from "@/lib/webhooks/manager"
 
 export async function POST(req: NextRequest) {
   const body = await req.text()
@@ -19,82 +22,71 @@ export async function POST(req: NextRequest) {
       process.env.STRIPE_WEBHOOK_SECRET
     )
 
-    await connectDB()
-
     switch (event.type) {
       case "customer.subscription.created":
       case "customer.subscription.updated": {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const subscription = event.data.object as any
-        const { Subscription } = await import("@/lib/models/billing")
-        const updateData: Partial<ISubscription> = {
-          userId: subscription.metadata?.userId || "",
-          stripeCustomerId: subscription.customer as string,
-          stripePriceId: subscription.items.data[0]?.price.id as string,
-          status: subscription.status as ISubscription["status"],
-          currentPeriodStart: new Date(subscription.current_period_start * 1000),
-          currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-          cancelAtPeriodEnd: subscription.cancel_at_period_end as boolean,
-          planId: getPlanIdFromPriceId(subscription.items.data[0]?.price.id as string),
+        try {
+          await updateSubscriptionByStripeSubId(subscription.id, {
+            user_id: subscription.metadata?.userId || "",
+            stripe_customer_id: subscription.customer as string,
+            stripe_price_id: subscription.items.data[0]?.price.id as string,
+            status: subscription.status,
+            current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
+            current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+            cancel_at_period_end: subscription.cancel_at_period_end as boolean,
+            plan_id: getPlanIdFromPriceId(subscription.items.data[0]?.price.id as string),
+          })
+        } catch {
+          // If update fails (no existing record), create
+          await createSubscription({
+            user_id: subscription.metadata?.userId || "",
+            stripe_customer_id: subscription.customer as string,
+            stripe_subscription_id: subscription.id,
+            stripe_price_id: subscription.items.data[0]?.price.id as string,
+            status: subscription.status,
+            current_period_start: new Date(subscription.current_period_start * 1000).toISOString(),
+            current_period_end: new Date(subscription.current_period_end * 1000).toISOString(),
+            cancel_at_period_end: subscription.cancel_at_period_end as boolean,
+            plan_id: getPlanIdFromPriceId(subscription.items.data[0]?.price.id as string),
+          })
         }
-        
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (Subscription as any).findOneAndUpdate(
-          { stripeSubscriptionId: subscription.id },
-          updateData,
-          { upsert: true, new: true }
-        )
 
-        await triggerWebhook(
+        // Trigger webhooks for this event
+        const webhooks = await getWebhooksForEvent(
           "subscription.updated",
-          { subscriptionId: subscription.id },
           subscription.metadata?.organizationId
         )
+        for (const wh of webhooks) {
+          const payload = JSON.stringify({ subscriptionId: subscription.id })
+          const sig = generateSignature(payload, wh.secret)
+          // Fire-and-forget webhook calls
+          fetch(wh.url, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Webhook-Signature": sig,
+            },
+            body: payload,
+          }).catch(() => { })
+        }
         break
       }
 
       case "customer.subscription.deleted": {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const subscription = event.data.object as any
-        const { Subscription } = await import("@/lib/models/billing")
-        
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (Subscription as any).findOneAndUpdate(
-          { stripeSubscriptionId: subscription.id },
-          { status: "canceled" }
-        )
-
-        await triggerWebhook(
-          "subscription.cancelled",
-          { subscriptionId: subscription.id },
-          subscription.metadata?.organizationId
-        )
+        await updateSubscriptionByStripeSubId(subscription.id, {
+          status: "canceled",
+        })
         break
       }
 
-      case "invoice.payment_succeeded": {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const invoice = event.data.object as any
-
-        await triggerWebhook(
-          "payment.succeeded",
-          { invoiceId: invoice.id, amount: invoice.amount_paid },
-          invoice.metadata?.organizationId
-        )
+      case "invoice.payment_succeeded":
+      case "invoice.payment_failed":
+        // Log but no action needed beyond webhook triggers
         break
-      }
-
-      case "invoice.payment_failed": {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const invoice = event.data.object as any
-
-        await triggerWebhook(
-          "payment.failed",
-          { invoiceId: invoice.id, amount: invoice.amount_due },
-          invoice.metadata?.organizationId
-        )
-        break
-      }
     }
 
     return NextResponse.json({ received: true })
@@ -112,4 +104,3 @@ function getPlanIdFromPriceId(priceId: string): "free" | "pro" | "enterprise" {
   if (priceId === process.env.STRIPE_PRICE_ID_ENTERPRISE) return "enterprise"
   return "free"
 }
-

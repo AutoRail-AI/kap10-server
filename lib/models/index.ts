@@ -1,65 +1,71 @@
-// Mongoose models for application features
-// Better Auth uses Prisma (see prisma/schema.prisma)
+import { supabase } from "@/lib/db"
+import type { Database, Json } from "@/lib/db/types"
 
-import mongoose, { Schema } from "mongoose"
+export type AgentConversation = Database["public"]["Tables"]["agent_conversations"]["Row"]
+export type AgentConversationInsert = Database["public"]["Tables"]["agent_conversations"]["Insert"]
+export type AgentConversationUpdate = Database["public"]["Tables"]["agent_conversations"]["Update"]
 
-// Example: Agent Conversation Model
-export interface IAgentConversation extends mongoose.Document {
-  userId: string
-  organizationId?: string
-  messages: Array<{
-    role: "user" | "assistant" | "system"
-    content: string
-    timestamp: Date
-  }>
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  metadata?: Record<string, any>
-  createdAt: Date
-  updatedAt: Date
+// Agent Conversation model functions
+
+export async function createAgentConversation(
+  data: AgentConversationInsert
+): Promise<AgentConversation> {
+  const { data: conversation, error } = await supabase
+    .from("agent_conversations")
+    .insert(data)
+    .select()
+    .single()
+
+  if (error) throw error
+  return conversation
 }
 
-const AgentConversationSchema = new Schema<IAgentConversation>(
-  {
-    userId: {
-      type: String,
-      required: true,
-      index: true,
-    },
-    organizationId: {
-      type: String,
-      index: true,
-    },
-    messages: [
-      {
-        role: {
-          type: String,
-          enum: ["user", "assistant", "system"],
-          required: true,
-        },
-        content: {
-          type: String,
-          required: true,
-        },
-        timestamp: {
-          type: Date,
-          default: Date.now,
-        },
-      },
-    ],
-    metadata: {
-      type: Schema.Types.Mixed,
-      default: {},
-    },
-  },
-  {
-    timestamps: true,
-  }
-)
+export async function getAgentConversation(id: string): Promise<AgentConversation | null> {
+  const { data, error } = await supabase
+    .from("agent_conversations")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle()
 
-export const AgentConversation =
-  mongoose.models.AgentConversation ||
-  mongoose.model<IAgentConversation>("AgentConversation", AgentConversationSchema)
+  if (error) throw error
+  return data
+}
 
-// Add more Mongoose models here as needed
-// Example: Projects, Documents, etc.
+export async function getAgentConversationsByUser(
+  userId: string,
+  limit = 50
+): Promise<AgentConversation[]> {
+  const { data, error } = await supabase
+    .from("agent_conversations")
+    .select("*")
+    .eq("user_id", userId)
+    .order("updated_at", { ascending: false })
+    .limit(limit)
 
+  if (error) throw error
+  return data || []
+}
+
+export async function updateAgentConversation(
+  id: string,
+  updates: AgentConversationUpdate
+): Promise<AgentConversation> {
+  const { data: conversation, error } = await supabase
+    .from("agent_conversations")
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .select()
+    .single()
+
+  if (error) throw error
+  return conversation
+}
+
+export async function deleteAgentConversation(id: string): Promise<void> {
+  const { error } = await supabase
+    .from("agent_conversations")
+    .delete()
+    .eq("id", id)
+
+  if (error) throw error
+}
