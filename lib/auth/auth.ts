@@ -220,6 +220,14 @@ function buildAuthConfig(database: Parameters<typeof betterAuth>[0]["database"])
           },
         }
         : {}),
+      ...(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET
+        ? {
+          github: {
+            clientId: process.env.GITHUB_CLIENT_ID,
+            clientSecret: process.env.GITHUB_CLIENT_SECRET,
+          },
+        }
+        : {}),
     },
 
     // Session configuration
