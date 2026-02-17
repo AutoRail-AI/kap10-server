@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/db"
-import type { Database, Json } from "@/lib/db/types"
+import type { Database } from "@/lib/db/types"
 
 export type FeatureFlag = Database["public"]["Tables"]["feature_flags"]["Row"]
 export type FeatureFlagInsert = Database["public"]["Tables"]["feature_flags"]["Insert"]

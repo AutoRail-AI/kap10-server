@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
 import { stripe } from "@/lib/billing/stripe"
 import {
-  updateSubscriptionByStripeSubId,
   createSubscription,
-  type SubscriptionInsert,
+  updateSubscriptionByStripeSubId,
 } from "@/lib/models/billing"
-import { getWebhooksForEvent, generateSignature } from "@/lib/webhooks/manager"
+import { generateSignature, getWebhooksForEvent } from "@/lib/webhooks/manager"
 
 export async function POST(req: NextRequest) {
   const body = await req.text()

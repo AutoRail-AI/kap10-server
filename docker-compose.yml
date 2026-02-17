@@ -5,7 +5,7 @@ services:
   # Next.js Application
   app:
     build: .
-    container_name: modern-boilerplate-app
+    container_name: kap10-web-server-app
     ports:
       - "3000:3000"
     volumes:
@@ -27,7 +27,7 @@ services:
   # Background Job Worker
   worker:
     build: .
-    container_name: modern-boilerplate-worker
+    container_name: kap10-web-server-worker
     command: pnpm worker
     volumes:
       - .:/app
@@ -44,7 +44,7 @@ services:
   # Redis for job queues
   redis:
     image: redis:7-alpine
-    container_name: modern-boilerplate-redis
+    container_name: kap10-web-server-redis
     ports:
       - "6379:6379"
     volumes:
@@ -61,7 +61,7 @@ services:
   # Uncomment to enable web-based Redis UI at http://localhost:8081
   # redis-commander:
   #   image: rediscommander/redis-commander:latest
-  #   container_name: modern-boilerplate-redis-commander
+  #   container_name: kap10-web-server-redis-commander
   #   environment:
   #     - REDIS_HOSTS=local:redis:6379
   #   ports:

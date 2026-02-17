@@ -5,7 +5,7 @@ import { hasPermission } from "@/lib/config/roles"
 import { supabase } from "@/lib/db"
 
 // Middleware to check admin access
-export async function requireAdmin(_req: NextRequest) {
+async function requireAdmin(_req: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -27,11 +27,13 @@ export async function GET(req: NextRequest) {
   if (authError) return authError
 
   // user and organization tables are managed by Better Auth, not our app Database type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { count: userCount } = await (supabase as any)
     .from("user")
     .select("id", { count: "exact", head: true })
 
   // Get organization count
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { count: orgCount } = await (supabase as any)
     .from("organization")
     .select("id", { count: "exact", head: true })

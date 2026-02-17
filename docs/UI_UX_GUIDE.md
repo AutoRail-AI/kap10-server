@@ -1,17 +1,20 @@
 # UI/UX Reference Guide
 ## Complete Design System & Implementation Standards
 
-**Version:** 3.0  
+**Version:** 4.0  
 **Status:** Authoritative Reference  
 **Target Quality:** Enterprise SaaS (Stripe, Linear, Atlassian, Notion)  
-**Last Updated:** January 2025  
-**Component Library:** Shadcn UI (438+ components available)
+**Last Updated:** February 2025  
+**Component Library:** Shadcn UI (438+ components available)  
+**Design System:** autorail (Void Black + Industrial Glass) — see `docs/brand/brand.md`  
+**Tailwind:** v4 — theme and utilities in `styles/tailwind.css`  
+**Golden Sample:** `.cursor/patterns/golden-sample.tsx`
 
 ---
 
 ## Executive Summary
 
-This document serves as the **single source of truth** for all UI/UX decisions, design system standards, and component usage across the **entire Screen Agent Platform**. It applies to all features including:
+This document serves as the **single source of truth** for all UI/UX decisions, design system standards, and component usage across **Kap10 Web Server** and the **autorail** platform. It applies to all features including:
 
 - **Dashboard** - Overview and high-level metrics
 - **Screen Agents** - Agent creation, management, and detail views
@@ -144,20 +147,21 @@ The system supports two **internal-only** tenant operating modes (never surfaced
 
 ## Part II: Design System
 
-### 2.1 Typography Hierarchy & Legibility
+### 2.1 Typography Hierarchy & Legibility (autorail)
 
-**Core Principle:** We do not mute primary content text. All primary content must be clearly legible and use high-contrast colors.
+**Core Principle:** We do not mute primary content text. All primary content must use Cloud White (`text-foreground`). Use `font-grotesk` for headings, `font-sans` for body, `font-mono` for code. See `docs/brand/brand.md` §7.
 
 #### Typography Scale
 
-| Element | Size | Weight | Color | Usage |
-|---------|------|--------|-------|-------|
-| **Page Title** | `text-lg` (18px) | `font-semibold` (600) | `text-foreground` | Main page headings (one per page) |
-| **Page Description** | `text-sm` (14px) | `font-normal` (400) | `text-foreground` | Page descriptions with `mt-0.5` |
-| **Section Header** | `text-sm` (14px) | `font-semibold` (600) | `text-foreground` | Major sections (e.g., "Authentication") |
-| **Body Text** | `text-sm` (14px) or `text-xs` (12px) | `font-normal` (400) | `text-foreground` | Primary content, descriptions |
-| **Form Label** | `text-xs` (12px) | `font-normal` (400) | `text-muted-foreground` | Field labels (appropriate use case) |
-| **Helper Text** | `text-xs` (12px) | `font-normal` (400) | `text-foreground` | Helper text, captions (NOT muted) |
+| Element | Size | Weight | Font | Color | Usage |
+|---------|------|--------|------|-------|-------|
+| **Page Title** | `text-lg` (18px) | `font-semibold` (600) | `font-grotesk` | `text-foreground` | Main page headings — **never larger** |
+| **Page Description** | `text-sm` (14px) | `font-normal` (400) | `font-sans` | `text-foreground` | Page descriptions with `mt-0.5` |
+| **Section Header** | `text-sm` (14px) | `font-semibold` (600) | `font-grotesk` | `text-foreground` | Major sections |
+| **Body Text** | `text-sm` or `text-xs` | `font-normal` (400) | `font-sans` | `text-foreground` | Primary content |
+| **Code/Data** | `text-sm` or `text-xs` | — | `font-mono` | `text-foreground` / `text-electric-cyan` | IDs, logs, metrics |
+| **Form Label** | `text-xs` (12px) | `font-normal` (400) | `font-sans` | `text-muted-foreground` | Field labels only |
+| **Helper Text** | `text-xs` (12px) | `font-normal` (400) | `font-sans` | `text-foreground` | Helper text (NOT muted) |
 
 #### Typography Legibility Rules
 
@@ -237,35 +241,43 @@ The system supports two **internal-only** tenant operating modes (never surfaced
 
 ---
 
-### 2.3 Color System
+### 2.3 Color System (autorail)
+
+**Primary UI Palette:** Use only Void Black, Rail Purple, and Electric Cyan for enterprise-grade consistency. See `docs/brand/brand.md` §4–§6.
 
 #### Semantic Colors
 
-| Color | Usage | Hex Value |
-|-------|-------|-----------|
-| **Primary** | Brand blue, buttons, links | `#568AFF` |
-| **Success** | Positive actions, success states | Green |
-| **Warning** | Warnings, caution | Amber |
-| **Error** | Errors, destructive actions | Red |
-| **Muted** | Form labels, placeholders, metadata ONLY | Gray |
-| **Foreground** | All primary content (high contrast) | Theme variable |
+| Color | Token | Hex | Usage |
+|-------|-------|-----|-------|
+| **Background** | `bg-background` | `#0A0A0F` (Void Black) | **Always.** Page and section backgrounds. |
+| **Foreground** | `text-foreground` | `#FAFAFA` (Cloud White) | Primary text, headlines, body. |
+| **Primary** | `text-primary` / `bg-primary` | `#6E18B3` (Rail Purple) | Buttons, borders, brand accents (never body text — WCAG fail). |
+| **Accent** | `text-electric-cyan` | `#00E5FF` | Active states, links, "intelligence" highlights. |
+| **Success** | `text-success` | `#00FF88` | Success states, pass rates. |
+| **Warning** | `text-warning` | `#FFB800` | Warnings, in-progress. |
+| **Error** | `text-error` | `#FF3366` | Errors, failures. |
+| **Muted** | `text-muted-foreground` | `rgba(250,250,250,0.6)` | Form labels, placeholders, metadata ONLY. |
 
 #### Background Hierarchy
-- Base: `bg-background` (white/black)
-- Card: `bg-muted/30` (subtle background, not white)
-- Muted: `bg-muted` (subtle background)
-- Accent: `bg-accent` (interactive states)
+- Base: `bg-background` (Void Black `#0A0A0F`)
+- Card: `glass-card` or `glass-panel` (Industrial Glass — see `styles/tailwind.css`)
+- Muted: `bg-muted` / `bg-muted/30`
+- Accent: `bg-accent` (Electric Cyan for interactive states)
+
+**Bicameral Rule:** Cyan = New Intelligence / kap10. Purple = Deep Context / necroma. Never blend cyan-to-purple gradients.
 
 ---
 
 ### 2.4 Component Patterns
 
 #### Cards
-- Background: `bg-muted/30` (not white)
+- **MANDATORY:** Use `glass-card` or `glass-panel` for Industrial Glass aesthetic (defined in `styles/tailwind.css`)
+- Optional: `border-border` for explicit border
+- Hover: `hover:shadow-glow-purple` or `hover:glow-cyan` for active states
 - Padding: `pt-6` via `CardContent` (never full padding)
 - Structure: Prefer `Card` + `CardContent` over `CardHeader` + `CardContent`
-- Headers: Inline with `text-sm font-semibold` instead of `CardTitle`
-- No heavy borders or shadows
+- Headers: Inline with `font-grotesk text-sm font-semibold` instead of `CardTitle`
+- **Golden Sample:** `.cursor/patterns/golden-sample.tsx`
 
 **Shadcn Component:** `@shadcn/card`
 
@@ -412,15 +424,51 @@ mcp_presenter-agent-ui-shadcn_search_items_in_registries({
 
 ## Part IV: Component Patterns
 
+### 4.0 Golden Page Pattern (Canonical)
+
+**Source:** `.cursor/patterns/golden-sample.tsx`
+
+Use this structure for all dashboard pages. The Master Application Shell (sidebar + layout) is provided by `app/(dashboard)/layout.tsx`; pages render PAGE CONTENT ONLY.
+
+```tsx
+<div className="space-y-6 py-6 animate-fade-in">
+  {/* Page Header — MANDATORY: text-lg font-semibold (never larger) */}
+  <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+    <div className="space-y-1">
+      <h1 className="font-grotesk text-lg font-semibold text-foreground">Page Title</h1>
+      <p className="text-sm text-foreground mt-0.5">Page description</p>
+    </div>
+    <Button size="sm" className="bg-rail-fade">
+      <Plus className="mr-2 h-3.5 w-3.5" />
+      Action
+    </Button>
+  </div>
+
+  {/* Stats Grid (optional) */}
+  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+    <Card className="glass-card border-border hover:shadow-glow-purple">
+      <CardContent className="pt-6">...</CardContent>
+    </Card>
+  </div>
+
+  {/* Main Content */}
+  <Suspense fallback={<Skeleton className="h-[200px] w-full" />}>
+    {/* Data-fetching component */}
+  </Suspense>
+</div>
+```
+
+**Key:** `glass-card`, `font-grotesk`, `space-y-6 py-6`, `h-9` inputs, `size="sm"` buttons, `Suspense` + `Skeleton`.
+
 ### 4.1 Page Layout Templates
 
 #### Standard Page Template
 
 ```tsx
-<div className="space-y-6">
+<div className="space-y-6 py-6">
   {/* Page Header */}
-  <div className="space-y-0.5">
-    <h1 className="text-lg font-semibold">Page Title</h1>
+  <div className="space-y-1">
+    <h1 className="font-grotesk text-lg font-semibold text-foreground">Page Title</h1>
     <p className="mt-0.5 text-sm text-foreground">Page description</p>
   </div>
   
@@ -434,21 +482,21 @@ mcp_presenter-agent-ui-shadcn_search_items_in_registries({
 #### List Page Template
 
 ```tsx
-<div className="space-y-6">
+<div className="space-y-6 py-6">
   {/* Page Header with Actions */}
   <div className="flex items-center justify-between">
-    <div className="space-y-0.5">
-      <h1 className="text-lg font-semibold">Resource List</h1>
+    <div className="space-y-1">
+      <h1 className="font-grotesk text-lg font-semibold text-foreground">Resource List</h1>
       <p className="mt-0.5 text-sm text-foreground">Manage your resources</p>
     </div>
-    <Button size="sm">
+    <Button size="sm" className="bg-rail-fade hover:opacity-90">
       <Plus className="mr-2 h-3.5 w-3.5" />
       Create Resource
     </Button>
   </div>
   
   {/* Table with Pagination */}
-  <Card className="bg-muted/30">
+  <Card className="glass-card border-border">
     <CardContent className="pt-6">
       <Table>
         {/* Table content */}
@@ -710,9 +758,9 @@ This section provides patterns and requirements for each major feature in the ap
 **Purpose:** High-level overview with clear next actions (NOT deep analytics)
 
 **Layout:**
-- Metric cards with `bg-muted/30` background
-- Quick action buttons (`size="sm"`)
-- Summary statistics with `text-2xl font-semibold` for values
+- Metric cards with `glass-card border-border hover:shadow-glow-purple`
+- Quick action buttons (`size="sm"`, `bg-rail-fade` for primary)
+- Summary statistics with `font-grotesk text-2xl font-bold` for values
 - Empty state using `Empty` component with `size="lg"` CTA button
 
 **Content:**
@@ -970,11 +1018,11 @@ This section provides patterns and requirements for each major feature in the ap
 ### 6.2 Anti-Patterns (Forbidden)
 
 **Visual Anti-Patterns:**
-- ❌ Oversized typography (`text-xl`, `text-2xl` for titles)
+- ❌ Oversized typography (`text-xl`, `text-2xl` for page titles — use `text-lg` only)
 - ❌ Excessive whitespace or padding
 - ❌ Marketing-style UI inside application
-- ❌ White card backgrounds (`bg-background`)
-- ❌ Heavy borders, shadows, or visual noise
+- ❌ Plain `bg-muted/30` cards — use `glass-card` for autorail aesthetic
+- ❌ Rail Purple for body text (WCAG fail — use Cloud White)
 - ❌ Muted primary content text
 
 **Structural Anti-Patterns:**
@@ -998,16 +1046,17 @@ This section provides patterns and requirements for each major feature in the ap
 **Before finalizing any page, validate:**
 
 **Typography:**
-- [ ] Page title uses `text-lg font-semibold` (not larger)
+- [ ] Page title uses `font-grotesk text-lg font-semibold` (never larger)
 - [ ] Page description uses `text-sm text-foreground` with `mt-0.5`
-- [ ] Section headers use `text-sm font-semibold`
+- [ ] Section headers use `font-grotesk text-sm font-semibold`
+- [ ] Code/data uses `font-mono`
 - [ ] All primary text uses `text-foreground` (NOT muted)
 - [ ] Muted text only for form labels, placeholders, metadata
 
 **Layout:**
-- [ ] Sections use `space-y-6` spacing
+- [ ] Sections use `space-y-6 py-6` for page container
 - [ ] Form fields use `space-y-4` or `space-y-2`
-- [ ] Cards use `bg-muted/30` background
+- [ ] Cards use `glass-card` or `glass-panel` (autorail)
 - [ ] Cards use `CardContent` with `pt-6` (not full padding)
 
 **Components:**
@@ -1173,19 +1222,25 @@ pnpm dlx shadcn@latest add button
 
 ---
 
-## Appendix B: Brand Guidelines Reference
+## Appendix B: autorail Brand & Tailwind Reference
 
-**Color Palette:**
-- Primary: Cornflower Blue `#568AFF`
-- Secondary: Green-Blue `#0665BA`
-- Rich Black: `#001320` (for text)
+**Primary UI Palette (Void Black + Industrial Glass):**
+- Background: Void Black `#0A0A0F` — `bg-background`
+- Primary: Rail Purple `#6E18B3` — graphics, borders, icons only (never body text; WCAG fail)
+- Accent: Electric Cyan `#00E5FF` — active states, links, intelligence
+- Text: Cloud White `#FAFAFA` — `text-foreground`
 
-**Typography:**
-- Headlines: Poppins Semi Bold (600)
-- Body: Poppins Regular (400)
-- Accent: Sofia Sans Extra Condensed (sparingly)
+**Typography (styles/tailwind.css):**
+- Headlines: `font-grotesk` (Space Grotesk)
+- Body: `font-sans` (Inter)
+- Code: `font-mono` (JetBrains Mono)
 
-**Full Guidelines:** See `brand/brand.md` for complete brand guidelines
+**Component Utilities:**
+- Cards: `glass-card`, `glass-panel`
+- Gradients: `bg-rail-fade`, `text-gradient`
+- Glows: `glow-purple`, `glow-cyan`, `glow-success-pulse`
+
+**Full Guidelines:** See `docs/brand/brand.md` for complete brand guidelines and Tailwind v4 implementation.
 
 ---
 
@@ -1228,6 +1283,9 @@ mcp_presenter-agent-ui-shadcn_get_add_command_for_items({
 ---
 
 **Document Status:** ✅ Complete  
-**Last Updated:** January 2025  
+**Last Updated:** February 2025  
+**Design System:** autorail (Void Black + Industrial Glass)  
+**Tailwind:** v4 — `styles/tailwind.css`  
+**Golden Sample:** `.cursor/patterns/golden-sample.tsx`  
 **Component Library:** Shadcn UI (438+ components)  
 **Next Review:** Quarterly or when major design system changes occur

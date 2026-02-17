@@ -1,4 +1,4 @@
-import { Queue, type QueueOptions } from "bullmq"
+import { type ConnectionOptions, Queue, type QueueOptions } from "bullmq"
 import { getRedis } from "./redis"
 import {
   type EmailJobData,
@@ -41,7 +41,7 @@ export function getEmailQueue(): Queue<EmailJobData> {
     // Don't specify generics in constructor - let TypeScript infer to avoid type conflicts
     // Use type assertion for connection to handle ioredis version compatibility
     emailQueue = new Queue(QUEUE_NAMES.EMAIL, {
-      connection: getRedis() as any,
+      connection: getRedis() as unknown as ConnectionOptions,
       ...defaultQueueOptions,
     }) as Queue<EmailJobData>
   }
@@ -58,7 +58,7 @@ export function getProcessingQueue(): Queue<ProcessingJobData> {
     // Don't specify generics in constructor - let TypeScript infer to avoid type conflicts
     // Use type assertion for connection to handle ioredis version compatibility
     processingQueue = new Queue(QUEUE_NAMES.PROCESSING, {
-      connection: getRedis() as any,
+      connection: getRedis() as unknown as ConnectionOptions,
       ...defaultQueueOptions,
     }) as Queue<ProcessingJobData>
   }
@@ -75,7 +75,7 @@ export function getWebhooksQueue(): Queue<WebhookJobData> {
     // Don't specify generics in constructor - let TypeScript infer to avoid type conflicts
     // Use type assertion for connection to handle ioredis version compatibility
     webhooksQueue = new Queue(QUEUE_NAMES.WEBHOOKS, {
-      connection: getRedis() as any,
+      connection: getRedis() as unknown as ConnectionOptions,
       ...defaultQueueOptions,
       defaultJobOptions: {
         ...defaultQueueOptions.defaultJobOptions,

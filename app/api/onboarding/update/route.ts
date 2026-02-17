@@ -1,7 +1,7 @@
 import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { advanceOnboardingStep, getOnboarding } from "@/lib/onboarding/flow"
+import { advanceOnboardingStep } from "@/lib/onboarding/flow"
 
 const stepOrder = ["welcome", "profile", "organization", "preferences", "complete"] as const
 type OnboardingStep = typeof stepOrder[number]

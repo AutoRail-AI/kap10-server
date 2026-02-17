@@ -2,7 +2,7 @@ import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 import { SubscriptionCard } from "@/components/billing/subscription-card"
 import { Button } from "@/components/ui/button"
-import { ContentBlock, ContentBlockDescription, ContentBlockHeader, ContentBlockTitle } from "@/components/ui/content-block"
+import { ContentBlock, ContentBlockHeader, ContentBlockTitle } from "@/components/ui/content-block"
 import { auth } from "@/lib/auth"
 import { getSubscription } from "@/lib/models/billing"
 

@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/db"
-import type { Database, Json } from "@/lib/db/types"
+import type { Database } from "@/lib/db/types"
 
 export type SearchIndexEntry = Database["public"]["Tables"]["search_index"]["Row"]
 export type SearchIndexInsert = Database["public"]["Tables"]["search_index"]["Insert"]

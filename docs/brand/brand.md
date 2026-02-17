@@ -1,654 +1,697 @@
-# 1DXR Brand Guidelines
+# autorail Brand Guidelines
 
-This document provides comprehensive brand guidelines for 1DXR, including logos, colors, typography, and usage rules. Use this as the definitive reference for all brand-related decisions.
+**Autonomous Engineering Infrastructure**
 
----
-
-## Table of Contents
-
-1. [Logo Variations](#logo-variations)
-2. [Color Palette](#color-palette)
-3. [Typography](#typography)
-4. [Brand Assets](#brand-assets)
-5. [Usage Guidelines](#usage-guidelines)
-6. [Applications & Mockups](#applications--mockups)
+This document defines the visual identity for **autorail**. The aesthetic is "Void Black + Industrial Glass"—utilizing a deep void-black palette with rail purple and electric cyan accents to create a structural, engineering-grade interface that conveys governance, verification, and machine precision. Two products share this system: **kap10** (Electric Cyan) and **necroma** (Rail Purple).
 
 ---
 
-## Logo Variations
+## Primary UI Palette (Enterprise Rule)
 
-### Primary Logo
-**Usage:** Use this as the main logo in most applications, including websites, marketing materials, and digital products.
+**Use only a couple of colors so the website looks professional and enterprise-grade.**
 
-**Available Files:**
-- `public/logos/logo_1.svg` - White text with gradient X on black background
-- `public/logos/logo_2.svg` - Gradient text with white X on black background
+| Role | Color | Usage |
+| :--- | :--- | :--- |
+| **Background** | **Void Black** (`#0A0A0F`) | **Always.** All page and section backgrounds use Void Black. |
+| **Fonts & components** | **Rail Purple** (`#6E18B3`) **or** **Electric Cyan** (`#00E5FF`) | All accents: buttons, borders, icons, links, highlights, and non-text UI. Use Cloud White for body text. |
 
-**Specifications:**
-- Format: SVG, PNG
-- Color: Black background with blue gradient accents
-- Minimum size: 120px width
-- Clear space: 25% of logo height on all sides
+- **Do not** introduce extra accent colors (e.g. avoid standalone Quantum Violet, Slate Grey, or other hues for UI).
+- **Text:** Primary reading text = Cloud White (`#FAFAFA`). Muted text = `rgba(250, 250, 250, 0.6)`.
+- **Focus / ring:** Electric Cyan for consistency and accessibility.
 
-**Best Use Cases:**
-- Website headers
-- Email signatures
-- Business cards
-- App interfaces (dark mode)
-- Marketing collateral
-- Social media posts (dark theme)
+This limited palette is implemented in `styles/tailwind.css` and across all landing and UI components.
 
 ---
 
-### Secondary Logo
-**Usage:** A versatile version for alternative layouts, footers, or smaller applications.
+## 1. Brand Core
 
-**Available Files:**
-- `public/logos/logo_4.svg` - Black text with gradient X on white background
-- `public/logos/logo_5.svg` - Gradient text with black X on white background
-
-**Specifications:**
-- Format: SVG, PNG
-- Color: White/light background with blue gradient accents
-- Minimum size: 100px width
-- Clear space: 20% of logo height on all sides
-
-**Best Use Cases:**
-- Light-themed websites
-- Document headers
-- Print materials
-- App interfaces (light mode)
-- Forms and templates
-- Light-colored backgrounds
+| Element | Definition |
+| :--- | :--- |
+| **Name** | autorail |
+| **Tagline** | Autonomous Engineering Infrastructure |
+| **Products** | kap10 (The AI Tech Lead — cyan) · necroma (The Migration Layer — purple) |
+| **Concept** | Platform providing governance infrastructure for AI-powered development — persistent context, behavioral verification, and self-healing built into the development lifecycle |
+| **Vibe** | Void Black, Industrial Glass, Rail Purple, Electric Cyan, Machine Precision |
 
 ---
 
-### Accent Logo
-**Usage:** A compact logo for small spaces like social media icons or app badges.
+## 2. Brand Voice: Three-Tier System
 
-**Available Files:**
-- `public/logos/logo_3.svg` - White text on gradient background
-- `public/logos/logo_6.svg` - Black text on gradient background
+autorail speaks with three distinct voices depending on context. All three share the same structural-engineering tone — authoritative, matter-of-fact, proof-driven — but differ in register and terminology.
 
-**Specifications:**
-- Format: SVG, PNG
-- Color: Gradient blue background (#559EFF → #0665BA)
-- Minimum size: 80px width
-- Clear space: 15% of logo height on all sides
+### 2.1 Platform Voice: The Structural Engineer
 
-**Best Use Cases:**
-- Social media profile images
-- App store icons
-- Favicon alternatives
-- Promotional badges
-- Call-to-action buttons
-- Premium features highlights
+**Tone:** Authoritative, matter-of-fact, infrastructure-grade. This is the voice of the parent brand — used for the main landing page, company-level messaging, and cross-product content.
 
----
+**Keywords:** *Infrastructure, Governance, Autonomous, Verification, Self-Healing.*
 
-### Logo Mark (Icon Only)
-**Usage:** A standalone icon for apps, endpoints, or minimal branding contexts.
+### 2.2 kap10 Voice: The AI Tech Lead
 
-**Available Files:**
-- `public/logos/logo_7.svg` - Gradient X on black background
-- `public/logos/logo_8.svg` - Black X on white background
-- `public/logos/logo_9.svg` - White X on gradient background
-- `public/icons/app.svg` - Premium app icon with effects
-- `public/icons/app_black_bg.svg` - App icon on 1080×1080px black canvas
+**Tone:** Direct, confident, developer-friendly. Speaks to individual developers and small teams who are already using AI coding agents (Cursor, Claude Code, Windsurf) and hitting the "Day 2" wall.
 
-**Specifications:**
-- Format: SVG, PNG, ICO
-- Sizes: 16px, 32px, 64px, 128px, 256px, 512px
-- Minimum size: 24px
-- Clear space: 10% of icon size on all sides
+**Keywords:** *Supervise, Review, Enforce, Ship, Context.*
 
-**Best Use Cases:**
-- Favicons
-- App icons (iOS, Android)
-- Social media avatars
-- Loading spinners
-- Navigation elements
-- Watermarks
-- Browser extensions
+### 2.3 necroma Voice: The Migration Architect
+
+**Tone:** Precise, enterprise-confident, proof-driven. Speaks to CIOs and enterprise architects managing legacy Java/COBOL/.NET systems. Every claim is backed by behavioral verification.
+
+**Keywords:** *Behavioral, Reconstruct, Verify, Modernize, Vertical Slice.*
+
+### Do / Don't
+
+| Don't say | Do say |
+| :--- | :--- |
+| "We use magic to fix your code." | "We provide the execution infrastructure to test, verify, and reliably ship autonomous code." |
+| "The AI guesses the fix." | "The agent is supervised by architectural rules and behavioral verification." |
+| "Instant migration." | "See your first production-ready feature in days, not quarters." |
+| "We replace your developers." | "We provide the guardrails so your team ships faster with AI." |
 
 ---
 
-## Color Palette
+## 3. Color Philosophy
 
-### Primary Colors
+### The "Industrial Glass" Aesthetic
 
-#### Cornflower Blue
-**Role:** Primary brand color  
-**Usage:** Main interactive elements, headlines, key brand moments
+Our color system creates a deep, immersive environment where **void black backgrounds** provide high contrast for **rail purple** and **electric cyan** elements. The Industrial Glass concept frames the UI as a structural, engineering-grade HUD — translucent panels, sharp borders, and confidence-reactive glows.
 
-| Format | Value |
-|--------|-------|
-| HEX | `#568AFF` |
-| RGB | `86, 138, 255` |
-| CMYK | `67%, 38%, 0%, 0%` |
+**Why this works for autorail:**
+- **Void Black (#0A0A0F)**: The production floor. The dark, stable foundation on which everything is built and tested.
+- **Rail Purple (#6E18B3)**: necroma's domain — deep context, legacy analysis, structural verification, the "wire" that connects past to future.
+- **Electric Cyan (#00E5FF)**: kap10's domain — new intelligence, supervision, forward momentum, the "spark" of modern engineering.
 
-**Applications:**
-- Primary buttons
-- Links and interactive elements
-- Brand accents
-- Hero sections
-- Call-to-action elements
+#### The "Bicameral" Color Logic
 
----
+To communicate the **two-product** architecture instantly, we separate color usage by function — every color has a *cognitive, engineering purpose*:
 
-#### Green-Blue
-**Role:** Secondary brand color  
-**Usage:** Supporting elements, gradients, depth
+| Color | Represents | Use for |
+| :--- | :--- | :--- |
+| **Electric Cyan (`#00E5FF`)** | **New Intelligence** — kap10, Generation, Forward Momentum | Primary buttons, active cursors, generated code, "Ship Ready" confidence |
+| **Rail Purple (`#6E18B3`)** | **Deep Context** — necroma, Legacy Analysis, Structure | Background borders, knowledge-graph nodes, "Self-Healing" diagnosis, historical logs |
 
-| Format | Value |
-|--------|-------|
-| HEX | `#0665BA` |
-| RGB | `6, 101, 186` |
-| CMYK | `96%, 48%, 0%, 27%` |
+**Rule:** *Cyan is the Spark. Purple is the Wire.* Never blend cyan-to-purple gradients.
 
-**Applications:**
-- Secondary buttons
-- Gradient end points
-- Hover states
-- Supporting graphics
-- Background accents
+For the full **Glass Brain View** design and UX patterns (boot sequence, breathing glow, event colors, animations), see **Section 10**.
 
 ---
 
-### Base Colors
+## 4. Color Palette Quick Reference
 
-#### Rich Black
-**Role:** Base/text color  
-**Usage:** Text, dark backgrounds, primary content
+### Background Colors
 
-| Format | Value |
-|--------|-------|
-| HEX | `#001320` |
-| RGB | `0, 19, 32` |
-| CMYK | `100%, 59%, 0%, 68%` |
+| Color | Hex | RGB | Role |
+| :---: | :--- | :--- | :--- |
+| ![#0A0A0F](https://via.placeholder.com/16/0A0A0F/0A0A0F?text=+) | `#0A0A0F` | (10, 10, 15) | **Void Black** (Main Background) |
+| ![#1E1E28](https://via.placeholder.com/16/1E1E28/1E1E28?text=+) | `#1E1E28` | (30, 30, 40) | **Slate Grey** (Secondary/Muted) |
+| ![#050507](https://via.placeholder.com/16/050507/050507?text=+) | `#050507` | (5, 5, 7) | **Obsidian** (Darker Depth) |
 
-**Applications:**
-- Body text
-- Headers and titles
-- Dark backgrounds
-- Icons (light mode)
-- Navigation bars
+### Foreground Colors
 
----
-
-#### White
-**Role:** Base color  
-**Usage:** Light backgrounds, text on dark surfaces, clean space
-
-| Format | Value |
-|--------|-------|
-| HEX | `#FFFFFF` |
-| RGB | `255, 255, 255` |
-| CMYK | `0%, 0%, 0%, 0%` |
-
-**Applications:**
-- Text on dark backgrounds
-- Page backgrounds (light mode)
-- Cards and panels
-- Clean, minimal spaces
-- Icons (dark mode)
+| Color | Hex | RGB | Role |
+| :---: | :--- | :--- | :--- |
+| ![#6E18B3](https://via.placeholder.com/16/6E18B3/6E18B3?text=+) | `#6E18B3` | (110, 24, 179) | **Rail Purple** (Primary Brand) |
+| ![#8134CE](https://via.placeholder.com/16/8134CE/8134CE?text=+) | `#8134CE` | (129, 52, 206) | **Quantum Violet** (Lighter Purple) |
+| ![#00E5FF](https://via.placeholder.com/16/00E5FF/00E5FF?text=+) | `#00E5FF` | (0, 229, 255) | **Electric Cyan** (Accent/Intelligence) |
+| ![#FAFAFA](https://via.placeholder.com/16/FAFAFA/FAFAFA?text=+) | `#FAFAFA` | (250, 250, 250) | **Cloud White** (Primary Text) |
 
 ---
 
-### Accent Colors
+## 5. Background Palette (Void Black & Glass)
 
-#### French Sky Blue
-**Role:** Accent color  
-**Usage:** Highlights, notifications, special callouts
+These are the structural colors — the canvas on which autorail operates.
 
-| Format | Value |
-|--------|-------|
-| HEX | `#66ABFE` |
-| RGB | `102, 171, 254` |
-| CMYK | `60%, 23%, 0%, 0%` |
+| Token | Hex | Role |
+| :--- | :--- | :--- |
+| **Background** | `#0A0A0F` | Main canvas, page background |
+| **Card** | `rgba(30, 30, 40, 0.4)` | Glass panels (Industrial Glass panes) |
+| **Muted** | `rgba(30, 30, 40, 0.5)` | Secondary backgrounds, inputs |
+| **Border** | `rgba(250, 250, 250, 0.1)` | Borders, dividers (subtle) |
 
-**Applications:**
-- Success states
-- Highlighted content
-- Badges and labels
-- Info notifications
-- Active states
+### Usage Guidelines
 
----
-
-### Gradient (P→S)
-**Role:** Premium gradient  
-**Usage:** Backgrounds, special elements, brand moments
-
-**Gradient Definition:**
-- Start: `#559EFF`
-- End: `#0065BA`
-- Direction: Varies by use case (typically top-to-bottom or diagonal)
-
-**Applications:**
-- Premium features
-- Hero sections
-- Buttons and CTAs
-- Background overlays
-- Marketing materials
-- App store assets
-
----
-
-## Color Usage Guidelines
-
-### Screen & Web Design
-- **Primary:** Use HEX and RGB values
-- **Backgrounds:** Rich Black (`#001320`) or White (`#FFFFFF`)
-- **Interactive Elements:** Cornflower Blue (`#568AFF`)
-- **Gradients:** `#559EFF` → `#0065BA`
-
-### Print Design
-- **Primary:** Use CMYK values for accurate printing
-- **Rich Black:** Consider using true black (K100) for text in print
-- **White:** Leave as paper color for efficiency
-- **Gradients:** Ensure proper color management in print workflow
-
-### Color Accessibility
-All color combinations meet **WCAG AA standards** for contrast:
-- ✅ White text on Rich Black: **15.8:1**
-- ✅ White text on Green-Blue: **4.7:1**
-- ✅ White text on Cornflower Blue: **3.8:1**
-- ✅ Rich Black text on White: **15.8:1**
-
----
-
-## Typography
-
-### Primary Font: Poppins Semi Bold
-**Usage:** The main typeface used for headlines and key brand messaging.
-
-**Specifications:**
-- Font Family: `Poppins`
-- Weight: `600` (Semi Bold)
-- Style: Sans-serif, geometric, modern
-- License: Open Font License (Google Fonts)
-
-**Applications:**
-- H1, H2, H3 headings
-- Hero headlines
-- Navigation menus
-- Button labels
-- Logo text
-- Marketing headlines
-
-**Web Implementation:**
 ```css
-@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@600&display=swap');
+/* Page background */
+background: #0A0A0F;
 
-h1, h2, h3 {
-  font-family: 'Poppins', sans-serif;
-  font-weight: 600;
+/* Glass Card */
+background: rgba(30, 30, 40, 0.4);
+backdrop-filter: blur(12px);
+border: 1px solid rgba(250, 250, 250, 0.1);
+```
+
+### ⚠️ Accessibility & Usage Rules (Strict)
+
+*   **Rail Purple (#6E18B3)**: Use **ONLY** for graphics, backgrounds, borders, icons, and gradients. **NEVER** use for body text or small labels (Contrast 3.5:1 fails WCAG AA).
+*   **Electric Cyan (#00E5FF)**: Safe for text and icons (Contrast 13:1). Use for active states, links, and "intelligence" accents.
+*   **Cloud White (#FAFAFA)**: Use for all primary reading text.
+*   **Quantum Violet (#8134CE)**: Use only inside the Rail Fade gradient, not as a standalone UI color.
+
+---
+
+## 6. Foreground Palette (Rail & Spark)
+
+The gradients represent the flow of data and the transformation process.
+
+| Token | Hex | Role |
+| :--- | :--- | :--- |
+| **Rail Purple** | `#6E18B3` | Primary actions, brand identity |
+| **Electric Cyan** | `#00E5FF` | Active states, code execution, "intelligence" |
+| **Success** | `#00FF88` | Successful verification/test (semantic only) |
+| **Warning** | `#FFB800` | Issues requiring attention (semantic only) |
+| **Error** | `#FF3366` | Critical failures (semantic only) |
+
+### Gradient Definition
+
+```css
+/* Rail Fade (Primary Brand Gradient) */
+background: linear-gradient(135deg, #8134CE 0%, #6E18B3 100%);
+
+/* Automation Flow (Hero/CTA) */
+background: linear-gradient(90deg, #00E5FF 0%, #8134CE 50%, #6E18B3 100%);
+```
+
+---
+
+## 6.1 Confidence Glows (Framing)
+
+Use these glows for clear, beautiful framing across the landing page (e.g. confidence tiers, status indicators, or progress states).
+
+| Range   | Hex     | Effect                          | Tailwind / Usage                                      |
+| :---    | :---    | :---                            | :---                                                  |
+| **40–70%**  | `#FFB800` | Subtle yellow glow              | `glow-yellow`                                         |
+| **70–85%**  | `#00E5FF` | Cyan glow                       | `glow-cyan`                                           |
+| **≥ 85%**   | `#00FF88` | Green glow + pulse              | `glow-success-pulse` (green glow + `animate-pulse-glow`) |
+
+### Usage
+
+- **40–70%:** Caution or in-progress state; soft yellow keeps the frame visible without dominating.
+- **70–85%:** Strong confidence; Electric Cyan aligns with brand "intelligence" and stays on-palette.
+- **≥ 85%:** High confidence / success; green glow with `animate-pulse-glow` for a clear, positive signal.
+
+Implement in `styles/tailwind.css` via `.glow-yellow`, `.glow-cyan`, and `.glow-success-pulse`.
+
+---
+
+## 7. Typography System — Enterprise Guide
+
+**"The Industrial Terminal Aesthetic"**
+
+Our typography is the voice of the machine. It must be precise, engineered, and readable. We avoid decorative fonts in favor of functional, high-performance typefaces that feel native to a developer's environment (IDEs, terminals, documentation). The system conveys **Technical Rigor**, **Safety**, and **Intelligence**.
+
+### 7.1 Typeface Selection
+
+We use a three-font stack: **Brand Voice** (headlines), **Utility** (UI/body), and **Data** (code).
+
+| Role | Font Family | Weight | Why we use it |
+| :--- | :--- | :--- | :--- |
+| **HEADLINES** | **Space Grotesk** | Bold (700), SemiBold (600) | Geometric sans that feels "engineered" and "manufactured." Anchors the "Industrial" vibe. |
+| **INTERFACE** | **Inter** | Regular (400), Medium (500) | Enterprise standard for legibility. Invisible, frictionless, and safe. |
+| **DATA & CODE** | **JetBrains Mono** | Regular (400) | Gold standard for code. Signals immediately: "This is a developer tool." |
+
+Sources: [Space Grotesk](https://fonts.google.com/specimen/Space+Grotesk), [Inter](https://fonts.google.com/specimen/Inter), [JetBrains Mono](https://fonts.google.com/specimen/JetBrains+Mono).
+
+### 7.2 Type Hierarchy & Scaling
+
+A distinct scale ensures hero messages feel massive and confident, while documentation stays dense and scannable.
+
+#### Display Levels (Space Grotesk)
+
+*Hero sections, huge statements, landing impact.*
+
+| Token | Size (Mobile / Desktop) | Weight | Tracking | Usage |
+| :--- | :--- | :--- | :--- | :--- |
+| **Display XL** | `48px` / `72px` | Bold (700) | `-0.04em` | Main landing hero ("Vibe Coding, Industrialized") |
+| **Display L** | `36px` / `56px` | Bold (700) | `-0.03em` | Major section headers ("The Day 2 Hangover") |
+| **Display M** | `30px` / `48px` | SemiBold (600) | `-0.02em` | Feature block headers |
+
+#### Heading Levels (Space Grotesk)
+
+*Cards, articles, product interfaces.*
+
+| Token | Size | Weight | Tracking | Usage |
+| :--- | :--- | :--- | :--- | :--- |
+| **H1** | `32px` | SemiBold (600) | `-0.02em` | Page titles (dashboard/docs) |
+| **H2** | `24px` | SemiBold (600) | `-0.01em` | Section dividers, large cards |
+| **H3** | `20px` | Medium (500) | `0` | Card titles, modal headers |
+| **H4** | `16px` | Medium (500) | `0` | Small labels, sub-sections |
+
+#### Body & UI (Inter)
+
+*All reading text, buttons, inputs.*
+
+| Token | Size | Weight | Line Height | Usage |
+| :--- | :--- | :--- | :--- | :--- |
+| **Body Large** | `18px` | Regular (400) | `1.6` | Hero subtext, intros |
+| **Body Base** | `16px` | Regular (400) | `1.6` | Standard blog/docs text |
+| **Body Small** | `14px` | Regular (400) | `1.5` | Dashboard UI, cards, inputs |
+| **Caption** | `12px` | Medium (500) | `1.4` | Metadata, timestamps, footnotes |
+
+#### Code & Technical (JetBrains Mono)
+
+*Terminal streams, code blocks, logs, technical badges.*
+
+| Token | Size | Color | Usage |
+| :--- | :--- | :--- | :--- |
+| **Code Base** | `14px` | Cloud White | Code snippets, main terminal output |
+| **Code Small** | `12px` | Muted / Electric Cyan | Inline code (`npm install`), badges |
+| **Code Tiny** | `10px` | Muted | Line numbers, subtle logs |
+
+### 7.3 Styling & Effects
+
+#### The "Industrial" Gradient Text
+
+Use only for high-impact keywords (e.g. "Industrialized", "Ground Truth"). Do not overuse.
+
+```css
+/* Tailwind: text-gradient */
+background: linear-gradient(135deg, #8134CE 0%, #6E18B3 100%);
+-webkit-background-clip: text;
+-webkit-text-fill-color: transparent;
+background-clip: text;
+```
+
+#### The "Terminal" Glow
+
+For code blocks or Electric Cyan text to suggest an active terminal / CRT.
+
+```css
+/* Tailwind: text-glow-cyan */
+color: #00E5FF;
+text-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
+```
+
+See `styles/tailwind.css` for `.text-glow-cyan` and `.text-glow-purple`.
+
+#### Selection State
+
+Keep selection on-brand and immersive.
+
+```css
+::selection {
+  background: rgba(0, 229, 255, 0.3);
+  color: #FAFAFA;
 }
 ```
 
-**Scale:**
-- H1: 48px / 3rem
-- H2: 36px / 2.25rem
-- H3: 28px / 1.75rem
-- Large: 24px / 1.5rem
+### 7.4 Tailwind CSS v4 Implementation
+
+**Source:** All utilities and theme variables are defined in `styles/tailwind.css`. Tailwind v4 uses `@theme { }` for design tokens and `@layer utilities` for custom classes.
+
+#### Theme Variables (`@theme`)
+
+```css
+/* Colors — use via Tailwind utilities: bg-*, text-*, border-* */
+--color-void-black: #0A0A0F;
+--color-slate-grey: #1E1E28;
+--color-cloud-white: #FAFAFA;
+--color-rail-purple: #6E18B3;
+--color-quantum-violet: #8134CE;
+--color-electric-cyan: #00E5FF;
+--color-success: #00FF88;
+--color-warning: #FFB800;
+--color-error: #FF3366;
+
+/* Fonts */
+--font-grotesk: Space Grotesk;   /* Headings */
+--font-sans: Inter;              /* Body, UI */
+--font-mono: JetBrains Mono;     /* Code, data */
+
+/* shadcn/ui semantic mapping */
+--color-background: var(--color-void-black);
+--color-foreground: var(--color-cloud-white);
+--color-primary: var(--color-rail-purple);
+--color-accent: var(--color-electric-cyan);
+```
+
+#### Utility Classes Reference
+
+| Purpose | Class | Usage |
+| :--- | :--- | :--- |
+| **Fonts** | `font-grotesk` | Headlines, page titles |
+| | `font-sans` | Body text, buttons, inputs |
+| | `font-mono` | Code, logs, IDs, numeric data |
+| **Display** | `text-display-xl` | Hero (48px → 72px at `md`) |
+| | `text-display-lg` | Section headers |
+| | `text-display-m` | Feature blocks |
+| **Glass panels** | `glass-card` | Cards with backdrop blur, hover glow |
+| | `glass-panel` | Structural panes (Glass Brain) |
+| **Gradients** | `bg-rail-fade` | Primary brand gradient |
+| | `text-gradient` | Industrial gradient text |
+| **Glows** | `glow-purple` | Rail Purple shadow |
+| | `glow-cyan` | Electric Cyan border/shadow |
+| | `glow-yellow` | Caution (40–70% confidence) |
+| | `glow-success-pulse` | Success (≥ 85%) |
+| **Text glow** | `text-glow-cyan` | Active terminal/code |
+| | `text-glow-purple` | Quantum Violet accent |
+| **Labels** | `text-label` | Uppercase, 10px, tracking |
+| **Animations** | `animate-fade-in` | Entry transitions |
+| | `animate-pulse-glow` | Status dots |
+| | `animate-breathing-glow` | Confidence framing |
+
+#### Component Usage Examples
+
+```tsx
+// Page container (golden-sample pattern)
+<div className="space-y-6 py-6 animate-fade-in">
+
+// Page title — MANDATORY: text-lg font-semibold
+<h1 className="font-grotesk text-lg font-semibold text-foreground">Page Title</h1>
+
+// Glass card
+<Card className="glass-card border-border hover:shadow-glow-purple">
+  <CardContent className="pt-6">...</CardContent>
+</Card>
+
+// Input (MANDATORY: h-9)
+<Input className="h-9 ..." />
+
+// Button (MANDATORY: size="sm")
+<Button size="sm" className="bg-rail-fade hover:opacity-90">
+```
+
+**Golden Sample:** See `.cursor/patterns/golden-sample.tsx` for the canonical dashboard pattern.
+
+### 7.5 Usage Rules (Do's & Don'ts)
+
+| Do | Don't |
+| :--- | :--- |
+| Use **Space Grotesk** in ALL CAPS with wide tracking (`tracking-widest`) for small labels like "ENTERPRISE" or "BETA". | Use **Space Grotesk** for paragraphs — it becomes hard to read at small sizes. |
+| Use **JetBrains Mono** for specific technical terms inside body text (e.g. "The `agent_events` table…"). | Use **JetBrains Mono** for long paragraphs — it creates eye strain. |
+| Use **Cloud White (`#FAFAFA`)** for headlines and body on Void Black. | Use pure white (`#FFFFFF`) for large headlines — it can "vibrate" against the black background. |
+| Use **muted** (`rgba(250,250,250,0.6)`) strictly for metadata, captions, footnotes. | Use accent colors for long-form body text. |
+
+### 7.6 The "Flight Deck" Rule (Data Density)
+
+Enterprise tools are defined by **information density**. Labels and numbers must be scannable and stable.
+
+| Element | Rule | Example |
+| :--- | :--- | :--- |
+| **Labels** | Uppercase, `text-[10px]`, `tracking-widest`, `font-grotesk`, `text-muted-foreground`. Use `.text-label`. | `CONFIDENCE SCORE`, `LATENCY` |
+| **Numbers** | Always `font-mono` (JetBrains), `tabular-nums` so numbers don't jitter when changing. | Counters, metrics, timers |
+| **Logs** | `text-xs`, `leading-tight`, `opacity-80`. | Terminal output, event streams |
+| **Glow** | Apply only to *changing* data (the delta), never to static data. | Live confidence %, active cursor |
 
 ---
 
-### Secondary Font: Poppins Regular
-**Usage:** A supporting typeface for subheadings and extended text content.
+## 8. Logo & Brand Assets
 
-**Specifications:**
-- Font Family: `Poppins`
-- Weight: `400` (Regular)
-- Style: Sans-serif, geometric
-- License: Open Font License (Google Fonts)
+### 8.1 Logo System
 
-**Applications:**
-- Body text
-- Paragraphs
-- Descriptions
-- Captions
-- Form labels
-- Supporting content
+The AutoRail logo system has three tiers — **Icon**, **Wordmark**, and **Icon + Wordmark** — each designed for different contexts. All assets live in `public/` and `app/`.
 
-**Web Implementation:**
+| File | Format | Contains | Usage |
+| :--- | :--- | :--- | :--- |
+| `app/icon.svg` | SVG | Icon only | Favicon, browser tab, PWA icon |
+| `public/autorail.svg` | SVG | Icon only | Standalone brand mark (e.g. loading states, small spaces) |
+| `public/autorail-wordmark.svg` | SVG | Wordmark only | Text-only logo — "autorail" in JetBrains Mono, Rail Purple (`#6E18B3`), with purple glow drop shadow. Use where the icon is not needed or space is constrained. |
+| `public/icon-wordmark.svg` | SVG | Icon + Wordmark | **Primary lockup.** Icon and "autorail" wordmark side-by-side with matching purple glow. Use for NavBar, Footer, and any context where the full brand identity is needed. |
+
+### 8.2 Logo Specifications
+
+- **Icon:** Geometric turbine/flower symbol rendered with a Rail Purple gradient (`#8333D2` → `#5C0B96`) and purple glow drop shadow.
+- **Wordmark:** "autorail" typeset in **JetBrains Mono Bold**, filled Rail Purple (`#6E18B3`), with a matching purple glow drop shadow (`stdDeviation: 8`, `opacity: 0.5`).
+- **Naming:** Always use lowercase **autorail** in the wordmark. Never "AutoRail.dev" — the `.dev` is for the URL, not the brand. See §8.4.
+
+### 8.3 Using Logos in Code
+
+```tsx
+import Image from "next/image"
+
+// Icon + Wordmark (NavBar, Footer — primary usage)
+<Image src="/icon-wordmark.svg" alt="autorail" width={233} height={77} className="h-10 w-auto" />
+
+// Wordmark only (inline references, compact layouts)
+<Image src="/autorail-wordmark.svg" alt="autorail" width={178} height={58} className="h-8 w-auto" />
+
+// Icon only (favicon, small spaces)
+<Image src="/autorail.svg" alt="autorail" width={32} height={32} />
+```
+
+### 8.4 Naming Convention
+
+| Context | Format | Example |
+| :--- | :--- | :--- |
+| **Logo / Wordmark** | Lowercase `autorail` | `> autorail` |
+| **Legal / Copyright** | Title case with "Inc." | `© 2026 autorail Inc.` |
+| **URL** | `autorail.dev` | `https://autorail.dev` |
+| **GitHub org** | PascalCase | `AutoRail-AI` |
+
+**Rule:** The brand name is **autorail** — lowercase, monospace, no `.dev` suffix. The URL is the address; the name is the infrastructure.
+
+### 8.5 Clear Space & Minimum Size
+
+- **Clear space:** Maintain at least 1× the icon height of padding around the full lockup.
+- **Minimum size:** Icon-wordmark lockup should not be rendered smaller than `h-8` (32px height). Icon-only should not be smaller than 16×16px.
+- **Background:** Always place on Void Black (`#0A0A0F`) or sufficiently dark backgrounds. The purple glow effect requires dark contrast to read correctly.
+
+---
+
+## 9. UI Principles
+
+1. **Void Black Canvas:** Always start with `#0A0A0F`.
+2. **Limited Accents:** Use only Rail Purple and Electric Cyan for fonts (accents), buttons, borders, icons, and glows—with **Bicameral** logic: Cyan = New Intelligence / Spark; Purple = Deep Context / Wire.
+3. **Industrial Glass (HUD Style):** Avoid soft, pillow-like glass. Our glass is structural.
+   - **Borders:** All glass panels must have a `1px` border. Use `border-white/10` for passive, `border-electric-cyan/30` for active.
+   - **Corners:** Use tighter radii (`rounded-lg` or `rounded-xl`). Never `rounded-3xl` (pill shapes are for consumers, not engineers).
+   - **Texture:** Use a subtle grid overlay on the deepest backgrounds (e.g. `bg-grid-pattern`) for a sense of "spatial mapping."
+4. **Motion Physics: Machine Precision:** Animations should feel like high-end machinery, not organic fluid.
+   - **The Snap:** Use `ease-out` (fast → slow) for entrances. It shows responsiveness.
+   - **The Pulse:** Status lights should use a "heartbeat" rhythm (double beat) rather than a sine wave — more biological/alive.
+   - **The Glitch:** Use `animate-glitch` *only* for "Transformation Events" (Legacy → Modern) or "Self-Healing" triggers. It visualizes self-healing — diagnosing the root cause and applying the fix.
+5. **Information Density:** High density (dashboard style), `text-sm` base size. CTOs want data; see **§7.6 The Flight Deck Rule**.
+6. **Glow Effects:** Use `glow-purple` or `glow-cyan` for active states/focus. For confidence/framing tiers use the **Confidence Glows** (§6.1): `glow-yellow` (40–70%), `glow-cyan` (70–85%), `glow-success-pulse` (≥ 85%).
+
+---
+
+## 10. Glass Brain View — Design & UX
+
+*Reference: `docs/GLASS_BRAIN_VIEW.md`*
+
+The Glass Brain is the production-grade, immersive dashboard aesthetic: Void Black + Rail Purple + Electric Cyan, with translucent panels and confidence-reactive glows. Use these patterns for any agent-facing or build-monitoring UI to keep the experience consistent and spectacular.
+
+### 10.1 Theatrical Entry (Boot & First Impression)
+
+**Boot sequence** establishes the "brain coming online" feel. A short, staged intro (e.g. 3–4 seconds) builds anticipation:
+
+| Phase | Visual |
+| :--- | :--- |
+| 0 | Pulsing cyan dot (opacity oscillates) |
+| 1 | Dot grows + radial lines (e.g. 6 lines, 60° apart) |
+| 2 | "Neural Link Established" (Electric Cyan, letter-spacing) |
+| 3 | "Materializing panes…" (muted, smaller) |
+| 4 | Overlay fades out; main content appears |
+
+Respect `prefers-reduced-motion`: skip to final state immediately.
+
+### 10.2 Breathing Glow (Confidence-Reactive Framing)
+
+Wrap key content in an **ambient glow** that reacts to state (e.g. confidence 0–1):
+
+- **Inset box-shadow** intensity scales with value (e.g. blur 20px→60px, alpha 5%→15%).
+- **Animation:** 3-keyframe loop (half → full → half), ~4s ease-in-out infinite.
+- Use **Electric Cyan** for the glow color to stay on-palette.
+
+This creates a living, reactive frame that makes the UI feel alive without distraction.
+
+### 10.3 Layout & Panes
+
+- **Grid:** Three-column layout, e.g. `grid-cols-[1fr_2fr_1fr]`, with `gap-3` and `p-3`.
+- **Panes:** Use `glass-panel` or `glass-card` for each column; stagger entrance (e.g. 0.15s delay per column) for a materializing effect.
+- **Density:** High information density, `text-sm` base; keep the "terminal/dashboard" feel.
+
+### 10.4 Event Type Colors (Logs & Badges)
+
+Use consistent colors for event types in logs, badges, and status indicators:
+
+| Event / State   | Color        | Hex       | Use |
+| :---            | :---         | :---      | :--- |
+| thought         | Grey         | `#888888` | AI reasoning |
+| tool_call       | Electric Cyan| `#00E5FF` | MCP / tools |
+| code_write      | Cloud White  | `#FAFAFA` | Code changes |
+| test_run        | Warning      | `#FFB800` | Tests running |
+| test_result pass| Success      | `#00FF88` | Pass |
+| test_result fail| Error        | `#FF3366` | Fail |
+| self_heal       | Quantum Violet | `#8134CE` | Self-healing |
+| confidence_update | Electric Cyan | `#00E5FF` | Confidence |
+| app_start       | Mint / Success | `#30D158` / `#00FF88` | Start |
+
+### 10.5 Animation Catalog
+
+**CSS keyframes** (in `styles/tailwind.css`):
+
+| Name | Purpose |
+| :--- | :--- |
+| `pulse-glow` | Opacity 0.5 ↔ 1; use for status dots and success glow |
+| `breathing-glow` | Inset cyan glow pulse |
+| `particle-flow` | Horizontal drift + fade (particles, progress) |
+| `shimmer` | Background position shift (loading) |
+| `float` | Gentle vertical drift |
+| `fade-in` / `slide-up` | Entry transitions |
+
+**Framer Motion patterns:**
+
+| Pattern | Use | Config |
+| :--- | :--- | :--- |
+| Pane stagger | Dashboard columns | `delay: i * 0.15`, `y: 20→0`, ~0.4s ease-out |
+| Status pulse | Live indicator dot | `scale: [1, 1.3, 1]`, `opacity: [0.7, 1, 0.7]`, ~1.5s repeat |
+| Expanding ring | Around status dot | `scale: [1, 2.5]`, `opacity: [0.4, 0]`, ~1.5s repeat |
+| Card scale-in | Overlays, cards | `scale: 0.8→1`, spring, optional stagger |
+| Fade + scale | View/page transitions | `opacity: 0→1`, `scale: 0.98→1` |
+
+**Counters:** Use rAF (requestAnimationFrame) with cubic ease-out for number changes (e.g. LOC, tests, timer). Avoid CSS transitions on width/transform for numbers.
+
+### 10.6 Key Design Decisions
+
+1. **No heavy charting library** — Sparklines as hand-rolled SVG; keeps bundle small.
+2. **No syntax-highlighting library** — Regex-based tokenization for code display is sufficient for our use case.
+3. **All numeric counters use rAF** — Smooth 60fps number animation; respect `prefers-reduced-motion` (snap to value).
+4. **Glass via utility classes** — `.glass-panel` and `.glass-card` everywhere; no inline backdrop-filter.
+5. **Event-driven UI** — Every visual change traces back to data/events; no purely decorative state.
+6. **Sound optional** — If used, map 1:1 to event types and make togglable.
+7. **Reduced motion everywhere** — Every animation has a `prefers-reduced-motion` escape hatch.
+
+### 10.7 Self-Heal / Status Semantics
+
+For self-heal or multi-step status flows, use a clear three-step story with consistent colors:
+
+| Step              | Background tint      | Border / glow      | Icon   |
+| :---              | :---                 | :---               | :---   |
+| Failure Detected  | `rgba(255,51,102,0.08)` | Error red          | XCircle |
+| Root Cause / Analysis | `rgba(110,24,179,0.08)` | Rail Purple        | Brain  |
+| Fix Applied       | `rgba(0,255,136,0.08)`  | Success green      | CheckCircle |
+
+Stagger card entrance (e.g. 0.8s between cards); use flowing particles or a simple connector between steps.
+
+### 10.8 Scrollbar & Polish
+
+Use a thin, minimal scrollbar so content stays primary:
+
 ```css
-@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400&display=swap');
+.custom-scrollbar::-webkit-scrollbar        { width: 6px; height: 6px; }
+.custom-scrollbar::-webkit-scrollbar-track  { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb  { background: rgba(255,255,255,0.1); border-radius: 3px; }
+.custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+```
 
-body, p {
-  font-family: 'Poppins', sans-serif;
-  font-weight: 400;
-  font-size: 16px;
-  line-height: 1.6;
+---
+
+## 11. Color Combinations
+
+| Background | Foreground | Use Case |
+| :--- | :--- | :--- |
+| `#0A0A0F` | `#FAFAFA` | Default page content |
+| `#0A0A0F` | `#6E18B3` | Primary brand elements |
+| `#0A0A0F` | `#00E5FF` | Active/Intelligence accents |
+| `rgba(30, 30, 40, 0.4)` | `#FAFAFA` | Card content |
+
+---
+
+## 12. Data Visualization Palette
+
+Use only Rail Purple and Electric Cyan for charts where possible.
+
+| Series | Color | Hex | Purpose |
+| :--- | :--- | :--- | :--- |
+| **Series A** | Rail Purple | `#6E18B3` | Primary metric |
+| **Series B** | Electric Cyan | `#00E5FF` | Secondary metric |
+| **Success** | Green | `#00FF88` | Success/Pass rate (semantic) |
+| **Error** | Red | `#FF3366` | Failure/Error rate (semantic) |
+
+---
+
+## 13. Favicons & PWA Icons
+
+| File | Purpose |
+| :--- | :--- |
+| `app/favicon.ico` | Browser tab icon |
+| `app/icon.svg` | Modern vector icon |
+| `app/apple-icon.png` | iOS touch icon |
+| `public/web-app-manifest-*.png` | PWA icons |
+
+---
+
+## 14. Enterprise Standards & Accessibility
+
+**Target:** WCAG 2.1 Level AA compliance. Enterprise-grade, production-ready UI.
+
+### Contrast Ratios (WCAG AA)
+
+| Foreground | Background | Ratio | Pass |
+| :--- | :--- | :--- | :--- |
+| Cloud White (#FAFAFA) | Void Black (#0A0A0F) | ~16:1 | AAA |
+| Electric Cyan (#00E5FF) | Void Black (#0A0A0F) | ~13:1 | AAA |
+| Quantum Violet (#8134CE) | Void Black (#0A0A0F) | ~5:1 | AA |
+| Rail Purple (#6E18B3) | Void Black (#0A0A0F) | ~3.5:1 | **FAIL** (text) |
+
+**Rule:** Rail Purple is for graphics/icons/borders only. Never for body text or small labels.
+
+### Focus States
+
+All interactive elements must have visible focus indicators. Use **Electric Cyan** for focus ring:
+
+```css
+focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-electric-cyan focus-visible:ring-offset-2 focus-visible:ring-offset-void-black
+```
+
+Never remove focus outline without providing an alternative.
+
+### Reduced Motion
+
+Support `prefers-reduced-motion: reduce`:
+
+```css
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
 ```
 
-**Scale:**
-- Body Large: 18px / 1.125rem
-- Body: 16px / 1rem
-- Small: 14px / 0.875rem
-- Caption: 12px / 0.75rem
+The design system already includes this in `styles/tailwind.css`.
 
----
+### Text Selection
 
-### Complementary Font: Sofia Sans Extra Condensed Regular
-**Usage:** An accent font used sparingly for emphasis or decorative purposes.
+Maintain brand immersion with styled selection:
 
-**Specifications:**
-- Font Family: `Sofia Sans Extra Condensed`
-- Weight: `400` (Regular)
-- Style: Sans-serif, condensed
-- License: Open Font License (Google Fonts)
-
-**Applications:**
-- Labels and tags
-- Numerical displays
-- Data visualization
-- Decorative headers
-- Space-constrained layouts
-- Special callouts
-
-**Web Implementation:**
 ```css
-@import url('https://fonts.googleapis.com/css2?family=Sofia+Sans+Extra+Condensed:wght@400&display=swap');
-
-.accent-text {
-  font-family: 'Sofia Sans Extra Condensed', sans-serif;
-  font-weight: 400;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+::selection {
+  background: rgba(0, 229, 255, 0.3);
+  color: #FAFAFA;
 }
 ```
 
-**Use Sparingly:** This font is for accent purposes only. Do not use for body text or long-form content.
+### Keyboard Navigation
+
+- All interactive elements must be reachable via Tab
+- Focus order must follow visual order
+- Modals/dropdowns must trap focus and support Escape to close
+
+### Semantic HTML & ARIA
+
+- Use `<label>` for all form inputs (or `aria-label` when visible label is not appropriate)
+- Use `aria-describedby` for helper text
+- Use `aria-live` for dynamic content (e.g., confidence updates)
+- Icon-only buttons must have `aria-label`
 
 ---
 
-## Typography Guidelines
+## 15. Product Visual Language
 
-### Hierarchy
-```
-H1 (Poppins Semi Bold, 48px) → Main page title
-H2 (Poppins Semi Bold, 36px) → Section headers
-H3 (Poppins Semi Bold, 28px) → Subsection headers
-Body (Poppins Regular, 16px) → Content text
-Accent (Sofia Sans EC, varies) → Labels/tags
-```
+Codifies the per-product visual rules used across landing pages and product UIs. Each product owns a distinct visual lane within the shared autorail design system.
 
-### Line Height
-- **Headlines:** 1.2
-- **Body Text:** 1.6
-- **Captions:** 1.4
+| Property | kap10 | necroma |
+| :--- | :--- | :--- |
+| **Primary accent** | Electric Cyan `#00E5FF` | Rail Purple `#6E18B3` |
+| **Glow shadow** | `rgba(0,229,255,0.15)` | `rgba(110,24,179,0.15)` |
+| **Active border** | `border-electric-cyan/25` | `border-rail-purple/25` |
+| **Terminal bg** | `bg-[#0e0e14]` | `bg-[#12101a]` or `bg-[#0e0a14]` |
+| **Visual metaphor** | CLI terminals, file trees, PR reviews | Code comparison panels, pipeline flows, dashboards |
+| **WebGL hero** | AntigravityCloud (token sphere) | BehavioralPipeline (fragment → reclaim morph) |
+| **Terminology** | "Supervise", "Tech Lead", "Spaghetti Shield" | "Behavioral Reconstruction", "Vertical Slice", "Guardrails" |
 
-### Letter Spacing
-- **Headlines:** -0.02em (tighter)
-- **Body Text:** 0 (default)
-- **Accent Font:** 0.05em (looser, uppercase)
+### Usage Rules
 
-### Do's & Don'ts
-
-✅ **Do:**
-- Use Poppins for all primary content
-- Maintain consistent hierarchy
-- Ensure proper line height for readability
-- Use Semi Bold for emphasis and headers
-- Keep accent font usage minimal and intentional
-
-❌ **Don't:**
-- Mix too many font weights in one layout
-- Use Sofia Sans for body text
-- Set body text below 14px
-- Use all caps for long text (except with accent font)
-- Forget to optimize web font loading
+- **Never mix product accents** within a single section. A kap10 section is cyan; a necroma section is purple. Cross-product sections (e.g. the main landing BentoGrid) use the platform palette with clear per-card product association.
+- **Terminal backgrounds** are slightly tinted toward the product color to reinforce ownership without breaking the Void Black rule.
+- **WebGL heroes** are product-specific — each product page has its own Three.js scene with distinct motion language and color palette.
 
 ---
 
-## Brand Assets
-
-### Icon Collection
-A collection of mockups, icons, and patterns for showcasing and enhancing the brand.
-
-**Available Assets:**
-
-#### Decorative Backgrounds
-- `public/icons/background_icon.svg` - Outlined X pattern for backgrounds
-- `public/icons/background_icon_usage.svg` - Implementation reference
-
-**Usage:**
-- Website hero sections (20-30% opacity)
-- Presentation backgrounds
-- Marketing materials
-- Decorative overlays
-- Print materials
-
-#### App Icons
-- `public/icons/app.svg` - Premium app icon (561×561px)
-- `public/icons/app_black_bg.svg` - App icon on black (1080×1080px)
-
-**Usage:**
-- iOS/Android app icons
-- PWA icons
-- Social media profiles
-- Premium presentations
-
-#### UI Icons (Examples from brand sheet)
-Various branded icons for UI elements:
-- Home/dashboard icons
-- Percentage/statistics icons
-- Notification/alert icons
-- Settings icons
-- Chart/analytics icons
-- Security/shield icons
-- Slider/control icons
-- And more...
-
-**Style Guidelines:**
-- Use rounded, soft edges
-- Maintain consistent stroke width
-- Apply brand blue colors
-- Use on light or dark backgrounds with proper contrast
-- Size: Minimum 24×24px for clarity
-
----
-
-## Usage Guidelines
-
-### Logo Usage Rules
-
-#### Do's ✅
-- **Maintain Aspect Ratio:** Never stretch or distort logos
-- **Use Correct Versions:** Dark logos on light backgrounds, light logos on dark backgrounds
-- **Provide Clear Space:** Follow minimum clear space guidelines
-- **Use Vector Files:** Always use SVG when possible for scalability
-- **Test Readability:** Ensure logos are legible at minimum sizes
-- **Choose Appropriate Variation:** Match logo version to context
-
-#### Don'ts ❌
-- **Don't Alter Colors:** Never change gradient colors or brand colors
-- **Don't Add Effects:** No drop shadows, glows, or filters (except in app.svg)
-- **Don't Rotate:** Keep logos horizontal
-- **Don't Place on Busy Backgrounds:** Ensure sufficient contrast
-- **Don't Compress Too Much:** Maintain quality when exporting
-- **Don't Combine Variations:** Use one logo style consistently per design
-
----
-
-### Color Usage Rules
-
-#### Do's ✅
-- **Follow Palette:** Use only defined brand colors
-- **Ensure Contrast:** Meet WCAG AA accessibility standards
-- **Use Gradients Consistently:** Apply P→S gradient in defined direction
-- **Test on Devices:** Verify colors on different screens
-- **Consider Context:** Use appropriate colors for print vs. screen
-
-#### Don'ts ❌
-- **Don't Invent Colors:** Stay within the defined palette
-- **Don't Use Low Contrast:** Ensure text is always readable
-- **Don't Overuse Accent Colors:** Use sparingly for impact
-- **Don't Mix Print and Screen Values:** Use CMYK for print, RGB/HEX for screen
-- **Don't Ignore Accessibility:** Always check color contrast ratios
-
----
-
-### Typography Usage Rules
-
-#### Do's ✅
-- **Maintain Hierarchy:** Use consistent heading levels
-- **Optimize Readability:** Follow line height and spacing guidelines
-- **Load Fonts Efficiently:** Use font-display: swap for web
-- **Test Across Platforms:** Verify rendering on different devices
-- **Use Proper Weights:** Semi Bold for headers, Regular for body
-
-#### Don'ts ❌
-- **Don't Mix Too Many Fonts:** Stick to the defined three fonts
-- **Don't Use Below Minimum Sizes:** Maintain legibility
-- **Don't Stretch Type:** Maintain proper aspect ratios
-- **Don't Ignore Line Length:** Keep body text between 45-75 characters per line
-- **Don't Overuse Accent Font:** Reserved for special purposes only
-
----
-
-## Applications & Mockups
-
-### Digital Applications
-
-#### Mobile App
-- **Logo:** Use app.svg or logo_2.svg for splash screen
-- **Colors:** Rich Black backgrounds with Cornflower Blue accents
-- **Typography:** Poppins Semi Bold for headers, Regular for content
-- **Icons:** Custom branded icons with rounded style
-
-#### Smartwatch/Wearables
-- **Logo:** Use logo_9.svg (icon only)
-- **Display:** High contrast with minimal color
-- **Typography:** Larger sizes for readability
-- **Layout:** Simplified, single-column
-
-#### Website
-- **Hero:** Use background_icon.svg at low opacity
-- **Headers:** logo_1.svg or logo_2.svg
-- **Footer:** logo_4.svg or logo_5.svg
-- **Dark Mode:** logo_1.svg, logo_2.svg, logo_7.svg
-- **Light Mode:** logo_4.svg, logo_5.svg, logo_8.svg
-
----
-
-### Presentation Materials
-
-#### Business Presentations
-- **Background:** Use background_icon_usage.svg as template
-- **Title Slide:** Large logo_3.svg or logo_6.svg centered
-- **Content Slides:** Small logo mark in corner (logo_7.svg, logo_8.svg, or logo_9.svg)
-- **Colors:** Use gradient backgrounds for impact slides
-- **Typography:** Poppins Semi Bold for all slide titles
-
-#### Marketing Decks
-- **Cover:** Full gradient background with white logo
-- **Interior:** Clean white backgrounds with blue accents
-- **Data Slides:** Use French Sky Blue for highlights
-- **Closing:** Brand color gradient with contact info
-
----
-
-### Print Materials
-
-#### Business Cards
-- **Front:** logo_4.svg with minimal text
-- **Back:** Gradient background with white text
-- **Paper:** Premium card stock
-- **Finish:** Matte or soft-touch
-
-#### Letterhead
-- **Header:** logo_5.svg (top left or center)
-- **Footer:** Small logo mark with contact details
-- **Colors:** Minimal use of brand colors
-- **Typography:** Poppins Regular for body
-
-#### Brochures
-- **Cover:** Large gradient element with logo_3.svg
-- **Interior:** Mix of white and colored panels
-- **Imagery:** Product photos with blue color grading
-- **Typography:** Clear hierarchy with Poppins
-
----
-
-## Quick Reference
-
-### Logo Selection Matrix
-
-| Background Color | Full Logo | Icon Only |
-|-----------------|-----------|-----------|
-| **Black/Dark** | logo_1.svg, logo_2.svg | logo_7.svg |
-| **White/Light** | logo_4.svg, logo_5.svg | logo_8.svg |
-| **Blue Gradient** | logo_3.svg, logo_6.svg | logo_9.svg |
-| **App Icons** | app.svg, app_black_bg.svg | app.svg |
-
-### Color Quick Copy
-
-| Color Name | HEX | RGB |
-|------------|-----|-----|
-| Cornflower Blue | `#568AFF` | `86, 138, 255` |
-| Green-Blue | `#0665BA` | `6, 101, 186` |
-| Rich Black | `#001320` | `0, 19, 32` |
-| White | `#FFFFFF` | `255, 255, 255` |
-| French Sky Blue | `#66ABFE` | `102, 171, 254` |
-| Gradient Start | `#559EFF` | `85, 158, 255` |
-| Gradient End | `#0065BA` | `0, 101, 186` |
-
-### Font Quick Reference
-
-```css
-/* Primary - Headlines */
-font-family: 'Poppins', sans-serif;
-font-weight: 600;
-
-/* Secondary - Body */
-font-family: 'Poppins', sans-serif;
-font-weight: 400;
-
-/* Complementary - Accent */
-font-family: 'Sofia Sans Extra Condensed', sans-serif;
-font-weight: 400;
-```
-
----
-
-## File Organization
-
-```
-public/
-├── logos/
-│   ├── logo_1.svg          (Black bg, white text, gradient X)
-│   ├── logo_2.svg          (Black bg, gradient text, white X)
-│   ├── logo_3.svg          (Gradient bg, white text, black X)
-│   ├── logo_4.svg          (White bg, black text, gradient X)
-│   ├── logo_5.svg          (White bg, gradient text, black X)
-│   ├── logo_6.svg          (Gradient bg, black text, white X)
-│   ├── logo_7.svg          (Black bg, gradient X icon)
-│   ├── logo_8.svg          (White bg, black X icon)
-│   └── logo_9.svg          (Gradient bg, white X icon)
-│
-└── icons/
-    ├── app.svg             (Premium app icon 561×561px)
-    ├── app_black_bg.svg    (App icon on black 1080×1080px)
-    ├── background_icon.svg (Outline pattern for backgrounds)
-    └── background_icon_usage.svg (Usage example 1280×720px)
-```
-
-## Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 1.0 | November 2025 | Initial brand guidelines |
-
----
-
-## Legal & Trademark
-
-The 1DXR logo, name, and brand assets are proprietary and protected. Unauthorized use, reproduction, or modification is prohibited without express written permission.
-
-**Last Updated:** November 2025  
-**Brand Version:** 1.0  
-**Guidelines Version:** 1.0
+*autorail Brand Guidelines — Autonomous Engineering Infrastructure*

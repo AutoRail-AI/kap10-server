@@ -4,330 +4,179 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Modern Next.js Boilerplate** - A production-ready Next.js starter with authentication, Supabase (PostgreSQL), background job processing, and modern tooling. Built with Next.js 16, React 19, and Tailwind CSS v4.
+**Kap10 Web Server** — Production-ready Next.js starter with Better Auth, Supabase (PostgreSQL), BullMQ job queues, and shadcn/ui. Built with Next.js 16, React 19, Tailwind CSS v4, and Zod v4.
 
-### What This Boilerplate Provides
+**Package Manager**: pnpm (via Corepack). **Node**: >=20.9.0.
 
-| Feature | Technology | Description |
-|---------|------------|-------------|
-| **Authentication** | Better Auth | Email/password + Google OAuth with session management |
-| **Database** | Supabase (PostgreSQL) | Type-safe operations with singleton client pattern |
-| **Job Queues** | BullMQ + Redis | Reliable background job processing with retries |
-| **UI Components** | shadcn/ui | Pre-built accessible components with Radix UI |
-| **Styling** | Tailwind CSS v4 | Utility-first CSS with CVA variants |
-| **File Uploads** | Uploadthing | Easy file upload handling |
-| **Email** | Resend | Transactional email service |
-| **Testing** | Vitest + Playwright | Unit, integration, and E2E testing |
-| **Containerization** | Docker | Development environment with Redis |
-
-### Tech Stack
-- **Framework**: Next.js 16 (App Router), React 19
-- **Styling**: Tailwind CSS v4, shadcn/ui, Radix UI
-- **Auth**: Better Auth with PostgreSQL (pg Pool)
-- **Database**: Supabase (PostgreSQL)
-- **Job Queue**: BullMQ with Redis
-- **Testing**: Vitest, Playwright, Storybook
-- **Package Manager**: pnpm (via Corepack)
-
-## Common Commands
+## Commands
 
 ```bash
-# Development
-pnpm dev              # Start dev server with Turbopack
-pnpm build            # Production build
-pnpm start            # Start production server
-pnpm analyze          # Build with bundle analyzer
-
-# Background Workers
-pnpm worker           # Start background job workers
-
-# Docker (includes Redis)
-docker compose up     # Start all services (app + worker + redis)
-docker compose up -d  # Start in detached mode
+pnpm dev                        # Dev server (Turbopack)
+pnpm build                      # Production build
+pnpm lint                       # ESLint
+pnpm lint:fix                   # ESLint auto-fix
+pnpm prettier                   # Check formatting
+pnpm prettier:fix               # Fix formatting
 
 # Testing
-pnpm test             # Run Vitest unit tests
-pnpm test:watch       # Run tests in watch mode
-pnpm test:coverage    # Run tests with coverage
-pnpm e2e:headless     # Run Playwright E2E tests
-pnpm e2e:ui           # Run Playwright with UI
+pnpm test                       # Vitest (all tests)
+pnpm test path/to/file.test.ts  # Single test file
+pnpm test:watch                 # Watch mode
+pnpm test:coverage              # With coverage
+pnpm e2e:headless               # Playwright E2E
+pnpm e2e:ui                     # Playwright with UI
 
-# Code Quality
-pnpm lint             # Run ESLint
-pnpm lint:fix         # Run ESLint with auto-fix
-pnpm prettier         # Check formatting
-pnpm prettier:fix     # Fix formatting
+# Workers & Docker
+pnpm worker                     # Start BullMQ workers
+docker compose up                # App + worker + Redis
+
+# Database
+pnpm seed                       # Seed database
+pnpm migrate                    # Run migrations
 
 # Storybook
-pnpm storybook        # Start Storybook on port 6006
-pnpm build-storybook  # Build static Storybook
+pnpm storybook                  # Dev on port 6006
 ```
 
 ## Architecture
 
-### Directory Structure
-```
-app/                    # Next.js App Router
-├── (auth)/             # Auth route group (login, register, verify-email)
-├── api/                # API routes
-│   ├── auth/           # Better Auth API
-│   ├── health/         # Health check endpoint
-│   └── uploadthing/    # File upload API
-├── layout.tsx          # Root layout
-└── page.tsx            # Home page
+### Key Directories
 
-components/
-├── auth/               # Auth components (login-form, register-form, oauth-buttons)
-├── providers/          # React providers (auth-provider)
-├── ui/                 # shadcn/ui components
-├── Button/             # Example component with tests and stories
-└── Tooltip/            # Example component
+- `app/` — Next.js App Router. Route groups: `(auth)` for login/register, `(admin)` for admin pages
+- `app/api/` — API routes (auth, health, uploadthing, webhooks, etc.)
+- `components/ui/` — shadcn/ui components
+- `components/auth/` — Auth components (login-form, register-form, oauth-buttons)
+- `lib/auth/` — Better Auth config (connects via `pg` Pool to Supabase PostgreSQL)
+- `lib/db/supabase.ts` — Singleton Supabase server client (lazy Proxy pattern)
+- `lib/db/supabase-browser.ts` — Browser-side Supabase client
+- `lib/db/types.ts` — Full TypeScript `Database` type with Row/Insert/Update generics
+- `lib/queue/` — BullMQ queues (email, processing, webhooks) + Redis connection
+- `proxy.ts` — Route protection (replaces `middleware.ts` in Next.js 16)
+- `env.mjs` — T3 Env with Zod validation for all environment variables
+- `styles/tailwind.css` — Design system tokens, glass utilities, custom fonts
 
-lib/
-├── auth/               # Better Auth configuration
-├── db/                 # Supabase client and type definitions
-├── queue/              # BullMQ job queue system
-│   ├── redis.ts        # Redis connection singleton
-│   ├── types.ts        # Job type definitions
-│   ├── queues.ts       # Queue definitions and helpers
-│   ├── workers.ts      # Worker processors
-│   └── index.ts        # Barrel export
-├── types/              # TypeScript type definitions
-├── uploadthing/        # Uploadthing configuration
-└── utils/              # Utility functions
+### Data Flow
 
-scripts/
-└── worker.ts           # Background worker entry point
+- **Auth**: Better Auth → `pg` Pool → Supabase PostgreSQL. Session token in cookies (`better-auth.session_token`).
+- **Database**: All queries via `import { supabase } from "@/lib/db"` — never create ad-hoc clients.
+- **Protected routes**: Defined in `proxy.ts` (public paths whitelist). Add new public paths there.
+- **Job queues**: Use `queueEmail()`, `queueProcessing()`, `queueWebhook()` from `@/lib/queue`. Workers run as separate process (`pnpm worker`).
 
-e2e/                    # Playwright end-to-end tests
-brand/                  # Brand guidelines and assets
-public/
-├── logos/              # Logo variations (9 SVG files)
-└── icons/              # App icons and patterns
-```
+### Component Conventions
 
-### Key Patterns
-
-**Component Structure**: Components are organized in folders with co-located files:
-- `ComponentName.tsx` - Main component
-- `ComponentName.test.tsx` - Vitest unit tests
-- `ComponentName.stories.tsx` - Storybook stories
-
-**Styling**: Uses Tailwind CSS v4 with:
-- `class-variance-authority` (CVA) for component variants
-- `tailwind-merge` for className merging
-
-**Environment Variables**: Managed via T3 Env (`env.mjs`) with Zod validation. Add new env vars there with schema definitions.
-
-**Health Checks**: Available at `/healthz`, `/health`, `/ping`, or `/api/health` (all route to the same endpoint).
-
-### Authentication
-
-Better Auth is pre-configured with:
-- Email/password authentication
-- Google OAuth (optional)
-- Email verification via Resend
-- PostgreSQL session storage (via Supabase)
-
-Protected routes are configured in `proxy.ts`. Add routes to `protectedRoutes` array.
-
-### Database
-
-This boilerplate uses **Supabase (PostgreSQL)** for all data storage:
-
-- **Server client**: `lib/db/supabase.ts` — singleton Supabase client with service role key
-- **Browser client**: `lib/db/supabase-browser.ts` — browser-side client using `@supabase/ssr`
-- **Type definitions**: `lib/db/types.ts` — full TypeScript Database type with Row/Insert/Update generics
-- **Migrations**: `supabase/migrations/` — SQL migration files for schema management
-
-Better Auth connects directly via `pg` Pool to the same Supabase PostgreSQL database.
-
-### Background Job Processing
-
-BullMQ + Redis for reliable background job processing. Pre-configured queues:
-
-| Queue | Purpose | Concurrency |
-|-------|---------|-------------|
-| `email` | Email sending | 5 workers |
-| `processing` | Long-running tasks | 3 workers |
-| `webhooks` | External HTTP calls | 10 workers |
-
-**Adding a job to a queue:**
-```typescript
-import { queueEmail, queueProcessing, queueWebhook } from "@/lib/queue"
-
-// Queue an email
-await queueEmail({
-  to: "user@example.com",
-  subject: "Welcome!",
-  body: "<p>Thanks for signing up</p>",
-})
-
-// Queue a processing task
-await queueProcessing({
-  userId: "user-123",
-  taskId: "task-456",
-  payload: { /* your data */ },
-})
-
-// Queue a webhook
-await queueWebhook({
-  url: "https://api.example.com/webhook",
-  method: "POST",
-  body: { event: "user.created" },
-})
-```
-
-**Running workers:**
-```bash
-# Development (separate terminal)
-pnpm worker
-
-# With Docker (automatically runs worker service)
-docker compose up
-```
-
-**Custom job types**: Add new job types in `lib/queue/types.ts` and processors in `lib/queue/workers.ts`.
-
-### Testing
-- Unit tests: Vitest with React Testing Library (files: `*.test.{ts,tsx}`)
-- E2E tests: Playwright (in `e2e/` directory)
-- Component testing: Storybook with test-runner
-
-### TypeScript
-Strict mode enabled with `noUncheckedIndexedAccess`. Uses ts-reset for enhanced type safety. Absolute imports configured from project root.
+- Components in folders: `ComponentName.tsx`, `ComponentName.test.tsx`, `ComponentName.stories.tsx`
+- Styling: CVA (`class-variance-authority`) for variants, `tailwind-merge` for className merging
+- Icons: Lucide React only
 
 ## Code Generation Rules
 
-**⚠️ CRITICAL: Follow code generation rules to prevent build and lint errors.**
+**These rules prevent known build failures. Follow them strictly.**
 
-All mandatory code patterns and rules are documented in [RULESETS.md](RULESETS.md). Please reference that file when generating code to ensure compatibility with our tech stack and prevent known build issues.
+### Next.js 16 / React 19
 
-The rules cover:
-- Supabase query patterns
-- Zod v4 validation syntax
-- JSON parsing type assertions
-- File extension requirements (JSX)
-- Lazy initialization for env-dependent clients
-- Error handling patterns
-- And more...
+- **Use `proxy.ts`, never `middleware.ts`** — Next.js 16 deprecated middleware.ts
+- **No `useEffect` for data fetching** — Use Server Components + `<Suspense>`. `useEffect` only for DOM side effects.
+- **Server Actions**: Use `'use server'` at top of action files. Prefer `useActionState` (not `useFormState`).
+- **Forms**: Use `action` prop on `<form>` with Server Actions.
+- **Async Server Components**: Await promises directly (no useEffect).
 
-**Always check [RULESETS.md](RULESETS.md) before generating code.**
+### TypeScript & Type Safety
 
----
+- **Strict mode** with `noUncheckedIndexedAccess` enabled
+- **Catch blocks**: Always `catch (error: unknown)`, then `error instanceof Error ? error.message : String(error)`
+- **JSON parsing**: Always type assert — `const body = (await request.json()) as { ... }`
+- **Reduce callbacks**: Always type accumulator — `items.reduce((sum: number, item) => ...)`
+- **JSX files**: Always `.tsx`, never `.ts` for files with JSX
 
-## Docker Development
+### Supabase
 
-The docker-compose setup includes:
-- **app**: Next.js development server with hot reloading
-- **worker**: Background job processor
-- **redis**: Redis server for job queues (persisted data)
+- **Import**: `import { supabase } from "@/lib/db"` — never create ad-hoc clients
+- **Always check error**: `const { data, error } = await supabase.from("table").select("*"); if (error) throw error;`
+- **Types**: `import type { Database } from "@/lib/db/types"` then `Database["public"]["Tables"]["table_name"]["Row"]`
+- **Common patterns**: `.insert(data).select().single()`, `.select("*").eq("id", id).maybeSingle()`, `.update(data).eq("id", id).select().single()`
 
-```bash
-# Start all services
-docker compose up
+### Zod v4
 
-# Start specific service
-docker compose up app
+- **No `.url()` or `.email()`** on strings — use `.refine()` instead:
+  ```typescript
+  link: z.string().refine(val => { try { new URL(val); return true } catch { return false } }, "Invalid URL").optional()
+  ```
+- **Records**: `z.record(z.string(), z.any())` not `z.record(z.any())`
 
-# View logs
-docker compose logs -f worker
+### Better Auth
 
-# Stop all services
-docker compose down
+- **Client plugins**: Import from `better-auth/client/plugins` (not `better-auth/react/plugins`)
+- **Build fallback**: `secret: process.env.BETTER_AUTH_SECRET || "development-secret-..."`
+
+### Lazy Initialization
+
+Third-party clients (Stripe, Redis, Supabase) must use lazy init to avoid build-time failures when env vars are missing:
+
+```typescript
+let instance: Client | null = null
+function getClient(): Client {
+  if (!instance) {
+    instance = new Client(process.env.KEY!)
+  }
+  return instance
+}
+export const client = new Proxy({} as Client, {
+  get(_target, prop) { return getClient()[prop as keyof Client] }
+})
 ```
 
-## Brand Assets
+### Other Rules
 
-Full brand guidelines are in `brand/brand.md`. Key resources:
+- **IP extraction**: `req.headers.get("x-forwarded-for")?.split(",")[0] || req.headers.get("x-real-ip") || "anonymous"` — never `req.ip`
+- **Stripe API version**: `"2025-02-24.acacia"`
+- **BullMQ**: Use `connection: getRedis() as any` for Queue/Worker constructors
+- **State management**: URL-driven state first (nuqs), server state second, local state last
 
-### Logos (`public/logos/`)
-| Background | Full Logo | Icon Only |
-|------------|-----------|-----------|
-| Dark/Black | logo_1.svg, logo_2.svg | logo_7.svg |
-| Light/White | logo_4.svg, logo_5.svg | logo_8.svg |
-| Gradient | logo_3.svg, logo_6.svg | logo_9.svg |
+## Design System
 
-### Icons (`public/icons/`)
-- `app.svg` - Primary app icon (561x561px, rounded square)
-- `app_black_bg.svg` - App icon on black canvas (1080x1080px, for social media)
-- `background_icon.svg` - Decorative X pattern for backgrounds (use at 20-30% opacity)
+**Aesthetic**: Dark-first, Industrial Glass. Reference `docs/UI_UX_GUIDE.md` and `docs/brand/brand.md` for full details.
 
-### Brand Colors
-| Color | Hex | Usage |
-|-------|-----|-------|
-| Cornflower Blue | `#568AFF` | Primary brand, buttons, links |
-| Green-Blue | `#0665BA` | Secondary, gradient endpoints |
-| Rich Black | `#001320` | Text, dark backgrounds |
-| Gradient | `#559EFF` → `#0065BA` | Premium elements, CTAs |
+### Key Rules
 
-### Typography
-- **Poppins Semi Bold (600)** - Headlines, navigation, buttons
-- **Poppins Regular (400)** - Body text, descriptions
-- **Sofia Sans Extra Condensed** - Accent labels only (use sparingly)
+- **Background**: Always `bg-background` (Void Black `#0A0A0F`)
+- **Text**: `text-foreground` for primary, `text-muted-foreground` for secondary
+- **Primary accent**: `#6E18B3` (Rail Purple) — icons/borders only, never body text (WCAG fail)
+- **No arbitrary colors** (`bg-blue-500`, etc.) — use design system tokens only
+- **Buttons**: Always `size="sm"` (h-8 px-3). Primary: `className="bg-rail-fade hover:opacity-90"`
+- **Inputs**: Always `h-9`, never `h-10`
+- **Cards**: Use `glass-card` or `glass-panel` classes. `CardContent` always has `pt-6`
+- **Fonts**: `font-grotesk` (Space Grotesk) for headings, `font-sans` (Inter) for body, `font-mono` (JetBrains Mono) for code
+- **Page titles**: `font-grotesk text-lg font-semibold` — never larger
+- **Page container**: `space-y-6 py-6`
+- **Icons**: Lucide React. Nav: `h-4 w-4`, Buttons: `h-3.5 w-3.5`
+- **Loading**: Use `<Skeleton />`, not `Loader2`
+- **Dashboard pages inherit layout** — never recreate sidebar/shell
 
-## Getting Started
+### Golden Page Pattern
 
-### Local Development
-```bash
-# 1. Copy environment file
-cp .env.example .env.local
-
-# 2. Fill in required values (Supabase URL/keys, Better Auth secret)
-
-# 3. Install dependencies
-pnpm install
-
-# 4. Start Redis (if running workers locally)
-docker run -d -p 6379:6379 redis:7-alpine
-
-# 5. Start dev server
-pnpm dev
-
-# 6. (Optional) Start workers in another terminal
-pnpm worker
+See `.cursor/patterns/golden-sample.tsx` for full example. Structure:
+```tsx
+export default function Page() {
+  return (
+    <div className="space-y-6 py-6 animate-fade-in">
+      <div className="flex items-center justify-between">
+        <div className="space-y-1">
+          <h1 className="font-grotesk text-lg font-semibold text-foreground">Title</h1>
+          <p className="text-sm text-foreground mt-0.5">Description</p>
+        </div>
+        <Button size="sm" className="bg-rail-fade hover:opacity-90">Action</Button>
+      </div>
+      <Suspense fallback={<Skeleton className="h-[200px] w-full" />}>
+        {/* Data-fetching component */}
+      </Suspense>
+    </div>
+  )
+}
 ```
-
-### Docker Development
-```bash
-# 1. Copy environment file
-cp .env.example .env.local
-
-# 2. Fill in required values
-
-# 3. Start all services
-docker compose up
-```
-
-## API Routes
-
-| Route | Description |
-|-------|-------------|
-| `GET /api/health` | Health check endpoint |
-| `/api/auth/*` | Better Auth endpoints |
-| `/api/uploadthing` | File upload endpoint |
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `SUPABASE_URL` | Yes | Supabase project URL |
-| `SUPABASE_SECRET_KEY` | Yes | Supabase service role key |
-| `SUPABASE_DB_URL` | Yes | PostgreSQL connection string |
-| `BETTER_AUTH_SECRET` | Yes | Auth secret (32+ chars) |
-| `BETTER_AUTH_URL` | Yes | App URL for auth |
-| `REDIS_URL` | No | Redis URL (default: localhost:6379) |
-| `GOOGLE_CLIENT_ID` | No | Google OAuth client ID |
-| `GOOGLE_CLIENT_SECRET` | No | Google OAuth secret |
-| `RESEND_API_KEY` | No | Resend email API key |
-| `EMAIL_FROM` | No | From email address |
-| `UPLOADTHING_TOKEN` | No | Uploadthing API token |
-| `NEXT_PUBLIC_APP_URL` | No | Public app URL |
 
 ## Additional Documentation
 
-- [README.md](README.md) - **Complete setup and usage guide** - Installation, configuration, and how to use all features
-- [ARCHITECTURE.md](ARCHITECTURE.md) - **Architecture documentation** - Database architecture, multi-tenancy, AI agents, billing, analytics, and system design
-- [AGENTS.md](AGENTS.md) - **Cursor AI guidance** - Similar documentation for Cursor AI
-- [GEMINI.md](GEMINI.md) - **Gemini/Antigravity guidance** - Similar documentation for Gemini AI
-- [brand/brand.md](brand/brand.md) - Complete brand guidelines and assets
+- [RULESETS.md](RULESETS.md) — Full code pattern reference with examples
+- [ARCHITECTURE.md](ARCHITECTURE.md) — Database architecture, multi-tenancy, billing, system design
+- [docs/UI_UX_GUIDE.md](docs/UI_UX_GUIDE.md) — Complete design system documentation
+- [docs/brand/brand.md](docs/brand/brand.md) — Brand guidelines, colors, typography, logos

@@ -35,7 +35,7 @@ export function getRedis(): Redis {
 
     // Only set up event handlers if not in build context
     if (typeof process !== "undefined" && process.env.NODE_ENV !== "production") {
-      redisInstance.on("error", (error) => {
+      redisInstance.on("error", (error: unknown) => {
         console.error("Redis connection error:", error)
       })
 
@@ -84,7 +84,7 @@ export async function closeRedis(): Promise<void> {
   if (redisInstance) {
     try {
       await redisInstance.quit()
-    } catch (error: unknown) {
+    } catch {
       // Ignore errors during shutdown
       // This can happen if connection was never established
       // Type assertion to handle unknown error type

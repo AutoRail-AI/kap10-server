@@ -117,7 +117,7 @@ export async function getSubscription(
   try {
     const stripe = getStripe()
     return await stripe.subscriptions.retrieve(subscriptionId)
-  } catch (_error) {
+  } catch {
     return null
   }
 }

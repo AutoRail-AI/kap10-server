@@ -1,7 +1,7 @@
-import { supabase } from "@/lib/db"
 import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
+import { supabase } from "@/lib/db"
 import type { Database } from "@/lib/db/types"
 
 export type RateLimitRow = Database["public"]["Tables"]["rate_limits"]["Row"]

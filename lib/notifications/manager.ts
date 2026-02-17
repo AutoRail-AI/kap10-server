@@ -1,5 +1,5 @@
 import { supabase } from "@/lib/db"
-import type { Database, Json } from "@/lib/db/types"
+import type { Database } from "@/lib/db/types"
 
 export type Notification = Database["public"]["Tables"]["notifications"]["Row"]
 export type NotificationInsert = Database["public"]["Tables"]["notifications"]["Insert"]

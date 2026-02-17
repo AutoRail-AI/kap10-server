@@ -45,20 +45,6 @@ export function OAuthButtons({ mode = "login" }: OAuthButtonsProps) {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false)
   const [isGithubLoading, setIsGithubLoading] = useState(false)
 
-  const handleGithubSignIn = async () => {
-    setIsGithubLoading(true)
-    try {
-      await signIn.social({
-        provider: "github",
-        callbackURL: "/",
-      })
-    } catch (error) {
-      console.error("GitHub sign-in error:", error)
-    } finally {
-      setIsGithubLoading(false)
-    }
-  }
-
   const handleGoogleSignIn = async () => {
     setIsGoogleLoading(true)
     try {
@@ -73,7 +59,22 @@ export function OAuthButtons({ mode = "login" }: OAuthButtonsProps) {
     }
   }
 
+  const handleGithubSignIn = async () => {
+    setIsGithubLoading(true)
+    try {
+      await signIn.social({
+        provider: "github",
+        callbackURL: "/",
+      })
+    } catch (error) {
+      console.error("GitHub sign-in error:", error)
+    } finally {
+      setIsGithubLoading(false)
+    }
+  }
+
   return (
+    <div className="space-y-3">
       <Button
         type="button"
         variant="outline"
@@ -104,6 +105,6 @@ export function OAuthButtons({ mode = "login" }: OAuthButtonsProps) {
         )}
         {mode === "login" ? "Sign in with GitHub" : "Sign up with GitHub"}
       </Button>
-    </div >
+    </div>
   )
 }

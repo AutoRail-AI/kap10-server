@@ -1,4 +1,4 @@
-import { type Job, Worker } from "bullmq"
+import { type ConnectionOptions, type Job, Worker } from "bullmq"
 import { createRedisConnection } from "./redis"
 import {
   type EmailJobData,
@@ -113,7 +113,7 @@ export function startWorkers(): void {
   // Email worker
   // Use type assertion for connection to handle ioredis version compatibility
   const emailWorker = new Worker(QUEUE_NAMES.EMAIL, processEmailJob, {
-    connection: createRedisConnection() as any,
+    connection: createRedisConnection() as unknown as ConnectionOptions,
     concurrency: 5,
   })
   workers.push(emailWorker)
@@ -124,7 +124,7 @@ export function startWorkers(): void {
     QUEUE_NAMES.PROCESSING,
     processProcessingJob,
     {
-      connection: createRedisConnection() as any,
+      connection: createRedisConnection() as unknown as ConnectionOptions,
       concurrency: 3, // Lower concurrency for heavy tasks
     }
   )
@@ -133,7 +133,7 @@ export function startWorkers(): void {
   // Webhooks worker
   // Use type assertion for connection to handle ioredis version compatibility
   const webhooksWorker = new Worker(QUEUE_NAMES.WEBHOOKS, processWebhookJob, {
-    connection: createRedisConnection() as any,
+    connection: createRedisConnection() as unknown as ConnectionOptions,
     concurrency: 10,
   })
   workers.push(webhooksWorker)
@@ -144,11 +144,11 @@ export function startWorkers(): void {
       console.log(`Job ${job.id} completed in queue ${worker.name}`)
     })
 
-    worker.on("failed", (job, error) => {
+    worker.on("failed", (job, error: unknown) => {
       console.error(`Job ${job?.id} failed in queue ${worker.name}:`, error)
     })
 
-    worker.on("error", (error) => {
+    worker.on("error", (error: unknown) => {
       console.error(`Worker error in ${worker.name}:`, error)
     })
   })

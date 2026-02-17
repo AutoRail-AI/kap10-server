@@ -1,6 +1,6 @@
 import * as React from "react"
-import { cn } from "@/lib/utils"
 import { Separator } from "@/components/ui/separator"
+import { cn } from "@/lib/utils"
 
 interface InlineFormProps extends React.HTMLAttributes<HTMLFormElement> {
   children: React.ReactNode

@@ -1,6 +1,6 @@
 import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
-import { getActivities, getActivitiesByUser, getActivitiesByResource } from "@/lib/activity/feed"
+import { getActivities, getActivitiesByResource, getActivitiesByUser } from "@/lib/activity/feed"
 import { auth } from "@/lib/auth"
 
 export async function GET(req: NextRequest) {

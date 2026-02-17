@@ -3,10 +3,10 @@
 import { CheckCircle2, Mail, XCircle } from "lucide-react"
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
-import { Suspense , useEffect, useState } from "react"
+import { Suspense, useEffect, useState } from "react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { ContentBlock } from "@/components/ui/content-block"
+
 import { Spinner } from "@/components/ui/spinner"
 
 function VerifyEmailContent() {
@@ -39,7 +39,7 @@ function VerifyEmailContent() {
           setError(data.message || "Verification failed")
           setStatus("error")
         }
-      } catch (_err) {
+      } catch {
         setError("An error occurred during verification")
         setStatus("error")
       }

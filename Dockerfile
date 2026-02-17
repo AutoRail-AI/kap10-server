@@ -1,4 +1,4 @@
-# Modern Next.js Boilerplate - Development Dockerfile
+# Kap10 Web Server - Development Dockerfile
 FROM node:22-alpine
 
 # Install dependencies for native modules

@@ -93,6 +93,12 @@ const light = proxyActivities<typeof lightActivities>({
 });
 ```
 
+### Separation of Concerns
+
+The system follows a **Ports & Adapters (hexagonal) architecture** — see Cross-Cutting Concern §5 for the full layer map, port definitions, DI container, and swap scenarios. The key principle: **use cases depend on port interfaces, never on concrete adapters.** This means every external technology (ArangoDB, Temporal, Stripe, Langfuse, SCIP, etc.) can be replaced by writing a single new adapter file without touching any business logic.
+
+All LLM calls use **structured output** (`generateObject()` + Zod schemas) — see Cross-Cutting Concern §6. No regex-based parsing of LLM responses anywhere in the codebase.
+
 ### Why ArangoDB (not CozoDB)
 
 code-synapse uses CozoDB embedded — perfect for a local CLI sidecar. kap10 is a **multi-tenant cloud service** where:
@@ -100,6 +106,7 @@ code-synapse uses CozoDB embedded — perfect for a local CLI sidecar. kap10 is 
 - Concurrent graph queries from MCP connections
 - Graph traversals (N-hop callers, impact analysis) are the primary query pattern
 - AQL is production-grade with native graph traversals, HNSW vector indices, and multi-model (doc + graph + search) in one engine
+- Pool-based multi-tenancy (single database, `org_id` + `repo_id` on every document) — avoids per-database memory overhead at scale
 - Scales horizontally (SmartGraphs, sharding) when needed
 
 ### Framework Decisions
@@ -164,8 +171,9 @@ const SyncLocalDiffTool = {
     // 1. Resolve workspace (per-user, per-repo, per-branch)
     const workspace = await resolveWorkspace(ctx.userId, ctx.repoId, branch);
 
-    // 2. Apply diff as overlay on top of last indexed commit
-    const overlay = parseDiffToOverlay(diff, baseSha);
+    // 2. Parse diff into structured overlay using parse-diff (not custom regex)
+    //    parse-diff converts raw git diff → { files, chunks, additions, deletions }
+    const overlay = parseDiffToOverlay(diff, baseSha);  // Uses parse-diff internally
 
     // 3. Re-index only changed files (incremental, in-memory)
     const delta = await indexOverlay(overlay, workspace.graphSnapshot);
@@ -258,16 +266,19 @@ function formatForAgent<T>(results: T[], summarizer: (item: T) => string): MCPRe
 
 **Problem:** Developers paste `git diff` output containing API keys, connection strings, or tokens into `sync_local_diff`. These must never reach LLM prompts or ArangoDB storage.
 
-**Solution:** Regex + entropy scrubber on all MCP payloads at the edge, before any processing.
+**Solution:** TruffleHog's open-source regex ruleset + entropy scrubber on all MCP payloads at the edge, before any processing.
+
+> **Why TruffleHog's ruleset (not a hand-rolled list of 6 patterns):** A custom list inevitably misses vendor-specific formats (Slack tokens, Stripe restricted keys, GCP service account keys, Azure SAS tokens, etc.). TruffleHog's open-source regex library detects **800+ specific vendor key formats**, maintained by a dedicated security team. We compile their patterns into our Node.js scrubber — no need to run the full TruffleHog Go binary.
 
 ```typescript
 // lib/mcp/security/scrubber.ts
-const SECRET_PATTERNS = [
-  /(?:api[_-]?key|secret|token|password|auth)\s*[:=]\s*['"]?([A-Za-z0-9+/=_-]{20,})['"]?/gi,
-  /(?:AKIA|ASIA)[A-Z0-9]{16}/g,                    // AWS access keys
-  /ghp_[A-Za-z0-9]{36}/g,                           // GitHub PATs
-  /sk-[A-Za-z0-9]{32,}/g,                           // OpenAI keys
-  /-----BEGIN (?:RSA |EC )?PRIVATE KEY-----/g,       // Private keys
+// Import TruffleHog's open-source regex patterns (800+ vendor-specific detectors)
+// Source: https://github.com/trufflesecurity/trufflehog/tree/main/pkg/detectors
+import { TRUFFLEHOG_PATTERNS } from './trufflehog-patterns';  // Compiled from TruffleHog's detector regexes
+
+// Fallback patterns for edge cases TruffleHog may miss
+const ADDITIONAL_PATTERNS = [
+  /-----BEGIN (?:RSA |EC )?PRIVATE KEY-----/g,       // Private keys (PEM format)
   /eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+/g,         // JWTs
 ];
 
@@ -277,7 +288,8 @@ function scrubSecrets(input: string): { cleaned: string; secretsFound: number } 
   let cleaned = input;
   let count = 0;
 
-  for (const pattern of SECRET_PATTERNS) {
+  const allPatterns = [...TRUFFLEHOG_PATTERNS, ...ADDITIONAL_PATTERNS];
+  for (const pattern of allPatterns) {
     cleaned = cleaned.replace(pattern, (match) => {
       count++;
       return '[REDACTED]';
@@ -847,6 +859,92 @@ export class VercelAIProvider implements ILLMProvider {
 }
 ```
 
+### 7. Data Lifecycle — 24-Hour Deletion SLA
+
+**Problem:** The landing page guarantees that when a user disconnects a repo, all data is permanently purged within 24 hours. Without an explicit mechanism, orphaned graph data, embeddings, and metadata persist indefinitely — violating enterprise security promises.
+
+**Solution:** A `deleteRepoWorkflow` in Temporal, triggered when a user disconnects a repo or uninstalls the GitHub App.
+
+```typescript
+// lib/temporal/workflows/delete-repo.ts
+export async function deleteRepoWorkflow(input: { orgId: string; repoId: string }): Promise<DeleteResult> {
+  const { orgId, repoId } = input;
+
+  // 1. Mark repo as "deleting" in Prisma (prevents new MCP queries)
+  await light.markRepoDeleting({ orgId, repoId });
+
+  // 2. Delete all ArangoDB entities, edges, patterns, rules, ledger entries, snapshots
+  const graphResult = await heavy.deleteArangoEntities({ orgId, repoId });
+  //    Deletes from: functions, classes, files, interfaces, variables,
+  //    contains, calls, imports, extends, implements, patterns, rules,
+  //    ledger, snapshots, ledger_summaries, snippets (repo-scoped)
+
+  // 3. Delete pgvector embeddings
+  const vectorResult = await light.deletePgvectorEmbeddings({ orgId, repoId });
+
+  // 4. Delete Prisma metadata (repo, API keys, workspaces, reviews, snapshots)
+  const metaResult = await light.deletePrismaMetadata({ orgId, repoId });
+
+  // 5. Delete any cloned workspace files from disk
+  await heavy.deleteWorkspaceFiles({ orgId, repoId });
+
+  // 6. Log deletion for audit trail (kept in Prisma, not in deleted ArangoDB)
+  await light.logDeletion({
+    orgId, repoId,
+    entitiesDeleted: graphResult.count,
+    embeddingsDeleted: vectorResult.count,
+    completedAt: new Date(),
+  });
+
+  return { success: true, entitiesDeleted: graphResult.count };
+}
+```
+
+**Trigger points:**
+- User clicks "Disconnect" on a repo in the dashboard
+- GitHub App uninstall webhook received (`installation.deleted` event)
+- Org deletion (cascades to all repos)
+
+**SLA enforcement:**
+- Temporal schedules the workflow immediately on disconnect
+- If any activity fails, Temporal retries with backoff (up to 24 hours)
+- A daily audit cron checks for repos in "deleting" state older than 24 hours → alerts ops
+
+```typescript
+// lib/temporal/workflows/deletion-audit.ts
+export async function deletionAuditWorkflow(): Promise<AuditResult> {
+  const staleRepos = await light.getStaleDeleteRequests({ olderThanHours: 24 });
+  if (staleRepos.length > 0) {
+    await light.sendOpsAlert({
+      severity: 'critical',
+      message: `${staleRepos.length} repos stuck in deletion > 24h: ${staleRepos.map(r => r.id).join(', ')}`,
+    });
+    // Retry the deletion workflow for each stale repo
+    for (const repo of staleRepos) {
+      await light.retryDeleteRepo({ orgId: repo.orgId, repoId: repo.id });
+    }
+  }
+  return { checked: staleRepos.length };
+}
+```
+
+**New Prisma model:**
+
+```prisma
+model DeletionLog {
+  id               String   @id @default(uuid())
+  organizationId   String   @map("organization_id")
+  repoId           String   @map("repo_id")
+  requestedAt      DateTime @map("requested_at")
+  completedAt      DateTime? @map("completed_at")
+  entitiesDeleted  Int      @default(0) @map("entities_deleted")
+  embeddingsDeleted Int     @default(0) @map("embeddings_deleted")
+  status           String   @default("pending") // pending | in_progress | completed | failed
+
+  @@map("deletion_logs")
+}
+```
+
 ---
 
 ## Phase 0 — Foundation Wiring
@@ -857,10 +955,12 @@ export class VercelAIProvider implements ILLMProvider {
 - Auth flow works end-to-end (Better Auth — already scaffolded)
 - Org creation with onboarding wizard
 - Empty dashboard shell with nav: Repos, Search, Settings
-- ArangoDB connection established + health check
-- Temporal server running + health check (both task queues registered)
-- Prisma schema initialized with existing Supabase tables
-- Langfuse initialized via OpenTelemetry (`instrumentation.ts`) + health check
+- **Ports & Adapters foundation:** All 11 port interfaces defined (`lib/ports/`), production adapters wired (`lib/adapters/`), DI container factory (`lib/di/container.ts`) with `createProductionContainer()` + `createTestContainer()`
+- ArangoDB connection established + health check (via `ArangoGraphStore` adapter)
+- Temporal server running + health check (both task queues registered, via `TemporalWorkflowEngine` adapter)
+- Prisma schema initialized with existing Supabase tables (via `PrismaRelationalStore` adapter)
+- Redis connected (via `RedisCacheStore` adapter)
+- Langfuse initialized via OpenTelemetry (`instrumentation.ts`) + health check (via `LangfuseObservability` adapter)
 - Docker Compose updated: `app` + `temporal` + `redis` + `arangodb` + separate worker containers
 
 ### Database changes
@@ -878,45 +978,115 @@ datasource db {
 // App tables managed by Prisma migrations
 ```
 
-**ArangoDB** — create tenant-scoped database:
+**ArangoDB** — single-database, pool-based multi-tenancy:
+
+> **Why NOT database-per-org:** ArangoDB spawns isolated V8 contexts, memory buffers, and threads per database. At 1,000+ orgs, this OOMs the cluster. Instead, use a single database with `org_id` + `repo_id` on every document/edge, enforced at the query level.
+
 ```
-System DB
-└── org_{org_id}          ← one ArangoDB database per org
-    ├── repos             (document collection)
-    ├── files             (document collection)
-    ├── functions         (document collection)
-    ├── classes           (document collection)
-    ├── interfaces        (document collection)
-    ├── variables         (document collection)
-    ├── contains          (edge collection: file → entity)
-    ├── calls             (edge collection: fn → fn)
-    ├── imports           (edge collection: file → file)
-    ├── extends           (edge collection: class → class)
-    └── implements        (edge collection: class → interface)
+kap10_db                              ← single shared database
+├── repos             (document)      ← org_id indexed
+├── files             (document)      ← org_id + repo_id indexed
+├── functions         (document)      ← org_id + repo_id indexed
+├── classes           (document)      ← org_id + repo_id indexed
+├── interfaces        (document)      ← org_id + repo_id indexed
+├── variables         (document)      ← org_id + repo_id indexed
+├── patterns          (document)      ← org_id + repo_id indexed
+├── rules             (document)      ← org_id indexed (repo_id optional)
+├── snippets          (document)      ← org_id nullable (null = community)
+├── ledger            (document)      ← org_id + repo_id indexed (append-only)
+├── contains          (edge: file → entity)
+├── calls             (edge: fn → fn)
+├── imports           (edge: file → file)
+├── extends           (edge: class → class)
+└── implements        (edge: class → interface)
+```
+
+**Tenant isolation enforcement:**
+
+```typescript
+// lib/adapters/arango-graph-store.ts — every query includes org_id filter
+async getEntitiesByFile(orgId: string, repoId: string, filePath: string): Promise<EntityDoc[]> {
+  return this.db.query(aql`
+    FOR doc IN functions
+      FILTER doc.org_id == ${orgId}
+      FILTER doc.repo_id == ${repoId}
+      FILTER doc.file_path == ${filePath}
+      RETURN doc
+  `).then(cursor => cursor.all());
+}
+
+// Persistent hash index on [org_id, repo_id] for every collection
+await collection.ensureIndex({
+  type: 'persistent',
+  fields: ['org_id', 'repo_id'],
+  name: 'idx_tenant',
+});
+```
+
+**Edge collections** also carry `org_id` + `repo_id` for filtered traversals:
+
+```typescript
+// Graph traversals always filter by tenant
+async getCallersOf(orgId: string, entityId: string, depth = 1): Promise<EntityDoc[]> {
+  return this.db.query(aql`
+    FOR v, e IN 1..${depth} INBOUND ${entityId} calls
+      FILTER e.org_id == ${orgId}
+      RETURN DISTINCT v
+  `).then(cursor => cursor.all());
+}
 ```
 
 ### New files
 ```
 lib/
-  db/
-    arango.ts              ← ArangoDB client singleton (arangojs)
-    arango-schema.ts       ← Collection/index creation per org
-    prisma.ts              ← Prisma client singleton
+  ports/                           ← Abstract interfaces (zero dependencies)
+    graph-store.ts
+    relational-store.ts
+    llm-provider.ts
+    workflow-engine.ts
+    git-host.ts
+    vector-search.ts
+    billing-provider.ts
+    observability.ts
+    cache-store.ts
+    code-intelligence.ts
+    pattern-engine.ts
+    types.ts                       ← Shared domain types (EntityDoc, EdgeDoc, etc.)
+  adapters/                        ← Concrete implementations (one per external dep)
+    arango-graph-store.ts          ← IGraphStore → ArangoDB (arangojs)
+    prisma-relational-store.ts     ← IRelationalStore → Supabase (Prisma)
+    vercel-ai-provider.ts          ← ILLMProvider → Vercel AI SDK
+    temporal-workflow-engine.ts    ← IWorkflowEngine → Temporal
+    github-host.ts                 ← IGitHost → GitHub (Octokit)
+    llamaindex-vector-search.ts    ← IVectorSearch → LlamaIndex + pgvector
+    stripe-payments.ts             ← IBillingProvider → Stripe
+    langfuse-observability.ts      ← IObservability → Langfuse
+    redis-cache-store.ts           ← ICacheStore → Redis
+    scip-code-intelligence.ts      ← ICodeIntelligence → SCIP indexers
+    semgrep-pattern-engine.ts      ← IPatternEngine → Semgrep CLI
+  di/
+    container.ts                   ← createProductionContainer() + createTestContainer()
+  domain/                          ← Pure business logic (zero external imports)
+    entity-hashing.ts
+    rule-resolution.ts
+    snippet-resolution.ts
+    taxonomy-classification.ts
+    impact-analysis.ts
   temporal/
-    client.ts              ← Temporal client singleton
+    client.ts                      ← Temporal client singleton
     workers/
-      heavy-compute.ts     ← Worker for heavy-compute-queue
-      light-llm.ts         ← Worker for light-llm-queue
-    connection.ts          ← Temporal connection config
+      heavy-compute.ts             ← Worker for heavy-compute-queue
+      light-llm.ts                 ← Worker for light-llm-queue
+    connection.ts                  ← Temporal connection config
 prisma/
-  schema.prisma            ← Prisma schema (Supabase tables + pgvector)
-docker-compose.yml         ← Add arangodb + temporal services
+  schema.prisma                    ← Prisma schema (Supabase tables + pgvector)
+docker-compose.yml                 ← Add arangodb + temporal services
 app/
   (dashboard)/
-    layout.tsx             ← Authenticated dashboard shell
-    page.tsx               ← Repos list (empty state)
-    repos/page.tsx         ← Repository management
-    settings/page.tsx      ← Org settings
+    layout.tsx                     ← Authenticated dashboard shell
+    page.tsx                       ← Repos list (empty state)
+    repos/page.tsx                 ← Repository management
+    settings/page.tsx              ← Org settings
 ```
 
 ### Docker Compose services
@@ -933,6 +1103,9 @@ app/
 
 ### Test
 - `pnpm test` — ArangoDB connection health check, Temporal connection health check (both queues), Prisma client connects
+- `pnpm test` — `createProductionContainer()` returns all 11 adapters with correct interface compliance
+- `pnpm test` — `createTestContainer()` returns all in-memory fakes; overrides replace individual adapters
+- `pnpm test` — Domain functions (entity hashing, rule resolution) work with zero external dependencies
 - `e2e` — Sign up → create org → see empty dashboard → "Connect Repository" CTA visible
 
 ---
@@ -991,10 +1164,102 @@ code-synapse uses custom Tree-sitter traversals to find "which function calls wh
 **Solution:** `prepareWorkspace` does a **full clone + dependency install** before SCIP runs.
 
 **Pipeline detail:**
-1. **`prepareWorkspace`** (replaces `cloneRepo`) — Full clone (not shallow!) to `/tmp/{hash}`, detect language from `package.json`/`go.mod`/etc., then run language-appropriate dependency install (`npm ci`, `go mod download`, `pip install -r requirements.txt`). This ensures SCIP indexers can resolve the full type graph. Runs on `heavy-compute-queue`.
-2. **`runSCIP`** — Run the appropriate SCIP indexer (e.g. `scip-typescript` for TS/JS projects). Produces a `.scip` protobuf file containing all definitions, references, and relationships with precise source locations. Runs on `heavy-compute-queue`.
+1. **`prepareWorkspace`** (replaces `cloneRepo`) — Full clone (not shallow!) via **`simple-git`** to a **persistent workspace directory** (`/data/workspaces/{orgId}/{repoId}/`), detect language from `package.json`/`go.mod`/etc., then run language-appropriate dependency install (`npm ci`, `go mod download`, `pip install -r requirements.txt`). **Monorepo detection** (see below). This ensures SCIP indexers can resolve the full type graph. Runs on `heavy-compute-queue`.
+
+> **Why `simple-git` (not `execAsync('git clone ...')`):** Running raw shell Git commands in Temporal workers is brittle across OS environments and fails silently with massive diffs. `simple-git` provides a promise-based API with proper auth handling, command queuing, and concurrent operation safety.
+
+> **Implementation Gotcha — The `npm install` Bottleneck:** Enterprise monorepos take 3–5 minutes for a fresh `npm install`. For incremental indexing (Phase 5), this is unacceptable for a 1-line code change. The `heavy-compute-queue` Temporal workers **must use persistent volume claims (PVCs)** or aggressive local disk caching. On incremental re-index: `git.pull()` into the existing cloned directory → `npm install` (2 seconds if `package.json` unchanged) → run SCIP on changed files only. Never clone from scratch for incremental updates.
+2. **`runSCIP`** — Run the appropriate SCIP indexer per workspace root (see Monorepo Support below). Produces `.scip` protobuf files. For monorepos, runs per sub-package then merges indices via `scip-cli combine`. Runs on `heavy-compute-queue`.
 3. **`parseRest`** — For languages without SCIP indexers (or for additional metadata like JSDoc, decorators), fall back to Tree-sitter WASM parsing. This is a **supplement**, not the primary extraction method. Runs on `heavy-compute-queue`.
 4. **`writeToArango`** — Parse the SCIP protobuf output, transform into ArangoDB document/edge format, batch insert. Generates **stable entity hashes** (see below). Runs on `light-llm-queue` (network-bound write).
+
+#### Monorepo Support (Enterprise-Critical)
+
+**Problem:** Enterprise users run monorepos (Turborepo, Nx, Yarn Workspaces, pnpm Workspaces). A single `scip-typescript` at the root fails because `tsconfig.json` files are nested in `apps/` and `packages/`. SCIP can't resolve cross-package types without per-package compilation.
+
+**Solution:** Detect workspace structure → run SCIP per sub-package → merge indices.
+
+```typescript
+// lib/indexer/monorepo.ts
+interface WorkspaceRoot {
+  path: string;           // e.g., "packages/auth"
+  language: string;       // "typescript" | "python" | "go" | ...
+  packageName: string;    // e.g., "@myapp/auth"
+}
+
+async function detectWorkspaceRoots(repoPath: string): Promise<WorkspaceRoot[]> {
+  // 1. Check for workspace definitions
+  const pkg = await readJson(join(repoPath, 'package.json')).catch(() => null);
+  const pnpmWorkspace = await readYaml(join(repoPath, 'pnpm-workspace.yaml')).catch(() => null);
+
+  let workspaceGlobs: string[] = [];
+
+  if (pnpmWorkspace?.packages) {
+    workspaceGlobs = pnpmWorkspace.packages;          // pnpm workspaces
+  } else if (pkg?.workspaces) {
+    workspaceGlobs = Array.isArray(pkg.workspaces)
+      ? pkg.workspaces                                 // yarn/npm workspaces
+      : pkg.workspaces.packages ?? [];
+  } else if (await exists(join(repoPath, 'nx.json'))) {
+    workspaceGlobs = ['apps/*', 'packages/*', 'libs/*']; // Nx convention
+  }
+
+  if (workspaceGlobs.length === 0) {
+    // Not a monorepo — single root
+    return [{ path: '.', language: detectLanguage(repoPath), packageName: pkg?.name ?? 'root' }];
+  }
+
+  // 2. Resolve globs to actual workspace roots
+  const roots: WorkspaceRoot[] = [];
+  for (const glob of workspaceGlobs) {
+    const matches = await fastGlob(join(glob, 'package.json'), { cwd: repoPath });
+    for (const match of matches) {
+      const wsPath = dirname(match);
+      const wsPkg = await readJson(join(repoPath, match));
+      roots.push({
+        path: wsPath,
+        language: detectLanguage(join(repoPath, wsPath)),
+        packageName: wsPkg.name ?? wsPath,
+      });
+    }
+  }
+
+  return roots;
+}
+```
+
+**SCIP indexing for monorepos:**
+
+```typescript
+// lib/indexer/scip-runner.ts
+async function runSCIPForWorkspace(repoPath: string): Promise<SCIPIndex> {
+  const roots = await detectWorkspaceRoots(repoPath);
+
+  if (roots.length === 1) {
+    // Simple repo — single SCIP run
+    return runSCIPIndexer(repoPath, roots[0]);
+  }
+
+  // Monorepo — run SCIP per sub-package, then merge
+  const indices: string[] = [];
+  for (const root of roots) {
+    const indexPath = await runSCIPIndexer(join(repoPath, root.path), root);
+    indices.push(indexPath);
+  }
+
+  // Merge all .scip files into a single combined index
+  // SCIP CLI has built-in merge: `scip combine -o combined.scip file1.scip file2.scip ...`
+  const combinedPath = join(repoPath, '.scip', 'combined.scip');
+  await execAsync(`scip combine -o ${combinedPath} ${indices.join(' ')}`);
+
+  return parseSCIPProtobuf(combinedPath);
+}
+```
+
+**Dependency install for monorepos:**
+- `pnpm install` / `yarn install` / `npm ci` at root installs all workspace deps (hoisted)
+- Each sub-package's `node_modules` is symlinked or hoisted — SCIP can resolve types
+- For non-JS monorepos (Go modules, Python), each sub-package installs independently
 
 #### Stable Entity Hashing
 
@@ -1093,7 +1358,8 @@ lib/
     webhooks.ts            ← Webhook event handlers
   indexer/
     prepare-workspace.ts   ← Full clone + dependency install (npm ci / go mod download / etc.)
-    scip-runner.ts         ← Run SCIP indexers, parse protobuf output
+    monorepo.ts            ← Workspace root detection (pnpm/yarn/npm/Nx/Turborepo)
+    scip-runner.ts         ← Run SCIP indexers per workspace root, merge for monorepos
     scip-to-arango.ts      ← Transform SCIP definitions/references → ArangoDB nodes/edges
     entity-hash.ts         ← Stable entity hashing for identity tracking
     parser.ts              ← Tree-sitter WASM wrapper (supplement for non-SCIP languages)
@@ -1111,7 +1377,7 @@ app/
       callback/route.ts   ← GitHub OAuth callback
       install/route.ts     ← GitHub App installation redirect
     webhooks/
-      github/route.ts     ← GitHub push/PR webhooks
+      github/route.ts     ← GitHub push/PR webhooks (validates x-hub-signature-256 before processing)
     repos/
       route.ts            ← GET repos list, POST connect repo
       [repoId]/route.ts   ← GET repo details, DELETE disconnect
@@ -1120,6 +1386,37 @@ app/
       [repoId]/
         page.tsx           ← Repo detail: file tree + entity list
         files/page.tsx     ← Browsable file explorer
+```
+
+### GitHub Webhook Security
+
+> **Implementation Gotcha:** Since the incremental indexer (Phase 5) and PR reviewer (Phase 7) are triggered by external HTTP POSTs, a malicious actor could spam the webhook endpoint to trigger expensive `heavy-compute` workflows. **All webhook handlers must validate `x-hub-signature-256` before processing.**
+
+```typescript
+// app/api/webhooks/github/route.ts
+import { Webhooks } from '@octokit/webhooks';
+
+const webhooks = new Webhooks({
+  secret: process.env.GITHUB_WEBHOOK_SECRET!,
+});
+
+export async function POST(req: Request) {
+  const body = await req.text();
+  const signature = req.headers.get('x-hub-signature-256') ?? '';
+
+  // Cryptographic verification — rejects forged payloads
+  if (!(await webhooks.verify(body, signature))) {
+    return new Response('Invalid signature', { status: 401 });
+  }
+
+  const event = req.headers.get('x-github-event')!;
+  const payload = JSON.parse(body);
+
+  // Only then dispatch to Temporal workflows
+  await webhooks.receive({ id: req.headers.get('x-github-delivery')!, name: event as any, payload });
+
+  return new Response('OK', { status: 200 });
+}
 ```
 
 ### Core engine integration
@@ -1135,13 +1432,14 @@ Port these modules from code-synapse (`/Users/jaswanth/IdeaProjects/code-synapse
 - `lib/indexer/entity-hash.ts` — deterministic entity identity hashing
 
 **Adaptation required:**
-- Replace CozoDB writes with ArangoDB batch inserts
-- Add `repo_id` and `org_id` to all entities for multi-tenancy
+- Replace CozoDB writes with ArangoDB batch inserts (single `kap10_db` database, pool-based tenancy)
+- Add `repo_id` and `org_id` to all entities and edges for tenant isolation (see Phase 0 ArangoDB schema)
 - Replace local file paths with cloned tmp paths
 - Remove local LLM dependency (justification comes in Phase 4)
 
 ### Test
 - `pnpm test` — `prepareWorkspace` clones and installs deps; SCIP runner produces valid protobuf with cross-file edges; transformer creates correct ArangoDB documents; entity hashes are stable across re-runs
+- `pnpm test` — Monorepo detection correctly identifies pnpm/yarn/npm/Nx workspace roots; SCIP runs per sub-package and merges indices; cross-package type references resolve correctly in merged index
 - `e2e` — Connect GitHub → select repo → see indexing progress (via Temporal query) → browse file tree → see function list with signatures
 - **Temporal UI** — Visit `localhost:8080`, see `indexRepoWorkflow` with step-by-step execution history, activities running on `heavy-compute-queue`
 
@@ -1196,7 +1494,64 @@ The Next.js dashboard can still deploy to Vercel. The MCP server runs as a **sep
 | `get_project_stats` | Overview: files, functions, languages | Aggregation query across collections |
 | `sync_local_diff` | Sync uncommitted local changes to cloud graph | Parse diff → overlay workspace (see Cross-Cutting §1) |
 
-All tools return responses through the **semantic truncation layer** (see Cross-Cutting §2). All incoming payloads pass through the **edge secret scrubber** (see Cross-Cutting §3).
+All tools return responses through the **semantic truncation layer** (see Cross-Cutting §2). All incoming payloads pass through the **edge secret scrubber** (see Cross-Cutting §3). All calls pass through the **runaway agent rate limiter** (see below).
+
+### Runaway Agent Protection
+
+**Problem:** AI agents (especially Cursor in Agent Mode) can enter infinite loops where they call `search_code` or `check_patterns` 15+ times per second. This rapidly exhausts database connections and artificially drains the user's LLM budget before the nightly billing sync catches it.
+
+**Solution:** Battle-tested sliding window rate limiter at the MCP transport layer using `@upstash/ratelimit` (works with standard `ioredis` — no Upstash hosting required).
+
+> **Why not custom Redis sorted sets:** Distributed rate-limiting has notorious race conditions with `MULTI/EXEC`. `@upstash/ratelimit` uses mathematically proven sliding window algorithms that handle concurrent requests correctly out of the box.
+
+```typescript
+// lib/mcp/security/rate-limiter.ts
+import { Ratelimit } from '@upstash/ratelimit';
+import { Redis } from 'ioredis';
+
+// Works with standard ioredis — no Upstash hosting required
+const redis = new Redis(process.env.REDIS_URL!);
+
+const mcpRateLimiter = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(60, '60 s'),  // 60 tool calls per 60-second sliding window
+  prefix: 'rate:mcp',
+  analytics: true,  // Track rate limit hits for dashboard visibility
+});
+
+async function checkRateLimit(userId: string): Promise<{ allowed: boolean; remaining: number }> {
+  const { success, remaining, reset } = await mcpRateLimiter.limit(userId);
+  return { allowed: success, remaining };
+}
+```
+
+**Integrated at MCP transport — before tool dispatch:**
+
+```typescript
+// lib/mcp/transport.ts
+app.post('/api/mcp/:apiKey', async (req, res) => {
+  const raw = req.body;
+  const scrubbed = scrubMCPPayload(raw);
+
+  // Rate limit check
+  const { allowed, remaining } = await checkRateLimit(redis, ctx.userId);
+  if (!allowed) {
+    return res.json({
+      error: {
+        code: 429,
+        message: 'Rate limit exceeded. You are calling tools too rapidly — this usually means the agent is in a loop. Pause, review your context, and ask the user for clarification before continuing.',
+      },
+      meta: { retryAfterSeconds: 30, callsPerMinute: RATE_LIMIT.maxCalls },
+    });
+  }
+
+  const result = await mcpServer.handleRequest(scrubbed);
+  res.setHeader('X-RateLimit-Remaining', remaining);
+  res.json(result);
+});
+```
+
+**Why 429 in the MCP response (not just HTTP 429):** Agents parse MCP tool results, not HTTP headers. By putting the "you are looping" message directly in the tool response, the agent reads it and can self-correct. A raw HTTP 429 would just cause the MCP client to retry.
 
 ### MCP transport
 
@@ -1264,6 +1619,7 @@ lib/
     transport.ts           ← HTTP+SSE transport adapter (long-running container)
     security/
       scrubber.ts          ← Edge secret scrubbing (regex + entropy)
+      rate-limiter.ts      ← Token bucket rate limiter (Redis sliding window, 60 calls/min)
     tools/
       index.ts             ← Tool registry
       search.ts            ← search_code tool
@@ -1317,7 +1673,7 @@ model Workspace {
 ```
 
 ### Test
-- `pnpm test` — MCP tool handlers return correct ArangoDB data; API key auth works; secret scrubber catches all patterns; response truncation respects byte limits; workspace resolution creates/reuses correctly
+- `pnpm test` — MCP tool handlers return correct ArangoDB data; API key auth works; secret scrubber catches all patterns; response truncation respects byte limits; workspace resolution creates/reuses correctly; rate limiter blocks at 70 calls/min and returns 429 with self-correction message
 - **Manual integration test** — Add MCP URL to Cursor → ask "what functions are in auth.ts?" → get correct answer; paste code with fake API key → verify it's redacted in logs
 - `e2e` — Dashboard → repo → "Connect IDE" → copy MCP URL → API key visible; onboarding PR created on GitHub
 
@@ -1339,7 +1695,7 @@ model Workspace {
 | Aspect | Raw implementation | LlamaIndex.TS |
 |--------|-------------------|---------------|
 | **Chunking** | Manual text splitting logic | Built-in `SentenceSplitter`, `CodeSplitter` |
-| **Embedding** | Raw OpenAI API calls + batch management | `OpenAIEmbedding` with automatic batching |
+| **Embedding** | Raw OpenAI API calls + batch management ($$$) | `HuggingFaceEmbedding` via `@xenova/transformers` — **$0 cost**, local CPU, infinite parallelism |
 | **pgvector** | Raw SQL: `SELECT ... ORDER BY embedding <=> $1` | `PGVectorStore` with built-in CRUD, filtering, metadata |
 | **Retrieval** | Custom merge/rank logic | `VectorIndexRetriever` + `KeywordTableIndex` composable |
 | **Re-ranking** | Manual reciprocal rank fusion | Built-in `SentenceTransformerRerank` or `CohereRerank` |
@@ -1357,9 +1713,9 @@ Entity extracted (Phase 1)
 │  │ Activity:       │───▶│ Activity:       │───▶│ Activity:          │  │
 │  │ buildDocuments  │    │ generateEmbeds  │    │ storeInPGVector    │  │
 │  │                 │    │                 │    │                    │  │
-│  │ LlamaIndex     │    │ LlamaIndex      │    │ LlamaIndex         │  │
-│  │ Document from   │    │ OpenAIEmbedding │    │ PGVectorStore      │  │
-│  │ name+sig+body  │    │ (text-embed-3)  │    │ (Supabase pgvector)│  │
+│  │ LlamaIndex     │    │ LlamaIndex +    │    │ LlamaIndex         │  │
+│  │ Document from   │    │ Transformers.js │    │ PGVectorStore      │  │
+│  │ name+sig+body  │    │ (nomic-embed)   │    │ (Supabase pgvector)│  │
 │  └────────────────┘    └────────────────┘    └────────────────────┘  │
 │                                                                       │
 │  [light-llm-queue] — all activities are network-bound                │
@@ -1372,14 +1728,23 @@ import { PGVectorStore } from "llamaindex/vector-store/PGVectorStore";
 import { OpenAIEmbedding } from "llamaindex/embeddings/OpenAIEmbedding";
 import { VectorStoreIndex } from "llamaindex";
 
+// IMPORTANT: Prisma owns the schema. Set createTable: false so LlamaIndex
+// doesn't fight Prisma over migrations. Prisma pushes the pgvector extension
+// and entity_embeddings table; LlamaIndex just reads/writes.
 const vectorStore = new PGVectorStore({
   connectionString: process.env.SUPABASE_DB_URL,
   tableName: "entity_embeddings",
-  dimensions: 1536,
+  dimensions: 768,     // nomic-embed-text produces 768-dim vectors
+  createTable: false,  // Prisma manages schema — see prisma/schema.prisma
 });
 
-const embedModel = new OpenAIEmbedding({
-  model: "text-embedding-3-small",
+// LOCAL embeddings via Transformers.js — $0 cost, no API rate limits, infinite parallelism
+// Runs inside Temporal light-llm-queue workers (Node.js, no GPU required)
+// Save the OpenAI/Anthropic budget for business justification (Phase 4)
+import { HuggingFaceEmbedding } from "llamaindex/embeddings/HuggingFaceEmbedding";
+
+const embedModel = new HuggingFaceEmbedding({
+  modelType: "nomic-ai/nomic-embed-text-v1.5",  // 768-dim, top-tier quality, runs on CPU
 });
 
 // Index documents
@@ -1760,11 +2125,186 @@ app/
 | `justifyRepoWorkflow` | `topoSort` → `classifyAndJustify` (×N levels) → `writeResults` → `aggregateFeatures` | Heavy (topoSort), Light (rest) | Full hierarchical justification + taxonomy. If level 3 fails due to API rate limit, Temporal retries level 3 — not the entire pipeline. |
 | `justifyEntityWorkflow` | `classifyAndJustify` → `writeResult` → `updateFeature` | `light-llm-queue` | Re-justify + re-classify a single entity after code change. |
 
+### Architecture Health Report (Post-Onboarding)
+
+**Purpose:** After the first full indexing + justification completes, kap10 automatically generates a comprehensive Architecture Health Report. This serves two goals:
+1. **Immediate value demonstration** — the user sees that kap10 *actually understands* their codebase before they even start using it with agents
+2. **Baseline for improvement** — identifies existing problems that AI agents are notorious for causing (and that kap10 will prevent going forward)
+
+**Triggered:** Automatically after `justifyRepoWorkflow` completes for a newly connected repo.
+
+```typescript
+// lib/temporal/workflows/health-report.ts
+export async function generateHealthReportWorkflow(input: {
+  orgId: string;
+  repoId: string;
+}): Promise<HealthReport> {
+  // 1. Gather data from the completed knowledge graph
+  const stats = await light.gatherRepoStats(input);
+  const entities = await light.getAllEntities(input);
+  const edges = await light.getAllEdges(input);
+  const taxonomy = await light.getTaxonomyData(input);
+
+  // 2. Run analysis activities
+  const [
+    deadCode,
+    architectureDrift,
+    testingGaps,
+    duplicateLogic,
+    circularDeps,
+    unusedExports,
+    complexityHotspots,
+  ] = await Promise.all([
+    light.detectDeadCode({ entities, edges }),
+    light.detectArchitectureDrift({ entities, taxonomy }),
+    light.detectTestingGaps({ entities, edges }),
+    light.detectDuplicateLogic({ entities }),
+    light.detectCircularDeps({ edges }),
+    light.detectUnusedExports({ entities, edges }),
+    light.detectComplexityHotspots({ entities }),
+  ]);
+
+  // 3. LLM-powered synthesis: executive summary + recommendations
+  const synthesis = await light.synthesizeReport({
+    ...input,
+    deadCode, architectureDrift, testingGaps,
+    duplicateLogic, circularDeps, unusedExports, complexityHotspots,
+    stats, taxonomy,
+  });
+
+  // 4. Store report
+  await light.storeHealthReport(input, synthesis);
+
+  return synthesis;
+}
+```
+
+**Report Schema (structured output via `generateObject`):**
+
+```typescript
+const HealthReportSchema = z.object({
+  executiveSummary: z.string().describe('2-3 sentence overview of codebase health'),
+  overallScore: z.number().min(0).max(100).describe('Aggregate health score'),
+
+  sections: z.object({
+    deadCode: z.object({
+      severity: z.enum(['low', 'medium', 'high', 'critical']),
+      count: z.number().describe('Number of dead/unreachable functions, classes, files'),
+      topOffenders: z.array(z.object({
+        entityId: z.string(),
+        name: z.string(),
+        filePath: z.string(),
+        reason: z.string().describe('Why this is dead code'),
+      })).max(10),
+      recommendation: z.string(),
+    }),
+
+    architectureDrift: z.object({
+      severity: z.enum(['low', 'medium', 'high', 'critical']),
+      issues: z.array(z.object({
+        pattern: z.string().describe('e.g., "Direct DB access in API routes bypassing service layer"'),
+        occurrences: z.number(),
+        affectedFiles: z.array(z.string()).max(5),
+        recommendation: z.string(),
+      })).max(10),
+    }),
+
+    testingGaps: z.object({
+      severity: z.enum(['low', 'medium', 'high', 'critical']),
+      untestedVerticals: z.array(z.object({
+        featureArea: z.string(),
+        entityCount: z.number(),
+        testedCount: z.number(),
+        coveragePercent: z.number(),
+      })).max(10),
+      recommendation: z.string(),
+    }),
+
+    duplicateLogic: z.object({
+      severity: z.enum(['low', 'medium', 'high', 'critical']),
+      clusters: z.array(z.object({
+        description: z.string().describe('What logic is duplicated'),
+        entities: z.array(z.string()).describe('Entity IDs with near-identical logic'),
+        recommendation: z.string().describe('How to consolidate'),
+      })).max(10),
+    }),
+
+    circularDependencies: z.object({
+      severity: z.enum(['low', 'medium', 'high', 'critical']),
+      cycles: z.array(z.object({
+        path: z.array(z.string()).describe('File/module cycle path'),
+        recommendation: z.string(),
+      })).max(10),
+    }),
+
+    unusedExports: z.object({
+      severity: z.enum(['low', 'medium', 'high', 'critical']),
+      count: z.number(),
+      topOffenders: z.array(z.object({
+        filePath: z.string(),
+        exportName: z.string(),
+        reason: z.string(),
+      })).max(10),
+    }),
+
+    complexityHotspots: z.object({
+      severity: z.enum(['low', 'medium', 'high', 'critical']),
+      hotspots: z.array(z.object({
+        entityId: z.string(),
+        name: z.string(),
+        filePath: z.string(),
+        cyclomaticComplexity: z.number(),
+        linesOfCode: z.number(),
+        inboundEdges: z.number().describe('How many callers depend on this'),
+        recommendation: z.string(),
+      })).max(10),
+    }),
+  }),
+
+  llmRiskAssessment: z.object({
+    summary: z.string().describe('How susceptible is this codebase to AI-generated regressions?'),
+    risks: z.array(z.object({
+      risk: z.string().describe('e.g., "No service layer boundary — AI agents will bypass abstractions"'),
+      severity: z.enum(['low', 'medium', 'high', 'critical']),
+      mitigation: z.string().describe('What kap10 will do to prevent this'),
+    })).max(5),
+  }),
+
+  suggestedRules: z.array(z.object({
+    title: z.string(),
+    description: z.string(),
+    type: z.enum(['architectural', 'syntactic', 'convention']),
+    enforcement: z.enum(['suggest', 'warn', 'block']),
+  })).max(10).describe('Rules that should be created based on the analysis'),
+});
+```
+
+**Analysis activities (graph-based, not LLM-based where possible):**
+
+| Analysis | Method | What it detects |
+|----------|--------|-----------------|
+| **Dead Code** | Graph traversal: entities with 0 inbound edges (no callers) and not entry points | Functions/classes that are never called anywhere |
+| **Architecture Drift** | Taxonomy analysis: VERTICAL entities directly importing other VERTICAL entities (should go through HORIZONTAL) | Layer violation, missing service boundaries |
+| **Testing Gaps** | Cross-reference with test file patterns: entities in VERTICAL features with no corresponding `*.test.*` or `*.spec.*` files | Untested business-critical code |
+| **Duplicate Logic** | Embedding cosine similarity: entities with >0.92 similarity in purpose + code structure | Copy-pasted logic that should be a shared utility |
+| **Circular Deps** | Graph cycle detection (Tarjan's SCC on import edges) | Module cycles that create fragility |
+| **Unused Exports** | Export analysis: exported symbols with 0 external references | API surface bloat |
+| **Complexity** | AST metrics: cyclomatic complexity + LOC + fan-in (inbound edges) | High-risk hotspots where AI changes are most dangerous |
+
+**Dashboard:**
+- `/dashboard/repos/[repoId]/health` — Full health report with expandable sections, severity badges, and "Create Rule" buttons next to each suggestion
+- Report is generated once after initial onboarding, then refreshed after each full re-index
+- Users can export as PDF for enterprise compliance documentation
+
+**Auto-seeded rules:** The `suggestedRules` from the report can be one-click promoted to active rules in the Rules Engine (Phase 6), giving users an instant set of guardrails based on their actual codebase's architecture.
+
 ### Test
 - `pnpm test` — topological sort produces correct level ordering; Vercel AI SDK `generateObject` returns typed taxonomy; feature aggregation groups correctly
+- `pnpm test` — Dead code detection finds entities with 0 inbound edges; architecture drift catches VERTICAL→VERTICAL imports; testing gap analysis cross-references test files; health report `generateObject` produces valid typed output with all sections
 - **Manual** — MCP `get_business_context` for a login handler → returns "HORIZONTAL / authentication / Consumers: User Management, Checkout, Admin"
 - **Manual** — MCP `get_blueprint` → returns features list with entity counts and user flows
 - `e2e` — Dashboard → entity detail → justification + classification card; Dashboard → Blueprint → React Flow graph with business swimlanes
+- `e2e` — After initial indexing completes → health report auto-generated → `/dashboard/repos/[repoId]/health` shows report with severity badges → "Create Rule" button creates active rule
 
 ---
 
@@ -1772,8 +2312,10 @@ app/
 
 **Feature:** _"When I push to GitHub, kap10 automatically re-indexes only the changed files. My MCP connection always has up-to-date knowledge."_
 
+> **Performance Note:** Incremental indexing reuses the **persistent workspace** from Phase 1 (`/data/workspaces/{orgId}/{repoId}/`). On push webhook: `git pull` into the existing directory → `npm install` (instant if `package.json` unchanged) → SCIP on changed files only. This keeps incremental re-index latency under 30 seconds for typical pushes, even on large monorepos.
+
 ### What ships
-- GitHub `push` webhook handler → detect changed files → re-index only those
+- GitHub `push` webhook handler (validates `x-hub-signature-256`) → detect changed files → re-index only those
 - Temporal workflow: `incrementalIndexWorkflow` — diff-based processing
 - Cascade re-justification: if a leaf function changes, re-justify its callers
 - **Stable entity hash comparison** for detecting renames/deletes (see Phase 1)
@@ -1904,6 +2446,517 @@ app/
 - **Manual** — Rename a function → old entity deleted, new entity created, callers re-justified
 - **Temporal UI** — `incrementalIndexWorkflow` shows each file processed as a separate activity
 - `e2e` — Dashboard activity feed shows "Indexed 3 files from push abc123" with entity diff counts
+
+---
+
+## Phase 5.5 — Prompt Ledger, Rewind & Branching
+
+**Feature:** _"Every AI-generated change is tracked with the prompt that caused it. When the AI breaks something, I click 'Rewind' to restore to the last working state — and kap10 automatically creates a rule so the AI never makes that mistake again. After a rewind, all subsequent prompts appear as a new timeline branch."_
+
+This is the **"black box recorder"** for AI-assisted development — the feature that makes the Loop of Death impossible.
+
+### What ships
+- **Prompt Ledger:** Append-only timeline tracking `{prompt} → {changes}` for every AI-generated modification
+- **Working State Snapshots:** Automatic snapshots when code passes validation (tests pass, no lint errors, user explicitly marks as "working")
+- **Rewind MCP Tool:** `revert_to_working_state` — restores specific files/functions to a previous working snapshot
+- **Anti-Pattern Rule Synthesis:** After rewind, LLM analyzes the failed changes and generates a rule to prevent the same mistake
+- **Timeline Branching:** After a rewind, all subsequent prompts form a new timeline branch (like git branching, but for prompts)
+- **Local Sync via CLI:** A lightweight `kap10` CLI that streams ledger entries between the user's local workspace and the cloud
+- **Dashboard Timeline:** Visual timeline with working/broken states, branch points, and rewind actions
+- **Roll-up on Commit:** When the user commits, all pending ledger entries are rolled up into a single commit-linked summary
+
+### The Prompt Ledger
+
+Every time `sync_local_diff` is called with changes from an AI agent, the ledger captures what prompted those changes:
+
+```typescript
+// lib/ledger/schema.ts
+const LedgerEntrySchema = z.object({
+  id: z.string(),                     // UUID
+  orgId: z.string(),
+  repoId: z.string(),
+  userId: z.string(),
+  branch: z.string(),                 // git branch
+  timelineBranch: z.number().default(0),  // 0 = main timeline, 1+ = post-rewind branches
+
+  // What caused the change
+  prompt: z.string(),                 // The user's prompt to the AI agent
+  agentModel: z.string().optional(),  // "claude-3.5-sonnet", "gpt-4o", etc.
+  agentTool: z.string().optional(),   // "cursor", "claude-code", "windsurf"
+  mcpToolsCalled: z.array(z.string()).optional(),  // Which kap10 tools the agent used
+
+  // What changed
+  changes: z.array(z.object({
+    filePath: z.string(),
+    entityId: z.string().optional(),  // Link to ArangoDB entity if identifiable
+    changeType: z.enum(['added', 'modified', 'deleted']),
+    diff: z.string(),                 // Unified diff of the change
+    linesAdded: z.number(),
+    linesRemoved: z.number(),
+  })),
+
+  // State
+  status: z.enum([
+    'pending',           // Change applied, not yet validated
+    'working',           // Passed validation (tests/lint/user approval)
+    'broken',            // Failed validation
+    'reverted',          // Undone via rewind
+    'committed',         // Rolled up into a git commit
+  ]).default('pending'),
+
+  // Linkage
+  parentId: z.string().nullable(),     // Previous ledger entry (linked list)
+  rewindTargetId: z.string().nullable(), // If this entry is a rewind, what it reverted to
+  commitSha: z.string().nullable(),    // Set when changes are committed
+  snapshotId: z.string().nullable(),   // Link to working-state snapshot
+
+  // Metadata
+  createdAt: z.date(),
+  validatedAt: z.date().nullable(),
+  ruleGenerated: z.string().nullable(),  // Rule ID if anti-pattern rule was created from rewind
+});
+```
+
+### Working State Snapshots
+
+A snapshot captures the content of affected files at a known-good point:
+
+```typescript
+// lib/ledger/snapshot.ts
+const SnapshotSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  repoId: z.string(),
+  userId: z.string(),
+  branch: z.string(),
+  timelineBranch: z.number(),
+
+  ledgerEntryId: z.string(),         // The ledger entry that was marked "working"
+  reason: z.enum([
+    'tests_passed',                   // Automated: test suite passed after this change
+    'user_marked',                    // User clicked "Mark as Working" in dashboard
+    'commit',                         // User committed (implicit working state)
+    'session_start',                  // Baseline snapshot at session start
+  ]),
+
+  files: z.array(z.object({
+    filePath: z.string(),
+    content: z.string(),             // Full file content at snapshot time
+    entityHashes: z.array(z.string()), // Entity hashes at this point (for entity-level rewind)
+  })),
+
+  createdAt: z.date(),
+});
+```
+
+**When snapshots are taken:**
+1. **Session start** — when `sync_local_diff` is first called, snapshot all tracked files
+2. **Tests pass** — if the Bootstrap Rule's post-flight `check_patterns` passes, auto-snapshot
+3. **User marks working** — explicit "Mark as Working" button in dashboard timeline
+4. **Pre-commit** — when the user commits, snapshot before roll-up
+
+### Rewind MCP Tool
+
+```typescript
+// lib/mcp/tools/rewind.ts
+const RevertToWorkingStateTool = {
+  name: 'revert_to_working_state',
+  description: 'Restore files to a previous working state when the AI broke something. Returns the file contents at the selected snapshot and generates an anti-pattern rule.',
+  inputSchema: z.object({
+    snapshotId: z.string().optional().describe('Specific snapshot to revert to. If omitted, uses the most recent working snapshot.'),
+    files: z.array(z.string()).optional().describe('Specific files to revert. If omitted, reverts all files changed since the snapshot.'),
+    reason: z.string().describe('Why is the rewind needed? Used to generate an anti-pattern rule.'),
+  }),
+  handler: async ({ snapshotId, files, reason }, ctx) => {
+    // 1. Find the target snapshot
+    const snapshot = snapshotId
+      ? await ledgerStore.getSnapshot(snapshotId)
+      : await ledgerStore.getMostRecentWorkingSnapshot(ctx.orgId, ctx.repoId, ctx.userId, ctx.branch);
+
+    if (!snapshot) throw new Error('No working snapshot found. Try committing your known-good state first.');
+
+    // 2. Determine which files to revert
+    const filesToRevert = files
+      ? snapshot.files.filter(f => files.includes(f.filePath))
+      : snapshot.files;
+
+    // 3. Create a rewind ledger entry
+    const rewindEntry = await ledgerStore.createEntry({
+      ...ctx,
+      prompt: `REWIND: ${reason}`,
+      changes: filesToRevert.map(f => ({
+        filePath: f.filePath,
+        changeType: 'modified' as const,
+        diff: '[rewind to snapshot]',
+        linesAdded: 0,
+        linesRemoved: 0,
+      })),
+      status: 'working',
+      rewindTargetId: snapshot.id,
+    });
+
+    // 4. Increment timeline branch counter (all future prompts go on new branch)
+    await ledgerStore.incrementTimelineBranch(ctx.orgId, ctx.repoId, ctx.userId, ctx.branch);
+
+    // 5. Synthesize anti-pattern rule from the failure
+    const rule = await synthesizeAntiPatternRule(reason, snapshot, rewindEntry, ctx);
+
+    // 6. Return file contents for the agent to apply
+    return {
+      restoredFiles: filesToRevert.map(f => ({ path: f.filePath, content: f.content })),
+      newTimelineBranch: rewindEntry.timelineBranch,
+      antiPatternRule: rule ? { id: rule.id, title: rule.title, description: rule.description } : null,
+      message: `Reverted ${filesToRevert.length} files to snapshot ${snapshot.id}. Timeline branch ${rewindEntry.timelineBranch} created. ${rule ? `Anti-pattern rule "${rule.title}" added.` : ''}`,
+    };
+  },
+};
+```
+
+### Anti-Pattern Rule Synthesis
+
+After every rewind, kap10 uses the LLM to analyze what went wrong and generate a rule to prevent recurrence:
+
+```typescript
+// lib/ledger/anti-pattern.ts
+import { generateObject } from 'ai';
+
+const AntiPatternSchema = z.object({
+  title: z.string().describe('Short rule name, e.g. "Do not use Library X for auth"'),
+  description: z.string().describe('Why this pattern is harmful and what to do instead'),
+  type: z.literal('architectural'),
+  scope: z.literal('repo'),
+  enforcement: z.enum(['warn', 'block']),
+  semgrepRule: z.string().optional().describe('Semgrep YAML pattern to detect this anti-pattern, if applicable'),
+});
+
+async function synthesizeAntiPatternRule(
+  reason: string,
+  snapshot: Snapshot,
+  rewindEntry: LedgerEntry,
+  ctx: OrgContext,
+): Promise<Rule | null> {
+  // Get the failed changes (entries between snapshot and rewind)
+  const failedEntries = await ledgerStore.getEntriesBetween(snapshot.ledgerEntryId, rewindEntry.id);
+
+  const { object: antiPattern } = await container.llmProvider.generateObject({
+    model: 'gpt-4o',
+    schema: AntiPatternSchema,
+    prompt: `A developer used an AI agent to make changes to their codebase. The changes broke the code and had to be reverted.
+
+## Why the rewind was needed
+${reason}
+
+## Failed changes (prompts and diffs)
+${failedEntries.map(e => `Prompt: ${e.prompt}\nFiles changed: ${e.changes.map(c => c.filePath).join(', ')}\nDiff:\n${e.changes.map(c => c.diff).join('\n')}`).join('\n---\n')}
+
+## Working state that was restored to
+Files: ${snapshot.files.map(f => f.filePath).join(', ')}
+
+Generate a concise architectural rule that would prevent this mistake from happening again. The rule should be actionable and specific.`,
+    context: ctx,
+  });
+
+  // Save the rule to the Rules Engine (Phase 6)
+  return container.graphStore.upsertRule(ctx.orgId, {
+    ...antiPattern,
+    orgId: ctx.orgId,
+    repoId: ctx.repoId,
+    createdBy: 'system:rewind',
+    status: 'active',
+    priority: 10,  // High priority — learned from failure
+  });
+}
+```
+
+### Timeline Branching
+
+After a rewind, the timeline forks. This is conceptually similar to git branching, but for the prompt history:
+
+```
+Timeline Branch 0 (main):
+  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────┐  ┌─────────┐
+  │ S1  │→ │ S2  │→ │ S3  │→ │ S4  │→ │ REWIND  │
+  │ ✓   │  │ ✓   │  │ ✗   │  │ ✗   │  │ → S2    │
+  └─────┘  └─────┘  └─────┘  └─────┘  └────┬────┘
+                                             │
+Timeline Branch 1 (post-rewind):             │
+                                        ┌────▼────┐  ┌─────┐  ┌─────┐
+                                        │ S5      │→ │ S6  │→ │ S7  │
+                                        │ (new)   │  │ ✓   │  │ ✓   │
+                                        └─────────┘  └─────┘  └─────┘
+
+Legend: ✓ = working, ✗ = broken, S = step
+```
+
+The branching model:
+- **Branch 0** is always the main timeline from session start
+- When a rewind happens, `timelineBranch` increments by 1
+- All subsequent ledger entries get the new branch number
+- The dashboard shows branches as parallel lanes, with the rewind point as a merge arrow
+- Multiple rewinds create multiple branches (branch 2, 3, etc.)
+- On commit, only the entries from the **active** (latest) branch are rolled up
+
+### Roll-Up on Commit
+
+When `sync_local_diff` detects a new commit SHA (different from the last known `baseSha`), it triggers roll-up:
+
+```typescript
+// lib/ledger/rollup.ts
+async function rollUpOnCommit(ctx: OrgContext, commitSha: string): Promise<void> {
+  // Get all uncommitted ledger entries for this user/repo/branch
+  const activeTimeline = await ledgerStore.getActiveTimelineBranch(ctx);
+  const pendingEntries = await ledgerStore.getUncommittedEntries(ctx, activeTimeline);
+
+  if (pendingEntries.length === 0) return;
+
+  // Mark all entries as committed
+  for (const entry of pendingEntries) {
+    await ledgerStore.updateEntry(entry.id, {
+      status: 'committed',
+      commitSha,
+    });
+  }
+
+  // Create a commit summary in ArangoDB's ledger collection
+  await container.graphStore.upsertLedgerSummary(ctx.orgId, {
+    commitSha,
+    repoId: ctx.repoId,
+    userId: ctx.userId,
+    branch: ctx.branch,
+    entryCount: pendingEntries.length,
+    promptSummary: pendingEntries.map(e => e.prompt).join(' → '),
+    totalFilesChanged: new Set(pendingEntries.flatMap(e => e.changes.map(c => c.filePath))).size,
+    totalLinesAdded: pendingEntries.reduce((sum, e) => sum + e.changes.reduce((s, c) => s + c.linesAdded, 0), 0),
+    totalLinesRemoved: pendingEntries.reduce((sum, e) => sum + e.changes.reduce((s, c) => s + c.linesRemoved, 0), 0),
+    rewindCount: pendingEntries.filter(e => e.rewindTargetId).length,
+    rulesGenerated: pendingEntries.filter(e => e.ruleGenerated).map(e => e.ruleGenerated!),
+    createdAt: new Date(),
+  });
+
+  // Reset timeline branch to 0 for next session
+  await ledgerStore.resetTimelineBranch(ctx);
+}
+```
+
+### kap10 CLI — Local Workspace Sync
+
+A lightweight CLI tool for real-time ledger streaming between the user's local machine and kap10 cloud. This enables rewind to work even without the agent — the user can rewind from the terminal.
+
+```bash
+# Install
+npm install -g @kap10/cli
+
+# Authenticate
+kap10 auth login
+
+# Start watching (streams changes to ledger in real-time)
+kap10 watch --repo owner/repo --branch main
+
+# View timeline
+kap10 timeline
+
+# Rewind to last working state
+kap10 rewind                          # Latest working snapshot
+kap10 rewind --snapshot snap_abc123   # Specific snapshot
+kap10 rewind --steps 3               # Go back 3 working states
+
+# Mark current state as working
+kap10 mark-working
+
+# View branches
+kap10 branches
+```
+
+**CLI Architecture:**
+
+```typescript
+// packages/cli/src/watch.ts
+async function watchMode(config: WatchConfig): Promise<void> {
+  const watcher = chokidar.watch(config.repoPath, {
+    ignored: ['node_modules', '.git', 'dist'],
+    persistent: true,
+  });
+
+  let debounceTimer: NodeJS.Timeout;
+
+  watcher.on('change', (filePath) => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(async () => {
+      // Get current diff
+      const diff = await execAsync('git diff HEAD', { cwd: config.repoPath });
+      if (!diff.trim()) return;
+
+      // Get the last prompt from the agent's conversation (if available)
+      const prompt = await getLastAgentPrompt(config);  // Reads from .cursor/prompts or similar
+
+      // Stream to kap10 cloud
+      await kap10Client.syncDiff({
+        diff,
+        branch: await getCurrentBranch(config.repoPath),
+        baseSha: await getHeadSha(config.repoPath),
+        prompt: prompt ?? '[manual edit — no agent prompt detected]',
+      });
+    }, 1000);  // 1s debounce
+  });
+
+  // Listen for rewind commands from cloud (triggered via dashboard)
+  kap10Client.onRewindEvent(async (event) => {
+    for (const file of event.restoredFiles) {
+      await writeFile(join(config.repoPath, file.path), file.content);
+    }
+    console.log(`⏪ Reverted ${event.restoredFiles.length} files to snapshot ${event.snapshotId}`);
+    if (event.antiPatternRule) {
+      console.log(`🛡️ Anti-pattern rule added: "${event.antiPatternRule.title}"`);
+    }
+  });
+}
+```
+
+**How the CLI detects which prompt caused a change:**
+1. **Agent-initiated changes:** When the agent calls `sync_local_diff` via MCP, the prompt is already part of the MCP context — the agent sends it as metadata.
+2. **CLI watch mode:** The CLI watches for file changes. It tries to extract the prompt from agent logs (`.cursor/prompts/`, Claude Code conversation context, etc.). If no prompt is found, it records the change as `[manual edit]`.
+3. **Hybrid:** The Bootstrap Rule instructs the agent to call `sync_local_diff` with the prompt. The CLI is a fallback for changes the agent doesn't report.
+
+### ArangoDB Collections
+
+The ledger uses ArangoDB for append-only storage (it's fast at inserts and AQL can efficiently query sorted timelines):
+
+```javascript
+// ledger collection (append-only)
+{
+  _key: "entry_uuid",
+  org_id: "org_123",
+  repo_id: "repo_456",
+  user_id: "user_789",
+  branch: "main",
+  timeline_branch: 0,
+  prompt: "Add Apple Pay to the checkout flow",
+  agent_model: "claude-3.5-sonnet",
+  changes: [
+    { file_path: "src/checkout/payment.ts", change_type: "modified", diff: "...", lines_added: 15, lines_removed: 3 }
+  ],
+  status: "working",
+  parent_id: "entry_previous_uuid",
+  rewind_target_id: null,
+  commit_sha: null,
+  snapshot_id: "snap_uuid",
+  created_at: "2026-02-17T10:30:00Z"
+}
+
+// snapshots collection
+{
+  _key: "snap_uuid",
+  org_id: "org_123",
+  repo_id: "repo_456",
+  user_id: "user_789",
+  branch: "main",
+  timeline_branch: 0,
+  ledger_entry_id: "entry_uuid",
+  reason: "tests_passed",
+  files: [
+    { file_path: "src/checkout/payment.ts", content: "...", entity_hashes: ["abc123", "def456"] }
+  ],
+  created_at: "2026-02-17T10:30:05Z"
+}
+
+// ledger_summaries collection (commit roll-ups)
+{
+  _key: "summary_uuid",
+  commit_sha: "abc123def",
+  org_id: "org_123",
+  repo_id: "repo_456",
+  user_id: "user_789",
+  branch: "main",
+  entry_count: 7,
+  prompt_summary: "Add Apple Pay → Fix import → Update types → REWIND → Add Apple Pay (retry) → Fix tests → Polish UI",
+  total_files_changed: 4,
+  total_lines_added: 89,
+  total_lines_removed: 12,
+  rewind_count: 1,
+  rules_generated: ["rule_uuid_1"],
+  created_at: "2026-02-17T11:45:00Z"
+}
+```
+
+### New MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `revert_to_working_state` | Restore files to a previous working snapshot. Generates anti-pattern rule. Creates new timeline branch. |
+| `get_timeline` | "What changes has the AI made in this session?" → Ledger entries with prompts, diffs, status, branches |
+| `mark_working` | Explicitly mark the current state as a working snapshot (user-initiated via agent or dashboard) |
+
+### Dashboard Pages
+
+- `/dashboard/repos/[repoId]/timeline` — Visual timeline showing prompts, changes, working/broken states, rewind points, and branches as parallel lanes
+- `/dashboard/repos/[repoId]/timeline/[entryId]` — Detail view of a specific change: prompt, diff, files affected, rules generated
+- `/dashboard/repos/[repoId]/commits` — Commit history with rolled-up ledger summaries showing the AI's contribution per commit
+
+### New Files
+
+```
+lib/
+  ledger/
+    schema.ts              ← LedgerEntry, Snapshot, LedgerSummary Zod schemas
+    store.ts               ← ArangoDB CRUD: append entries, query timelines, manage branches
+    snapshot.ts            ← Working state snapshot creation + retrieval
+    rollup.ts              ← Commit roll-up logic (mark committed, create summary)
+    anti-pattern.ts        ← LLM-powered anti-pattern rule synthesis after rewind
+  mcp/tools/
+    rewind.ts              ← revert_to_working_state MCP tool
+    timeline.ts            ← get_timeline, mark_working MCP tools
+packages/
+  cli/                     ← @kap10/cli npm package (separate package in monorepo)
+    src/
+      index.ts             ← CLI entry point (commander.js)
+      commands/
+        watch.ts           ← kap10 watch — file watcher + ledger streaming
+        rewind.ts          ← kap10 rewind — restore from terminal
+        timeline.ts        ← kap10 timeline — view prompt history
+        mark-working.ts    ← kap10 mark-working — explicit snapshot
+        branches.ts        ← kap10 branches — view timeline branches
+        auth.ts            ← kap10 auth login/logout
+      client.ts            ← HTTP client for kap10 API
+      prompt-detector.ts   ← Extract agent prompt from Cursor/Claude Code/Windsurf logs
+app/
+  (dashboard)/
+    repos/
+      [repoId]/
+        timeline/
+          page.tsx         ← Visual timeline with branches
+          [entryId]/page.tsx ← Ledger entry detail
+        commits/page.tsx   ← Commit history with AI contribution summaries
+```
+
+### Prisma Schema Additions
+
+```prisma
+// Snapshot storage in Postgres (file contents can be large)
+model LedgerSnapshot {
+  id             String   @id @default(uuid())
+  orgId          String   @map("org_id")
+  repoId         String   @map("repo_id")
+  userId         String   @map("user_id")
+  branch         String
+  timelineBranch Int      @default(0) @map("timeline_branch")
+  ledgerEntryId  String   @map("ledger_entry_id")
+  reason         String   // tests_passed | user_marked | commit | session_start
+  files          Json     // Array of { filePath, content, entityHashes }
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([orgId, repoId, userId, branch])
+  @@map("ledger_snapshots")
+}
+```
+
+> **Note:** Ledger entries and summaries live in ArangoDB (fast appends, AQL timeline queries). Snapshots live in Postgres/Prisma (large file content blobs, better for JSONB storage).
+
+### Test
+
+- `pnpm test` — Ledger entry creation is append-only; snapshot captures correct file content; rewind restores to exact snapshot state; timeline branch increments after rewind; roll-up correctly marks entries as committed and creates summary; anti-pattern rule synthesis produces valid Semgrep YAML
+- `pnpm test` — `revert_to_working_state` MCP tool returns file contents, creates new branch, generates rule; `get_timeline` returns entries in chronological order with branch info
+- `e2e` — Dashboard timeline shows prompt → change → working/broken flow; Rewind button restores files; post-rewind prompts appear on new branch lane; commit roll-up shows AI contribution summary
+- `e2e` — CLI: `kap10 watch` detects file changes → streams to cloud → `kap10 timeline` shows entries → `kap10 rewind` restores files locally
 
 ---
 
@@ -3042,10 +4095,12 @@ app/dashboard/snippets/
 ## Phase Summary & Dependencies
 
 ```
-Phase 0: Foundation Wiring (Prisma + ArangoDB + Temporal + Redis + Langfuse)
+Phase 0: Foundation Wiring
+(Prisma + ArangoDB + Temporal + Redis + Langfuse + Ports/Adapters + DI Container)
     │
     ▼
-Phase 1: GitHub Connect & Repo Indexing (SCIP + prepareWorkspace + entity hashing)
+Phase 1: GitHub Connect & Repo Indexing
+(SCIP + prepareWorkspace + entity hashing + monorepo support)
     │
     ├──────────────────┐
     ▼                  ▼
@@ -3053,17 +4108,24 @@ Phase 2: MCP Server    Phase 3: Semantic Search (LlamaIndex.TS)
 (+ Shadow Workspace    │
  + Auto-PR             │
  + Secret Scrubbing    │
+ + Rate Limiter        │
  + Truncation)         │
     │                  │
     └────────┬─────────┘
              ▼
 Phase 4: Business Justification + Taxonomy (Vercel AI SDK)
 (+ VERTICAL/HORIZONTAL/UTILITY classification
- + Features collection
- + Blueprint Dashboard)
+ + Features collection + Blueprint Dashboard
+ + Architecture Health Report)
     │
     ▼
 Phase 5: Incremental Indexing (entity hash diff + cascade re-justify)
+    │
+    ▼
+Phase 5.5: Prompt Ledger + Rewind + Branching
+(+ append-only timeline + working-state snapshots
+ + anti-pattern rule synthesis + kap10 CLI
+ + commit roll-up)
     │
     ├──────────────────┐
     ▼                  ▼
@@ -3083,20 +4145,24 @@ Phase 9: Code Snippet Library (post-launch)
 (community + team + auto-extracted snippets)
 ```
 
+**Cross-Cutting (all phases):** Structured output mandate (§6), 24-hour deletion SLA (§7), pool-based multi-tenancy
+
 ### Estimated scope per phase
 
 | Phase | New files | Modified files | New DB tables/collections | New MCP tools | Temporal workflows |
 |-------|-----------|---------------|--------------------------|---------------|-------------------|
-| 0 | ~12 | ~4 | ArangoDB schema + Prisma init | 0 | 0 |
-| 1 | ~16 | ~3 | 1 Prisma + 11 ArangoDB | 0 | 1 (`indexRepo`) |
-| 2 | ~14 | ~2 | 1 Prisma (Workspace) | 9 | 0 |
+| 0 | ~30 | ~4 | ArangoDB schema (single DB, pool tenancy) + Prisma init + DeletionLog | 0 | 0 |
+| 1 | ~18 | ~3 | 1 Prisma + 11 ArangoDB + monorepo detection | 0 | 1 (`indexRepo`) |
+| 2 | ~16 | ~2 | 1 Prisma (Workspace) | 9 | 0 |
 | 3 | ~8 | ~3 | 1 Prisma | 2 | 1 (`embedRepo`) |
-| 4 | ~12 | ~2 | 4 ArangoDB + 2 edge | 4 | 2 (`justifyRepo`, `justifyEntity`) |
+| 4 | ~16 | ~3 | 4 ArangoDB + 2 edge | 4 | 3 (`justifyRepo`, `justifyEntity`, `healthReport`) |
 | 5 | ~8 | ~4 | 0 | 1 | 1 (`incrementalIndex`) |
+| 5.5 | ~20 | ~4 | 3 ArangoDB (`ledger`, `snapshots`, `ledger_summaries`) + 1 Prisma (`LedgerSnapshot`) | 3 (`revert_to_working_state`, `get_timeline`, `mark_working`) | 0 |
 | 6 | ~18 | ~4 | 2 ArangoDB (`patterns` + `rules`) | 5 (+`get_rules`, `check_rules`) | 1 (`detectPatterns`) |
 | 7 | ~12 | ~3 | 2 Prisma | 0 | 1 (`reviewPr`) |
 | 8 | ~12 | ~6 | 3 Prisma | 0 | 1 (`syncBilling`) |
 | 9 *(post-launch)* | ~14 | ~4 | 1 ArangoDB (`snippets`) + pgvector embeddings | 3 (`get_snippets`, `search_snippets`, `pin_snippet`) | 1 (`extractSnippets`) |
+| — | ~6 | ~2 | — | — | 2 (`deleteRepo`, `deletionAudit`) |
 
 ---
 
@@ -3115,6 +4181,7 @@ Phase 9: Code Snippet Library (post-launch)
 | Package | Purpose | Phase |
 |---------|---------|-------|
 | `scip-typescript` / `scip-python` / etc. | SCIP code intelligence indexers (run as CLI, require full workspace with deps) | 1 |
+| `scip` (CLI) | SCIP index merging for monorepos (`scip combine`) | 1 |
 | `web-tree-sitter` | Supplementary parsing for non-SCIP languages | 1 |
 | `@ast-grep/napi` | Structural code search (pattern detection) | 6 |
 | `semgrep` (CLI) | Rule-based static analysis (pattern enforcement + PR review) | 6, 7 |
@@ -3123,23 +4190,37 @@ Phase 9: Code Snippet Library (post-launch)
 
 | Package | Purpose | Phase |
 |---------|---------|-------|
-| `ai` + `@ai-sdk/openai` + `@ai-sdk/anthropic` | Unified LLM routing (Vercel AI SDK) | 4 |
+| `ai` + `@ai-sdk/openai` + `@ai-sdk/anthropic` | Unified LLM routing (Vercel AI SDK) — all calls via `generateObject()` + Zod | 4 |
 | `llamaindex` | Embedding pipeline + pgvector retrieval + RAG | 3 |
+| `@xenova/transformers` | Local embedding models (nomic-embed-text) — $0 cost, no API rate limits, runs on CPU in Temporal workers | 3 |
 | `@langfuse/tracing` + `@langfuse/otel` + `@langfuse/client` | LLM observability, cost tracking, billing metering (via OpenTelemetry) | 0 (init), 4+ (all LLM calls) |
 | `@opentelemetry/sdk-node` + `@opentelemetry/sdk-trace-node` | OpenTelemetry SDK — bridges Vercel AI SDK telemetry to Langfuse | 0 |
 
-### GitHub & Infra
+### Git, GitHub & Infra
 
 | Package | Purpose | Phase |
 |---------|---------|-------|
-| `@octokit/rest` + `@octokit/webhooks` | GitHub API + webhook handling + Auto-PR | 1, 2 |
+| `simple-git` | Promise-based Git operations in Temporal workers (clone, pull, diff) — no shell commands | 1, 5 |
+| `parse-diff` | Structured parsing of raw `git diff` output into typed JSON (files, chunks, additions, deletions) | 5, 5.5 |
+| `@octokit/rest` + `@octokit/webhooks` | GitHub API + webhook handling (with `x-hub-signature-256` validation) + Auto-PR | 1, 2 |
 | `@modelcontextprotocol/sdk` | MCP server implementation | 2 |
+| `@upstash/ratelimit` | Battle-tested Redis sliding window rate limiter (works with standard `ioredis`) | 2 |
+
+### CLI & Local Sync
+
+| Package | Purpose | Phase |
+|---------|---------|-------|
+| `commander` | CLI framework for `@kap10/cli` | 5.5 |
+| `chokidar` | File watcher for CLI watch mode (ledger streaming) | 5.5 |
 
 ### Visualization
 
 | Package | Purpose | Phase |
 |---------|---------|-------|
-| `@xyflow/react` (React Flow) | Blueprint Dashboard — business swimlane visualization | 4 |
+| `@xyflow/react` (React Flow) | Blueprint Dashboard — structured business swimlane visualization | 4 |
+| `cytoscape` + `react-cytoscapejs` | Force-directed dependency graph visualization for impact analysis (N-hop callers/callees, 500+ node organic graphs) | 4, 7 |
+
+> **React Flow vs Cytoscape:** React Flow excels at structured, swimlane-style layouts (Blueprint Dashboard). But when a user clicks "Analyze Impact" and gets a 500-node organic dependency graph, React Flow is too rigid and slow. Cytoscape.js specializes in force-directed layouts with built-in graph theory algorithms (shortest path, betweenness centrality, community detection) that run directly in the browser.
 
 ### Snippet Library (Post-Launch)
 
@@ -3155,9 +4236,31 @@ Each phase has three test levels:
 
 | Level | Tool | What it covers |
 |-------|------|---------------|
-| **Unit** | Vitest | Individual functions: parsers, formatters, query builders, AI SDK mock calls, secret scrubber, entity hasher |
+| **Unit** | Vitest + `createTestContainer()` | Individual functions with in-memory fakes: parsers, formatters, query builders, AI SDK mock calls, secret scrubber, entity hasher, rule resolution, snippet resolution |
 | **Integration** | Vitest + testcontainers | Full pipelines: SCIP → ArangoDB → query → result; Temporal workflow replay tests; MCP tool chain with truncation |
 | **E2E** | Playwright | User flows: dashboard interactions, connection flows, Blueprint Dashboard |
+
+### Port/Adapter testing
+
+The hexagonal architecture (Cross-Cutting Concern §5) makes unit testing trivial — use `createTestContainer()` with in-memory fakes instead of mocking frameworks:
+
+```typescript
+// Unit test — no external dependencies, no Docker, no mocking library
+import { createTestContainer } from '@/lib/di/container';
+import { IndexRepoUseCase } from '@/lib/use-cases/index-repo';
+
+const container = createTestContainer({
+  // Override specific adapters if needed
+  codeIntelligence: new FakeCodeIntelligence({ entities: mockEntities }),
+});
+
+const useCase = new IndexRepoUseCase(container);
+const result = await useCase.execute({ orgId: 'test', repoUrl: 'https://...' });
+
+expect(result.entityCount).toBe(mockEntities.length);
+// In-memory graph store can be inspected directly
+expect(container.graphStore.getEntity('test', 'fn_main')).toBeDefined();
+```
 
 ### Temporal-specific testing
 
@@ -3187,7 +4290,7 @@ expect(result.fileCount).toBeGreaterThan(0);
 | Custom AST visitors for pattern detection | **ast-grep** | 3-line YAML patterns instead of 50-line visitors; 80% dev time reduction in Phase 6 |
 | Raw pattern checking | **Semgrep** | Deterministic YAML rule execution; LLM generates rules once, Semgrep enforces forever; blazing fast PR reviews |
 | Raw OpenAI SDK + manual routing | **Vercel AI SDK** | One-line provider switching, native Zod structured output, built-in streaming + Next.js integration |
-| Raw pgvector SQL + OpenAI embeddings | **LlamaIndex.TS** | Built-in chunking, embedding, PGVectorStore, retrieval + re-ranking — no custom vector pipeline |
+| Raw pgvector SQL + OpenAI embeddings ($$) | **LlamaIndex.TS + local `@xenova/transformers`** | $0 embedding cost, no API rate limits, infinite parallelism; LlamaIndex handles chunking, PGVectorStore, retrieval + re-ranking |
 | Raw Supabase client | **Prisma** | Type-safe queries, migration management, native pgvector support |
 | Simple justification only | **VERTICAL/HORIZONTAL/UTILITY taxonomy** + features collection + Blueprint Dashboard | Structural understanding of the codebase as business swimlanes, not just a bag of functions |
 | No local state bridging | **Shadow Workspace** (sync_local_diff + Bootstrap Rule + Auto-PR) | Agents see current work, not just last commit; frictionless onboarding via PR |
@@ -3198,7 +4301,21 @@ expect(result.fileCount).toBeGreaterThan(0);
 | Abstract "usage units" billing | **LLM cost in USD** as the billing dimension | Users understand exactly what they pay for; no confusing unit conversions; Langfuse is the single source of truth |
 | Static `.cursorrules` files | **Hierarchical Rules Engine** (org → repo → path → branch → workspace) | Rules never fall out of context — injected via MCP on every tool call; team-wide enforcement without cursor rules context rot |
 | No exemplar code injection | **Code Snippet Library** (community + team + auto-extracted) | Agents produce code matching team conventions; knowledge transfer survives developer turnover; community curates best practices |
+| Direct SDK imports in business logic | **Ports & Adapters** (hexagonal architecture) | Every external dependency behind an interface; swap ArangoDB→Neo4j, Temporal→Inngest, Stripe→Paddle with a single adapter file; business logic has zero external imports |
+| Manual DI / global singletons | **Container factory** (`createProductionContainer` / `createTestContainer`) | Typed dependency graph; tests use in-memory fakes without mocking frameworks; new dependency = new port + adapter, nothing else changes |
+| `generateText()` + regex/JSON.parse | **`generateObject()` + Zod schemas** (structured output mandate) | ~99.9% reliability vs ~70% with regex; provider uses constrained decoding; typed output guaranteed; zero LLM response parsing code |
+| Database-per-org ArangoDB | **Single database, pool-based multi-tenancy** (`org_id` + `repo_id` on every doc/edge) | No per-database memory overhead; scales to 10,000+ orgs; tenant isolation enforced at query level with persistent indexes |
+| Single-root SCIP indexing | **Monorepo detection + per-package SCIP + `scip combine`** | Enterprise monorepos (Nx, Turborepo, pnpm workspaces) index correctly; cross-package type references resolve |
+| No tool call rate limiting | **Token bucket rate limiter** (Redis sliding window, 60 calls/min) | Prevents runaway agents from draining DB connections and inflating LLM costs; 429 response tells agent to stop looping |
+| No change tracking | **Prompt Ledger** (append-only timeline + working-state snapshots + branching) | Every AI change linked to its prompt; rewind to any working state; anti-pattern rules auto-generated from failures; commit roll-up shows AI contribution |
+| No local workspace sync for ledger | **kap10 CLI** (`@kap10/cli` — watch, rewind, timeline, mark-working) | Users can rewind from terminal; file changes streamed to cloud in real-time; works alongside agent-based sync |
+| No data deletion mechanism | **24-hour deletion SLA** (`deleteRepoWorkflow` + `deletionAuditWorkflow`) | Enterprise compliance; all repo data (graph, embeddings, metadata) purged within 24h of disconnect; audit trail for compliance |
+| No initial value demonstration | **Architecture Health Report** (auto-generated after first indexing) | Dead code, architecture drift, testing gaps, circular deps, complexity hotspots, LLM risk assessment — proves kap10 works before user writes a single prompt |
+| `execAsync('git clone/pull/diff')` | **`simple-git`** + **`parse-diff`** | Promise-based Git with auth/queuing/concurrency safety; structured diff parsing into typed JSON — no brittle shell commands |
+| Custom Redis `MULTI/EXEC` rate limiter | **`@upstash/ratelimit`** | Mathematically proven sliding window; no race conditions; works with standard `ioredis` |
+| Hand-rolled 6-regex secret scrubber | **TruffleHog regex ruleset** (800+ vendor patterns) + entropy fallback | Catches Slack, Stripe, GCP, Azure, and hundreds more vendor-specific key formats; maintained by security team |
+| React Flow only for all graphs | **React Flow** (structured swimlanes) + **Cytoscape.js** (force-directed dependency graphs) | React Flow for Blueprint Dashboard; Cytoscape for organic N-hop impact analysis graphs with 500+ nodes |
 
 ---
 
-*kap10 — The AI Tech Lead. Institutional memory, rules, and proven patterns for your codebase.*
+*kap10 — The AI Tech Lead. Institutional memory, rewind, rules, and proven patterns for your codebase.*

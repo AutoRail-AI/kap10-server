@@ -1,6 +1,6 @@
-import { supabase } from "@/lib/db"
 import crypto from "node:crypto"
-import type { Database, Json } from "@/lib/db/types"
+import { supabase } from "@/lib/db"
+import type { Database } from "@/lib/db/types"
 
 export type Webhook = Database["public"]["Tables"]["webhooks"]["Row"]
 export type WebhookInsert = Database["public"]["Tables"]["webhooks"]["Insert"]

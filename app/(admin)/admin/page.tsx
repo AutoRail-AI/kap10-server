@@ -10,10 +10,12 @@ export default async function AdminDashboard() {
 
   // Get stats from Supabase
   // user and organization tables are managed by Better Auth, not our app Database type
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { count: userCount } = await (supabase as any)
     .from("user")
     .select("id", { count: "exact", head: true })
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { count: orgCount } = await (supabase as any)
     .from("organization")
     .select("id", { count: "exact", head: true })

@@ -1,8 +1,8 @@
 import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
-import { createTemplate, getTemplate, getTemplates, incrementUsageCount } from "@/lib/templates/manager"
 import type { Json } from "@/lib/db/types"
+import { createTemplate, getTemplate, getTemplates, incrementUsageCount } from "@/lib/templates/manager"
 
 export async function GET(req: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -103,7 +103,7 @@ export async function POST(req: NextRequest) {
     category,
     tags,
     content: parsedContent as Json,
-    variables: variables as any,
+    variables: variables as unknown as Json,
     public: isPublic,
   })
 

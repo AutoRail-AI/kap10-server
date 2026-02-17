@@ -1,4 +1,4 @@
-# Modern Next.js Boilerplate
+# Kap10 Web Server
 
 Production-ready Next.js starter for building full-stack SaaS applications. Includes authentication, multi-tenancy, AI agents, billing, analytics, and more.
 
@@ -55,7 +55,7 @@ corepack enable
 
 # 2. Clone and install dependencies
 git clone <your-repo-url>
-cd nextjs_fullstack_boilerplate
+cd kap10-web-server
 pnpm install
 
 # 3. Configure environment
@@ -245,7 +245,7 @@ pnpm migrate          # Run database migrations
 
 ## Database Setup
 
-This boilerplate uses **Supabase (PostgreSQL)** for all data storage.
+This project uses **Supabase (PostgreSQL)** for all data storage.
 
 ### Schema Management
 

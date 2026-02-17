@@ -1,63 +1,58 @@
 import { NextResponse } from "next/server"
 import type { NextRequest } from "next/server"
 
-// Routes that require authentication
-const protectedRoutes: string[] = [
-  "/dashboard",
-  "/settings",
-  "/billing",
-  "/admin",
-]
+export async function proxy(request: NextRequest) {
+    const path = request.nextUrl.pathname
 
-// Routes that should redirect to home if already authenticated
-const authRoutes = ["/login", "/register"]
+    // Define public paths that don't require authentication
+    const publicPaths = [
+        "/login",
+        "/register",
+        "/verify-email",
+        "/api/auth",
+        "/api/webhooks",
+    ]
 
-// Admin routes (require platform_admin role)
-const adminRoutes = ["/admin"]
+    // Check if the path is public
+    const isPublicPath = publicPaths.some((publicPath) =>
+        path.startsWith(publicPath)
+    )
 
-export function proxy(request: NextRequest) {
-  const { pathname } = request.nextUrl
+    // Get session token from cookies
+    // better-auth uses "better-auth.session_token" by default
+    const sessionToken = request.cookies.get("better-auth.session_token")?.value ||
+        request.cookies.get("__Secure-better-auth.session_token")?.value
 
-  // Get the session token from cookies
-  const sessionToken = request.cookies.get("better-auth.session_token")?.value
-  const isAuthenticated = !!sessionToken
+    // If user is not authenticated and trying to access a protected route
+    if (!sessionToken && !isPublicPath) {
+        // Redirect to login page
+        const url = request.nextUrl.clone()
+        url.pathname = "/login"
+        // Optional: Add callback URL
+        // url.searchParams.set("callbackUrl", path)
+        return NextResponse.redirect(url)
+    }
 
-  // Check if the current path is a protected route
-  const isProtectedRoute = protectedRoutes.some((route) =>
-    pathname.startsWith(route)
-  )
+    // If user is authenticated and trying to access auth pages (login/register)
+    if (sessionToken && (path === "/login" || path === "/register")) {
+        // Redirect to dashboard
+        return NextResponse.redirect(new URL("/", request.url))
+    }
 
-  // Check if the current path is an auth route
-  const isAuthRoute = authRoutes.some((route) => pathname.startsWith(route))
-
-  // Check if the current path is an admin route
-  const isAdminRoute = adminRoutes.some((route) => pathname.startsWith(route))
-
-  // Redirect unauthenticated users from protected routes to login
-  if ((isProtectedRoute || isAdminRoute) && !isAuthenticated) {
-    const loginUrl = new URL("/login", request.url)
-    loginUrl.searchParams.set("callbackUrl", pathname)
-    return NextResponse.redirect(loginUrl)
-  }
-
-  // Redirect authenticated users from auth routes to home (or onboarding)
-  if (isAuthRoute && isAuthenticated) {
-    return NextResponse.redirect(new URL("/", request.url))
-  }
-
-  return NextResponse.next()
+    return NextResponse.next()
 }
 
 export const config = {
-  matcher: [
-    /*
-     * Match all request paths except:
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     * - public files (public directory)
-     * - api routes (handled separately)
-     */
-    "/((?!_next/static|_next/image|favicon.ico|public|api).*)",
-  ],
+    matcher: [
+        /*
+         * Match all request paths except for the ones starting with:
+         * - api/auth (auth endpoints)
+         * - api/webhooks (webhook endpoints)
+         * - _next/static (static files)
+         * - _next/image (image optimization files)
+         * - favicon.ico, sitemap.xml, robots.txt (metadata files)
+         * - images/ (public images)
+         */
+        "/((?!api/auth|api/webhooks|_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt|images/).*)",
+    ],
 }

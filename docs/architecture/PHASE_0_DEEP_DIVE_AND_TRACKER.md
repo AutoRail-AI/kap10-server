@@ -291,6 +291,7 @@ Response shape:
     arangodb:  { status: "up" | "down", latencyMs: number },
     temporal:  { status: "up" | "down", latencyMs: number },
     redis:     { status: "up" | "down", latencyMs: number },
+    langfuse:  { status: "up" | "down" | "unconfigured", latencyMs: number },
   }
 }
 
@@ -298,6 +299,8 @@ Logic:
   IF supabase.down → status = "unhealthy" (HTTP 503)
   ELSE IF any other system down → status = "degraded" (HTTP 200)
   ELSE → status = "healthy" (HTTP 200)
+  Note: langfuse.status = "unconfigured" (env vars missing) is treated as "up" for
+  overall status — it's optional infrastructure, not a failure.
 ```
 
 **Why Supabase is the only "unhealthy" trigger:** In Phase 0, the user cannot sign up, log in, or do anything without Supabase. ArangoDB and Temporal have no user-facing functionality yet. Redis degradation is a performance issue, not a functional one.
@@ -374,16 +377,19 @@ For Temporal workers (long-running processes, not serverless):
 
 ### Memory Considerations for Docker Compose
 
-| Service | Memory Limit | Rationale |
-|---------|-------------|-----------|
-| `app` | 512 MB | Next.js dev server with Turbopack |
-| `temporal` | 512 MB | Temporal server (auto-setup, single-node dev) |
-| `temporal-ui` | 128 MB | Static web UI |
-| `temporal-worker-heavy` | 256 MB (Phase 0 — no heavy work yet) | Will need 8 GB in Phase 1+ for SCIP |
-| `temporal-worker-light` | 128 MB (Phase 0 — no LLM calls yet) | Will need 512 MB in Phase 4+ |
-| `arangodb` | 1 GB | ArangoDB's RocksDB engine needs memory for write buffers |
-| `redis` | 128 MB | Minimal data in Phase 0 |
-| **Total** | ~2.7 GB | Fits on a 4 GB dev machine with headroom |
+> **Observed (2026-02-17):** Temporal server uses ~227 MB, Temporal UI uses ~30 MB, PostgreSQL (local persistence) is also running.
+
+| Service | Memory Limit | Actual (observed) | Rationale |
+|---------|-------------|-------------------|-----------|
+| `app` | 512 MB | — (runs outside Docker in dev) | Next.js dev server with Turbopack |
+| `temporal` | 512 MB | ~227 MB | Temporal server (`auto-setup:1.24.2`, backed by local PostgreSQL) |
+| `temporal-ui` | 128 MB | ~30 MB | Static web UI (`ui:2.31.2`) |
+| `postgresql` | 512 MB | — | Local PostgreSQL 13 for Temporal persistence |
+| `temporal-worker-heavy` | 256 MB (Phase 0 — no heavy work yet) | — (not yet running) | Will need 8 GB in Phase 1+ for SCIP |
+| `temporal-worker-light` | 128 MB (Phase 0 — no LLM calls yet) | — (not yet running) | Will need 512 MB in Phase 4+ |
+| `arangodb` | 1 GB | — (not yet running) | ArangoDB's RocksDB engine needs memory for write buffers |
+| `redis` | 128 MB | — | Minimal data in Phase 0 |
+| **Total** | ~3.2 GB | — | Fits on an 8 GB dev machine with headroom |
 
 ---
 
@@ -457,6 +463,15 @@ Seam 5: ArangoDB
 
 ### Docker Compose Expansion
 
+> **Status Note (2026-02-17):** Temporal server, Temporal UI, Redis, and a local PostgreSQL instance are already running in Docker. Config values added to `.env.local`. The running containers are:
+>
+> | Container | Image | Port | Memory | Status |
+> |-----------|-------|------|--------|--------|
+> | `temporal` | `temporalio/auto-setup:1.24.2` | 7233 | ~227 MB | Running |
+> | `ui` (Temporal UI) | `temporalio/ui:2.31.2` | 8080 | ~30 MB | Running |
+> | `postgresql` | `postgres:13` | 5432 | — | Running |
+> | `redis` | `redis:7-alpine` | 6379 | — | Running (already in docker-compose.yml) |
+
 - [ ] **Add ArangoDB service to `docker-compose.yml`** — S
   - Image: `arangodb/arangodb:3.12`
   - Port: 8529 (web UI + API)
@@ -466,48 +481,60 @@ Seam 5: ArangoDB
   - **Test:** `docker compose up arangodb` starts cleanly. Web UI accessible at `localhost:8529`.
   - Notes: _____
 
-- [ ] **Add Temporal server service** — M
-  - Image: `temporalio/auto-setup:latest`
+- [x] **Add Temporal server service** — M
+  - Image: `temporalio/auto-setup:1.24.2` (pinned, not `:latest`)
   - Port: 7233 (gRPC)
-  - Environment: `DB=sqlite` (dev mode — no external DB needed for single-node dev)
-  - Depends on: nothing (self-contained in dev mode)
+  - Uses local PostgreSQL (`postgres:13` on port 5432) as persistence store
   - Health check: `temporal operator cluster health`
-  - **Test:** `docker compose up temporal` starts. `temporal operator namespace describe default` returns.
-  - Notes: _____
+  - **Test:** ~~`docker compose up temporal` starts. `temporal operator namespace describe default` returns.~~
+  - Notes: Running. ~227 MB memory, 1.38% CPU. Connected to local PostgreSQL for persistence.
 
-- [ ] **Add Temporal UI service** — S
-  - Image: `temporalio/ui:latest`
+- [x] **Add Temporal UI service** — S
+  - Image: `temporalio/ui:2.31.2` (pinned)
   - Port: 8080
   - Environment: `TEMPORAL_ADDRESS=temporal:7233`
   - Depends on: `temporal`
-  - **Test:** Web UI loads at `localhost:8080`. Default namespace visible.
-  - Notes: _____
+  - **Test:** ~~Web UI loads at `localhost:8080`. Default namespace visible.~~
+  - Notes: Running. ~30 MB memory. Accessible at `localhost:8080`.
 
 - [ ] **Add Temporal heavy-compute worker service** — M
   - Build from project root, custom entrypoint: `pnpm temporal:worker:heavy`
   - No exposed ports
-  - Environment: `TEMPORAL_ADDRESS=temporal:7233`, `TASK_QUEUE=heavy-compute-queue`
+  - Environment: `TEMPORAL_ADDRESS=localhost:7233`, `TASK_QUEUE=heavy-compute-queue`
   - Depends on: `temporal`
   - Memory limit: 256 MB (Phase 0 — no actual work)
   - **Test:** Worker connects, registers on `heavy-compute-queue`. Temporal UI shows worker in queue.
-  - Notes: _____
+  - Notes: Temporal server is ready. Worker code needs to be written (see §2.4).
 
 - [ ] **Add Temporal light-llm worker service** — M
   - Same as heavy worker but `TASK_QUEUE=light-llm-queue`
   - Memory limit: 128 MB
   - **Test:** Worker registers on `light-llm-queue`. Temporal UI confirms.
-  - Notes: _____
+  - Notes: Temporal server is ready. Worker code needs to be written (see §2.4).
 
-- [ ] **Update `.env.example` with new variables** — S
-  - `ARANGODB_URL`, `ARANGODB_DATABASE`, `ARANGODB_ROOT_PASSWORD`
-  - `TEMPORAL_ADDRESS`
-  - `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_BASEURL` (optional, for self-hosted)
+- [ ] **Update `.env.example` with new variables** — S (partially done)
+  - Already configured in `.env.local`: `TEMPORAL_ADDRESS`, `REDIS_URL`
+  - Still needed in `.env.example`: `ARANGODB_URL`, `ARANGODB_DATABASE`, `ARANGODB_ROOT_PASSWORD`, `TEMPORAL_ADDRESS`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_BASEURL`
   - **Test:** `cp .env.example .env.local` + fill values → `docker compose up` succeeds.
-  - Notes: _____
+  - Notes: `.env.local` has Temporal + Redis config. `.env.example` needs to be updated to document all new vars for other developers.
 
 - [ ] **Add `pnpm temporal:worker:heavy` and `pnpm temporal:worker:light` scripts to `package.json`** — S
   - Both use `tsx` to run TypeScript worker entry points
   - **Test:** `pnpm temporal:worker:heavy` starts without error (may fail to connect if Temporal isn't running — that's expected).
+  - Notes: _____
+
+- [x] **Redis service in `docker-compose.yml`** — S
+  - Already present in `docker-compose.yml` (`redis:7-alpine`, port 6379, AOF persistence)
+  - Health check configured (`redis-cli ping`)
+  - Notes: Pre-existing. No changes needed.
+
+### E2E Test Framework Setup
+
+- [ ] **Verify Playwright is installed and scaffolded with browser binaries** — S
+  - Playwright is already a devDependency (`@playwright/test`). Ensure browser binaries are installed: `pnpm exec playwright install --with-deps chromium`.
+  - Confirm `playwright.config.ts` has a `baseURL` pointing to `localhost:3000` and a `webServer` block that starts the dev server before E2E runs.
+  - Add `pnpm exec playwright install` to the Docker Compose `app` entrypoint or CI pipeline so browser binaries are available in every environment where E2E tests run.
+  - **Test:** `pnpm e2e:headless` runs the existing example spec without "browser not found" errors.
   - Notes: _____
 
 ---
@@ -756,11 +783,12 @@ Seam 5: ArangoDB
 - [ ] **`scripts/temporal-worker-heavy.ts`** — S
   - Connects to Temporal, registers `heavy-compute-queue` with empty activity set (Phase 0)
   - Logs "Heavy compute worker started, waiting for tasks..."
-  - **Test:** Script starts, connects, idles. Temporal UI shows worker.
+  - **Connection retry:** Must handle Temporal server unavailability during `docker compose up` startup race. The Temporal Docker image takes 5-10 seconds to initialize. Workers must retry connection with exponential backoff (e.g., 1s, 2s, 4s, 8s... up to 60s max) rather than crashing the container. Use Temporal SDK's built-in `ConnectionOptions.connectTimeout` + a wrapper retry loop. Log each retry attempt so developers can distinguish "still connecting" from "permanently broken."
+  - **Test:** Script starts, connects, idles. Temporal UI shows worker. Also: start worker BEFORE Temporal server → worker retries and eventually connects when server becomes available.
   - Notes: _____
 
 - [ ] **`scripts/temporal-worker-light.ts`** — S
-  - Same for `light-llm-queue`
+  - Same for `light-llm-queue`, same retry behavior as heavy worker.
   - **Test:** Same as above.
   - Notes: _____
 
@@ -932,4 +960,5 @@ Testing & Verification ──────────────────┘
 
 | Date | Author | Change |
 |------|--------|--------|
-| _TBD_ | — | Initial document created |
+| 2026-02-17 | — | Initial document created |
+| 2026-02-17 | — | Marked Temporal server, Temporal UI, Redis as running. Recorded actual image versions (`auto-setup:1.24.2`, `ui:2.31.2`, `postgres:13`). Noted Temporal uses local PostgreSQL for persistence (not SQLite). Updated memory table with observed values. |
