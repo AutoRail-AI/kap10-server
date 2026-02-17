@@ -38,7 +38,7 @@ export function proxy() { ... }
 
 ## 2. Supabase Query Patterns
 
-**Rule**: Use the typed Supabase client from `@/lib/db` for all database operations. Kap10 app tables live in PostgreSQL schema `kap10` (not `public`); for Prisma-managed tables use `@@schema("kap10")`. See docs/architecture/VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split.
+**Rule**: Use the typed Supabase client from `@/lib/db` or Prisma for all relational database operations. Relational data is Supabase (PostgreSQL) and Prisma only — no MongoDB or other NoSQL document stores. Kap10 app tables live in PostgreSQL schema `kap10` (not `public`); for Prisma-managed tables use `@@schema("kap10")`. See docs/architecture/VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split.
 
 All queries should import the singleton `supabase` client and use typed table names.
 
@@ -379,6 +379,16 @@ export function getRedis(): Redis {
   return redisInstance
 }
 ```
+
+### Infra dependencies during build (Temporal, ArangoDB, Supabase, Redis)
+
+All infra clients must be loaded lazily so the Next.js build never loads or connects to Temporal, ArangoDB, Supabase, or Redis. See [Temporal](https://docs.temporal.io), [ArangoDB](https://www.arangodb.com/docs), and [Supabase](https://supabase.com/docs) docs on connection and scaling.
+
+- **DI container** (`lib/di/container.ts`): Production adapters are loaded via `require()` inside getters on first property access. No static imports of adapter implementations.
+- **Auth** (`lib/auth/auth.ts`): `pg` and `better-auth` are `require()`d inside `getAuth()` only.
+- **Supabase** (`lib/db/supabase.ts`): `createClient` is `require()`d inside `getSupabase()` only.
+- **Redis** (`lib/queue/redis.ts`): `ioredis` is `require()`d inside `getRedis()` only.
+- **Adapters**: ArangoDB and Temporal adapters use `require("arangojs")` / `require("@temporalio/client")` inside their getter functions, not top-level imports.
 
 **When to apply**: Any client/library that requires environment variables and might be imported during build
 

@@ -1,9 +1,15 @@
 /**
  * ArangoGraphStore — IGraphStore implementation using ArangoDB.
  * Phase 0: bootstrapGraphSchema + health; other methods implemented but unused until Phase 1+.
+ *
+ * We use the arangojs driver (Node.js HTTP client), not ArangoDB's in-server JavaScript API.
+ * The in-server API (require("@arangodb").db, Foxx, arangosh) runs inside arangod; it cannot
+ * be used from Node.js. See: https://www.arangodb.com/docs/stable/appendix-javascript-api/
+ *
+ * arangojs is required() inside getDb/getDbAsync so the build never loads or connects to ArangoDB.
  */
 
-import { Database } from "arangojs"
+import type { Database } from "arangojs"
 import type { IGraphStore } from "@/lib/ports/graph-store"
 import type {
   BlueprintData,
@@ -47,25 +53,25 @@ let dbInstance: Database | null = null
 
 async function getDbAsync(): Promise<Database> {
   if (!dbInstance) {
+    const { Database: ArangoDatabase } = require("arangojs") as typeof import("arangojs")
     const { url, password, databaseName } = getConfig()
-    const base = new Database({ url, auth: { username: "root", password } })
+    const base = new ArangoDatabase({ url, auth: { username: "root", password } })
     try {
       await base.createDatabase(databaseName)
     } catch {
       // exists
     }
-    base.useDatabase(databaseName)
-    dbInstance = base
+    dbInstance = base.database(databaseName)
   }
   return dbInstance
 }
 
 function getDb(): Database {
   if (!dbInstance) {
+    const { Database: ArangoDatabase } = require("arangojs") as typeof import("arangojs")
     const { url, password, databaseName } = getConfig()
-    const base = new Database({ url, auth: { username: "root", password } })
-    base.useDatabase(databaseName)
-    dbInstance = base
+    const base = new ArangoDatabase({ url, auth: { username: "root", password } })
+    dbInstance = base.database(databaseName)
   }
   return dbInstance
 }

@@ -1,9 +1,12 @@
 /**
  * TemporalWorkflowEngine — IWorkflowEngine using Temporal.
  * Phase 0: connection + healthCheck only; no workflows started.
+ *
+ * @temporalio/client is required() inside getClient so the build never loads or connects to Temporal.
+ * See Temporal docs: infra deps should be loaded at runtime only.
  */
 
-import { Client, Connection } from "@temporalio/client"
+import type { Client } from "@temporalio/client"
 import type { WorkflowHandle, WorkflowStatus } from "@/lib/ports/types"
 import type { IWorkflowEngine, TaskQueue } from "@/lib/ports/workflow-engine"
 
@@ -11,9 +14,10 @@ let clientInstance: Client | null = null
 
 async function getClient(): Promise<Client> {
   if (!clientInstance) {
+    const { Connection, Client: TemporalClient } = require("@temporalio/client") as typeof import("@temporalio/client")
     const address = process.env.TEMPORAL_ADDRESS ?? "localhost:7233"
     const connection = await Connection.connect({ address })
-    clientInstance = new Client({ connection, namespace: "default" })
+    clientInstance = new TemporalClient({ connection, namespace: "default" })
   }
   return clientInstance
 }

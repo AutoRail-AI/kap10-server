@@ -292,83 +292,14 @@ Keep selection on-brand and immersive.
 }
 ```
 
-### 7.4 Tailwind CSS v4 Implementation
+### 7.4 Tailwind Implementation
 
-**Source:** All utilities and theme variables are defined in `styles/tailwind.css`. Tailwind v4 uses `@theme { }` for design tokens and `@layer utilities` for custom classes.
+Display and glow utilities are defined in `styles/tailwind.css`:
 
-#### Theme Variables (`@theme`)
+- **Display:** `.text-display-xl` (48px → 72px at `md`), `.text-display-lg` (36px → 56px at `md`), `.text-display-m` (30px → 48px at `md`).
+- **Glow:** `.text-glow-cyan`, `.text-glow-purple`.
 
-```css
-/* Colors — use via Tailwind utilities: bg-*, text-*, border-* */
---color-void-black: #0A0A0F;
---color-slate-grey: #1E1E28;
---color-cloud-white: #FAFAFA;
---color-rail-purple: #6E18B3;
---color-quantum-violet: #8134CE;
---color-electric-cyan: #00E5FF;
---color-success: #00FF88;
---color-warning: #FFB800;
---color-error: #FF3366;
-
-/* Fonts */
---font-grotesk: Space Grotesk;   /* Headings */
---font-sans: Inter;              /* Body, UI */
---font-mono: JetBrains Mono;     /* Code, data */
-
-/* shadcn/ui semantic mapping */
---color-background: var(--color-void-black);
---color-foreground: var(--color-cloud-white);
---color-primary: var(--color-rail-purple);
---color-accent: var(--color-electric-cyan);
-```
-
-#### Utility Classes Reference
-
-| Purpose | Class | Usage |
-| :--- | :--- | :--- |
-| **Fonts** | `font-grotesk` | Headlines, page titles |
-| | `font-sans` | Body text, buttons, inputs |
-| | `font-mono` | Code, logs, IDs, numeric data |
-| **Display** | `text-display-xl` | Hero (48px → 72px at `md`) |
-| | `text-display-lg` | Section headers |
-| | `text-display-m` | Feature blocks |
-| **Glass panels** | `glass-card` | Cards with backdrop blur, hover glow |
-| | `glass-panel` | Structural panes (Glass Brain) |
-| **Gradients** | `bg-rail-fade` | Primary brand gradient |
-| | `text-gradient` | Industrial gradient text |
-| **Glows** | `glow-purple` | Rail Purple shadow |
-| | `glow-cyan` | Electric Cyan border/shadow |
-| | `glow-yellow` | Caution (40–70% confidence) |
-| | `glow-success-pulse` | Success (≥ 85%) |
-| **Text glow** | `text-glow-cyan` | Active terminal/code |
-| | `text-glow-purple` | Quantum Violet accent |
-| **Labels** | `text-label` | Uppercase, 10px, tracking |
-| **Animations** | `animate-fade-in` | Entry transitions |
-| | `animate-pulse-glow` | Status dots |
-| | `animate-breathing-glow` | Confidence framing |
-
-#### Component Usage Examples
-
-```tsx
-// Page container (golden-sample pattern)
-<div className="space-y-6 py-6 animate-fade-in">
-
-// Page title — MANDATORY: text-lg font-semibold
-<h1 className="font-grotesk text-lg font-semibold text-foreground">Page Title</h1>
-
-// Glass card
-<Card className="glass-card border-border hover:shadow-glow-purple">
-  <CardContent className="pt-6">...</CardContent>
-</Card>
-
-// Input (MANDATORY: h-9)
-<Input className="h-9 ..." />
-
-// Button (MANDATORY: size="sm")
-<Button size="sm" className="bg-rail-fade hover:opacity-90">
-```
-
-**Golden Sample:** See `.cursor/patterns/golden-sample.tsx` for the canonical dashboard pattern.
+Use `font-grotesk`, `font-sans`, and `font-mono` for the three roles. Theme variables: `--font-grotesk`, `--font-sans`, `--font-mono`.
 
 ### 7.5 Usage Rules (Do's & Don'ts)
 

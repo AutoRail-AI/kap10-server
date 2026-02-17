@@ -30,7 +30,8 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(new URL("/", request.url))
   }
 
-  // Email verification: authenticated but unverified → /verify-email (except exempt paths)
+  // Email verification: only for email/password signups. OAuth (Google/GitHub) users are
+  // not required to verify email; providers already verify the email.
   if (sessionToken && !isPublicPath) {
     try {
       const session = await auth.api.getSession({
@@ -38,12 +39,22 @@ export async function proxy(request: NextRequest) {
       })
       const user = session?.user as { emailVerified?: boolean } | undefined
       if (user && user.emailVerified === false) {
-        const url = request.nextUrl.clone()
-        url.pathname = "/verify-email"
-        return NextResponse.redirect(url)
+        const accounts = (await auth.api.listUserAccounts({
+          headers: request.headers,
+        })) as Array<{ providerId?: string }> | undefined
+        const hasOAuthAccount =
+          Array.isArray(accounts) &&
+          accounts.some(
+            (a) => a.providerId === "google" || a.providerId === "github"
+          )
+        if (!hasOAuthAccount) {
+          const url = request.nextUrl.clone()
+          url.pathname = "/verify-email"
+          return NextResponse.redirect(url)
+        }
       }
     } catch {
-      // Session lookup failed — allow through; auth may be degraded
+      // Session or accounts lookup failed — allow through; auth may be degraded
     }
   }
 

@@ -47,7 +47,13 @@ export async function GET() {
     runCheck("langfuse", () => container.observability.healthCheck()),
   ])
 
-  const checks: Record<string, CheckResult> = {
+  const checks: {
+    supabase: CheckResult
+    arangodb: CheckResult
+    temporal: CheckResult
+    redis: CheckResult
+    langfuse: CheckResult
+  } = {
     supabase:
       supabase.status === "fulfilled"
         ? supabase.value

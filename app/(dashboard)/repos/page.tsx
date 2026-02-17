@@ -2,7 +2,7 @@ import { headers } from "next/headers"
 import { Suspense } from "react"
 import { EmptyStateRepos } from "@/components/dashboard/empty-state-repos"
 import { Skeleton } from "@/components/ui/skeleton"
-import { auth } from "@/lib/auth"
+import { auth, listOrganizations } from "@/lib/auth"
 import { getContainer } from "@/lib/di/container"
 
 async function ReposContent() {
@@ -11,9 +11,7 @@ async function ReposContent() {
 
   let organizations: { id: string }[] = []
   try {
-    organizations = (await auth.api.listOrganizations({
-      headers: await headers(),
-    })) as { id: string }[]
+    organizations = await listOrganizations(await headers())
   } catch {
     return <EmptyStateRepos />
   }

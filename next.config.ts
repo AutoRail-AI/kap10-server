@@ -10,6 +10,19 @@ const config: NextConfig = {
       fullUrl: true,
     },
   },
+  webpack: (config, { isServer }) => {
+    // arangojs uses a dynamic require in connection.js that triggers Webpack's
+    // "Critical dependency: the request of a dependency is an expression" warning.
+    // Safe to ignore: the package handles the expression at runtime.
+    if (isServer) {
+      config.ignoreWarnings = config.ignoreWarnings ?? []
+      config.ignoreWarnings.push({
+        module: /node_modules[\\/].*arangojs/,
+        message: /Critical dependency: the request of a dependency is an expression/,
+      })
+    }
+    return config
+  },
   rewrites: async () => [
     { source: "/healthz", destination: "/api/health" },
     { source: "/api/healthz", destination: "/api/health" },

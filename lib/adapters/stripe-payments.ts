@@ -21,4 +21,8 @@ export class StripePayments implements IBillingProvider {
   async reportUsage(): Promise<void> {
     throw new NotImplementedError("IBillingProvider.reportUsage not implemented in Phase 0")
   }
+
+  async createOnDemandCharge(): Promise<{ url: string }> {
+    throw new NotImplementedError("IBillingProvider.createOnDemandCharge not implemented in Phase 0")
+  }
 }

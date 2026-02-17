@@ -1,7 +1,7 @@
 import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 import { OnboardingCreateOrg } from "@/components/onboarding/onboarding-create-org"
-import { auth } from "@/lib/auth"
+import { auth, listOrganizations } from "@/lib/auth"
 
 export default async function OnboardingPage() {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -11,9 +11,7 @@ export default async function OnboardingPage() {
 
   let organizations: { id: string }[] = []
   try {
-    organizations = (await auth.api.listOrganizations({
-      headers: await headers(),
-    })) as { id: string }[]
+    organizations = await listOrganizations(await headers())
   } catch {
     organizations = []
   }

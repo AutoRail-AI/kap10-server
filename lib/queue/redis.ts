@@ -1,4 +1,6 @@
-import Redis from "ioredis"
+// Lazy load ioredis so the build never loads Redis client or attempts connection.
+// See Supabase/Temporal/ArangoDB docs: infra deps should be loaded at runtime only.
+type RedisInstance = import("ioredis").default
 
 // Lazy initialization - only get URL when actually needed (at runtime, not build time)
 function getRedisUrl(): string {
@@ -6,16 +8,15 @@ function getRedisUrl(): string {
 }
 
 // Singleton pattern for Redis connection
-let redisInstance: Redis | null = null
+let redisInstance: RedisInstance | null = null
 
 /**
- * Get Redis connection instance (lazy initialization)
- * Only creates connection at runtime when actually called, not during build
+ * Get Redis connection instance (lazy initialization).
+ * ioredis is required() on first call so the build does not load or connect to Redis.
  */
-export function getRedis(): Redis {
+export function getRedis(): RedisInstance {
   if (!redisInstance) {
-    // Only create connection at runtime, not during build
-    // getRedisUrl() is only called here, not at module load time
+    const Redis = require("ioredis") as typeof import("ioredis").default
     const url = getRedisUrl()
     redisInstance = new Redis(url, {
       maxRetriesPerRequest: null,

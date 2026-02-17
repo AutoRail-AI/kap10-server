@@ -11,7 +11,7 @@ export default function LoginPage() {
   return (
     <div className="max-w-md mx-auto space-y-6">
       <div className="space-y-0.5 text-center">
-        <h1 className="text-lg font-semibold">Welcome back</h1>
+        <h1 className="font-grotesk text-lg font-semibold text-foreground">Welcome back</h1>
         <p className="mt-0.5 text-sm text-foreground">
           Sign in to your account to continue
         </p>

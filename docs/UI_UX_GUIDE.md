@@ -1,142 +1,127 @@
 # UI/UX Reference Guide
 ## Complete Design System & Implementation Standards
 
-**Version:** 4.0  
-**Status:** Authoritative Reference  
-**Target Quality:** Enterprise SaaS (Stripe, Linear, Atlassian, Notion)  
-**Last Updated:** February 2025  
-**Component Library:** Shadcn UI (438+ components available)  
-**Design System:** autorail (Void Black + Industrial Glass) — see `docs/brand/brand.md`  
-**Tailwind:** v4 — theme and utilities in `styles/tailwind.css`  
+**Version:** 5.0
+**Status:** Authoritative Reference
+**Target Quality:** Enterprise SaaS — Stripe × Linear × the kap10 Landing Page
+**Last Updated:** February 2026
+**Stack:** Next.js 16 App Router, React 19, Tailwind v4, Shadcn UI, Zustand, React Hook Form + Zod v4
+**Design System:** autorail Industrial Glass (Void Black + Electric Cyan)
+**Tailwind:** v4 — `styles/tailwind.css`
 **Golden Sample:** `.cursor/patterns/golden-sample.tsx`
+**Brand Guide:** `docs/brand/brand.md`
+**Landing Page Reference:** https://autorail.com/kap10 — the visual DNA this app continues
 
 ---
 
-## Executive Summary
+## Design Philosophy
 
-This document serves as the **single source of truth** for all UI/UX decisions, design system standards, and component usage across **Kap10 Web Server** and the **autorail** platform. It applies to all features including:
+> The kap10 dashboard is what happens when a user clicks "Join Waitlist" on the landing page and gets in. **The experience must feel like stepping inside the product they were just sold.** The landing page promises Industrial Glass, terminal-grade precision, cyan intelligence glows, and a structural-engineering HUD. The app delivers exactly that — with the restraint needed for 8-hour daily use.
 
-- **Dashboard** - Overview and high-level metrics
-- **Screen Agents** - Agent creation, management, and detail views
-- **Knowledge** - Knowledge source management and extraction
-- **Analytics** - Analytics dashboards and reporting
-- **Teams** - Team management (organization mode)
-- **Settings** - Profile, authentication, preferences, organization settings
-- **Billing** - Billing management and subscriptions
-- **All other features** - Consistent patterns across the application
-
-It consolidates:
-- Enterprise UX transformation guidelines
-- Visual design system specifications
-- Component patterns and usage for all features
-- Feature-specific examples and patterns
-- Shadcn UI component references
-- Quality standards and validation checklists
-
-**Component Library:** Built with **Shadcn UI** - 438+ components available via MCP server. All components are copy-paste ready and customizable.
-
-**Reference Standards:**
-- Stripe Dashboard (clean, minimal, high information density)
-- Linear (fast, predictable, delightful micro-interactions)
-- Atlassian (comprehensive, scalable, enterprise-ready)
-- Notion (flexible, powerful, approachable)
+**The Translation Rule:**
+| Landing Page | Dashboard App |
+|---|---|
+| Cinematic glass cards with glow shadows | `glass-card` with `hover:shadow-glow-purple` — same material, less drama |
+| Terminal mockups inside bento grid cards | Real terminal panels (`GlassBrainPane`) displaying live agent output |
+| Animated stat values (count-up on scroll) | Static stat values in `font-grotesk text-2xl font-bold` — snappy, no animation |
+| `text-display-xl` hero headlines | `text-lg font-semibold` page titles — enterprise restraint |
+| Framer Motion `blurReveal` sections | `animate-fade-in` on page mount — one subtle entrance, then done |
+| WebGL NeuralConstellation background | No WebGL — pure CSS Industrial Glass aesthetic carries the feel |
+| `text-electric-cyan` for brand accent | `text-electric-cyan` for active states, links, confidence highlights |
 
 ---
 
 ## Table of Contents
 
 1. [Foundation & Architecture](#part-i-foundation--architecture)
-2. [Design System](#part-ii-design-system)
-3. [Shadcn UI Components](#part-iii-shadcn-ui-components)
-4. [Component Patterns](#part-iv-component-patterns)
-5. [Feature-Specific Patterns](#part-v-feature-specific-patterns)
-   - Dashboard
-   - Screen Agents
-   - Knowledge
-   - Analytics
-   - Teams
-   - Settings
-   - Billing
-6. [Quality Standards](#part-vi-quality-standards)
-7. [Reference Checklists](#part-vii-reference-checklists)
+2. [Industrial Glass Design System](#part-ii-industrial-glass-design-system)
+3. [Glass Material System](#part-iii-glass-material-system)
+4. [Terminal & Code Display Patterns](#part-iv-terminal--code-display-patterns)
+5. [Shadcn UI Components](#part-v-shadcn-ui-components)
+6. [Component Patterns](#part-vi-component-patterns)
+7. [Feature-Specific Patterns](#part-vii-feature-specific-patterns)
+8. [Quality Standards](#part-viii-quality-standards)
+9. [Reference Checklists](#part-ix-reference-checklists)
 
 ---
 
 ## Part I: Foundation & Architecture
 
-### 1.1 Account Model & Tenant Behavior
+### 1.1 Application Shell
+
+The dashboard renders inside a fixed sidebar shell provided by `app/(dashboard)/layout.tsx`. Pages render **content only** — no sidebar, no nav, no shell chrome.
+
+```
+┌──────────────────────────────────────────────────────┐
+│ ┌──────────┐ ┌──────────────────────────────────────┐ │
+│ │          │ │                                      │ │
+│ │ SIDEBAR  │ │         PAGE CONTENT                 │ │
+│ │ w-56     │ │         flex-1 overflow-y-auto p-6   │ │
+│ │ glass-   │ │                                      │ │
+│ │ panel    │ │  ┌─ Header ─────────────────────┐    │ │
+│ │          │ │  │ Title + Actions               │    │ │
+│ │ kap10    │ │  ├─ Stats Grid ─────────────────┤    │ │
+│ │ logo     │ │  │ glass-card × 4                │    │ │
+│ │          │ │  ├─ Main Content ───────────────┤    │ │
+│ │ Repos    │ │  │ Tabs / Tables / Grid          │    │ │
+│ │ Search   │ │  └──────────────────────────────┘    │ │
+│ │ Settings │ │                                      │ │
+│ │          │ │                                      │ │
+│ │ ──────── │ │                                      │ │
+│ │ User     │ │                                      │ │
+│ │ Org      │ │                                      │ │
+│ └──────────┘ └──────────────────────────────────────┘ │
+└──────────────────────────────────────────────────────┘
+```
+
+**Sidebar:** `w-56` (224px), `glass-panel` + `border-r border-border`. "kap10" wordmark in `font-grotesk text-sm font-semibold`. Nav links use `text-muted-foreground` default → `text-electric-cyan` active.
+
+**Main content area:** `flex-1 overflow-y-auto p-6`. All page components render here.
+
+### 1.2 Account Model & Tenant Behavior
 
 **Principle:** Every signup creates a **tenant-based account**. There is **no concept of a "personal account"** in product language, UX, or user-facing code.
 
 #### Internal Operating Modes
 
-The system supports two **internal-only** tenant operating modes (never surfaced in UI):
+Two **internal-only** tenant operating modes (never surfaced in UI):
 
-**1. Normal Mode (Default)**
-- Simplified tenant experience
-- Members, roles, and settings
-- No teams or team-scoped features
-- Navigation: Dashboard, Screen Agents, Analytics, Settings
+| Mode | Experience | Navigation |
+|------|-----------|-----------|
+| **Normal** (Default) | Simplified tenant. Members, roles, settings. No teams. | Dashboard, Repos, Analytics, Settings |
+| **Organization** (Advanced) | Full enterprise. All Normal + Teams + Billing. | Dashboard, Repos, Analytics, Billing, Teams, Settings |
 
-**2. Organization Mode (Advanced)**
-- Full enterprise-ready experience
-- All Normal Mode features + Teams
-- Organization-level analytics and billing
-- Navigation: Dashboard, Screen Agents, Analytics, Billing, Teams, Settings
-
-#### Critical UX Rules
-
-**Never Surface Mode Terminology:**
+#### UX Rules
 - ❌ Never say "personal mode" or "organization mode" in UI
 - ❌ Never say "personal account" or "personal workspace"
-- ✅ Use "Settings", "Members", "Your Account"
-- ✅ Use "Enable Teams" or "Upgrade to Organization"
+- ✅ Use "Settings", "Members", "Your Account", "Enable Teams"
+- Teams features: **completely hidden** in Normal mode
 
-**Feature Gating:**
-- Teams features must be **completely hidden** in Normal mode
-- UI must dynamically adapt based on tenant mode
-- Transition is explicit and confirmed
-
----
-
-### 1.2 Authorization & Role System
-
-**Tenant-Level Roles (Apply to All Tenants):**
+### 1.3 Authorization & Role System
 
 | Role | Authority | Capabilities |
 |------|-----------|-------------|
-| `owner` | Ultimate authority | Tenant configuration, member management, billing, deletion |
-| `admin` | Operational admin | Member management (except owner), settings (except billing), resource management |
-| `member` | Standard contributor | Create/manage assigned resources, view tenant resources |
-| `viewer` | Read-only participant | View resources and analytics only |
+| `owner` | Ultimate | Tenant config, member management, billing, deletion |
+| `admin` | Operational | Member management (except owner), settings (except billing), resources |
+| `member` | Contributor | Create/manage assigned resources, view tenant resources |
+| `viewer` | Read-only | View resources and analytics only |
 
-**Team-Level Roles (Organization Mode Only):**
-- `team_admin` - Team-scoped administration
-- `team_member` - Team-scoped contributor
+**Team-Level (Organization Only):** `team_admin`, `team_member`
 
----
+### 1.4 Settings Architecture
 
-### 1.3 Settings Architecture
-
-**User-Level Settings:**
 ```
 /settings
 ├── Profile (name, email, avatar)
 ├── Authentication (password, OAuth)
 └── Preferences (theme, language, notifications)
-```
 
-**Tenant-Level Settings:**
-```
 /settings/tenant
 ├── Members (list, invitations, roles)
 ├── General (name, slug, logo)
 └── API Keys
-```
 
-**Organization-Only Settings:**
-```
-/settings/organization
+/settings/organization    ← Organization mode only
 ├── Teams
 ├── Billing
 ├── Security
@@ -145,1147 +130,934 @@ The system supports two **internal-only** tenant operating modes (never surfaced
 
 ---
 
-## Part II: Design System
+## Part II: Industrial Glass Design System
 
-### 2.1 Typography Hierarchy & Legibility (autorail)
+### 2.1 Color System
 
-**Core Principle:** We do not mute primary content text. All primary content must use Cloud White (`text-foreground`). Use `font-grotesk` for headings, `font-sans` for body, `font-mono` for code. See `docs/brand/brand.md` §7.
+**Core Rule:** Void Black + Electric Cyan + Rail Purple. No other accent colors. This is the same palette the user saw on the landing page.
+
+#### Semantic Colors
+
+| Color | Token | Hex | CSS | Usage |
+|-------|-------|-----|-----|-------|
+| **Background** | `--color-void-black` | `#0A0A0F` | `bg-background` | **Always.** Page, sidebar, card backgrounds. |
+| **Foreground** | `--color-cloud-white` | `#FAFAFA` | `text-foreground` | Primary text, headlines, body. **Never muted for primary content.** |
+| **Primary** | `--color-rail-purple` | `#6E18B3` | `bg-primary` | Buttons, borders, brand accents. **Never body text (WCAG fail).** |
+| **Accent** | `--color-electric-cyan` | `#00E5FF` | `text-electric-cyan` | Active states, links, confidence highlights, agent intelligence markers. |
+| **Success** | `--color-success` | `#00FF88` | `text-success` | Confidence ≥85%, pass rates, completion states. |
+| **Warning** | `--color-warning` | `#FFB800` | `text-warning` | Confidence 50–84%, in-progress, caution states. |
+| **Error** | `--color-error` | `#FF3366` | `text-error` | Failures, blocked reviews, violations. |
+| **Muted** | — | `rgba(250,250,250,0.6)` | `text-muted-foreground` | Form labels, placeholders, metadata labels ONLY. |
+
+#### Bicameral Color Rule (from landing page)
+
+| Color | Represents | Use For |
+|-------|-----------|---------|
+| **Electric Cyan** | New Intelligence — the Spark | Active nav, agent output, links, processed data, "Ship Ready" |
+| **Rail Purple** | Deep Context — the Wire | Borders, graph nodes, historical data, structural analysis |
+
+**Rule:** Never blend cyan-to-purple gradients. Cyan = intelligence. Purple = structure.
+
+#### Background Hierarchy
+
+| Layer | Value | Usage |
+|-------|-------|-------|
+| Page base | `bg-background` (Void Black `#0A0A0F`) | Root background |
+| Sidebar | `glass-panel` + `border-r border-border` | Fixed aside |
+| Card | `glass-card` | Stat cards, table wrappers, panels |
+| Terminal | `bg-[#0e0e14]` | Agent output, code display, logs |
+| Table row hover | `hover:bg-muted/30` | Subtle interaction feedback |
+| Input bg | `bg-muted/30` | Form inputs |
+
+#### Confidence Score Colors
+
+Match the landing page's Confidence Glow system (brand.md §6.1):
+
+| Score | Color | Visual |
+|-------|-------|--------|
+| ≥85% | `text-success` (`#00FF88`) | High confidence — green glow |
+| 50–84% | `text-warning` (`#FFB800`) | Medium confidence — yellow/amber |
+| <50% | `text-muted-foreground` | Low/no confidence — dimmed |
+
+```tsx
+<span className={`font-mono text-sm ${
+  score >= 0.85 ? "text-success"
+  : score >= 0.5 ? "text-warning"
+  : "text-muted-foreground"
+}`}>
+  {Math.round(score * 100)}%
+</span>
+```
+
+### 2.2 Typography System
+
+Three font families — exactly matching the landing page:
+
+| Family | Token | CSS Class | Usage |
+|--------|-------|-----------|-------|
+| **Space Grotesk** | `--font-grotesk` | `font-grotesk` | Page titles, stat values, section headers |
+| **Inter** | `--font-sans` | `font-sans` (default) | Body text, descriptions, buttons, forms |
+| **JetBrains Mono** | `--font-mono` | `font-mono` | Code, agent output, project names, metrics trends, terminal panels |
+
+**Important:** The root `app/layout.tsx` must load these three fonts via `next/font`. Do **not** use Poppins or Sofia Sans — those are stale references from the pre-rebrand era.
 
 #### Typography Scale
 
-| Element | Size | Weight | Font | Color | Usage |
-|---------|------|--------|------|-------|-------|
-| **Page Title** | `text-lg` (18px) | `font-semibold` (600) | `font-grotesk` | `text-foreground` | Main page headings — **never larger** |
-| **Page Description** | `text-sm` (14px) | `font-normal` (400) | `font-sans` | `text-foreground` | Page descriptions with `mt-0.5` |
-| **Section Header** | `text-sm` (14px) | `font-semibold` (600) | `font-grotesk` | `text-foreground` | Major sections |
-| **Body Text** | `text-sm` or `text-xs` | `font-normal` (400) | `font-sans` | `text-foreground` | Primary content |
-| **Code/Data** | `text-sm` or `text-xs` | — | `font-mono` | `text-foreground` / `text-electric-cyan` | IDs, logs, metrics |
+| Element | Size | Weight | Font | Color | Example |
+|---------|------|--------|------|-------|---------|
+| **Page Title** | `text-lg` (18px) | `font-semibold` (600) | `font-grotesk` | `text-foreground` | "Projects" |
+| **Page Description** | `text-sm` (14px) | `font-normal` (400) | `font-sans` | `text-foreground` | "Manage your repos" |
+| **Section Header** | `text-sm` (14px) | `font-semibold` (600) | `font-grotesk` | `text-foreground` | "Migration Projects" |
+| **Stat Value** | `text-2xl` (24px) | `font-bold` (700) | `font-grotesk` | `text-foreground` | "87%" |
+| **Stat Label** | `text-xs` (12px) | `font-medium` (500) | `font-sans` | `text-muted-foreground` | "Avg Confidence" |
+| **Trend** | `text-xs` (12px) | `font-normal` (400) | `font-mono` | `text-muted-foreground` | "+5% this week" |
+| **Body Text** | `text-sm` (14px) | `font-normal` (400) | `font-sans` | `text-foreground` | Primary content |
+| **Code / Data** | `text-sm`/`text-xs` | `font-normal` (400) | `font-mono` | `text-foreground` / `text-electric-cyan` | IDs, logs, metrics |
 | **Form Label** | `text-xs` (12px) | `font-normal` (400) | `font-sans` | `text-muted-foreground` | Field labels only |
 | **Helper Text** | `text-xs` (12px) | `font-normal` (400) | `font-sans` | `text-foreground` | Helper text (NOT muted) |
 
 #### Typography Legibility Rules
 
-**MANDATORY:**
-- All primary content (body text, titles, headings, descriptions, table content, navigation) must use `text-foreground` for maximum legibility
-- Buttons must use `text-foreground` or high-contrast variants for clear visibility
+**MANDATORY — all primary text uses `text-foreground`:**
+- ✅ Page titles, section headers, body text, descriptions, table content, buttons, empty states, error messages
+- ✅ Helper text: `text-foreground` (or `opacity-85` for slight de-emphasis)
 
-**Muted Text Usage (Allowed Only For):**
+**Muted text ONLY for:**
 - ✅ Form labels (`text-muted-foreground`)
 - ✅ Placeholder text
 - ✅ Disabled states
-- ✅ Metadata labels (e.g., "Created", "Last Updated")
+- ✅ Metadata labels ("Created", "Last Updated")
+- ✅ Stat card labels
 
-**Forbidden Use Cases:**
-- ❌ Body text
-- ❌ Page titles
-- ❌ Section headings
-- ❌ Table content
-- ❌ Navigation labels
-- ❌ Primary descriptions
-- ❌ Error messages
-- ❌ Empty state text
-- ❌ Button text
+**Page title ceiling:** `text-lg font-semibold` — **never larger.** This is a dashboard, not a marketing page. The landing page uses `text-display-xl` for hero headlines; the app uses `text-lg` for page titles. This restraint signals enterprise credibility.
 
-#### Examples
-
-✅ **Correct Usage:**
-```tsx
-// Page title and description
-<h1 className="text-lg font-semibold">Settings</h1>
-<p className="mt-0.5 text-sm text-foreground">Manage your tenant settings</p>
-
-// Section header
-<h3 className="text-sm font-semibold">Authentication</h3>
-
-// Form label (muted is OK)
-<Label className="text-xs text-muted-foreground">Username</Label>
-
-// Body text (NOT muted)
-<p className="text-sm text-foreground">This is primary content.</p>
-
-// Button (high contrast)
-<Button className="text-foreground">Submit</Button>
-```
-
-❌ **Incorrect Usage:**
-```tsx
-// ❌ WRONG - Muted page description
-<p className="text-sm text-muted-foreground">Manage your settings</p>
-
-// ❌ WRONG - Muted body text
-<p className="text-sm text-muted-foreground">This is primary content.</p>
-
-// ❌ WRONG - Muted button text
-<Button className="text-muted-foreground">Submit</Button>
-```
-
----
-
-### 2.2 Spacing Scale
+### 2.3 Spacing System
 
 #### Container Spacing
-- Page container: `max-w-7xl mx-auto px-4 sm:px-6 lg:px-8`
-- Section spacing: `space-y-6` (24px)
-- Card padding: `pt-6` (never full padding - use `CardContent` with `pt-6`)
+| Spacing | Value | Usage |
+|---------|-------|-------|
+| Page container | `space-y-6 py-6` | Outer page wrapper |
+| Section spacing | `space-y-6` (24px) | Between major sections |
+| Card padding | `pt-6` via `CardContent` | Never full padding — use `CardContent` with `pt-6` |
+| Form fields | `space-y-4` (16px) or `space-y-2` (8px) | Between form field groups |
 
 #### Component Spacing
-- Form fields: `space-y-4` (16px) or `space-y-2` (8px)
-- Button groups: `gap-2` (8px) or `gap-1` (4px)
-- List items: `space-y-1` (4px)
-- Card content: `space-y-4` (16px) or `space-y-3` (12px)
-
-#### Micro Spacing
-- Icon + text: `gap-2` (8px)
-- Inline elements: `gap-1` (4px)
-- Tight grouping: `gap-0.5` (2px)
+| Spacing | Value | Usage |
+|---------|-------|-------|
+| Button groups | `gap-2` (8px) | Between action buttons |
+| Icon + text | `gap-2` (8px) | Icon adjacent to label |
+| List items | `space-y-1` (4px) | Compact list spacing |
+| Card content | `space-y-3` to `space-y-4` | Between card content elements |
+| Micro | `gap-0.5` (2px) | Tight grouping |
 
 ---
 
-### 2.3 Color System (autorail)
+## Part III: Glass Material System
 
-**Primary UI Palette:** Use only Void Black, Rail Purple, and Electric Cyan for enterprise-grade consistency. See `docs/brand/brand.md` §4–§6.
+### 3.1 Glass Tiers
 
-#### Semantic Colors
+The Industrial Glass aesthetic carries directly from the landing page. Every card, panel, and container in the app uses one of these glass tiers:
 
-| Color | Token | Hex | Usage |
-|-------|-------|-----|-------|
-| **Background** | `bg-background` | `#0A0A0F` (Void Black) | **Always.** Page and section backgrounds. |
-| **Foreground** | `text-foreground` | `#FAFAFA` (Cloud White) | Primary text, headlines, body. |
-| **Primary** | `text-primary` / `bg-primary` | `#6E18B3` (Rail Purple) | Buttons, borders, brand accents (never body text — WCAG fail). |
-| **Accent** | `text-electric-cyan` | `#00E5FF` | Active states, links, "intelligence" highlights. |
-| **Success** | `text-success` | `#00FF88` | Success states, pass rates. |
-| **Warning** | `text-warning` | `#FFB800` | Warnings, in-progress. |
-| **Error** | `text-error` | `#FF3366` | Errors, failures. |
-| **Muted** | `text-muted-foreground` | `rgba(250,250,250,0.6)` | Form labels, placeholders, metadata ONLY. |
+| Tier | Class | Background | Border | Backdrop | Hover | Usage |
+|------|-------|-----------|--------|----------|-------|-------|
+| **Panel** | `glass-panel` | `rgba(255,255,255,0.03)` | `rgba(255,255,255,0.10)` | `blur(12px)` | None | Sidebar, table wrappers, static containers |
+| **Card** | `glass-card` | `rgba(255,255,255,0.03)` | `rgba(255,255,255,0.10)` | `blur(12px)` | `bg→0.05, border→0.15` | Stat cards, interactive panels |
+| **Terminal** | `bg-[#0e0e14]` | `#0e0e14` | `border-border` | None | None | Agent output, code display, log panels |
 
-#### Background Hierarchy
-- Base: `bg-background` (Void Black `#0A0A0F`)
-- Card: `glass-card` or `glass-panel` (Industrial Glass — see `styles/tailwind.css`)
-- Muted: `bg-muted` / `bg-muted/30`
-- Accent: `bg-accent` (Electric Cyan for interactive states)
+**Critical:** Use `glass-card` or `glass-panel` for all card-like elements. Never use plain `bg-muted/30` — that was the pre-rebrand pattern. The Industrial Glass material is what visually connects the app to the landing page.
 
-**Bicameral Rule:** Cyan = New Intelligence / kap10. Purple = Deep Context / necroma. Never blend cyan-to-purple gradients.
+### 3.2 Glow System
+
+Glows are the signature visual element from the landing page. In the app, they're used sparingly for interactive feedback and confidence states:
+
+| Glow | CSS | Usage |
+|------|-----|-------|
+| `glow-purple` | `box-shadow: 0 0 20px rgba(110,24,179,0.2)` | Card hover default |
+| `glow-cyan` | `box-shadow: 0 0 20px rgba(0,229,255,0.2)` + cyan border | Active/selected states |
+| `glow-success-pulse` | Pulsing green `box-shadow` + green border | Confidence ≥85% cards |
+| `glow-yellow` | Yellow `box-shadow` + yellow border | Confidence 40–70% indicator |
+| `glow-red` | `box-shadow: 0 0 20px rgba(255,51,102,0.2)` | Error states, blocked reviews |
+
+**Application pattern:**
+```tsx
+{/* Stat card — purple glow on hover */}
+<Card className="glass-card border-border hover:shadow-glow-purple transition-all duration-300">
+
+{/* Active/selected card — cyan glow */}
+<Card className="glass-card border-electric-cyan/20 shadow-[0_0_30px_rgba(0,229,255,0.06)]">
+
+{/* Error state card */}
+<Card className="glass-card border-error/20 glow-red">
+```
+
+### 3.3 Status Badge Colors
+
+Match the landing page's color vocabulary for agent/pipeline states:
+
+```tsx
+const statusColors: Record<string, string> = {
+  pending:    "bg-slate-grey/50 text-muted-foreground border-border",
+  processing: "bg-electric-cyan/10 text-electric-cyan border-electric-cyan/20",
+  ready:      "bg-rail-purple/10 text-quantum-violet border-rail-purple/20",
+  building:   "bg-warning/10 text-warning border-warning/20",
+  complete:   "bg-success/10 text-success border-success/20",
+  failed:     "bg-error/10 text-error border-error/20",
+  blocked:    "bg-error/10 text-error border-error/20",
+}
+
+<Badge variant="outline" className={statusColors[status]}>
+  {status}
+</Badge>
+```
+
+### 3.4 Breathing Glow (Background Ambient)
+
+For panels that need subtle life — agent activity indicators, live session panels:
+
+```tsx
+{/* Cyan breathing — agent is actively processing */}
+<div className="animate-breathing-glow rounded-lg p-4 glass-panel">
+
+{/* Purple breathing — analysis in progress */}
+<div className="animate-breathing-glow-purple rounded-lg p-4 glass-panel">
+```
+
+Keyframes are defined in `styles/tailwind.css`. Use sparingly — max 1–2 breathing elements per page.
 
 ---
 
-### 2.4 Component Patterns
+## Part IV: Terminal & Code Display Patterns
 
-#### Cards
-- **MANDATORY:** Use `glass-card` or `glass-panel` for Industrial Glass aesthetic (defined in `styles/tailwind.css`)
-- Optional: `border-border` for explicit border
-- Hover: `hover:shadow-glow-purple` or `hover:glow-cyan` for active states
-- Padding: `pt-6` via `CardContent` (never full padding)
-- Structure: Prefer `Card` + `CardContent` over `CardHeader` + `CardContent`
-- Headers: Inline with `font-grotesk text-sm font-semibold` instead of `CardTitle`
-- **Golden Sample:** `.cursor/patterns/golden-sample.tsx`
+### 4.1 Terminal Panel (Agent Output)
 
-**Shadcn Component:** `@shadcn/card`
+The landing page's most distinctive visual element is its terminal mockups. The app makes these **real** — displaying actual agent output, code reviews, and logs.
 
-#### Buttons
-- Primary: Solid background, high contrast (`size="sm"` for app)
-- Secondary: Outlined variant (`size="sm"`)
-- Destructive: Red variant for dangerous actions
-- Sizes: `sm` (default in app), `default`, `lg` (only for empty states)
-- Loading: Use `Spinner` from `@shadcn/spinner`, not `Loader2`
+#### Terminal Panel Structure
 
-**Shadcn Component:** `@shadcn/button`
+```tsx
+function TerminalPanel({ title, icon, children }: TerminalPanelProps) {
+  return (
+    <div className="glass-panel rounded-lg border border-border overflow-hidden">
+      {/* Header bar — same pattern as landing page terminal mockups */}
+      <div className="terminal-header">
+        <div className="terminal-dot" style={{ background: "#FF5F57" }} />
+        <div className="terminal-dot" style={{ background: "#FEBC2E" }} />
+        <div className="terminal-dot" style={{ background: "#28C840" }} />
+        <span className="ml-3 text-xs font-mono text-white/40 flex items-center gap-2">
+          {icon}
+          {title}
+        </span>
+      </div>
+      {/* Content area */}
+      <div className="bg-[#0e0e14] p-4 font-mono text-xs text-foreground">
+        {children}
+      </div>
+    </div>
+  )
+}
+```
 
-#### Forms
-- Label: `text-xs text-muted-foreground`
-- Input: `h-9` height (never default or `h-10`)
-- Textarea: `text-sm` with proper rows
-- Error: Red border + error message below
-- Help text: `text-xs text-foreground` (NOT muted)
+**CSS classes:** `terminal-header` and `terminal-dot` are defined in `styles/tailwind.css`.
 
-**Shadcn Components:** `@shadcn/input`, `@shadcn/label`, `@shadcn/textarea`
+#### Terminal Log Lines
 
-#### Tables
-- Header: `font-semibold text-sm`
-- Row: `border-b` (subtle separation)
-- Hover: `hover:bg-muted/50`
-- Pagination: Always required for list views
+For agent activity logs, PR review output, build status:
 
-**Shadcn Components:** `@shadcn/table`, `@shadcn/pagination`
+```tsx
+{/* PASS line */}
+<div className="flex items-center gap-2 py-0.5">
+  <span className="text-success">PASS</span>
+  <span className="text-white/60">auth/login.ts — pattern compliance</span>
+</div>
+
+{/* BLOCKED line */}
+<div className="flex items-center gap-2 py-0.5">
+  <span className="text-error">BLOCKED</span>
+  <span className="text-white/60">utils/db.ts — wrong ORM import</span>
+</div>
+
+{/* REWRITE line */}
+<div className="flex items-center gap-2 py-0.5">
+  <span className="text-electric-cyan">REWRITE</span>
+  <span className="text-white/60">api/checkout.ts — scope violation → fixed</span>
+</div>
+```
+
+#### Blinking Cursor
+
+```tsx
+{/* Cyan blinking cursor (default) */}
+<span className="cursor-blink" />
+
+{/* Purple blinking cursor (legacy/analysis context) */}
+<span className="cursor-blink-purple" />
+```
+
+### 4.2 Glass Brain Pane (3-Column Dashboard)
+
+The landing page shows a `GlassBrainShowcase` with 3 panels (Workspace / Editor+Console / AI Thoughts). The app implements this as real interactive panels:
+
+```tsx
+<div className="grid gap-4 lg:grid-cols-3">
+  <GlassBrainPane
+    title="The Plan"
+    icon={<Code2 className="h-4 w-4" />}
+  >
+    {/* Dependency graph / vertical slice tree */}
+  </GlassBrainPane>
+
+  <GlassBrainPane
+    title="The Work"
+    icon={<Sparkles className="h-4 w-4" />}
+  >
+    {/* Terminal streaming output — agent code generation */}
+  </GlassBrainPane>
+
+  <GlassBrainPane
+    title="The Thoughts"
+    icon={<Brain className="h-4 w-4" />}
+  >
+    {/* Agent reasoning / inner monologue */}
+  </GlassBrainPane>
+</div>
+```
+
+Each pane uses `glass-panel` with a header bar and mono-font content area. On mobile, stack vertically — center panel ("The Work") always visible, side panels collapsible.
+
+### 4.3 Code Review Display
+
+PR review output should mirror the landing page's "Spaghetti Shield" terminal mockup:
+
+```tsx
+<TerminalPanel title="spaghetti-shield.log" icon={<ShieldCheck className="h-3 w-3" />}>
+  <div className="space-y-1">
+    <LogLine type="scan" text="Scanning auth/login.ts..." />
+    <LogLine type="pass" text="Pattern compliance verified" />
+    <LogLine type="blocked" text="utils/payments.ts — bypassed transaction wrapper" />
+    <LogLine type="rewrite" text="Applying architectural fix → payments.service.ts" />
+    <LogLine type="pass" text="All checks passed — safe to merge" />
+  </div>
+  <div className="mt-3 pt-2 border-t border-white/[0.06] flex items-center gap-2">
+    <div className="w-1.5 h-1.5 rounded-full bg-success" />
+    <span className="text-success text-xs">3 passed</span>
+    <span className="text-white/30">·</span>
+    <span className="text-error text-xs">1 blocked → rewritten</span>
+  </div>
+</TerminalPanel>
+```
+
+### 4.4 Confidence Visualization
+
+The landing page uses animated progress bars for Impact Score and Test Coverage. The app uses the same visual language:
+
+```tsx
+{/* Confidence bar */}
+<div className="space-y-1">
+  <div className="flex justify-between text-xs">
+    <span className="text-muted-foreground">Confidence</span>
+    <span className="font-mono text-success">92%</span>
+  </div>
+  <div className="h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+    <div
+      className="h-full bg-success rounded-full transition-all duration-500"
+      style={{ width: "92%" }}
+    />
+  </div>
+</div>
+```
+
+Color by confidence: `bg-success` (≥85%), `bg-warning` (50–84%), `bg-muted-foreground` (<50%).
 
 ---
 
-## Part III: Shadcn UI Components
+## Part V: Shadcn UI Components
 
-### 3.1 Available Components (438+ Components)
+### 5.1 Available Components
 
-**Access Methods:**
-- **MCP Server:** Use `mcp_presenter-agent-ui-shadcn_*` tools to explore, view, and get examples
-- **CLI:** `pnpm dlx shadcn@latest add [component-name]`
-- **Registry:** [ui.shadcn.com](https://ui.shadcn.com)
+**Access:** `pnpm dlx shadcn@latest add [component-name]` or via MCP server tools.
 
-### 3.2 Core Components Used
+### 5.2 Installed Components
 
-#### Layout & Navigation
-- `@shadcn/card` - Card containers (use `bg-muted/30`, `CardContent` with `pt-6`)
-- `@shadcn/separator` - Section dividers
-- `@shadcn/sidebar` - Application sidebar
-- `@shadcn/breadcrumb` - Navigation breadcrumbs
-- `@shadcn/tabs` - Tabbed content sections
+| Category | Components |
+|----------|-----------|
+| **Layout** | `card`, `separator`, `tabs`, `sheet`, `scroll-area` |
+| **Forms** | `input`, `label`, `textarea`, `select`, `switch`, `form` |
+| **Feedback** | `alert`, `badge`, `spinner`, `skeleton`, `progress`, `sonner` (toast) |
+| **Data** | `table`, `avatar` |
+| **Interactive** | `button`, `dialog`, `alert-dialog`, `dropdown-menu`, `tooltip` |
+| **Custom** | `content-block`, `inline-form`, `metric`, `section` |
 
-#### Forms & Inputs
-- `@shadcn/input` - Text inputs (`h-9` height)
-- `@shadcn/textarea` - Multi-line text (`text-sm`)
-- `@shadcn/label` - Form labels (`text-xs text-muted-foreground`)
-- `@shadcn/select` - Dropdown selects
-- `@shadcn/checkbox` - Checkboxes
-- `@shadcn/radio-group` - Radio button groups
-- `@shadcn/switch` - Toggle switches
-- `@shadcn/accordion` - Collapsible sections
-
-#### Feedback & Status
-- `@shadcn/alert` - Alert messages
-- `@shadcn/badge` - Status badges
-- `@shadcn/spinner` - Loading indicators (preferred over `Loader2`)
-- `@shadcn/skeleton` - Skeleton loaders
-- `@shadcn/progress` - Progress bars
-- `@shadcn/toast` - Toast notifications (via Sonner)
-
-#### Data Display
-- `@shadcn/table` - Data tables
-- `@shadcn/pagination` - Pagination controls
-- `@shadcn/empty` - Empty states
-- `@shadcn/avatar` - User avatars
-
-#### Overlays & Dialogs
-- `@shadcn/dialog` - Modal dialogs
-- `@shadcn/drawer` - Mobile drawer dialogs
-- `@shadcn/sheet` - Slide-over panels
-- `@shadcn/dropdown-menu` - Dropdown menus
-- `@shadcn/popover` - Popover overlays
-- `@shadcn/tooltip` - Tooltips
-
-#### Advanced Components
-- `@shadcn/command` - Command palette
-- `@shadcn/calendar` - Date picker calendar
-- `@shadcn/chart` - Charts (Recharts-based)
-- `@shadcn/carousel` - Image carousels
-- `@shadcn/form` - React Hook Form integration
-
-### 3.3 Getting Shadcn Components
-
-**View Component Details:**
-```typescript
-// Use MCP tool to view component
-mcp_presenter-agent-ui-shadcn_view_items_in_registries({
-  items: ["@shadcn/button", "@shadcn/card"]
-})
-```
-
-**Get Usage Examples:**
-```typescript
-// Get examples and demos
-mcp_presenter-agent-ui-shadcn_get_item_examples_from_registries({
-  registries: ["@shadcn"],
-  query: "button-demo"
-})
-```
-
-**Install Component:**
-```bash
-# Via CLI
-pnpm dlx shadcn@latest add button
-
-# Get add command via MCP
-mcp_presenter-agent-ui-shadcn_get_add_command_for_items({
-  items: ["@shadcn/button", "@shadcn/card"]
-})
-```
-
-**Search Components:**
-```typescript
-// Search by name or description
-mcp_presenter-agent-ui-shadcn_search_items_in_registries({
-  registries: ["@shadcn"],
-  query: "form input"
-})
-```
-
-### 3.4 Component Usage Guidelines
+### 5.3 Component Usage Rules
 
 **Always:**
 - ✅ Use Shadcn components for consistency
-- ✅ Follow component patterns from examples
-- ✅ Customize via className, not by modifying source
-- ✅ Use `size="sm"` for buttons in application context
+- ✅ Customize via `className`, never modify source files
+- ✅ Use `size="sm"` for buttons in app context
 - ✅ Use `h-9` for inputs
+- ✅ Use `Spinner` from `@shadcn/spinner` for loading states
 
 **Never:**
-- ❌ Modify Shadcn component source files directly
-- ❌ Use `Loader2` from lucide-react (use `Spinner` instead)
+- ❌ Use `Loader2` from `lucide-react` — use `Spinner` instead
+- ❌ Use `CardHeader` / `CardTitle` / `CardDescription` — use inline structure with `CardContent`
 - ❌ Create custom components that duplicate Shadcn functionality
-- ❌ Use oversized typography (`text-xl` or larger for titles)
+- ❌ Use oversized typography (`text-xl` or larger for page titles)
+
+### 5.4 Tab Active State Pattern
+
+Custom tab trigger matching the landing page's active-state vocabulary:
+
+```tsx
+<TabsTrigger
+  value={value}
+  className="relative h-9 rounded-none border-b-2 border-transparent bg-transparent px-4 pb-3 pt-2
+    font-sans font-medium text-muted-foreground shadow-none transition-none
+    data-[state=active]:border-rail-purple
+    data-[state=active]:text-electric-cyan
+    data-[state=active]:shadow-[0_4px_12px_-4px_rgba(0,229,255,0.3)]"
+>
+```
+
+Active: Rail Purple underline + Electric Cyan text + subtle cyan glow shadow. Same energy as the landing page's section navigation.
 
 ---
 
-## Part IV: Component Patterns
+## Part VI: Component Patterns
 
-### 4.0 Golden Page Pattern (Canonical)
+### 6.0 Golden Page Pattern (Canonical)
 
 **Source:** `.cursor/patterns/golden-sample.tsx`
 
-Use this structure for all dashboard pages. The Master Application Shell (sidebar + layout) is provided by `app/(dashboard)/layout.tsx`; pages render PAGE CONTENT ONLY.
+Every dashboard page follows this structure:
 
 ```tsx
 <div className="space-y-6 py-6 animate-fade-in">
-  {/* Page Header — MANDATORY: text-lg font-semibold (never larger) */}
+  {/* 1. Page Header — MANDATORY: text-lg font-semibold (never larger) */}
   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
     <div className="space-y-1">
       <h1 className="font-grotesk text-lg font-semibold text-foreground">Page Title</h1>
       <p className="text-sm text-foreground mt-0.5">Page description</p>
     </div>
-    <Button size="sm" className="bg-rail-fade">
-      <Plus className="mr-2 h-3.5 w-3.5" />
-      Action
-    </Button>
+    <div className="flex items-center gap-2">
+      <Button size="sm" variant="outline"
+        className="border-rail-purple/30 text-electric-cyan hover:bg-rail-purple/10">
+        <LayoutDashboard className="mr-2 h-3.5 w-3.5" />
+        Secondary Action
+      </Button>
+      <Button size="sm" className="bg-rail-fade hover:opacity-90 shadow-glow-purple">
+        <Plus className="mr-2 h-3.5 w-3.5" />
+        Primary Action
+      </Button>
+    </div>
   </div>
 
-  {/* Stats Grid (optional) */}
+  {/* 2. Stats Grid — glass-card with glow hover */}
   <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-    <Card className="glass-card border-border hover:shadow-glow-purple">
-      <CardContent className="pt-6">...</CardContent>
+    <Card className="glass-card border-border hover:shadow-glow-purple transition-all duration-300">
+      <CardContent className="pt-6">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-medium text-muted-foreground">Label</p>
+          <Icon className="h-4 w-4 text-electric-cyan" />
+        </div>
+        <div className="font-grotesk text-2xl font-bold text-foreground tracking-tight">42</div>
+        <p className="text-xs text-muted-foreground mt-1 font-mono">+5% this week</p>
+      </CardContent>
     </Card>
   </div>
 
-  {/* Main Content */}
-  <Suspense fallback={<Skeleton className="h-[200px] w-full" />}>
-    {/* Data-fetching component */}
+  {/* 3. Main Content — Tabs + Table */}
+  <Suspense fallback={<Skeleton className="h-[300px] w-full rounded-lg" />}>
+    <ContentArea />
   </Suspense>
 </div>
 ```
 
 **Key:** `glass-card`, `font-grotesk`, `space-y-6 py-6`, `h-9` inputs, `size="sm"` buttons, `Suspense` + `Skeleton`.
 
-### 4.1 Page Layout Templates
+### 6.1 Button Patterns
 
-#### Standard Page Template
+| Variant | Classes | Usage |
+|---------|---------|-------|
+| **Primary** | `bg-rail-fade hover:opacity-90 shadow-glow-purple` | Main action (Create, Save) |
+| **Outline** | `border-rail-purple/30 text-electric-cyan hover:bg-rail-purple/10` | Secondary action |
+| **Destructive** | `variant="destructive"` | Dangerous actions (Delete, Remove) |
+| **Ghost** | `variant="ghost" text-muted-foreground hover:text-electric-cyan` | Icon buttons, table row actions |
+
+All buttons: `size="sm"` in app context. Only `size="lg"` for empty state CTAs.
+
+### 6.2 Card Patterns
 
 ```tsx
-<div className="space-y-6 py-6">
-  {/* Page Header */}
-  <div className="space-y-1">
-    <h1 className="font-grotesk text-lg font-semibold text-foreground">Page Title</h1>
-    <p className="mt-0.5 text-sm text-foreground">Page description</p>
-  </div>
-  
-  {/* Page content */}
-  <div className="space-y-6">
-    {/* Content sections */}
-  </div>
-</div>
+{/* Stat card — glass-card with glow hover */}
+<Card className="glass-card border-border hover:shadow-glow-purple transition-all duration-300">
+  <CardContent className="pt-6">{/* content */}</CardContent>
+</Card>
+
+{/* Table wrapper — glass-panel (no hover) */}
+<Card className="glass-panel border-border">
+  <CardContent className="pt-6">{/* table */}</CardContent>
+</Card>
+
+{/* Active/selected card — cyan accent */}
+<Card className="glass-card border-electric-cyan/20 shadow-[0_0_30px_rgba(0,229,255,0.06)]">
+  <CardContent className="pt-6">{/* content */}</CardContent>
+</Card>
 ```
 
-#### List Page Template
+**Rules:**
+- Use `CardContent` with `pt-6` only — no `CardHeader`, `CardTitle`, `CardDescription`
+- Section headers go inline as `<h3 className="font-grotesk text-sm font-semibold text-foreground">`
+- Sub-descriptions: `<p className="text-xs text-muted-foreground">`
+
+### 6.3 Empty States
 
 ```tsx
-<div className="space-y-6 py-6">
-  {/* Page Header with Actions */}
-  <div className="flex items-center justify-between">
-    <div className="space-y-1">
-      <h1 className="font-grotesk text-lg font-semibold text-foreground">Resource List</h1>
-      <p className="mt-0.5 text-sm text-foreground">Manage your resources</p>
-    </div>
-    <Button size="sm" className="bg-rail-fade hover:opacity-90">
-      <Plus className="mr-2 h-3.5 w-3.5" />
-      Create Resource
-    </Button>
-  </div>
-  
-  {/* Table with Pagination */}
-  <Card className="glass-card border-border">
-    <CardContent className="pt-6">
-      <Table>
-        {/* Table content */}
-      </Table>
-      <Pagination />
-    </CardContent>
-  </Card>
-</div>
-```
-
-#### Detail Page Template
-
-```tsx
-<div className="space-y-6">
-  {/* Page Header */}
-  <div className="space-y-0.5">
-    <h1 className="text-lg font-semibold">Resource Detail</h1>
-    <p className="mt-0.5 text-sm text-foreground">View and manage resource</p>
-  </div>
-  
-  {/* Tabs */}
-  <Tabs defaultValue="overview">
-    <TabsList>
-      <TabsTrigger value="overview">Overview</TabsTrigger>
-      <TabsTrigger value="settings">Settings</TabsTrigger>
-    </TabsList>
-    
-    <TabsContent value="overview" className="space-y-4">
-      {/* Overview content */}
-    </TabsContent>
-  </Tabs>
-</div>
-```
-
-**Shadcn Components:** `@shadcn/card`, `@shadcn/table`, `@shadcn/pagination`, `@shadcn/tabs`, `@shadcn/button`
-
----
-
-### 4.2 Empty States
-
-**Pattern:**
-```tsx
-<Card className="bg-muted/30">
+<Card className="glass-card border-border">
   <CardContent className="pt-6">
     <Empty>
       <EmptyHeader>
         <EmptyMedia>
-          <Globe className="h-12 w-12 text-muted-foreground" />
+          <FolderGit2 className="h-12 w-12 text-muted-foreground" />
         </EmptyMedia>
-        <EmptyTitle className="text-2xl font-semibold">
-          No resources yet
+        <EmptyTitle className="text-2xl font-semibold font-grotesk">
+          No repositories yet
         </EmptyTitle>
         <EmptyDescription className="text-sm text-foreground">
-          Create your first resource to get started
+          Connect your first GitHub repository to get started with kap10.
         </EmptyDescription>
       </EmptyHeader>
-      <Button size="lg">
+      <Button size="lg" className="bg-rail-fade hover:opacity-90">
         <Plus className="mr-2 h-4 w-4" />
-        Create Resource
+        Connect Repository
       </Button>
     </Empty>
   </CardContent>
 </Card>
 ```
 
-**Guidelines:**
-- Calm, instructional (no marketing copy)
-- Icon (64x64px max, muted color)
-- Title: `text-2xl font-semibold` (only exception to typography rules)
-- Description: `text-sm text-foreground`
-- CTA: `size="lg"` button (only exception to button sizing)
+**Rules:** Calm, instructional (no marketing copy). `size="lg"` button (only exception to sm rule). Title in `font-grotesk`. Description in `text-foreground` (NOT muted).
 
-**Shadcn Component:** `@shadcn/empty`
+### 6.4 Loading States
 
----
-
-### 4.3 Loading States
-
-**Patterns:**
 ```tsx
-// Page-level skeleton
-<Skeleton className="h-8 w-48 mb-2" />
-<Skeleton className="h-4 w-96 mb-6" />
-<Skeleton className="h-32 w-full" />
+{/* Page skeleton */}
+<div className="space-y-6 py-6">
+  <Skeleton className="h-8 w-48 mb-2" />
+  <Skeleton className="h-4 w-96 mb-6" />
+  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+    {Array.from({ length: 4 }).map((_, i) => (
+      <Skeleton key={i} className="h-[125px] rounded-lg border border-border bg-card/50" />
+    ))}
+  </div>
+  <Skeleton className="h-[300px] rounded-lg border border-border bg-card/50" />
+</div>
 
-// Button loading
+{/* Button loading */}
 <Button disabled size="sm">
   <Spinner className="mr-2 h-3.5 w-3.5" />
   Creating...
 </Button>
-
-// Component loading
-<Card className="bg-muted/30">
-  <CardContent className="pt-6">
-    <div className="space-y-4">
-      <Skeleton className="h-4 w-full" />
-      <Skeleton className="h-4 w-3/4" />
-    </div>
-  </CardContent>
-</Card>
 ```
 
-**Guidelines:**
-- Use `Spinner` from `@shadcn/spinner` (not `Loader2`)
-- Match skeleton structure to final content
-- Show loading immediately (no delay)
-- Provide context ("Loading agents...", "Fetching data...")
+**Rules:** Use `Spinner` (not `Loader2`). Skeleton shapes match final content. Show loading immediately. Provide context text ("Loading repos...", "Analyzing...").
 
-**Shadcn Components:** `@shadcn/skeleton`, `@shadcn/spinner`
+### 6.5 Error States
 
----
-
-### 4.4 Error States
-
-**Patterns:**
 ```tsx
-// Page-level error
+{/* Page-level error */}
 <Alert variant="destructive" className="py-2">
   <AlertCircle className="h-4 w-4" />
   <AlertDescription className="text-xs">
     <div className="space-y-1">
-      <p className="font-medium">Failed to load resources</p>
-      <p>{error}</p>
-      <Button variant="outline" size="sm" onClick={retry}>
-        Retry
-      </Button>
+      <p className="font-medium">Failed to load repositories</p>
+      <p>{error.message}</p>
+      <Button variant="outline" size="sm" onClick={retry}>Retry</Button>
     </div>
   </AlertDescription>
 </Alert>
 
-// Inline form error
+{/* Inline form error */}
 <Input className="h-9 border-destructive" />
 <p className="text-xs text-destructive">{error}</p>
 ```
 
-**Guidelines:**
-- Always provide retry mechanism
-- Clear, actionable error messages
-- Use `Alert` component for page-level errors
-- Use inline text for form errors
+### 6.6 Form Patterns
 
-**Shadcn Components:** `@shadcn/alert`
-
----
-
-### 4.5 Form Patterns
-
-**Standard Form Structure:**
 ```tsx
 <form className="space-y-4">
-  {/* Section Header */}
   <div className="space-y-0.5">
-    <h3 className="text-sm font-semibold">Section Title</h3>
-    <p className="text-xs text-foreground opacity-85">
-      Section description
-    </p>
+    <h3 className="font-grotesk text-sm font-semibold">Section Title</h3>
+    <p className="text-xs text-foreground opacity-85">Section description</p>
   </div>
 
-  {/* Form Fields */}
   <div className="space-y-1.5">
-    <Label htmlFor="field" className="text-xs text-muted-foreground">
-      Field Label
-    </Label>
-    <Input
-      id="field"
-      className="h-9"
-      placeholder="Placeholder text"
-    />
-    <p className="text-xs text-foreground opacity-85">
-      Helper text (NOT muted)
-    </p>
+    <Label htmlFor="name" className="text-xs text-muted-foreground">Repository Name</Label>
+    <Input id="name" className="h-9" placeholder="owner/repo" />
+    <p className="text-xs text-foreground opacity-85">The GitHub repository to connect.</p>
   </div>
 
-  {/* Separator */}
   <Separator />
 
-  {/* Submit Button */}
   <div className="flex justify-end gap-2">
-    <Button type="button" variant="outline" size="sm">
-      Cancel
-    </Button>
-    <Button type="submit" size="sm">
-      Save
-    </Button>
+    <Button type="button" variant="outline" size="sm">Cancel</Button>
+    <Button type="submit" size="sm" className="bg-rail-fade">Save</Button>
   </div>
 </form>
 ```
 
-**Guidelines:**
-- Section spacing: `space-y-4`
-- Field spacing: `space-y-1.5` or `space-y-2`
+**Rules:**
 - Labels: `text-xs text-muted-foreground`
-- Inputs: `h-9` height
-- Help text: `text-xs text-foreground opacity-85` (NOT muted)
-
-**Shadcn Components:** `@shadcn/form`, `@shadcn/input`, `@shadcn/label`, `@shadcn/separator`
+- Inputs: `h-9`
+- Helper text: `text-xs text-foreground opacity-85` (NOT muted)
+- Advanced options: `Accordion` (progressive disclosure)
+- Sections separated by `Separator`
 
 ---
 
-## Part V: Feature-Specific Patterns
+## Part VII: Feature-Specific Patterns
 
-This section provides patterns and requirements for each major feature in the application. These patterns apply consistently across all features while allowing for feature-specific adaptations.
+### 7.1 Universal List/Table Patterns
 
-### 5.1 Universal List/Table Patterns
+**Applies to:** Repos, Knowledge, Teams, Members
 
-**Applies to:** Screen Agents, Knowledge, Teams, Members, and all resource lists
-
-#### Layout Requirements
 - ✅ **Table view** (not cards) for scalable data
-- ✅ **Pagination mandatory** (default 25 items per page)
-- ✅ **Fixed header row** with sortable columns (where applicable)
-- ✅ **Row click** navigates to detail page (primary action)
-- ✅ **Actions menu** (dropdown, not prominent buttons)
+- ✅ **Pagination** (default 25 per page)
+- ✅ **Row click** navigates to detail
+- ✅ **Actions** in dropdown menu (not prominent buttons)
+- ✅ **Status badges** with `statusColors` vocabulary
 
-#### Visual Standards
-- High scanability (consistent row height `py-2`)
-- No visual noise (minimal icons, subtle colors)
-- Professional spacing (`space-y-1` for list items)
-- Status badges with clear visual hierarchy
+```tsx
+<Card className="glass-panel border-border">
+  <CardContent className="pt-6">
+    <div className="space-y-1 mb-4">
+      <h3 className="font-grotesk text-sm font-semibold text-foreground">Repositories</h3>
+      <p className="text-xs text-muted-foreground">Click a repo to open the dashboard.</p>
+    </div>
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b border-border">
+          <th className="h-10 px-4 text-left font-medium text-muted-foreground text-xs">Name</th>
+          <th className="h-10 px-4 text-left font-medium text-muted-foreground text-xs">Status</th>
+          <th className="h-10 px-4 text-right font-medium text-muted-foreground text-xs">Confidence</th>
+          <th className="h-10 px-4 text-right font-medium text-muted-foreground text-xs">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr className="border-b border-border hover:bg-muted/30 transition-colors">
+          <td className="p-4">
+            <span className="font-mono text-sm font-medium text-foreground">repo-name</span>
+            <p className="text-xs text-muted-foreground mt-0.5">Description</p>
+          </td>
+          {/* ... */}
+        </tr>
+      </tbody>
+    </table>
+    <Pagination />
+  </CardContent>
+</Card>
+```
 
-#### Standard Columns
-- Name/Title (primary identifier)
-- Status (badge with appropriate state)
-- Metadata (dates, counts, relevant info)
-- Actions (dropdown menu)
+### 7.2 Universal Detail Page Patterns
 
-**Shadcn Components:** `@shadcn/table`, `@shadcn/pagination`, `@shadcn/dropdown-menu`, `@shadcn/badge`
+- ✅ **Tab-based navigation** (single-level, flat)
+- ✅ **No card wrappers** on tab content
+- ✅ **Overview tab** with key metrics + terminal panels
+- ✅ **Settings tab** for resource configuration
+- ✅ **Activity tab** for history/timeline
 
----
+```tsx
+<Tabs defaultValue="overview">
+  <TabsList className="bg-transparent p-0 border-b border-border">
+    <LazarusTabTrigger value="overview">Overview</LazarusTabTrigger>
+    <LazarusTabTrigger value="review">Code Review</LazarusTabTrigger>
+    <LazarusTabTrigger value="settings">Settings</LazarusTabTrigger>
+  </TabsList>
 
-### 5.2 Universal Detail Page Patterns
+  <TabsContent value="overview" className="space-y-6 pt-6">
+    {/* Stats + Terminal panels + Glass Brain panes */}
+  </TabsContent>
+</Tabs>
+```
 
-**Applies to:** Screen Agents, Knowledge, Teams, and all resource detail pages
+### 7.3 Dashboard
 
-#### Structure Requirements
-- ✅ **Tab-based navigation** (single-level only)
-- ✅ **No nested navigation** (flat structure)
-- ✅ **No card wrappers** (content blends into page)
-- ✅ **Clear status visibility** in Overview tab
-
-#### Standard Tabs
-- **Overview:** Status, metrics, summary, key information
-- **Settings/Configuration:** Resource-specific settings and options
-- **Activity/History:** Timeline of events, changes, or sync history
-- **Content/Details:** Feature-specific content (tables, lists, details)
-
-#### Visual Standards
-- Page title: `text-lg font-semibold`
-- Section headers: `text-sm font-semibold`
-- No card borders (removed `border rounded-lg`)
-- Table-first design for data display
-
-**Shadcn Components:** `@shadcn/tabs`, `@shadcn/table`, `@shadcn/badge`, `@shadcn/progress`
-
----
-
-### 5.3 Dashboard
-
-**Purpose:** High-level overview with clear next actions (NOT deep analytics)
+**Purpose:** High-level overview with clear next actions — NOT deep analytics.
 
 **Layout:**
-- Metric cards with `glass-card border-border hover:shadow-glow-purple`
-- Quick action buttons (`size="sm"`, `bg-rail-fade` for primary)
-- Summary statistics with `font-grotesk text-2xl font-bold` for values
-- Empty state using `Empty` component with `size="lg"` CTA button
+1. Page header: title + primary CTA
+2. Stats grid: 4 `glass-card` stat cards with `hover:shadow-glow-purple`
+3. Tabs + table: Repos list with status badges and confidence scores
+4. Glass Brain preview: 3-column `GlassBrainPane` grid
 
 **Content:**
-- High-level metrics only (total agents, active sessions, etc.)
-- Primary CTAs (create agent, invite members)
-- Quick navigation links to detailed views
-- No dense charts or historical drill-downs
+- Total repos, active sessions, avg confidence, completions
+- Primary CTAs: Connect repo, invite members
+- Quick nav to detailed views
+- No dense charts — that's Analytics
 
-**Guidelines:**
-- Keep it fast and scannable
-- Focus on "what's next" not "what happened"
-- Use `Card` components for metric groups
-- Empty states must be actionable
+### 7.4 Repository Detail
 
-**Shadcn Components:** `@shadcn/card`, `@shadcn/button`, `@shadcn/empty`, `@shadcn/badge`
+**Tabs:** Overview, Code Review, Knowledge Graph, Timeline, Settings
 
----
+**Overview Tab:**
+- Stats: Files indexed, Patterns detected, Confidence score, Last sync
+- Glass Brain 3-pane (Plan / Work / Thoughts) — real agent output
+- Terminal panel: latest Spaghetti Shield review log
 
-### 5.4 Screen Agents
+**Code Review Tab:**
+- Terminal panel: `spaghetti-shield.log` with SCAN/BLOCKED/REWRITE/PASS entries
+- PR scorecard: domain/infra badges, Impact Score bar, Test Coverage bar, compliance badges
+- Same visual vocabulary as landing page Section 5 (Lifecycle Step 03 and 05)
 
-**List View (`/screen-agents`):**
-- Table view with pagination
-- Columns: Name, Status, Visibility, Metrics (Presentations, Viewers)
-- Row click navigates to detail
-- Actions: Share, Edit, Delete (dropdown menu)
+**Knowledge Graph Tab:**
+- Graph visualization of modules, conventions, dependencies
+- Node colors: Electric Cyan (active/recent), Rail Purple (structural/historical)
+- Edge weights indicating dependency strength
 
-**Detail View (`/screen-agents/[id]`):**
-- Tabs: Overview, Analytics, Sessions, Knowledge, Settings
-- Overview: Metrics (Presentations, Viewers, Minutes, Avg Duration)
-- Configuration visibility in Settings tab
-- Status controls (Publish/Pause) with `Spinner` loading states
+**Timeline Tab:**
+- Prompt Ledger: append-only list of `{prompt} → {changes}`
+- Working-state markers (green dots for verified states)
+- Rewind button: restores to last working state
+- Branch visualization after rewind
 
-**Creation Form (`/screen-agents/new`):**
-- Multi-step wizard with progress indicator
-- Form sections separated with `Separator`
-- All inputs `h-9`, labels `text-xs text-muted-foreground`
-- Advanced options in `Accordion`
+### 7.5 Analytics
 
-**Shadcn Components:** `@shadcn/table`, `@shadcn/pagination`, `@shadcn/tabs`, `@shadcn/card`, `@shadcn/progress`, `@shadcn/spinner`
+**Purpose:** Deep insights, trends, detailed reporting (separate from Dashboard).
 
----
-
-### 5.5 Knowledge
-
-**List View (`/knowledge`):**
-- Table view with pagination (default 25 per page)
-- Columns: Name, Source, Status, Last Sync, Pages, Actions
-- Status badges with progress indicators for active syncs
-- Row click navigates to detail
-
-**Detail View (`/knowledge/[id]`):**
-- Tabs: Overview, Configuration, Contents, Activity
-- Contents in tables (not cards)
-- Sync history timeline in Activity tab
-- Clear failure details when sync fails
-
-**Creation Form (`/knowledge/new`):**
-1. Basic Information (Name, Description, Source Name)
-2. Website Source (Website URL + Authentication)
-3. Additional Assets (Files, Doc URLs, Video URLs)
-4. Advanced Options (Accordion)
-
-**Guidelines:**
-- Website URL always required
-- Authentication only for website (not assets)
-- Asset list with type badges and remove buttons
-- Progress visibility during sync
-
-**Shadcn Components:** `@shadcn/table`, `@shadcn/pagination`, `@shadcn/tabs`, `@shadcn/badge`, `@shadcn/progress`, `@shadcn/separator`, `@shadcn/accordion`
-
----
-
-### 5.6 Analytics
-
-**Purpose:** Deep analytics, trends, and detailed reporting (separate from Dashboard)
-
-**Layout:**
-- Charts and detailed metrics
+- Charts: `@shadcn/chart` (Recharts-based) with brand palette (`chart-1` = purple, `chart-2` = cyan)
 - Date range selectors
-- Filterable data tables
-- Export options (future)
+- Filterable tables with pagination
+- Metric cards with `glass-card` (not `bg-muted/30`)
 
-**Components:**
-- Metric cards with `bg-muted/30` and hover effects
-- Tables with pagination
-- Charts using `@shadcn/chart` (Recharts-based)
-- Activity feeds with timestamps
+### 7.6 Settings
 
-**Guidelines:**
-- Focus on deep insights, not quick overview
-- Historical data and trends
-- Detailed drill-downs
-- Exportable reports (future)
+**Layout:** Tabbed navigation
 
-**Shadcn Components:** `@shadcn/chart`, `@shadcn/table`, `@shadcn/card`, `@shadcn/pagination`, `@shadcn/select`
+| Section | Content |
+|---------|---------|
+| **Profile** | Name, email, avatar |
+| **Authentication** | Password, OAuth connections |
+| **Preferences** | Theme, language, notifications |
+| **Tenant > General** | Tenant name, slug, logo |
+| **Tenant > Members** | List, invitations, role management |
+| **Tenant > API Keys** | MCP endpoint URL, key management |
+| **Org > Teams** | Team creation, member assignment |
+| **Org > Billing** | Stripe integration, usage, invoices |
+| **Org > Security** | SSO, domain allowlist |
 
----
+Each section in `glass-card border-border`. Confirmation dialogs for destructive actions. Toast notifications for feedback.
 
-### 5.7 Teams (Organization Mode Only)
+### 7.7 Billing (Organization Mode)
 
-**List View (`/teams`):**
-- Table view with pagination
-- Columns: Name, Members, Created, Actions
-- Empty state: Clear CTA to create first team
-- Organization features required messaging (Normal mode)
+- Balance card with `glass-card` + credit card icon
+- Subscription plans: popular plan highlighted with `border-primary ring-1 ring-primary/20`
+- Usage meters: confidence bar pattern (§4.4)
+- Transaction history table with pagination
 
-**Detail View (Future):**
-- Tabs: Overview, Members, Settings
-- Member management interface
-- Team-scoped resources
+### 7.8 Onboarding Flow
 
-**Creation Form (Future):**
-- Team name and description
-- Initial member invitations
-- Team settings
+First-time experience — the bridge from landing page to app:
 
-**Shadcn Components:** `@shadcn/table`, `@shadcn/pagination`, `@shadcn/empty`, `@shadcn/card`
-
----
-
-### 5.8 Settings
-
-**Layout:**
-- Tabbed navigation (horizontal for personal, vertical for organization)
-- Each section in `Card` with `bg-muted/30`
-- Form sections with `space-y-4` spacing
-
-**Personal Settings (`/settings`):**
-- Profile: Name, email, avatar
-- Authentication: Password, OAuth connections
-- Preferences: Theme, language, notifications
-
-**Organization Settings (`/settings/tenant` or `/settings/organization`):**
-- General: Tenant name, slug, description
-- Members: List, invitations, role management
-- Billing: Payment methods, invoices, usage
-- Security: Enterprise features (SSO, domain allowlist)
-
-**Guidelines:**
-- Inline editing where appropriate
-- Modal dialogs for destructive actions
-- Confirmation patterns for sensitive changes
-- Toast notifications for success/error feedback
-
-**Shadcn Components:** `@shadcn/tabs`, `@shadcn/card`, `@shadcn/input`, `@shadcn/select`, `@shadcn/switch`, `@shadcn/dialog`, `@shadcn/toast`
+- Create organization form
+- Connect first GitHub repo
+- Wait for initial indexing → show Architecture Health Report (auto-generated)
+- Terminal panel showing real-time indexing progress with `animate-breathing-glow`
+- Completion: green glow (`glow-success-pulse`) on the dashboard
 
 ---
 
-### 5.9 Billing (Organization Mode Only)
+## Part VIII: Quality Standards
 
-**Layout:**
-- Balance display in `Card` with `bg-muted/30`
-- Subscription cards with hover effects
-- Usage metrics with progress indicators
-- Payment methods management
-
-**Components:**
-- Balance card with credit card icon
-- Auto-reload settings in `Card`
-- Subscription plans with `border-primary ring-1 ring-primary/20` for popular plan
-- Transaction history table
-
-**Guidelines:**
-- Clear balance visibility
-- Prominent payment action buttons
-- Usage meters with visual indicators
-- Professional, trustworthy design
-
-**Shadcn Components:** `@shadcn/card`, `@shadcn/button`, `@shadcn/table`, `@shadcn/progress`, `@shadcn/switch`
-
----
-
-### 5.10 Form Patterns (Universal)
-
-**Standard Form Structure:**
-1. **Basic Information** (Name, Description - always first)
-2. **Primary Configuration** (Main feature settings)
-3. **Additional Options** (Optional features, integrations)
-4. **Advanced Options** (Accordion with advanced settings)
-
-**Section Organization:**
-- Use `Separator` between major sections
-- Section headers: `text-sm font-semibold`
-- Section descriptions: `text-xs text-foreground opacity-85`
-
-**Guidelines:**
-- Most important fields first
-- Progressive disclosure for advanced options
-- Clear field grouping with visual separation
-- Validation feedback inline below fields
-
-**Shadcn Components:** `@shadcn/input`, `@shadcn/label`, `@shadcn/textarea`, `@shadcn/select`, `@shadcn/checkbox`, `@shadcn/switch`, `@shadcn/separator`, `@shadcn/accordion`
-
----
-
-### 5.11 Universal Patterns Summary
-
-**All List Views:**
-- Table layout (not cards)
-- Pagination required
-- Row click for primary navigation
-- Actions in dropdown menu
-- Status badges with clear hierarchy
-
-**All Detail Views:**
-- Tab-based navigation (single-level)
-- Overview tab with key metrics
-- Settings/Configuration tab
-- Activity/History tab when applicable
-- No card wrappers on tabs
-
-**All Forms:**
-- Basic info first
-- Primary configuration next
-- Additional options after
-- Advanced options in accordion
-- Section separators between major groups
-
-**All Empty States:**
-- Use `Empty` component
-- Clear, actionable messaging
-- Primary CTA with `size="lg"` button
-- No marketing copy or illustrations
-
-**Shadcn Components Used:** All features use the same Shadcn component library for consistency
-
----
-
-## Part VI: Quality Standards
-
-### 6.1 Enterprise Quality Bar
+### 8.1 Enterprise Quality Bar
 
 **Visual Quality:**
-- Subtle, calm, credible enterprise-grade aesthetics
-- High information density (not spacious)
-- Professional polish that signals reliability
+- Every card uses Industrial Glass material (`glass-card` or `glass-panel`)
+- Stat values in `font-grotesk text-2xl font-bold` — same authority as landing page metrics
+- Terminal panels for code/agent output — authentic, not decorative
+- Glow effects for interactive feedback — purple hover, cyan active, green success
+- Professional density — information-rich, not spacious
 
 **Interaction Design:**
-- Predictable, consistent patterns
-- Clear visual affordances (buttons look like buttons)
-- Smooth micro-interactions
+- Predictable patterns (tables for lists, tabs for detail, forms for creation)
+- Clear affordances (buttons look like buttons, clickable rows have hover)
+- `animate-fade-in` on page mount — one entrance, then static
+- Loading: `Suspense` + `Skeleton` matching final content shape
 
 **Information Architecture:**
-- Clear hierarchy, high signal-to-noise ratio
-- Scalable to hundreds/thousands of items
-- No visual noise or decoration
+- High signal-to-noise: `text-foreground` for content, muted only for labels
+- Scalable to hundreds of repos, thousands of review entries
+- Table-first for data, cards for metrics, terminals for output
 
-**Usability:**
-- Long-session usability (8+ hour workdays)
-- Accessible (WCAG AA contrast standards)
-- Fast scanning and navigation
+### 8.2 Anti-Patterns (Forbidden)
 
----
-
-### 6.2 Anti-Patterns (Forbidden)
-
-**Visual Anti-Patterns:**
-- ❌ Oversized typography (`text-xl`, `text-2xl` for page titles — use `text-lg` only)
-- ❌ Excessive whitespace or padding
-- ❌ Marketing-style UI inside application
-- ❌ Plain `bg-muted/30` cards — use `glass-card` for autorail aesthetic
+**Visual:**
+- ❌ `bg-muted/30` for cards — use `glass-card` or `glass-panel`
+- ❌ `text-xl` or `text-2xl` for page titles — `text-lg font-semibold` maximum
 - ❌ Rail Purple for body text (WCAG fail — use Cloud White)
-- ❌ Muted primary content text
+- ❌ Muted primary content text (descriptions, body, table content)
+- ❌ Light backgrounds anywhere
+- ❌ Cyan-to-purple gradient blending
+- ❌ Poppins or Sofia Sans fonts (stale pre-rebrand — use Space Grotesk / Inter / JetBrains Mono)
 
-**Structural Anti-Patterns:**
-- ❌ Card-based layouts for lists (use tables)
-- ❌ Infinite scroll (use pagination)
-- ❌ Nested navigation (single-level only)
-- ❌ Mixing user-scoped and tenant-scoped settings
+**Structural:**
+- ❌ Card-based layouts for data lists — use tables
+- ❌ Infinite scroll — use pagination
+- ❌ Nested navigation — single-level tabs only
+- ❌ Mixing user-scoped and tenant-scoped settings on one page
+- ❌ Marketing copy in empty states
 
-**Component Anti-Patterns:**
-- ❌ Using `Loader2` (use `Spinner` instead)
-- ❌ Creating custom components that duplicate Shadcn
+**Component:**
+- ❌ `Loader2` — use `Spinner`
+- ❌ `CardHeader` / `CardTitle` / `CardDescription` — inline structure only
+- ❌ Custom components duplicating Shadcn functionality
 - ❌ Modifying Shadcn component source files
-- ❌ Using `CardHeader` when inline headers suffice
+
+**Animation:**
+- ❌ Bouncing, springing, or looping animations on content
+- ❌ `blurReveal` or `whileInView` — those are landing page patterns, not app patterns
+- ❌ More than 2 breathing-glow elements per page
+- ❌ Animation on every page transition (one `animate-fade-in` on mount, that's it)
 
 ---
 
-## Part VII: Reference Checklists
+## Part IX: Reference Checklists
 
-### 7.1 Page-Level Validation Checklist
-
-**Before finalizing any page, validate:**
+### 9.1 Page-Level Validation
 
 **Typography:**
-- [ ] Page title uses `font-grotesk text-lg font-semibold` (never larger)
-- [ ] Page description uses `text-sm text-foreground` with `mt-0.5`
-- [ ] Section headers use `font-grotesk text-sm font-semibold`
-- [ ] Code/data uses `font-mono`
-- [ ] All primary text uses `text-foreground` (NOT muted)
-- [ ] Muted text only for form labels, placeholders, metadata
+- [ ] Page title: `font-grotesk text-lg font-semibold text-foreground` (never larger)
+- [ ] Page description: `text-sm text-foreground` with `mt-0.5`
+- [ ] Section headers: `font-grotesk text-sm font-semibold text-foreground`
+- [ ] Code/data: `font-mono`
+- [ ] All primary text: `text-foreground` (NOT muted)
+- [ ] Muted only for: form labels, placeholders, metadata labels
 
 **Layout:**
-- [ ] Sections use `space-y-6 py-6` for page container
-- [ ] Form fields use `space-y-4` or `space-y-2`
-- [ ] Cards use `glass-card` or `glass-panel` (autorail)
-- [ ] Cards use `CardContent` with `pt-6` (not full padding)
+- [ ] Page container: `space-y-6 py-6 animate-fade-in`
+- [ ] Form fields: `space-y-4` or `space-y-2`
+- [ ] Cards: `glass-card` or `glass-panel` (never `bg-muted/30`)
+- [ ] Cards use `CardContent` with `pt-6` (no full padding, no `CardHeader`)
 
 **Components:**
-- [ ] All buttons use `size="sm"` (except empty state CTAs)
-- [ ] All inputs use `h-9` height
-- [ ] All labels use `text-xs text-muted-foreground`
-- [ ] Loading states use `Spinner` (not `Loader2`)
-- [ ] Empty states use `Empty` component
-
-**Shadcn Usage:**
-- [ ] Using Shadcn components (not custom duplicates)
-- [ ] Components customized via className (not source modification)
-- [ ] Examples referenced from Shadcn registry
-
----
-
-### 7.2 Component Usage Checklist
-
-**When using any component:**
-
-**Shadcn Components:**
-- [ ] Component installed via CLI or MCP
-- [ ] Usage matches Shadcn examples
-- [ ] Customization via className only
-- [ ] No source file modifications
-
-**Typography:**
+- [ ] Buttons: `size="sm"` (except empty state CTAs → `size="lg"`)
+- [ ] Inputs: `h-9` height with `aria-label`
 - [ ] Labels: `text-xs text-muted-foreground`
-- [ ] Help text: `text-xs text-foreground` (NOT muted)
-- [ ] Headers: `text-sm font-semibold`
-- [ ] Body: `text-sm` or `text-xs` with `text-foreground`
+- [ ] Loading: `Spinner` + `Suspense` + `Skeleton`
+- [ ] Empty states: `Empty` component with `font-grotesk` title
 
-**Spacing:**
-- [ ] Form sections: `space-y-4`
-- [ ] Button groups: `gap-2`
-- [ ] Icon + text: `gap-2`
+**Glass & Glow:**
+- [ ] Stat cards: `glass-card border-border hover:shadow-glow-purple`
+- [ ] Table wrappers: `glass-panel border-border`
+- [ ] Terminal panels: `bg-[#0e0e14]` with `terminal-header` + dots
+- [ ] Active/selected: `border-electric-cyan/20` + cyan glow shadow
+- [ ] Confidence colors: success (≥85%), warning (50–84%), muted (<50%)
 
-**Accessibility:**
-- [ ] Proper label associations
-- [ ] ARIA attributes where needed
-- [ ] Keyboard navigation support
-- [ ] Focus management
+### 9.2 Feature Checklist
 
----
-
-### 7.3 Feature-Specific Checklist
-
-**All List Views (Screen Agents, Knowledge, Teams, Members):**
+**All List Views:**
 - [ ] Table view (not cards)
-- [ ] Pagination implemented (default 25 per page)
+- [ ] Pagination (25 per page)
 - [ ] Row click navigates to detail
 - [ ] Actions in dropdown menu
-- [ ] Status badges with clear hierarchy
-- [ ] Empty state with actionable CTA
+- [ ] Status badges with `statusColors` pattern
+- [ ] Empty state with `Empty` component
 
-**All Detail Views (Screen Agents, Knowledge, Teams):**
+**All Detail Views:**
 - [ ] Tab-based navigation (single-level)
-- [ ] Overview tab with key metrics
+- [ ] Overview tab with stats + terminal panels
 - [ ] Settings/Configuration tab
+- [ ] Activity tab when applicable
 - [ ] No card wrappers on tab content
-- [ ] Clear status visibility
-- [ ] History/Activity accessible when applicable
 
-**All Creation Forms:**
-- [ ] Form sections separated with `Separator`
-- [ ] Basic information first
-- [ ] Primary configuration next
-- [ ] Advanced options in accordion
-- [ ] Clear validation and error messages
+**All Forms:**
+- [ ] Basic info first → primary config → additional → advanced (accordion)
+- [ ] `Separator` between sections
+- [ ] `h-9` inputs, `text-xs text-muted-foreground` labels
+- [ ] Helper text: `text-foreground opacity-85` (NOT muted)
 - [ ] Loading states with `Spinner`
 
-**Dashboard:**
-- [ ] High-level metrics only (not deep analytics)
-- [ ] Primary CTAs visible
-- [ ] Empty state with `Empty` component
-- [ ] Quick navigation links
-- [ ] No dense charts or historical drill-downs
+**Terminal Displays:**
+- [ ] `bg-[#0e0e14]` background
+- [ ] `terminal-header` with traffic-light dots
+- [ ] `font-mono text-xs` content
+- [ ] Status-colored keywords: PASS (green), BLOCKED (red), REWRITE (cyan)
+- [ ] Blinking cursor where appropriate (`cursor-blink`)
 
-**Analytics:**
-- [ ] Deep insights and trends
-- [ ] Date range selectors
-- [ ] Filterable data tables
-- [ ] Charts using `@shadcn/chart`
-- [ ] Detailed metrics and reporting
+### 9.3 New Feature Checklist
 
-**Settings:**
-- [ ] Tabbed navigation (horizontal/vertical)
-- [ ] Each section in `Card` with `bg-muted/30`
-- [ ] Form patterns with proper spacing
-- [ ] Confirmation dialogs for destructive actions
-- [ ] Toast notifications for feedback
+Before building any new feature:
 
----
-
-## Appendix A: Shadcn Component Quick Reference
-
-### Layout Components
-- **Card:** `@shadcn/card` - Use `bg-muted/30`, `CardContent` with `pt-6`
-- **Separator:** `@shadcn/separator` - Section dividers
-- **Tabs:** `@shadcn/tabs` - Tabbed content sections
-
-### Form Components
-- **Input:** `@shadcn/input` - Always `h-9` height
-- **Label:** `@shadcn/label` - Use `text-xs text-muted-foreground`
-- **Textarea:** `@shadcn/textarea` - Use `text-sm`
-- **Select:** `@shadcn/select` - Dropdown selects
-- **Checkbox:** `@shadcn/checkbox` - Checkboxes
-- **Radio Group:** `@shadcn/radio-group` - Radio buttons
-- **Switch:** `@shadcn/switch` - Toggle switches
-- **Accordion:** `@shadcn/accordion` - Collapsible sections
-
-### Feedback Components
-- **Alert:** `@shadcn/alert` - Error/success messages
-- **Badge:** `@shadcn/badge` - Status indicators
-- **Spinner:** `@shadcn/spinner` - Loading indicators (preferred)
-- **Skeleton:** `@shadcn/skeleton` - Skeleton loaders
-- **Progress:** `@shadcn/progress` - Progress bars
-- **Toast:** `@shadcn/toast` - Toast notifications (Sonner)
-
-### Data Display Components
-- **Table:** `@shadcn/table` - Data tables
-- **Pagination:** `@shadcn/pagination` - Pagination controls
-- **Empty:** `@shadcn/empty` - Empty states
-- **Avatar:** `@shadcn/avatar` - User avatars
-
-### Interactive Components
-- **Button:** `@shadcn/button` - Use `size="sm"` in app
-- **Dialog:** `@shadcn/dialog` - Modal dialogs
-- **Dropdown Menu:** `@shadcn/dropdown-menu` - Dropdown menus
-- **Popover:** `@shadcn/popover` - Popover overlays
-- **Tooltip:** `@shadcn/tooltip` - Tooltips
-
-### Accessing Shadcn Components
-
-**Via MCP (Recommended):**
-```typescript
-// View component details
-mcp_presenter-agent-ui-shadcn_view_items_in_registries({
-  items: ["@shadcn/button"]
-})
-
-// Get usage examples
-mcp_presenter-agent-ui-shadcn_get_item_examples_from_registries({
-  registries: ["@shadcn"],
-  query: "button-demo"
-})
-
-// Get installation command
-mcp_presenter-agent-ui-shadcn_get_add_command_for_items({
-  items: ["@shadcn/button"]
-})
-```
-
-**Via CLI:**
-```bash
-pnpm dlx shadcn@latest add button
-```
-
-**Registry URL:**
-- Main Registry: https://ui.shadcn.com
-- Component Docs: https://ui.shadcn.com/docs/components/[component-name]
-- Examples: Available via MCP tools
+- [ ] Read this guide + `.cursor/patterns/golden-sample.tsx`
+- [ ] Verify font stack: Space Grotesk, Inter, JetBrains Mono (NOT Poppins/Sofia)
+- [ ] Use `glass-card`/`glass-panel` for all containers
+- [ ] Use brand color system: cyan = intelligence, purple = structure
+- [ ] Terminal panels for any code/agent/log output
+- [ ] Confidence scores use the 3-tier color system
+- [ ] Server Component by default — `"use client"` only when hooks needed
+- [ ] `Suspense` + `Skeleton` for async data
+- [ ] Test WCAG AA contrast (Cloud White on Void Black = 18.4:1)
+- [ ] Keyboard nav + `aria-label` on icon buttons + `focus-visible:ring-ring`
 
 ---
 
-## Appendix B: autorail Brand & Tailwind Reference
+## Appendix A: Tailwind Utility Quick Reference
 
-**Primary UI Palette (Void Black + Industrial Glass):**
-- Background: Void Black `#0A0A0F` — `bg-background`
-- Primary: Rail Purple `#6E18B3` — graphics, borders, icons only (never body text; WCAG fail)
-- Accent: Electric Cyan `#00E5FF` — active states, links, intelligence
-- Text: Cloud White `#FAFAFA` — `text-foreground`
+| Utility | Definition | Usage |
+|---------|-----------|-------|
+| `glass-panel` | `bg-white/3% + blur(12px) + border-white/10%` | Static panels, sidebar, table wrappers |
+| `glass-card` | Same + hover (bg→5%, border→15%) | Stat cards, interactive panels |
+| `bg-rail-fade` | Purple gradient `135deg #8134CE → #6E18B3` | Primary button background |
+| `text-gradient` | Purple gradient text (clipped) | Decorative headings (rare) |
+| `glow-purple` | `box-shadow: 0 0 20px rgba(110,24,179,0.2)` | Card hover state |
+| `glow-cyan` | `box-shadow: 0 0 20px rgba(0,229,255,0.2)` + border | Active/selected |
+| `glow-success-pulse` | Pulsing green shadow + border | High confidence |
+| `glow-red` | Red shadow | Error states |
+| `text-glow-cyan` | Cyan + text-shadow | Terminal highlights |
+| `terminal-header` | Flex row with padding + bottom border | Terminal top bar |
+| `terminal-dot` | 8px circle | Traffic-light dots |
+| `cursor-blink` | `::after` blinking cyan block | Terminal cursor |
+| `divider-shimmer` | Gradient line + shimmer animation | Section dividers |
+| `animate-fade-in` | `opacity 0→1, 0.5s` | Page mount entrance |
+| `animate-breathing-glow` | Pulsing inset cyan shadow | Live/processing indicator |
+| `bg-grid-pattern` | 40px grid lines at 3% white | HUD background texture |
+| `scan-lines` | Subtle horizontal lines via `::after` | Terminal overlay |
 
-**Typography (styles/tailwind.css):**
-- Headlines: `font-grotesk` (Space Grotesk)
-- Body: `font-sans` (Inter)
-- Code: `font-mono` (JetBrains Mono)
+## Appendix B: Shadcn Component Reference
 
-**Component Utilities:**
-- Cards: `glass-card`, `glass-panel`
-- Gradients: `bg-rail-fade`, `text-gradient`
-- Glows: `glow-purple`, `glow-cyan`, `glow-success-pulse`
+| Category | Components | Key Patterns |
+|----------|-----------|-------------|
+| **Layout** | `card`, `separator`, `tabs`, `sheet`, `scroll-area` | `glass-card` + `CardContent pt-6` |
+| **Forms** | `input`, `label`, `textarea`, `select`, `switch`, `form` | `h-9` inputs, `text-xs` labels |
+| **Feedback** | `alert`, `badge`, `spinner`, `skeleton`, `progress`, `sonner` | `Spinner` not `Loader2` |
+| **Data** | `table`, `avatar` | Pagination mandatory |
+| **Interactive** | `button`, `dialog`, `alert-dialog`, `dropdown-menu`, `tooltip` | `size="sm"` default |
 
-**Full Guidelines:** See `docs/brand/brand.md` for complete brand guidelines and Tailwind v4 implementation.
+## Appendix C: Landing Page → App Translation Table
 
----
+This table maps visual elements from the kap10 landing page to their dashboard equivalents:
 
-## Appendix C: Quick Reference Commands
-
-### Explore Shadcn Components
-```typescript
-// List all available components
-mcp_presenter-agent-ui-shadcn_list_items_in_registries({
-  registries: ["@shadcn"],
-  limit: 50
-})
-
-// Search for components
-mcp_presenter-agent-ui-shadcn_search_items_in_registries({
-  registries: ["@shadcn"],
-  query: "form input"
-})
-
-// View specific components
-mcp_presenter-agent-ui-shadcn_view_items_in_registries({
-  items: ["@shadcn/button", "@shadcn/card"]
-})
-```
-
-### Get Component Examples
-```typescript
-// Get examples by query
-mcp_presenter-agent-ui-shadcn_get_item_examples_from_registries({
-  registries: ["@shadcn"],
-  query: "button-demo"
-})
-
-// Get add command
-mcp_presenter-agent-ui-shadcn_get_add_command_for_items({
-  items: ["@shadcn/button"]
-})
-```
+| Landing Page Element | App Equivalent |
+|---------------------|---------------|
+| `text-display-xl` hero headline | `text-lg font-semibold` page title |
+| `blurReveal` scroll animation | `animate-fade-in` on page mount (once) |
+| Terminal mockup inside bento card | `TerminalPanel` component with real agent output |
+| NeuralConstellation WebGL | No WebGL — `glass-card` + `glass-panel` carry the aesthetic |
+| Stat values `text-3xl font-grotesk text-electric-cyan` | Stat values `text-2xl font-bold text-foreground` |
+| Bento grid (hero + 2×2) | Stats grid (4-col) + table + Glass Brain panes |
+| "Spaghetti Shield" terminal mockup | Real PR review log in `TerminalPanel` |
+| "Rewind Button" timeline mockup | Real Prompt Ledger Timeline with working-state markers |
+| "Invisible Testing" REC dot | Real test recording status with `animate-breathing-glow` |
+| HUD corner brackets on CTA | Not used in app — reserved for marketing surfaces |
+| FAQ accordion in glass container | Settings sections with `Accordion` for advanced options |
+| `hover:glow-cyan` on CTA buttons | `hover:shadow-glow-purple` on stat cards, `text-electric-cyan` on active tabs |
 
 ---
 
-**Document Status:** ✅ Complete  
-**Last Updated:** February 2025  
-**Design System:** autorail (Void Black + Industrial Glass)  
-**Tailwind:** v4 — `styles/tailwind.css`  
-**Golden Sample:** `.cursor/patterns/golden-sample.tsx`  
-**Component Library:** Shadcn UI (438+ components)  
-**Next Review:** Quarterly or when major design system changes occur
+**Document Status:** Complete
+**Last Updated:** February 2026
+**Design System:** autorail Industrial Glass (Void Black + Electric Cyan)
+**Tailwind:** v4 — `styles/tailwind.css`
+**Golden Sample:** `.cursor/patterns/golden-sample.tsx`
+**Brand Guide:** `docs/brand/brand.md`
+**Component Library:** Shadcn UI
+**Landing Page Reference:** autorail-landing-page `docs/content/kap10-page.md`
+**Next Review:** When major features ship or design system changes occur

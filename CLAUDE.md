@@ -4,15 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Kap10 Web Server** — Cloud-native code intelligence platform with Better Auth, Supabase (PostgreSQL), Temporal workflows, and shadcn/ui. Built with Next.js 16, React 19, Tailwind CSS v4, and Zod v4.
+**Kap10 Web Server** — Cloud-native code intelligence platform that connects to repositories, builds a knowledge graph, and exposes it to AI coding agents via MCP. Built with Next.js 16, React 19, Tailwind CSS v4, and Zod v4. Uses Ports & Adapters (hexagonal) architecture.
 
 **Package Manager**: pnpm (via Corepack). **Node**: >=20.9.0.
 
 ## Commands
 
 ```bash
-pnpm dev                        # Dev server (Turbopack)
-pnpm build                      # Production build
+pnpm dev                        # Dev server (Turbopack) — auto-runs migrations via predev hook
+pnpm build                      # Production build (uses --webpack flag)
 pnpm lint                       # ESLint
 pnpm lint:fix                   # ESLint auto-fix
 pnpm prettier                   # Check formatting
@@ -29,31 +29,48 @@ pnpm e2e:ui                     # Playwright with UI
 # Workers & Docker
 pnpm temporal:worker:heavy      # Temporal heavy-compute worker (SCIP, Semgrep)
 pnpm temporal:worker:light      # Temporal light worker (LLM, email, webhooks)
-docker compose up                # All infrastructure services
+docker compose up -d             # Infrastructure only (Redis, ArangoDB, Temporal, PostgreSQL)
+docker compose --profile worker up -d  # + Temporal workers
+docker compose --profile app up -d     # + Next.js app (everything)
 
 # Database
 pnpm seed                       # Seed database
-pnpm migrate                    # Run migrations
+pnpm migrate                    # Run SQL migrations + Better Auth migrations
 
 # Storybook
 pnpm storybook                  # Dev on port 6006
 ```
 
+**Dev ports**: App `localhost:3000`, Temporal UI `localhost:8080`, ArangoDB UI `localhost:8529`.
+
 ## Architecture
 
-### Key Directories
+### Hexagonal / Ports & Adapters
 
-- `app/` — Next.js App Router. Route groups: `(auth)` for login/register, `(admin)` for admin pages
-- `app/api/` — API routes (auth, health, uploadthing, webhooks, etc.)
-- `components/ui/` — shadcn/ui components
-- `components/auth/` — Auth components (login-form, register-form, oauth-buttons)
+All external dependencies are behind port interfaces in `lib/ports/`. Business logic depends only on abstractions. The DI container (`lib/di/container.ts`) provides `createProductionContainer()` for runtime and `createTestContainer(overrides?)` with 11 in-memory fakes for testing.
+
+**11 ports** (`lib/ports/`): `IGraphStore`, `IRelationalStore`, `IWorkflowEngine`, `ICacheStore`, `IObservability`, `ILLMProvider`, `IGitHost`, `IVectorSearch`, `IBillingProvider`, `ICodeIntelligence`, `IPatternEngine`.
+
+**Production adapters** (`lib/adapters/`): ArangoDB (graph), Prisma/Supabase (relational), Temporal (workflows), Redis (cache). Six ports are stubs (throw `NotImplementedError`).
+
+### Four-Store Architecture
+
+| Store | Role | What lives here |
+|-------|------|-----------------|
+| **Supabase (PostgreSQL)** | App data, auth, billing | Auth tables in `public`; kap10 app tables in schema `kap10` |
+| **ArangoDB** | Graph knowledge store | Files, functions, classes, relationships, rules, patterns |
+| **Temporal** | Workflow orchestration | Repo indexing, pattern detection, PR review pipelines |
+| **Redis** | Cache & rate limits | Hot query cache, API rate limiting, MCP session state |
+
+### Key Files
+
+- `proxy.ts` — Route protection (replaces `middleware.ts` in Next.js 16). Public paths whitelist lives here.
+- `env.mjs` — T3 Env with Zod validation for all environment variables
 - `lib/auth/` — Better Auth config (connects via `pg` Pool to Supabase PostgreSQL)
 - `lib/db/supabase.ts` — Singleton Supabase server client (lazy Proxy pattern)
-- `lib/db/supabase-browser.ts` — Browser-side Supabase client
-- `lib/db/types.ts` — Full TypeScript `Database` type with Row/Insert/Update generics
-- `lib/queue/redis.ts` — Redis connection singleton (used by `RedisCacheStore` adapter for cache/rate-limiting)
-- `proxy.ts` — Route protection (replaces `middleware.ts` in Next.js 16)
-- `env.mjs` — T3 Env with Zod validation for all environment variables
+- `lib/di/container.ts` — DI container. Production adapters loaded via `require()` inside getters (never static imports)
+- `lib/ports/types.ts` — Shared domain types (`EntityDoc`, `EdgeDoc`, `OrgContext`, etc.)
+- `lib/use-cases/` — Business logic functions (receive container as arg)
 - `styles/tailwind.css` — Design system tokens, glass utilities, custom fonts
 
 ### Data Flow
@@ -61,7 +78,25 @@ pnpm storybook                  # Dev on port 6006
 - **Auth**: Better Auth → `pg` Pool → Supabase PostgreSQL. Session token in cookies (`better-auth.session_token`).
 - **Database**: All queries via `import { supabase } from "@/lib/db"` — never create ad-hoc clients.
 - **Protected routes**: Defined in `proxy.ts` (public paths whitelist). Add new public paths there.
-- **Background work**: All async jobs (email, webhooks, indexing, LLM calls) run as Temporal workflows/activities. Two worker processes: `heavy-compute-queue` (CPU-bound) and `light-llm-queue` (network-bound, including email and webhooks).
+- **Background work**: All async jobs run as Temporal workflows/activities. Two worker queues: `heavy-compute-queue` (CPU-bound: SCIP, Semgrep) and `light-llm-queue` (network-bound: LLM, email, webhooks).
+
+### Auth Patterns
+
+**Server Component:**
+```typescript
+import { auth } from "@/lib/auth"
+import { headers } from "next/headers"
+const session = await auth.api.getSession({ headers: await headers() })
+```
+
+**Client Component:**
+```typescript
+"use client"
+import { authClient } from "@/lib/auth/client"
+const { data: session } = authClient.useSession()
+```
+
+Email verification is enforced at the proxy level for email/password signups only. OAuth users (Google/GitHub) skip verification. Unverified users redirect to `/verify-email`.
 
 ### Component Conventions
 
@@ -91,10 +126,11 @@ pnpm storybook                  # Dev on port 6006
 
 ### Supabase / Prisma
 
-- **Schema approach:** Kap10 app tables live in PostgreSQL schema **`kap10`** (multi-app same Supabase project). In Prisma: `schemas = ["public", "kap10"]` and `@@schema("kap10")` on every kap10 model and enum. Do not add new kap10 tables to `public`. See [docs/architecture/VERTICAL_SLICING_PLAN.md](docs/architecture/VERTICAL_SLICING_PLAN.md) § Storage & Infrastructure Split.
+- **Relational data:** Supabase (PostgreSQL) and Prisma only. No MongoDB or other NoSQL for app/auth data.
+- **Schema approach:** Kap10 app tables live in PostgreSQL schema **`kap10`**. In Prisma: `schemas = ["public", "kap10"]` and `@@schema("kap10")` on every kap10 model and enum. Do not add new kap10 tables to `public`.
 - **Import**: `import { supabase } from "@/lib/db"` — never create ad-hoc clients
 - **Always check error**: `const { data, error } = await supabase.from("table").select("*"); if (error) throw error;`
-- **Types**: `import type { Database } from "@/lib/db/types"` then `Database["public"]["Tables"]["table_name"]["Row"]` (or `Database["kap10"]["Tables"]["table_name"]["Row"]` for kap10 schema)
+- **Types**: `import type { Database } from "@/lib/db/types"` then `Database["public"]["Tables"]["table_name"]["Row"]` (or `Database["kap10"]["Tables"][...]` for kap10 schema)
 - **Common patterns**: `.insert(data).select().single()`, `.select("*").eq("id", id).maybeSingle()`, `.update(data).eq("id", id).select().single()`
 
 ### Zod v4
@@ -112,7 +148,7 @@ pnpm storybook                  # Dev on port 6006
 
 ### Lazy Initialization
 
-Third-party clients (Stripe, Redis, Supabase) must use lazy init to avoid build-time failures when env vars are missing:
+All infra clients (Stripe, Redis, Supabase, ArangoDB, Temporal) must use lazy init so the Next.js build never connects to external services. Production adapters in `lib/di/container.ts` use `require()` inside getters. Auth, Supabase, and Redis modules also use `require()` inside their getter functions — no top-level imports of `pg`, `better-auth`, `@supabase/supabase-js`, `ioredis`, `arangojs`, or `@temporalio/client`.
 
 ```typescript
 let instance: Client | null = null
@@ -132,6 +168,7 @@ export const client = new Proxy({} as Client, {
 - **IP extraction**: `req.headers.get("x-forwarded-for")?.split(",")[0] || req.headers.get("x-real-ip") || "anonymous"` — never `req.ip`
 - **Stripe API version**: `"2025-02-24.acacia"`
 - **State management**: URL-driven state first (nuqs), server state second, local state last
+- **No `bg-white` or raw `bg-black`**: Use `bg-card` or `bg-background`
 
 ## Design System
 
@@ -155,7 +192,6 @@ export const client = new Proxy({} as Client, {
 
 ### Golden Page Pattern
 
-See `.cursor/patterns/golden-sample.tsx` for full example. Structure:
 ```tsx
 export default function Page() {
   return (
@@ -178,6 +214,6 @@ export default function Page() {
 ## Additional Documentation
 
 - [RULESETS.md](RULESETS.md) — Full code pattern reference with examples
-- [ARCHITECTURE.md](ARCHITECTURE.md) — Database architecture, multi-tenancy, billing, system design
+- [docs/architecture/README.md](docs/architecture/README.md) — Configuration, env, database architecture, migrations, Docker, key directories
 - [docs/UI_UX_GUIDE.md](docs/UI_UX_GUIDE.md) — Complete design system documentation
 - [docs/brand/brand.md](docs/brand/brand.md) — Brand guidelines, colors, typography, logos

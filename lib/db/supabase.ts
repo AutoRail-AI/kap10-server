@@ -1,4 +1,4 @@
-import { createClient, SupabaseClient } from "@supabase/supabase-js"
+import type { SupabaseClient } from "@supabase/supabase-js"
 import type { Database } from "./types"
 
 let instance: SupabaseClient<Database> | null = null
@@ -7,8 +7,13 @@ let instance: SupabaseClient<Database> | null = null
 const PLACEHOLDER_URL = "https://placeholder.supabase.co"
 const PLACEHOLDER_KEY = "placeholder-key"
 
+/**
+ * Get Supabase server client. createClient is required() on first call so the
+ * build does not load @supabase/supabase-js or connect to Supabase.
+ */
 function getSupabase(): SupabaseClient<Database> {
     if (!instance) {
+        const { createClient } = require("@supabase/supabase-js") as typeof import("@supabase/supabase-js")
         const url =
             process.env.SUPABASE_URL ||
             process.env.NEXT_PUBLIC_SUPABASE_URL ||

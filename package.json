@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "cross-env FORCE_COLOR=1 next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
@@ -23,7 +23,8 @@
     "temporal:worker:heavy": "tsx scripts/temporal-worker-heavy.ts",
     "temporal:worker:light": "tsx scripts/temporal-worker-light.ts",
     "seed": "tsx scripts/seed.ts",
-    "migrate": "tsx scripts/migrate.ts",
+    "migrate": "tsx scripts/migrate.ts && pnpm dlx dotenv-cli -e .env.local -- pnpm dlx @better-auth/cli@latest migrate --config ./lib/auth/better-auth.cli.ts --yes",
+    "predev": "pnpm run migrate",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "postinstall": "npx patch-package -y",
     "coupling-graph": "npx madge --extensions js,jsx,ts,tsx,css,md,mdx ./ --exclude '.next|tailwind.config.js|reset.d.ts|prettier.config.js|postcss.config.js|playwright.config.ts|next.config.js|next-env.d.ts|instrumentation.ts|e2e/|README.md|.storybook/|.eslintrc.js' --image graph.svg"
@@ -32,6 +33,7 @@
     "@better-fetch/fetch": "^1.1.21",
     "@hookform/resolvers": "^5.2.2",
     "@next/bundle-analyzer": "^16.0.10",
+    "@prisma/adapter-pg": "^7.4.0",
     "@prisma/client": "^7.4.0",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-alert-dialog": "^1.1.15",

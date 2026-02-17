@@ -9,4 +9,5 @@ export interface IBillingProvider {
   createSubscription(orgId: string, planId: string): Promise<Subscription>
   cancelSubscription(subscriptionId: string): Promise<void>
   reportUsage(orgId: string, amount: number, description: string): Promise<void>
+  createOnDemandCharge(orgId: string, amountUsd: number): Promise<{ url: string }>
 }

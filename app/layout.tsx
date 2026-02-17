@@ -1,41 +1,47 @@
 import type { Metadata } from "next"
-import { Poppins, Sofia_Sans_Extra_Condensed } from "next/font/google"
+import { Inter, JetBrains_Mono, Space_Grotesk } from "next/font/google"
 import { Providers } from "@/components/providers"
 import "styles/tailwind.css"
 
-// Primary font: Poppins (Semi Bold for headings, Regular for body)
-const poppins = Poppins({
+// Design system: Space Grotesk (headlines), Inter (UI/body), JetBrains Mono (code) — docs/brand/brand.md §7
+const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-poppins",
+  weight: ["500", "600", "700"],
+  variable: "--font-space-grotesk",
   display: "swap",
 })
 
-// Accent font: Sofia Sans Extra Condensed (for labels, tags, decorative)
-const sofiaSans = Sofia_Sans_Extra_Condensed({
+const inter = Inter({
   subsets: ["latin"],
-  weight: ["400"],
-  variable: "--font-sofia",
+  weight: ["400", "500", "600"],
+  variable: "--font-inter-var",
+  display: "swap",
+})
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500"],
+  variable: "--font-jetbrains",
   display: "swap",
 })
 
 export const metadata: Metadata = {
   title: {
-    default: "AppealGen AI - Medical Denial Appeal Generator | 10XR",
-    template: "%s | AppealGen AI",
+    default: "kap10 — The AI Tech Lead | autorail",
+    template: "%s | kap10",
   },
   description:
-    "AppealGen AI by 10XR - AI-powered medical denial appeal generator. Generate citation-backed appeals in seconds, not hours.",
+    "kap10 by autorail — Supervise, review, and ship with AI coding agents. Context-aware guardrails for Cursor, Claude Code, and Windsurf.",
   keywords: [
-    "medical appeals",
-    "denial appeals",
-    "healthcare",
-    "AI",
-    "medical necessity",
-    "insurance appeals",
-    "10XR",
+    "AI coding",
+    "code review",
+    "Cursor",
+    "Claude Code",
+    "Windsurf",
+    "developer tools",
+    "autorail",
   ],
-  authors: [{ name: "10XR", url: "https://10xr.co" }],
+  authors: [{ name: "autorail", url: "https://autorail.dev" }],
 }
 
 export default function RootLayout({
@@ -46,7 +52,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${poppins.variable} ${sofiaSans.variable}`}
+      className={`${spaceGrotesk.variable} ${inter.variable} ${jetbrainsMono.variable}`}
       suppressHydrationWarning
     >
       <body className="min-h-screen bg-background font-sans antialiased">

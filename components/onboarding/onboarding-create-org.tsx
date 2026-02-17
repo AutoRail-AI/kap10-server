@@ -42,11 +42,11 @@ export function OnboardingCreateOrg() {
     setLoading(true)
     try {
       const slug = slugify(trimmed) || "org"
-      const data = await authClient.organization.create({
+      const { data: org, error: createError } = await authClient.organization.create({
         name: trimmed,
         slug,
       })
-      if (!data?.id) {
+      if (createError || !org?.id) {
         setError("Failed to create organization.")
         setLoading(false)
         return
@@ -54,7 +54,7 @@ export function OnboardingCreateOrg() {
       const res = await fetch("/api/org/bootstrap", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ organizationId: data.id, name: trimmed }),
+        body: JSON.stringify({ organizationId: org.id, name: trimmed }),
       })
       if (!res.ok) {
         console.warn("Bootstrap failed, continuing to dashboard")

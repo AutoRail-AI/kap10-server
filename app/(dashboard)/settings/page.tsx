@@ -1,6 +1,6 @@
 import { headers } from "next/headers"
 import { Card, CardContent } from "@/components/ui/card"
-import { auth } from "@/lib/auth"
+import { auth, listOrganizations } from "@/lib/auth"
 
 export default async function SettingsPage() {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -8,9 +8,7 @@ export default async function SettingsPage() {
 
   let organizations: { id: string; name: string; slug: string }[] = []
   try {
-    organizations = (await auth.api.listOrganizations({
-      headers: await headers(),
-    })) as { id: string; name: string; slug: string }[]
+    organizations = await listOrganizations(await headers())
   } catch {
     organizations = []
   }

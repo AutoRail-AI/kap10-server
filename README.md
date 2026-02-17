@@ -36,7 +36,7 @@ Developer's IDE                        kap10 Cloud
 
 | Store | Role | What lives here |
 |-------|------|-----------------|
-| **Supabase (PostgreSQL)** | App data, auth, billing | Auth tables in `public`; kap10 app tables in schema **`kap10`** (repos, deletion_logs, etc.) |
+| **Supabase (PostgreSQL)** | App data, auth, billing | Auth tables in `public`; kap10 app tables in schema **`kap10`** (repos, deletion_logs, etc.). PostgreSQL only — no MongoDB. |
 | **ArangoDB** | Graph knowledge store | Files, functions, classes, relationships (calls, imports, extends), rules, patterns |
 | **Temporal** | Workflow orchestration | Repo indexing, justification, pattern detection, PR review pipelines |
 | **Redis** | Cache & rate limits | Hot query cache, API rate limiting, MCP session state |
@@ -112,10 +112,7 @@ cp .env.example .env.local
 # 4. Start infrastructure (Redis, ArangoDB, Temporal, PostgreSQL)
 docker compose up -d
 
-# 5. Run database migrations
-pnpm migrate
-
-# 6. Start development server
+# 5. Start development server (migrations run automatically before dev)
 pnpm dev
 ```
 
@@ -246,7 +243,7 @@ pnpm temporal:worker:heavy      # Temporal: heavy compute (SCIP, Semgrep — Pha
 pnpm temporal:worker:light      # Temporal: light activities (LLM, email — Phase 1+)
 
 # Database
-pnpm migrate                    # Run Prisma migrations against Supabase
+pnpm migrate                    # Apply supabase/migrations/*.sql (also runs automatically before pnpm dev)
 pnpm seed                       # Seed database
 
 # Testing
@@ -356,7 +353,7 @@ docs/architecture/              # Architecture documentation
 
 Better Auth with email/password, Google OAuth, GitHub OAuth, and organization-based multi-tenancy.
 
-**Email verification** is enforced at the proxy level (`proxy.ts`). Unverified users are redirected to `/verify-email` on every protected route. The `cookieCache` (5 minutes) prevents per-request DB queries.
+**Email verification** is required only for **email/password** signups; it is enforced at the proxy level (`proxy.ts`). Users who signed up with Google or GitHub are not required to verify email (OAuth providers already verify it). Unverified email/password users are redirected to `/verify-email` on every protected route. The `cookieCache` (5 minutes) limits session lookups; when unverified, the proxy also checks linked accounts to skip the redirect for OAuth users.
 
 **Server Component:**
 ```typescript
@@ -416,6 +413,7 @@ Also available at `/healthz`, `/health`, `/ping`.
 
 | Document | Purpose |
 |----------|---------|
+| [docs/architecture/README.md](docs/architecture/README.md) | Configuration, env vars, database architecture, migrations, Docker, key directories (aligned with project_lazarus) |
 | [VERTICAL_SLICING_PLAN.md](docs/architecture/VERTICAL_SLICING_PLAN.md) | Master architecture — 10-phase delivery plan, system design, cross-cutting concerns |
 | [PHASE_0_DEEP_DIVE_AND_TRACKER.md](docs/architecture/PHASE_0_DEEP_DIVE_AND_TRACKER.md) | Phase 0 deep dive: user flows, reliability, performance, implementation tracker |
 | [CLAUDE.md](CLAUDE.md) | AI coding assistant guidance — code generation rules, design system |

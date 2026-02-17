@@ -1,7 +1,9 @@
 /**
  * PrismaRelationalStore — IRelationalStore using Prisma (Supabase PostgreSQL).
+ * Prisma 7 requires a driver adapter; we use @prisma/adapter-pg with SUPABASE_DB_URL.
  */
 
+import { PrismaPg } from "@prisma/adapter-pg"
 import { PrismaClient } from "@prisma/client"
 import type { DeletionLogRecord, IRelationalStore, RepoRecord } from "@/lib/ports/relational-store"
 
@@ -9,7 +11,15 @@ let prismaInstance: PrismaClient | null = null
 
 function getPrisma(): PrismaClient {
   if (!prismaInstance) {
-    prismaInstance = new PrismaClient()
+    const connectionString =
+      process.env.SUPABASE_DB_URL ?? process.env.DATABASE_URL
+    if (!connectionString) {
+      throw new Error(
+        "PrismaClient requires SUPABASE_DB_URL or DATABASE_URL. Set it in .env.local."
+      )
+    }
+    const adapter = new PrismaPg({ connectionString })
+    prismaInstance = new PrismaClient({ adapter })
   }
   return prismaInstance
 }
@@ -101,3 +111,5 @@ export class PrismaRelationalStore implements IRelationalStore {
     }))
   }
 }
+
+export default PrismaRelationalStore

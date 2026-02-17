@@ -1,8 +1,8 @@
-import { betterAuth } from "better-auth"
-import { organization } from "better-auth/plugins"
-import { Pool } from "pg"
 import { Resend } from "resend"
 import dns from "node:dns"
+
+/** Auth instance type (from module type so better-auth is not loaded at build). */
+type AuthInstance = ReturnType<(typeof import("better-auth"))["betterAuth"]>
 
 // Prefer IPv4 when connecting to Supabase/Postgres (avoids ECONNREFUSED on IPv6-only resolutions)
 dns.setDefaultResultOrder("ipv4first")
@@ -16,15 +16,24 @@ function getResendClient(): Resend | null {
 
 // Email sender configuration
 const getEmailFrom = () =>
-  process.env.EMAIL_FROM || "AppealGen AI <noreply@appealgen.ai>"
+  process.env.EMAIL_FROM || "Kap10 <noreply@kap10.dev>"
 
-// Build auth config (database is set dynamically in getAuth - see below)
-function buildAuthConfig(database: Parameters<typeof betterAuth>[0]["database"]) {
+// Build auth config. Receives database and organization plugin (lazy-loaded in getAuth).
+function buildAuthConfig(
+  database: Parameters<(typeof import("better-auth"))["betterAuth"]>[0]["database"],
+  organization: (config: {
+    allowUserToCreateOrganization?: boolean
+    organizationLimit?: number
+    membershipLimit?: number
+    creatorRole?: string
+    sendInvitationEmail?: (data: { id: string; email: string; inviter: { user: { name?: string | null; email: string } }; organization: { name: string } }) => Promise<void>
+  }) => unknown
+) {
   return {
     database,
 
     // App configuration
-    appName: "AppealGen AI",
+    appName: "Kap10",
     baseURL: process.env.BETTER_AUTH_URL || "http://localhost:3000",
     secret:
       process.env.BETTER_AUTH_SECRET ||
@@ -40,7 +49,7 @@ function buildAuthConfig(database: Parameters<typeof betterAuth>[0]["database"])
         creatorRole: "owner",
 
         // Invitation email handler
-        async sendInvitationEmail(data) {
+        async sendInvitationEmail(data: { id: string; email: string; inviter: { user: { name?: string | null; email: string } }; organization: { name: string } }) {
           const resend = getResendClient()
           if (!resend) {
             console.warn("Resend not configured, skipping invitation email")
@@ -70,28 +79,28 @@ function buildAuthConfig(database: Parameters<typeof betterAuth>[0]["database"])
                   <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f5; padding: 40px 20px;">
                     <tr>
                       <td align="center">
-                        <table width="100%" max-width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        <table width="100%" max-width="600" cellpadding="0" cellspacing="0" style="background-color: #0A0A0F; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); border: 1px solid rgba(250,250,250,0.1);">
                           <tr>
-                            <td style="background: linear-gradient(135deg, #559EFF 0%, #0065BA 100%); padding: 32px; border-radius: 8px 8px 0 0; text-align: center;">
-                              <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 600;">Organization Invitation</h1>
+                            <td style="background: linear-gradient(135deg, #8134CE 0%, #6E18B3 100%); padding: 32px; border-radius: 8px 8px 0 0; text-align: center;">
+                              <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 600; font-family: 'Space Grotesk', sans-serif;">Organization Invitation</h1>
                             </td>
                           </tr>
                           <tr>
                             <td style="padding: 40px 32px;">
-                              <h2 style="color: #001320; margin: 0 0 16px 0; font-size: 20px; font-weight: 600;">You've been invited!</h2>
-                              <p style="color: #52525b; margin: 0 0 24px 0; font-size: 16px; line-height: 1.6;">
-                                ${data.inviter.user.name || data.inviter.user.email} invited you to join <strong>${data.organization.name}</strong>.
+                              <h2 style="color: #FAFAFA; margin: 0 0 16px 0; font-size: 20px; font-weight: 600;">You've been invited!</h2>
+                              <p style="color: rgba(250,250,250,0.6); margin: 0 0 24px 0; font-size: 16px; line-height: 1.6;">
+                                ${data.inviter.user.name || data.inviter.user.email} invited you to join <strong style="color: #FAFAFA;">${data.organization.name}</strong>.
                               </p>
                               <table width="100%" cellpadding="0" cellspacing="0">
                                 <tr>
                                   <td align="center" style="padding: 16px 0;">
-                                    <a href="${inviteLink}" style="display: inline-block; background-color: #568AFF; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 6px; font-size: 16px; font-weight: 600;">
+                                    <a href="${inviteLink}" style="display: inline-block; background: linear-gradient(135deg, #8134CE 0%, #6E18B3 100%); color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 6px; font-size: 16px; font-weight: 600;">
                                       Accept Invitation
                                     </a>
                                   </td>
                                 </tr>
                               </table>
-                              <p style="color: #71717a; margin: 24px 0 0 0; font-size: 14px; line-height: 1.6;">
+                              <p style="color: rgba(250,250,250,0.4); margin: 24px 0 0 0; font-size: 14px; line-height: 1.6;">
                                 This invitation will expire in 48 hours.
                               </p>
                             </td>
@@ -136,7 +145,7 @@ function buildAuthConfig(database: Parameters<typeof betterAuth>[0]["database"])
           await resend.emails.send({
             from: getEmailFrom(),
             to: user.email,
-            subject: "Verify your AppealGen AI account",
+            subject: "Verify your Kap10 account",
             html: `
             <!DOCTYPE html>
             <html>
@@ -149,49 +158,46 @@ function buildAuthConfig(database: Parameters<typeof betterAuth>[0]["database"])
                 <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #f4f4f5; padding: 40px 20px;">
                   <tr>
                     <td align="center">
-                      <table width="100%" max-width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                      <table width="100%" max-width="600" cellpadding="0" cellspacing="0" style="background-color: #0A0A0F; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.3); border: 1px solid rgba(250,250,250,0.1);">
                         <!-- Header -->
                         <tr>
-                          <td style="background: linear-gradient(135deg, #559EFF 0%, #0065BA 100%); padding: 32px; border-radius: 8px 8px 0 0; text-align: center;">
-                            <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 600;">AppealGen AI</h1>
-                            <p style="color: rgba(255,255,255,0.9); margin: 8px 0 0 0; font-size: 14px;">by 10XR</p>
+                          <td style="background: linear-gradient(135deg, #8134CE 0%, #6E18B3 100%); padding: 32px; border-radius: 8px 8px 0 0; text-align: center;">
+                            <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 600; font-family: 'Space Grotesk', sans-serif;">Kap10</h1>
+                            <p style="color: rgba(255,255,255,0.9); margin: 8px 0 0 0; font-size: 14px;">Code Intelligence Platform</p>
                           </td>
                         </tr>
                         <!-- Content -->
                         <tr>
                           <td style="padding: 40px 32px;">
-                            <h2 style="color: #001320; margin: 0 0 16px 0; font-size: 20px; font-weight: 600;">Verify your email address</h2>
-                            <p style="color: #52525b; margin: 0 0 24px 0; font-size: 16px; line-height: 1.6;">
+                            <h2 style="color: #FAFAFA; margin: 0 0 16px 0; font-size: 20px; font-weight: 600;">Verify your email address</h2>
+                            <p style="color: rgba(250,250,250,0.6); margin: 0 0 24px 0; font-size: 16px; line-height: 1.6;">
                               Hi ${user.name || "there"},
                             </p>
-                            <p style="color: #52525b; margin: 0 0 24px 0; font-size: 16px; line-height: 1.6;">
-                              Thanks for signing up for AppealGen AI! Please verify your email address by clicking the button below.
+                            <p style="color: rgba(250,250,250,0.6); margin: 0 0 24px 0; font-size: 16px; line-height: 1.6;">
+                              Thanks for signing up for Kap10! Please verify your email address by clicking the button below.
                             </p>
                             <table width="100%" cellpadding="0" cellspacing="0">
                               <tr>
                                 <td align="center" style="padding: 16px 0;">
-                                  <a href="${url}" style="display: inline-block; background-color: #568AFF; color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 6px; font-size: 16px; font-weight: 600;">
+                                  <a href="${url}" style="display: inline-block; background: linear-gradient(135deg, #8134CE 0%, #6E18B3 100%); color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 6px; font-size: 16px; font-weight: 600;">
                                     Verify Email Address
                                   </a>
                                 </td>
                               </tr>
                             </table>
-                            <p style="color: #71717a; margin: 24px 0 0 0; font-size: 14px; line-height: 1.6;">
+                            <p style="color: rgba(250,250,250,0.4); margin: 24px 0 0 0; font-size: 14px; line-height: 1.6;">
                               If you didn't create an account, you can safely ignore this email.
                             </p>
-                            <p style="color: #71717a; margin: 16px 0 0 0; font-size: 14px; line-height: 1.6;">
+                            <p style="color: rgba(250,250,250,0.4); margin: 16px 0 0 0; font-size: 14px; line-height: 1.6;">
                               This link will expire in 24 hours.
                             </p>
                           </td>
                         </tr>
                         <!-- Footer -->
                         <tr>
-                          <td style="padding: 24px 32px; border-top: 1px solid #e4e4e7; text-align: center;">
-                            <p style="color: #a1a1aa; margin: 0; font-size: 12px;">
-                              &copy; ${new Date().getFullYear()} 10XR. All rights reserved.
-                            </p>
-                            <p style="color: #a1a1aa; margin: 8px 0 0 0; font-size: 12px;">
-                              <a href="https://10xr.co" style="color: #568AFF; text-decoration: none;">10xr.co</a>
+                          <td style="padding: 24px 32px; border-top: 1px solid rgba(250,250,250,0.1); text-align: center;">
+                            <p style="color: rgba(250,250,250,0.4); margin: 0; font-size: 12px;">
+                              &copy; ${new Date().getFullYear()} Kap10. All rights reserved.
                             </p>
                           </td>
                         </tr>
@@ -263,13 +269,14 @@ function buildAuthConfig(database: Parameters<typeof betterAuth>[0]["database"])
       window: 60, // 60 seconds
       max: 10, // 10 requests per window
     },
-  } as Parameters<typeof betterAuth>[0]
+  } as Parameters<(typeof import("better-auth"))["betterAuth"]>[0]
 }
 
-// Lazy init: Only create real auth when database is configured (avoids build-time errors in CI)
-let authInstance: ReturnType<typeof betterAuth> | null = null
+// Lazy init: pg and better-auth are required() inside getAuth so the build never loads or connects.
+// See Temporal/ArangoDB/Supabase docs: infra deps should be loaded at runtime only.
+let authInstance: AuthInstance | null = null
 
-function getAuth(): ReturnType<typeof betterAuth> {
+function getAuth(): AuthInstance {
   if (authInstance) return authInstance
 
   // During build (e.g. CI), SUPABASE_DB_URL may be unset - use stub to avoid "Failed to initialize database adapter"
@@ -279,32 +286,32 @@ function getAuth(): ReturnType<typeof betterAuth> {
   }
 
   try {
+    const { Pool } = require("pg") as typeof import("pg")
+    const { betterAuth } = require("better-auth") as { betterAuth: (config: Parameters<(typeof import("better-auth"))["betterAuth"]>[0]) => AuthInstance }
+    const { organization } = require("better-auth/plugins") as { organization: (config: object) => unknown }
     const dbUrl = process.env.SUPABASE_DB_URL
-    // Explicitly use public schema to avoid "Schema '$user' does not exist" warning
     const connectionString =
       dbUrl +
       (dbUrl?.includes("?") ? "&" : "?") +
       "options=-c%20search_path%3Dpublic"
-    // Better Auth's Kysely adapter requires a pg Pool (with "connect" method), not { provider, url }
     const pool = new Pool({
       connectionString,
       ssl: dbUrl?.includes("supabase.co")
         ? { rejectUnauthorized: false }
         : undefined,
     })
-    const config = buildAuthConfig(pool)
+    const config = buildAuthConfig(pool, organization)
     authInstance = betterAuth(config)
     return authInstance
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
     console.error("[Better Auth] Failed to initialize:", message)
-    // Fallback stub if betterAuth throws (e.g. DB connection fails during build)
     authInstance = createAuthStub()
     return authInstance
   }
 }
 
-function createAuthStub() {
+function createAuthStub(): AuthInstance {
   const stub = {
     api: {
       getSession: async () => null,
@@ -321,15 +328,14 @@ function createAuthStub() {
       ),
     $Infer: { Session: { user: {} } },
   }
-  return stub as unknown as ReturnType<typeof betterAuth>
+  return stub as unknown as AuthInstance
 }
 
-export const auth = new Proxy({} as ReturnType<typeof betterAuth>, {
+export const auth = new Proxy({} as AuthInstance, {
   get(_, prop) {
-    return getAuth()[prop as keyof ReturnType<typeof betterAuth>]
+    return getAuth()[prop as keyof AuthInstance]
   },
   has(_, prop) {
-    // toNextJsHandler checks "handler" in auth to choose auth.handler vs auth(request)
     return prop in getAuth()
   },
 })
@@ -340,3 +346,17 @@ export type Session = {
   session: { id: string; expiresAt: Date; token: string; userId: string }
 } | null
 export type User = NonNullable<Session>["user"]
+
+/** Organization list shape from Better Auth organization plugin (used for type assertion). */
+export type OrgListItem = { id: string; name: string; slug: string }
+
+/**
+ * List organizations for the current session. Use this instead of auth.api.listOrganizations
+ * so the organization plugin API is correctly typed at build time.
+ */
+export async function listOrganizations(headers: Headers): Promise<OrgListItem[]> {
+  const api = auth.api as unknown as {
+    listOrganizations: (opts: { headers: Headers }) => Promise<OrgListItem[]>
+  }
+  return api.listOrganizations({ headers })
+}

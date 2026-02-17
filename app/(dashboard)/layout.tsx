@@ -7,7 +7,13 @@ import {
 import { headers } from "next/headers"
 import Link from "next/link"
 import { redirect } from "next/navigation"
-import { auth } from "@/lib/auth"
+import { auth, listOrganizations } from "@/lib/auth"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 
 export default async function DashboardLayout({
   children,
@@ -21,9 +27,7 @@ export default async function DashboardLayout({
 
   let organizations: { id: string; name: string; slug: string }[] = []
   try {
-    organizations = (await auth.api.listOrganizations({
-      headers: await headers(),
-    })) as { id: string; name: string; slug: string }[]
+    organizations = await listOrganizations(await headers())
   } catch {
     organizations = []
   }
@@ -50,13 +54,22 @@ export default async function DashboardLayout({
             <FolderGit2 className="h-4 w-4" />
             Repos
           </Link>
-          <span
-            className="flex cursor-not-allowed items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground"
-            aria-disabled
-          >
-            <Search className="h-4 w-4" />
-            Search
-          </span>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  className="flex cursor-not-allowed items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground"
+                  aria-disabled
+                >
+                  <Search className="h-4 w-4" />
+                  Search
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                <p>Search coming soon</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           <Link
             href="/settings"
             className="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-foreground hover:bg-muted"

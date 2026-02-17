@@ -55,7 +55,7 @@ function VerifyEmailContent() {
           <Mail className="h-6 w-6 text-muted-foreground" />
         </div>
         <div className="space-y-0.5">
-          <h1 className="text-lg font-semibold">Check your email</h1>
+          <h1 className="font-grotesk text-lg font-semibold text-foreground">Check your email</h1>
           <p className="mt-0.5 text-sm text-foreground">
             We&apos;ve sent you a verification link. Click the link in your email
             to verify your account.
@@ -84,7 +84,7 @@ function VerifyEmailContent() {
           <Spinner className="h-6 w-6 text-primary" />
         </div>
         <div className="space-y-0.5">
-          <h1 className="text-lg font-semibold">Verifying email...</h1>
+          <h1 className="font-grotesk text-lg font-semibold text-foreground">Verifying email...</h1>
           <p className="mt-0.5 text-sm text-foreground">
             Please wait while we verify your email address.
           </p>
@@ -96,19 +96,19 @@ function VerifyEmailContent() {
   if (status === "success") {
     return (
       <div className="max-w-md mx-auto space-y-6 text-center">
-        <div className="mx-auto w-12 h-12 rounded-full bg-green-100 dark:bg-green-900 flex items-center justify-center">
-          <CheckCircle2 className="h-6 w-6 text-green-600 dark:text-green-400" />
+        <div className="mx-auto w-12 h-12 rounded-full bg-success/10 flex items-center justify-center">
+          <CheckCircle2 className="h-6 w-6 text-success" />
         </div>
         <div className="space-y-0.5">
-          <h1 className="text-lg font-semibold">Email verified!</h1>
+          <h1 className="font-grotesk text-lg font-semibold text-foreground">Email verified!</h1>
           <p className="mt-0.5 text-sm text-foreground">
             Your email has been successfully verified. You can now sign in to
             your account.
           </p>
         </div>
-        <Alert className="border-green-500 bg-green-50 dark:bg-green-950">
-          <CheckCircle2 className="h-4 w-4 text-green-600" />
-          <AlertDescription className="text-green-800 dark:text-green-200">
+        <Alert className="border-success/50 bg-success/10">
+          <CheckCircle2 className="h-4 w-4 text-success" />
+          <AlertDescription className="text-foreground">
             Redirecting you to login...
           </AlertDescription>
         </Alert>
@@ -129,7 +129,7 @@ function VerifyEmailContent() {
         <XCircle className="h-6 w-6 text-destructive" />
       </div>
       <div className="space-y-0.5">
-        <h1 className="text-lg font-semibold">Verification failed</h1>
+        <h1 className="font-grotesk text-lg font-semibold text-foreground">Verification failed</h1>
         <p className="mt-0.5 text-sm text-foreground">
           We couldn&apos;t verify your email address.
         </p>
@@ -159,7 +159,7 @@ function VerifyEmailLoading() {
       <div className="mx-auto w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
         <Spinner className="h-6 w-6 text-primary" />
       </div>
-      <h1 className="text-lg font-semibold">Loading...</h1>
+      <h1 className="font-grotesk text-lg font-semibold text-foreground">Loading...</h1>
     </div>
   )
 }

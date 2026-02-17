@@ -169,6 +169,9 @@ export class NoOpBillingProvider implements IBillingProvider {
   }
   async cancelSubscription(): Promise<void> {}
   async reportUsage(): Promise<void> {}
+  async createOnDemandCharge(): Promise<{ url: string }> {
+    return { url: "" }
+  }
 }
 
 export class InMemoryObservability implements IObservability {

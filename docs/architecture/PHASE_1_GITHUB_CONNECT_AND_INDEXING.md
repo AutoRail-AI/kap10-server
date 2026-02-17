@@ -662,6 +662,22 @@ Seam 5: Repo status → readiness for Q&A
   - **Files:** `docker-compose.yml`
   - Notes: _____
 
+- [ ] **P1-INFRA-06: Create `Dockerfile.heavy-worker` for heavy-compute worker** — M
+  - **The problem:** A standard Node.js Alpine image does not include the runtimes or SCIP CLI binaries needed by `prepareWorkspace` and `runSCIP`. Without this, P1-API-12 and P1-API-13 will fail with `command not found` inside Docker.
+  - Base image: Ubuntu 22.04 (or Debian Bookworm) — needed for native binary compatibility with SCIP indexers
+  - Install runtimes: Node.js 20+ (via `nvm` or `nodesource`), `pnpm`, `yarn`, Go 1.22+, Python 3.11+, `pip`
+  - Install SCIP CLI binaries: `scip-typescript`, `scip-go`, `scip-python`, `scip` (CLI for `scip combine`)
+  - Install Tree-sitter WASM support: ensure `tree-sitter-cli` is available for grammar compilation if needed
+  - Install build tools: `git`, `build-essential`, `cmake` (needed by some `npm install` native modules)
+  - Entrypoint: `pnpm temporal:worker:heavy`
+  - Multi-stage build to keep final image size reasonable (install build deps in stage 1, copy binaries to stage 2)
+  - Update `docker-compose.yml`: change `temporal-worker-heavy` service to `build: { context: ., dockerfile: Dockerfile.heavy-worker }` instead of a generic Node image
+  - **Test:** `docker compose build temporal-worker-heavy` succeeds. Inside container: `node --version`, `pnpm --version`, `go version`, `python3 --version`, `scip-typescript --version` all return valid output. Worker starts and connects to Temporal.
+  - **Depends on:** P1-INFRA-04
+  - **Files:** `Dockerfile.heavy-worker`, `docker-compose.yml`
+  - **Acceptance:** All required runtimes and SCIP binaries available in the heavy worker container. Image size < 2 GB.
+  - Notes: _____
+
 ---
 
 ## 2.2 Database & Schema Layer
@@ -834,6 +850,19 @@ Seam 5: Repo status → readiness for Q&A
   - **Acceptance:** All CRUD operations work. Type-safe Prisma queries with no raw SQL.
   - Notes: _____
 
+### ICacheStore — Atomic Deduplication Support
+
+- [ ] **P1-ADAPT-13: Add `setIfNotExists()` to `ICacheStore` port and `RedisCacheStore`** — S
+  - New method on `ICacheStore`: `setIfNotExists(key: string, value: string, ttlSeconds: number): Promise<boolean>` — returns `true` if key was set (first caller wins), `false` if key already existed
+  - Redis implementation: uses `SET key value EX ttl NX` (atomic set-if-not-exists)
+  - Purpose: Webhook deduplication in P1-API-07 — prevents race conditions when GitHub delivers the same event twice concurrently
+  - Update `InMemoryCacheStore` fake to support the same semantics (check Map before insert)
+  - **Test:** `setIfNotExists("key", "val", 60)` → `true`. Same call again → `false`. After TTL expires → `true` again.
+  - **Depends on:** Nothing
+  - **Files:** `lib/ports/cache-store.ts`, `lib/adapters/redis-cache-store.ts`, `lib/di/fakes.ts`
+  - **Acceptance:** Atomic behavior verified under concurrent calls. Fake mirrors Redis semantics.
+  - Notes: _____
+
 ---
 
 ## 2.4 Backend / API Layer
@@ -915,11 +944,11 @@ Seam 5: Repo status → readiness for Q&A
   - `installation.deleted`: mark installation as removed, set all org repos to `error`
   - `installation_repositories.added`: create new `Repo` records
   - `installation_repositories.removed`: trigger `deleteRepoWorkflow`
-  - Deduplicate via `x-github-delivery` header stored in Redis (TTL 24h)
+  - Deduplicate via `x-github-delivery` header stored in Redis (TTL 24h). Uses atomic `setIfNotExists` on `ICacheStore` to prevent race conditions when two webhook deliveries arrive simultaneously (see P1-ADAPT-13).
   - **Test:** Send test webhook from GitHub App settings → 200 OK. Forge signature → 401.
-  - **Depends on:** P1-INFRA-02
+  - **Depends on:** P1-INFRA-02, P1-ADAPT-13
   - **Files:** `app/api/webhooks/github/route.ts`
-  - **Acceptance:** Valid signature → processed. Invalid → 401. Duplicate delivery ID → 200 (no re-process).
+  - **Acceptance:** Valid signature → processed. Invalid → 401. Duplicate delivery ID → 200 (no re-process). Concurrent duplicate deliveries → only one processed (atomic check).
   - Notes: _____
 
 ### Repo Browsing API Routes
@@ -995,10 +1024,11 @@ Seam 5: Repo status → readiness for Q&A
   - Tree-sitter WASM fallback for files SCIP didn't cover
   - Extracts: file-level entities (exports, decorators, JSDoc annotations)
   - Tracks `coveredFiles[]` vs `failedFiles[]` for partial indexing reporting
-  - **Test:** For a file with JSDoc and decorators → extracts additional metadata not in SCIP output.
-  - **Depends on:** P1-API-13
-  - **Files:** `lib/temporal/activities/indexing-heavy.ts`, `lib/indexer/parser.ts`
-  - **Acceptance:** Supplementary entities extracted. No duplication with SCIP entities.
+  - **WASM asset loading caveat:** Tree-sitter `.wasm` language grammar files (e.g., `tree-sitter-typescript.wasm`, `tree-sitter-python.wasm`) are binary assets that bundlers (Turbopack, esbuild) do not cleanly copy to the output directory. The `tsx` runtime used by Temporal workers also does not handle `.wasm` imports natively. **Solution:** Store `.wasm` grammar files in a known directory (e.g., `lib/indexer/grammars/`) and load them at runtime via `fs.readFileSync` + `Parser.setLanguage(Language.load(wasmPath))`. Add a postinstall script or build step that copies grammars from `node_modules/tree-sitter-*/tree-sitter-*.wasm` to the grammars directory. In `Dockerfile.heavy-worker` (P1-INFRA-06), ensure the grammars directory is included in the image.
+  - **Test:** For a file with JSDoc and decorators → extracts additional metadata not in SCIP output. Grammars load without "file not found" errors in both local `tsx` and Docker environments.
+  - **Depends on:** P1-API-13, P1-INFRA-06
+  - **Files:** `lib/temporal/activities/indexing-heavy.ts`, `lib/indexer/parser.ts`, `lib/indexer/grammars/` (binary assets), `scripts/copy-grammars.ts` (postinstall helper)
+  - **Acceptance:** Supplementary entities extracted. No duplication with SCIP entities. `.wasm` grammars load in both local and Docker worker environments.
   - Notes: _____
 
 - [ ] **P1-API-15: Implement `writeToArango` activity** — M
@@ -1272,6 +1302,8 @@ P1-INFRA-01 (GitHub App)
     │
 P1-INFRA-04 (heavy worker 8GB) ── P1-INFRA-05 (workspace volume)
     │
+    └── P1-INFRA-06 (Dockerfile.heavy-worker) ── P1-API-12, P1-API-13, P1-API-14
+    │
 P1-DB-01 (GitHubInstallation) ─┐
 P1-DB-02 (Repo extensions) ────┤
 P1-DB-03 (ArangoDB file index) ┘
@@ -1281,6 +1313,7 @@ P1-ADAPT-08 (getEntitiesByFile)
 P1-ADAPT-09 (SCIP indexWorkspace)
 P1-ADAPT-10 (startWorkflow) ── P1-ADAPT-11 (getWorkflowStatus)
 P1-ADAPT-12 (relational CRUD)
+P1-ADAPT-13 (setIfNotExists) ── P1-API-07 (webhook handler)
     │
     ├── P1-API-01..06 (GitHub + Repos API)
     ├── P1-API-07 (webhook handler)
@@ -1320,6 +1353,7 @@ lib/
     parser.ts                              ← Tree-sitter WASM (supplementary)
     scanner.ts                             ← File discovery + gitignore (from code-synapse)
     writer.ts                              ← ArangoDB batch writer
+    grammars/                              ← Tree-sitter .wasm grammar files (binary assets)
   temporal/
     workflows/
       index-repo.ts                        ← indexRepoWorkflow definition
@@ -1361,6 +1395,9 @@ components/
     entity-detail.tsx                      ← Entity detail with callers/callees
 hooks/
   use-repo-status.ts                       ← Polling hook for indexing progress
+scripts/
+  copy-grammars.ts                         ← Postinstall: copy .wasm grammars to lib/indexer/grammars/
+Dockerfile.heavy-worker                    ← Multi-stage build for heavy worker (Node, Go, Python, SCIP)
 ```
 
 ### Modified Files
@@ -1373,6 +1410,8 @@ lib/adapters/arango-graph-store.ts         ← Bulk operations + getEntitiesByFi
 lib/adapters/scip-code-intelligence.ts     ← Full implementation (replace stubs)
 lib/adapters/temporal-workflow-engine.ts    ← startWorkflow + getWorkflowStatus
 lib/adapters/prisma-relational-store.ts    ← Phase 1 CRUD methods
+lib/ports/cache-store.ts                   ← Add setIfNotExists method
+lib/adapters/redis-cache-store.ts          ← Implement setIfNotExists (SET NX)
 lib/di/container.ts                        ← No structural changes (adapters updated in-place)
 lib/di/fakes.ts                            ← Extend fakes with Phase 1 methods
 prisma/schema.prisma                       ← GitHubInstallation model + Repo extensions
@@ -1393,4 +1432,5 @@ app/api/repos/route.ts                     ← Add POST handler
 
 | Date | Author | Change |
 |------|--------|--------|
-| 2026-02-17 | — | Initial document created. Part 1: 5 user flows with Mermaid diagrams, state management (two-token model, entity hashing, repo FSM, ArangoDB multi-tenancy), 9 failure scenarios, 8 performance budgets, Phase 2 bridge with 5 seam points. Part 2: 44 tracker items across 6 layers (Infrastructure: 5, Database: 3, Adapters: 12, API: 17, UI: 7, Testing: 12). |
+| 2026-02-17 | — | Initial document created. Part 1: 5 user flows with Mermaid diagrams, state management (two-token model, entity hashing, repo FSM, ArangoDB multi-tenancy), 9 failure scenarios, 8 performance budgets, Phase 2 bridge with 5 seam points. Part 2: 44 tracker items across 6 layers. |
+| 2026-02-17 | — | **Review pass — 3 fixes applied.** (1) Added **P1-INFRA-06: Create `Dockerfile.heavy-worker`** — multi-stage Docker build with Node.js, pnpm, yarn, Go, Python, SCIP CLI binaries, and build tools. Without this, P1-API-12 (`prepareWorkspace`) and P1-API-13 (`runSCIP`) would fail with `command not found` inside Docker. (2) Added **P1-ADAPT-13: `setIfNotExists()` on `ICacheStore`** — atomic `SET NX` for webhook deduplication in P1-API-07, preventing race conditions on concurrent duplicate deliveries. Updated P1-API-07 to depend on P1-ADAPT-13. (3) Added **Tree-sitter WASM asset loading caveat** to P1-API-14 — `.wasm` grammar files must be copied to a known directory and loaded via `fs.readFileSync`, not bundler imports. Added `scripts/copy-grammars.ts` postinstall helper and `lib/indexer/grammars/` to new files list. P1-API-14 now depends on P1-INFRA-06. Updated dependency graph, new/modified files summary. **Final count: 47 tracker items** (Infrastructure: 6, Database: 3, Adapters: 13, API: 17, UI: 7, Testing: 12). |

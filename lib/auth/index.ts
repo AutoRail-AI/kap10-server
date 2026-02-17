@@ -1,2 +1,2 @@
-export { auth } from "./auth"
-export type { Session, User } from "./auth"
+export { auth, listOrganizations } from "./auth"
+export type { OrgListItem, Session, User } from "./auth"

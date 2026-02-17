@@ -7,7 +7,7 @@
  * Connection retries with exponential backoff when Temporal server is not ready.
  */
 
-import { Worker } from "@temporalio/worker"
+import { NativeConnection, Worker } from "@temporalio/worker"
 import path from "node:path"
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233"
@@ -26,13 +26,13 @@ async function createWorkerWithRetry(): Promise<Worker> {
   while (true) {
     attempt++
     try {
+      const connection = await NativeConnection.connect({
+        address: TEMPORAL_ADDRESS,
+      })
       const worker = await Worker.create({
         workflowsPath: path.resolve(process.cwd(), "lib/temporal/workflows"),
         taskQueue: TASK_QUEUE,
-        connection: {
-          address: TEMPORAL_ADDRESS,
-          connectTimeout: 10_000,
-        },
+        connection,
         // Phase 0: no activities
         activities: {},
       })
