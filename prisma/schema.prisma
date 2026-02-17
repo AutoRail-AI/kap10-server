@@ -1,0 +1,73 @@
+// Prisma schema for kap10 app tables (Phase 0).
+// All kap10-managed tables live in PostgreSQL schema "kap10" (same Supabase project, multi-app).
+// Better Auth tables (user, session, account, etc.) stay in "public"; we do not migrate those.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["public", "kap10"]
+}
+
+enum RepoStatus {
+  pending
+  indexing
+  ready
+  error
+  deleting
+
+  @@schema("kap10")
+}
+
+enum RepoProvider {
+  github
+
+  @@schema("kap10")
+}
+
+model Repo {
+  id              String      @id @default(uuid())
+  organizationId  String      @map("organization_id")
+  name            String
+  fullName        String      @map("full_name")
+  provider        RepoProvider
+  providerId      String      @map("provider_id")
+  status         RepoStatus   @default(pending)
+  defaultBranch  String       @default("main") @map("default_branch")
+  lastIndexedAt   DateTime?   @map("last_indexed_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  @@unique([organizationId, provider, providerId])
+  @@index([organizationId])
+  @@map("repos")
+  @@schema("kap10")
+}
+
+enum DeletionLogStatus {
+  pending
+  in_progress
+  completed
+  failed
+
+  @@schema("kap10")
+}
+
+model DeletionLog {
+  id                 String            @id @default(uuid())
+  organizationId     String            @map("organization_id")
+  repoId             String?           @map("repo_id")
+  requestedAt        DateTime          @default(now()) @map("requested_at")
+  completedAt       DateTime?         @map("completed_at")
+  entitiesDeleted    Int               @default(0) @map("entities_deleted")
+  embeddingsDeleted  Int               @default(0) @map("embeddings_deleted")
+  status             DeletionLogStatus  @default(pending)
+  errorMessage       String?           @map("error_message")
+
+  @@index([organizationId])
+  @@index([status])
+  @@map("deletion_logs")
+  @@schema("kap10")
+}
