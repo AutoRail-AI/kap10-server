@@ -1,45 +1,53 @@
 import { NextResponse } from "next/server"
 import type { NextRequest } from "next/server"
+import { auth } from "@/lib/auth"
 
 export async function proxy(request: NextRequest) {
-    const path = request.nextUrl.pathname
+  const path = request.nextUrl.pathname
 
-    // Define public paths that don't require authentication
-    const publicPaths = [
-        "/login",
-        "/register",
-        "/verify-email",
-        "/api/auth",
-        "/api/webhooks",
-    ]
+  const publicPaths = [
+    "/login",
+    "/register",
+    "/verify-email",
+    "/api/auth",
+    "/api/webhooks",
+    "/api/health",
+  ]
 
-    // Check if the path is public
-    const isPublicPath = publicPaths.some((publicPath) =>
-        path.startsWith(publicPath)
-    )
+  const isPublicPath = publicPaths.some((p) => path.startsWith(p))
 
-    // Get session token from cookies
-    // better-auth uses "better-auth.session_token" by default
-    const sessionToken = request.cookies.get("better-auth.session_token")?.value ||
-        request.cookies.get("__Secure-better-auth.session_token")?.value
+  const sessionToken =
+    request.cookies.get("better-auth.session_token")?.value ??
+    request.cookies.get("__Secure-better-auth.session_token")?.value
 
-    // If user is not authenticated and trying to access a protected route
-    if (!sessionToken && !isPublicPath) {
-        // Redirect to login page
+  if (!sessionToken && !isPublicPath) {
+    const url = request.nextUrl.clone()
+    url.pathname = "/login"
+    return NextResponse.redirect(url)
+  }
+
+  if (sessionToken && (path === "/login" || path === "/register")) {
+    return NextResponse.redirect(new URL("/", request.url))
+  }
+
+  // Email verification: authenticated but unverified → /verify-email (except exempt paths)
+  if (sessionToken && !isPublicPath) {
+    try {
+      const session = await auth.api.getSession({
+        headers: request.headers,
+      })
+      const user = session?.user as { emailVerified?: boolean } | undefined
+      if (user && user.emailVerified === false) {
         const url = request.nextUrl.clone()
-        url.pathname = "/login"
-        // Optional: Add callback URL
-        // url.searchParams.set("callbackUrl", path)
+        url.pathname = "/verify-email"
         return NextResponse.redirect(url)
+      }
+    } catch {
+      // Session lookup failed — allow through; auth may be degraded
     }
+  }
 
-    // If user is authenticated and trying to access auth pages (login/register)
-    if (sessionToken && (path === "/login" || path === "/register")) {
-        // Redirect to dashboard
-        return NextResponse.redirect(new URL("/", request.url))
-    }
-
-    return NextResponse.next()
+  return NextResponse.next()
 }
 
 export const config = {

@@ -1,50 +1,26 @@
 # Docker Compose for Development
-# Uses cloud Supabase (PostgreSQL) and local Redis
+# ================================
+# Default: infrastructure services only (for running web server on host)
+#   docker compose up -d
+#   pnpm dev                          # web server on host at localhost:3000
+#
+# Full stack (everything in Docker):
+#   docker compose --profile app up -d
+#
+# Services exposed to localhost:
+#   Redis          → localhost:6379
+#   ArangoDB       → localhost:8529   (web UI at same port)
+#   Temporal gRPC  → localhost:7233
+#   Temporal UI    → localhost:8080
+#   PostgreSQL     → localhost:5432   (Temporal persistence only)
 
 services:
-  # Next.js Application
-  app:
-    build: .
-    container_name: kap10-web-server-app
-    ports:
-      - "3000:3000"
-    volumes:
-      # Mount source code for hot reloading
-      - .:/app
-      # Prevent node_modules from being overwritten
-      - /app/node_modules
-      - /app/.next
-    environment:
-      - NODE_ENV=development
-      - WATCHPACK_POLLING=true
-      - REDIS_URL=redis://redis:6379
-    env_file:
-      - .env.local
-    depends_on:
-      - redis
-    restart: unless-stopped
+  # ── Infrastructure (always started) ────────────────────────────────
 
-  # Background Job Worker
-  worker:
-    build: .
-    container_name: kap10-web-server-worker
-    command: pnpm worker
-    volumes:
-      - .:/app
-      - /app/node_modules
-    environment:
-      - NODE_ENV=development
-      - REDIS_URL=redis://redis:6379
-    env_file:
-      - .env.local
-    depends_on:
-      - redis
-    restart: unless-stopped
-
-  # Redis for job queues
+  # Redis for cache and rate limiting
   redis:
     image: redis:7-alpine
-    container_name: kap10-web-server-redis
+    container_name: kap10-redis
     ports:
       - "6379:6379"
     volumes:
@@ -57,11 +33,155 @@ services:
       timeout: 5s
       retries: 5
 
-  # Redis Commander (optional - for debugging)
-  # Uncomment to enable web-based Redis UI at http://localhost:8081
+  # ArangoDB (graph knowledge store)
+  arangodb:
+    image: arangodb/arangodb:3.12
+    container_name: kap10-arangodb
+    ports:
+      - "8529:8529"
+    environment:
+      ARANGO_ROOT_PASSWORD: ${ARANGO_ROOT_PASSWORD:-firstPassword12345}
+    volumes:
+      - arangodb_data:/var/lib/arangodb3
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "arangosh", "--server.password", "${ARANGO_ROOT_PASSWORD:-firstPassword12345}", "--javascript.execute-string", "db._version()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL (Temporal persistence store — NOT for app data, app uses cloud Supabase)
+  postgresql:
+    image: postgres:13
+    container_name: kap10-postgresql
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: temporal
+    volumes:
+      - postgresql_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Temporal server (workflow orchestration)
+  temporal:
+    image: temporalio/auto-setup:1.24.2
+    container_name: kap10-temporal
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=postgres
+      - POSTGRES_SEEDS=postgresql
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # Temporal UI (web dashboard for workflow visibility)
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    container_name: kap10-temporal-ui
+    ports:
+      - "8080:8080"
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+  # ── Application (only with --profile app) ──────────────────────────
+
+  # Next.js Application
+  app:
+    profiles: ["app"]
+    build: .
+    container_name: kap10-app
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    environment:
+      - NODE_ENV=development
+      - WATCHPACK_POLLING=true
+      # Override localhost URLs to Docker-internal hostnames
+      - REDIS_URL=redis://redis:6379
+      - TEMPORAL_ADDRESS=temporal:7233
+      - ARANGODB_URL=http://arangodb:8529
+    env_file:
+      - .env.local
+    depends_on:
+      redis:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      arangodb:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Temporal heavy-compute worker (Phase 0: idle, no activities yet)
+  temporal-worker-heavy:
+    profiles: ["app", "worker"]
+    build: .
+    container_name: kap10-temporal-worker-heavy
+    command: pnpm temporal:worker:heavy
+    environment:
+      - NODE_ENV=development
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TASK_QUEUE=heavy-compute-queue
+    env_file:
+      - .env.local
+    depends_on:
+      temporal:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # Temporal light-llm worker (Phase 0: idle, no activities yet)
+  temporal-worker-light:
+    profiles: ["app", "worker"]
+    build: .
+    container_name: kap10-temporal-worker-light
+    command: pnpm temporal:worker:light
+    environment:
+      - NODE_ENV=development
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TASK_QUEUE=light-llm-queue
+    env_file:
+      - .env.local
+    depends_on:
+      temporal:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+  # ── Optional debugging tools ───────────────────────────────────────
+
+  # Redis Commander — uncomment to enable web UI at http://localhost:8081
   # redis-commander:
   #   image: rediscommander/redis-commander:latest
-  #   container_name: kap10-web-server-redis-commander
+  #   container_name: kap10-redis-commander
   #   environment:
   #     - REDIS_HOSTS=local:redis:6379
   #   ports:
@@ -72,3 +192,5 @@ services:
 
 volumes:
   redis_data:
+  arangodb_data:
+  postgresql_data:

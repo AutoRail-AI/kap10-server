@@ -2,6 +2,8 @@
 
 > **Each phase ships a single, end-to-end testable feature.**
 > No phase depends on future phases to be useful. Every phase produces a working feature a user can interact with.
+>
+> **Phase 0 implementation tracker:** [PHASE_0_DEEP_DIVE_AND_TRACKER.md](./PHASE_0_DEEP_DIVE_AND_TRACKER.md)
 
 ---
 
@@ -41,6 +43,8 @@ Developer's IDE                        kap10 Cloud
 | **ArangoDB** | Graph knowledge store | Files, functions, classes, interfaces, relationships (calls, imports, extends, implements), justifications, classifications, features, change ledger |
 | **Temporal** | Workflow orchestration | All multi-step pipelines: repo indexing, justification, pattern detection, PR review, incremental re-indexing |
 | **Redis** | Cache, rate limits, MCP sessions | Hot query cache, API rate limiting, MCP connection state |
+
+**Supabase: schema approach (mandatory).** All kap10-managed Supabase tables live in PostgreSQL schema **`kap10`** (we use the schema approach, not a table prefix). From now on, every new kap10 table MUST be created in schema `kap10` via Prisma with `@@schema("kap10")`; do not add kap10 app tables to `public`. Prisma: `schemas = ["public", "kap10"]` in the datasource; use `@@schema("kap10")` on every kap10 model and enum. Table names are unprefixed (e.g. `repos`, `deletion_logs`). Better Auth tables stay in `public` (user, session, account, organization, member, invitation, verification); we do not migrate those. This is required when sharing one Supabase project with multiple apps (clear separation, no name clashes, simpler permissions). [Prisma multi-schema](https://www.prisma.io/docs/orm/prisma-schema/data-model/multi-schema).
 
 ### Why Temporal (not BullMQ)
 
@@ -965,17 +969,16 @@ model DeletionLog {
 
 ### Database changes
 
-**Supabase (via Prisma)** — map existing Better Auth tables + app tables into Prisma schema:
+**Supabase (via Prisma)** — same DB for Better Auth (in `public`) and kap10 app tables in schema **`kap10`** (see Storage & Infrastructure Split).
 ```prisma
 // prisma/schema.prisma
 datasource db {
-  provider   = "postgresql"
-  url        = env("SUPABASE_DB_URL")
-  extensions = [pgvector]
+  provider = "postgresql"
+  schemas  = ["public", "kap10"]
 }
 
-// Better Auth tables are managed externally — use @@map to reference them
-// App tables managed by Prisma migrations
+// Better Auth tables stay in public. Kap10 app tables:
+// @@schema("kap10") and @@map("repos"), @@map("deletion_logs"), etc.
 ```
 
 **ArangoDB** — single-database, pool-based multi-tenancy:

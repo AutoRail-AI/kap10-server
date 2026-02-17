@@ -14,12 +14,25 @@ export const env = createEnv({
     SUPABASE_DB_URL: z.string().optional(),
     // Redis (for job queues)
     REDIS_URL: z.string().refine((val) => !val || /^redis(s)?:\/\//.test(val), "Invalid Redis URL").optional(),
+    // ArangoDB (graph store)
+    ARANGODB_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid ArangoDB URL").optional(),
+    ARANGODB_DATABASE: z.string().optional(),
+    ARANGO_ROOT_PASSWORD: z.string().optional(),
+    // Temporal (workflow orchestration)
+    TEMPORAL_ADDRESS: z.string().optional(),
+    // Langfuse (LLM observability)
+    LANGFUSE_SECRET_KEY: z.string().optional(),
+    LANGFUSE_PUBLIC_KEY: z.string().optional(),
+    LANGFUSE_BASEURL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid Langfuse URL").optional(),
     // Better Auth
     BETTER_AUTH_SECRET: z.string().min(32).optional(),
     BETTER_AUTH_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
     // Google OAuth
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
+    // GitHub OAuth (Better Auth)
+    GITHUB_CLIENT_ID: z.string().optional(),
+    GITHUB_CLIENT_SECRET: z.string().optional(),
     // Email (Resend)
     RESEND_API_KEY: z.string().optional(),
     EMAIL_FROM: z.string().refine((val) => !val || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val), "Invalid email").optional(),
@@ -62,6 +75,13 @@ export const env = createEnv({
     SUPABASE_SECRET_KEY: process.env.SUPABASE_SECRET_KEY,
     SUPABASE_DB_URL: process.env.SUPABASE_DB_URL,
     REDIS_URL: process.env.REDIS_URL,
+    ARANGODB_URL: process.env.ARANGODB_URL,
+    ARANGODB_DATABASE: process.env.ARANGODB_DATABASE,
+    ARANGO_ROOT_PASSWORD: process.env.ARANGO_ROOT_PASSWORD,
+    TEMPORAL_ADDRESS: process.env.TEMPORAL_ADDRESS,
+    LANGFUSE_SECRET_KEY: process.env.LANGFUSE_SECRET_KEY,
+    LANGFUSE_PUBLIC_KEY: process.env.LANGFUSE_PUBLIC_KEY,
+    LANGFUSE_BASEURL: process.env.LANGFUSE_BASEURL,
     BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
     BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
     GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,

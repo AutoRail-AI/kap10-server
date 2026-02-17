@@ -17,7 +17,7 @@ You are a Senior Frontend Engineer and UI/UX Designer at Kap10 Web Server, an en
 * **Icons:** Lucide React (MANDATORY).
 * **Database:** Supabase (PostgreSQL).
 * **Auth:** Better Auth with PostgreSQL adapter.
-* **Job Queue:** BullMQ with Redis.
+* **Workflows:** Temporal (durable execution, resume-from-failure).
 * **File Uploads:** Uploadthing.
 * **Email:** Resend.
 * **State:** URL-driven state first (nuqs when applicable), server state second, local state last.
@@ -60,7 +60,7 @@ export function Component() {
 
 **1. Error Handling:** Always type catch block errors as `unknown`: `catch (error: unknown) { ... }`
 
-**2. Supabase Database:** Use typed client from `@/lib/db`: `import { supabase } from "@/lib/db"`. Never create ad-hoc Supabase clients.
+**2. Supabase Database:** Use typed client from `@/lib/db`: `import { supabase } from "@/lib/db"`. Never create ad-hoc Supabase clients. Kap10 app tables live in PostgreSQL schema `kap10` (Prisma `@@schema("kap10")`); see docs/architecture/VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split.
 
 **3. Zod Validation (v4):** Use `.refine()` for URL/Email validation (not `.url()` or `.email()`). Use `z.record(z.string(), z.any())` for maps (not `z.record(z.any())`).
 
@@ -76,7 +76,7 @@ export function Component() {
 
 **9. Lazy Initialization:** Use lazy initialization for third-party clients requiring environment variables (Stripe, Redis, Supabase). Use Proxy pattern to avoid build-time failures. See RULESETS.md.
 
-**10. BullMQ Queue Types:** Use type assertions for Queue constructors and Redis connections: `connection: getRedis() as any`.
+**10. Background Jobs:** All async work (email, webhooks, indexing, LLM calls) uses Temporal workflows and activities. BullMQ has been removed. Redis is used only for caching and rate limiting.
 
 **11. Stripe API Version:** Use `apiVersion: "2025-02-24.acacia"` for Stripe.
 

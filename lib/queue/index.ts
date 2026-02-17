@@ -1,27 +1,2 @@
-// Redis connection
-export { getRedis, createRedisConnection, closeRedis } from "./redis"
-
-// Queues
-export {
-  getEmailQueue,
-  getProcessingQueue,
-  getWebhooksQueue,
-  queueEmail,
-  queueProcessing,
-  queueWebhook,
-  closeAllQueues,
-} from "./queues"
-
-// Workers
-export { startWorkers, stopWorkers } from "./workers"
-
-// Types
-export {
-  QUEUE_NAMES,
-  type QueueName,
-  type EmailJobData,
-  type ProcessingJobData,
-  type WebhookJobData,
-  type JobData,
-  type JobResult,
-} from "./types"
+// Redis connection (cache & rate limiting)
+export { getRedis, closeRedis } from "./redis"

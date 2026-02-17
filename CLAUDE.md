@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Kap10 Web Server** — Production-ready Next.js starter with Better Auth, Supabase (PostgreSQL), BullMQ job queues, and shadcn/ui. Built with Next.js 16, React 19, Tailwind CSS v4, and Zod v4.
+**Kap10 Web Server** — Cloud-native code intelligence platform with Better Auth, Supabase (PostgreSQL), Temporal workflows, and shadcn/ui. Built with Next.js 16, React 19, Tailwind CSS v4, and Zod v4.
 
 **Package Manager**: pnpm (via Corepack). **Node**: >=20.9.0.
 
@@ -27,8 +27,9 @@ pnpm e2e:headless               # Playwright E2E
 pnpm e2e:ui                     # Playwright with UI
 
 # Workers & Docker
-pnpm worker                     # Start BullMQ workers
-docker compose up                # App + worker + Redis
+pnpm temporal:worker:heavy      # Temporal heavy-compute worker (SCIP, Semgrep)
+pnpm temporal:worker:light      # Temporal light worker (LLM, email, webhooks)
+docker compose up                # All infrastructure services
 
 # Database
 pnpm seed                       # Seed database
@@ -50,7 +51,7 @@ pnpm storybook                  # Dev on port 6006
 - `lib/db/supabase.ts` — Singleton Supabase server client (lazy Proxy pattern)
 - `lib/db/supabase-browser.ts` — Browser-side Supabase client
 - `lib/db/types.ts` — Full TypeScript `Database` type with Row/Insert/Update generics
-- `lib/queue/` — BullMQ queues (email, processing, webhooks) + Redis connection
+- `lib/queue/redis.ts` — Redis connection singleton (used by `RedisCacheStore` adapter for cache/rate-limiting)
 - `proxy.ts` — Route protection (replaces `middleware.ts` in Next.js 16)
 - `env.mjs` — T3 Env with Zod validation for all environment variables
 - `styles/tailwind.css` — Design system tokens, glass utilities, custom fonts
@@ -60,7 +61,7 @@ pnpm storybook                  # Dev on port 6006
 - **Auth**: Better Auth → `pg` Pool → Supabase PostgreSQL. Session token in cookies (`better-auth.session_token`).
 - **Database**: All queries via `import { supabase } from "@/lib/db"` — never create ad-hoc clients.
 - **Protected routes**: Defined in `proxy.ts` (public paths whitelist). Add new public paths there.
-- **Job queues**: Use `queueEmail()`, `queueProcessing()`, `queueWebhook()` from `@/lib/queue`. Workers run as separate process (`pnpm worker`).
+- **Background work**: All async jobs (email, webhooks, indexing, LLM calls) run as Temporal workflows/activities. Two worker processes: `heavy-compute-queue` (CPU-bound) and `light-llm-queue` (network-bound, including email and webhooks).
 
 ### Component Conventions
 
@@ -88,11 +89,12 @@ pnpm storybook                  # Dev on port 6006
 - **Reduce callbacks**: Always type accumulator — `items.reduce((sum: number, item) => ...)`
 - **JSX files**: Always `.tsx`, never `.ts` for files with JSX
 
-### Supabase
+### Supabase / Prisma
 
+- **Schema approach:** Kap10 app tables live in PostgreSQL schema **`kap10`** (multi-app same Supabase project). In Prisma: `schemas = ["public", "kap10"]` and `@@schema("kap10")` on every kap10 model and enum. Do not add new kap10 tables to `public`. See [docs/architecture/VERTICAL_SLICING_PLAN.md](docs/architecture/VERTICAL_SLICING_PLAN.md) § Storage & Infrastructure Split.
 - **Import**: `import { supabase } from "@/lib/db"` — never create ad-hoc clients
 - **Always check error**: `const { data, error } = await supabase.from("table").select("*"); if (error) throw error;`
-- **Types**: `import type { Database } from "@/lib/db/types"` then `Database["public"]["Tables"]["table_name"]["Row"]`
+- **Types**: `import type { Database } from "@/lib/db/types"` then `Database["public"]["Tables"]["table_name"]["Row"]` (or `Database["kap10"]["Tables"]["table_name"]["Row"]` for kap10 schema)
 - **Common patterns**: `.insert(data).select().single()`, `.select("*").eq("id", id).maybeSingle()`, `.update(data).eq("id", id).select().single()`
 
 ### Zod v4
@@ -129,7 +131,6 @@ export const client = new Proxy({} as Client, {
 
 - **IP extraction**: `req.headers.get("x-forwarded-for")?.split(",")[0] || req.headers.get("x-real-ip") || "anonymous"` — never `req.ip`
 - **Stripe API version**: `"2025-02-24.acacia"`
-- **BullMQ**: Use `connection: getRedis() as any` for Queue/Worker constructors
 - **State management**: URL-driven state first (nuqs), server state second, local state last
 
 ## Design System

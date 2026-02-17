@@ -18,7 +18,7 @@ export function getRedis(): Redis {
     // getRedisUrl() is only called here, not at module load time
     const url = getRedisUrl()
     redisInstance = new Redis(url, {
-      maxRetriesPerRequest: null, // Required for BullMQ
+      maxRetriesPerRequest: null,
       enableReadyCheck: false,
       // Use lazyConnect to prevent connection during build
       lazyConnect: true,
@@ -59,26 +59,7 @@ export function getRedis(): Redis {
 }
 
 /**
- * Create a new Redis connection (for workers that need dedicated connections)
- * Lazy connection - only connects when actually used
- */
-export function createRedisConnection(): Redis {
-  const url = getRedisUrl()
-  return new Redis(url, {
-    maxRetriesPerRequest: null,
-    enableReadyCheck: false,
-    lazyConnect: true,
-    retryStrategy: (times) => {
-      if (process.env.NODE_ENV === "production" || times < 5) {
-        return Math.min(times * 50, 2000)
-      }
-      return null
-    },
-  })
-}
-
-/**
- * Close all connections gracefully
+ * Close the Redis connection gracefully
  */
 export async function closeRedis(): Promise<void> {
   if (redisInstance) {

@@ -38,7 +38,7 @@ export function proxy() { ... }
 
 ## 2. Supabase Query Patterns
 
-**Rule**: Use the typed Supabase client from `@/lib/db` for all database operations
+**Rule**: Use the typed Supabase client from `@/lib/db` for all database operations. Kap10 app tables live in PostgreSQL schema `kap10` (not `public`); for Prisma-managed tables use `@@schema("kap10")`. See docs/architecture/VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split.
 
 All queries should import the singleton `supabase` client and use typed table names.
 
@@ -428,34 +428,15 @@ try {
 
 ---
 
-## 17. BullMQ Queue Types
+## 17. Background Jobs — Temporal (not BullMQ)
 
-**Rule**: Use type assertions for Queue constructors and Redis connections
+**Rule**: All async background work (email, webhooks, indexing, LLM calls) uses **Temporal workflows and activities**. BullMQ has been removed from the project.
 
-BullMQ v5 has complex type inference. Use type assertions for compatibility.
+- Email sending, webhook delivery, and other short tasks run as activities on the `light-llm-queue` Temporal worker.
+- CPU-heavy tasks (SCIP indexing, Semgrep scans) run on the `heavy-compute-queue` Temporal worker.
+- Redis is still used for caching and rate limiting (via `RedisCacheStore` adapter), but NOT for job queues.
 
-```typescript
-// ✅ CORRECT - Queue creation
-let emailQueue: Queue<EmailJobData> | null = null
-
-export function getEmailQueue(): Queue<EmailJobData> {
-  if (!emailQueue) {
-    emailQueue = new Queue(QUEUE_NAMES.EMAIL, {
-      connection: getRedis() as any, // Type assertion for Redis connection
-      ...defaultQueueOptions,
-    }) as Queue<EmailJobData>
-  }
-  return emailQueue
-}
-
-// ✅ CORRECT - Worker creation
-const emailWorker = new Worker(QUEUE_NAMES.EMAIL, processEmailJob, {
-  connection: createRedisConnection() as any, // Type assertion for Redis connection
-  concurrency: 5,
-})
-```
-
-**When to apply**: Creating BullMQ Queue and Worker instances
+**When to apply**: Any time you need to run work asynchronously or in the background.
 
 ---
 
@@ -474,7 +455,7 @@ Before committing code, verify:
 - [ ] Third-party clients (Stripe, Redis, etc.) use lazy initialization
 - [ ] Database types imported from `@/lib/db/types`
 - [ ] Catch blocks type errors as `unknown`
-- [ ] BullMQ connections use type assertions
+- [ ] Background jobs use Temporal workflows/activities (not BullMQ)
 
 ---
 

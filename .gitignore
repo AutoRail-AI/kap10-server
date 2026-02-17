@@ -165,3 +165,5 @@ tmp/
 temp/
 *.tmp
 *.temp
+
+/generated/prisma

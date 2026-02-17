@@ -3,7 +3,7 @@
  */
 
 import type { ICacheStore } from "@/lib/ports/cache-store"
-import { getRedis } from "@/lib/queue/redis"
+import { getRedis } from "@/lib/queue"
 
 const PREFIX = "kap10:"
 const RATE_PREFIX = "kap10:rl:"
