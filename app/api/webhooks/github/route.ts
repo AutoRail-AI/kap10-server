@@ -40,11 +40,7 @@ export async function POST(req: NextRequest) {
   if (event === "installation" && payload.action === "deleted" && payload.installation?.id) {
     const inst = await container.relationalStore.getInstallationByInstallationId(payload.installation.id)
     if (inst) {
-      await container.relationalStore.deleteInstallation(inst.organizationId)
-      const repos = await container.relationalStore.getRepos(inst.organizationId)
-      for (const repo of repos) {
-        await container.relationalStore.updateRepoStatus(repo.id, { status: "error", errorMessage: "GitHub App uninstalled" })
-      }
+      await container.relationalStore.deleteInstallationById(inst.id)
     }
   }
   if (event === "installation_repositories" && payload.repositories_added?.length && payload.installation?.id) {

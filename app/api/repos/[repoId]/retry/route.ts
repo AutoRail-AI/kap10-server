@@ -34,9 +34,16 @@ export const POST = withAuth(async (req: NextRequest) => {
     return errorResponse("Max 3 retries per hour", 429)
   }
 
-  const installation = await container.relationalStore.getInstallation(orgId)
-  if (!installation) {
+  const installations = await container.relationalStore.getInstallations(orgId)
+  if (installations.length === 0) {
     return errorResponse("GitHub App not installed", 400)
+  }
+
+  const repoOwner = (repo.fullName ?? repo.githubFullName ?? "").split("/")[0] ?? ""
+  const installation =
+    installations.find((i) => i.accountLogin === repoOwner) ?? installations[0]
+  if (!installation) {
+    return errorResponse("No matching GitHub installation", 400)
   }
 
   const workflowId = `index-${orgId}-${repoId}`

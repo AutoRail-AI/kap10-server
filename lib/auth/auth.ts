@@ -18,8 +18,18 @@ function getResendClient(): Resend | null {
 const getEmailFrom = () =>
   process.env.EMAIL_FROM || "Kap10 <noreply@kap10.dev>"
 
+function slugify(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .slice(0, 48)
+}
+
 // Build auth config. Receives database and organization plugin (lazy-loaded in getAuth).
 function buildAuthConfig(
+  pool: import("pg").Pool,
   database: Parameters<(typeof import("better-auth"))["betterAuth"]>[0]["database"],
   organization: (config: {
     allowUserToCreateOrganization?: boolean
@@ -27,7 +37,8 @@ function buildAuthConfig(
     membershipLimit?: number
     creatorRole?: string
     sendInvitationEmail?: (data: { id: string; email: string; inviter: { user: { name?: string | null; email: string } }; organization: { name: string } }) => Promise<void>
-  }) => unknown
+  }) => unknown,
+  generateId: () => string
 ) {
   return {
     database,
@@ -269,6 +280,37 @@ function buildAuthConfig(
       window: 60, // 60 seconds
       max: 10, // 10 requests per window
     },
+
+    // Auto-provision a personal workspace on signup so every user has an org immediately
+    databaseHooks: {
+      user: {
+        create: {
+          after: async (user: { id: string; email: string; name?: string | null }) => {
+            const displayName = user.name || user.email.split("@")[0] || "My"
+            const orgName = `${displayName}'s workspace`
+            const orgSlug = slugify(displayName) || "workspace"
+            const orgId = generateId()
+            const memberId = generateId()
+            const now = new Date()
+
+            try {
+              await pool.query(
+                `INSERT INTO "organization" ("id", "name", "slug", "createdAt") VALUES ($1, $2, $3, $4)`,
+                [orgId, orgName, orgSlug, now]
+              )
+              await pool.query(
+                `INSERT INTO "member" ("id", "organizationId", "userId", "role", "createdAt") VALUES ($1, $2, $3, $4, $5)`,
+                [memberId, orgId, user.id, "owner", now]
+              )
+            } catch (err: unknown) {
+              const message = err instanceof Error ? err.message : String(err)
+              // Slug conflict (user signed up twice, race condition) — log but don't block signup
+              console.error("[databaseHooks] Auto-create org failed:", message)
+            }
+          },
+        },
+      },
+    },
   } as Parameters<(typeof import("better-auth"))["betterAuth"]>[0]
 }
 
@@ -287,7 +329,10 @@ function getAuth(): AuthInstance {
 
   try {
     const { Pool } = require("pg") as typeof import("pg")
-    const { betterAuth } = require("better-auth") as { betterAuth: (config: Parameters<(typeof import("better-auth"))["betterAuth"]>[0]) => AuthInstance }
+    const { betterAuth, generateId } = require("better-auth") as {
+      betterAuth: (config: Parameters<(typeof import("better-auth"))["betterAuth"]>[0]) => AuthInstance
+      generateId: () => string
+    }
     const { organization } = require("better-auth/plugins") as { organization: (config: object) => unknown }
     const dbUrl = process.env.SUPABASE_DB_URL
     const connectionString =
@@ -300,7 +345,7 @@ function getAuth(): AuthInstance {
         ? { rejectUnauthorized: false }
         : undefined,
     })
-    const config = buildAuthConfig(pool, organization)
+    const config = buildAuthConfig(pool, pool, organization, generateId)
     authInstance = betterAuth(config)
     return authInstance
   } catch (error: unknown) {

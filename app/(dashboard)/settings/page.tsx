@@ -1,7 +1,10 @@
 import { headers } from "next/headers"
+import Link from "next/link"
 import { redirect } from "next/navigation"
+import { GitBranch } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { auth, listOrganizations } from "@/lib/auth"
+import { getContainer } from "@/lib/di/container"
 
 export default async function SettingsPage() {
   const session = await auth.api.getSession({ headers: await headers() })
@@ -20,6 +23,11 @@ export default async function SettingsPage() {
     redirect("/")
   }
 
+  const container = getContainer()
+  const installations = activeOrg
+    ? await container.relationalStore.getInstallations(activeOrg.id)
+    : []
+
   return (
     <div className="space-y-6 py-6 animate-fade-in">
       <div className="space-y-1">
@@ -27,7 +35,7 @@ export default async function SettingsPage() {
           Organization settings
         </h1>
         <p className="text-sm text-foreground mt-0.5">
-          Manage your organization name and members.
+          Manage your organization (account context), GitHub connections, and members.
         </p>
       </div>
 
@@ -54,7 +62,35 @@ export default async function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Card className="glass-card border-border border-destructive/30">
+      <Link
+        href="/settings/connections"
+        className="block"
+      >
+        <Card className="glass-card border-border hover:shadow-glow-purple transition">
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-muted/30">
+                  <GitBranch className="h-4 w-4 text-foreground" />
+                </div>
+                <div className="space-y-0.5">
+                  <h3 className="font-grotesk text-sm font-semibold text-foreground">
+                    GitHub Connections
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    {installations.length === 0
+                      ? "No GitHub accounts connected"
+                      : `${installations.length} GitHub ${installations.length === 1 ? "account" : "accounts"} connected`}
+                  </p>
+                </div>
+              </div>
+              <span className="text-xs text-electric-cyan">Manage &rarr;</span>
+            </div>
+          </CardContent>
+        </Card>
+      </Link>
+
+      <Card className="glass-card border-destructive/30">
         <CardContent className="pt-6">
           <div className="space-y-1">
             <h3 className="font-grotesk text-sm font-semibold text-destructive">
@@ -64,8 +100,8 @@ export default async function SettingsPage() {
               Delete organization and all associated data. This cannot be undone.
             </p>
             <p className="text-muted-foreground mt-2 text-xs">
-              Delete org is available via Better Auth; Phase 0 does not implement
-              the button.
+              Delete organization is available via Better Auth; Phase 0 does not
+              implement the button.
             </p>
           </div>
         </CardContent>

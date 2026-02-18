@@ -1,7 +1,5 @@
 import { headers } from "next/headers"
 import { Suspense } from "react"
-import { CreateWorkspaceFirstBanner } from "@/components/dashboard/create-workspace-first-banner"
-import { EmptyStateNoOrg } from "@/components/dashboard/empty-state-no-org"
 import { EmptyStateRepos } from "@/components/dashboard/empty-state-repos"
 import { ReposList } from "@/components/dashboard/repos-list"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -16,23 +14,30 @@ async function DashboardContent() {
   try {
     organizations = await listOrganizations(await headers())
   } catch {
-    return <EmptyStateNoOrg />
+    // Edge case: org listing failed — show empty repos state
+    return <EmptyStateRepos />
   }
 
   const activeOrgId = organizations[0]?.id
-  if (!activeOrgId) return <EmptyStateNoOrg />
+  if (!activeOrgId) {
+    // Every user gets an auto-provisioned org on signup, so this is
+    // only reachable if the org was deleted or a race condition.
+    return <EmptyStateRepos />
+  }
 
   const container = getContainer()
-  const [repos, installation] = await Promise.all([
+  const [repos, installations] = await Promise.all([
     container.relationalStore.getRepos(activeOrgId),
-    container.relationalStore.getInstallation(activeOrgId),
+    container.relationalStore.getInstallations(activeOrgId),
   ])
 
-  if (repos.length === 0 && !installation) {
+  if (repos.length === 0 && installations.length === 0) {
     return (
       <EmptyStateRepos installHref={`/api/github/install?orgId=${encodeURIComponent(activeOrgId)}`} />
     )
   }
+
+  const githubAccounts = installations.map((i) => `@${i.accountLogin}`).join(", ")
 
   return (
     <>
@@ -43,9 +48,9 @@ async function DashboardContent() {
           </h1>
           <p className="text-sm text-foreground mt-0.5">
             Connect and manage your repositories for code intelligence.
-            {installation?.accountLogin != null && (
+            {githubAccounts && (
               <span className="ml-1.5 text-muted-foreground">
-                (GitHub: @{installation.accountLogin})
+                (GitHub: {githubAccounts})
               </span>
             )}
           </p>
@@ -53,8 +58,8 @@ async function DashboardContent() {
       </div>
       <ReposList
         repos={repos}
-        hasInstallation={installation != null}
-        githubAccountLogin={installation?.accountLogin ?? null}
+        hasInstallation={installations.length > 0}
+        githubAccountLogin={installations[0]?.accountLogin ?? null}
         installHref={`/api/github/install?orgId=${encodeURIComponent(activeOrgId)}`}
       />
     </>
@@ -69,8 +74,16 @@ export default async function DashboardPage({
   const params = await searchParams
   return (
     <div className="space-y-6 py-6 animate-fade-in">
-      {params.error === "create_workspace_first" && (
-        <CreateWorkspaceFirstBanner />
+      {params.error === "no_org_context" && (
+        <div
+          role="alert"
+          className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-foreground"
+        >
+          <p>
+            Could not link GitHub to an organization. Please select a workspace first,
+            then try connecting GitHub again.
+          </p>
+        </div>
       )}
       <Suspense fallback={<Skeleton className="h-[200px] w-full" />}>
         <DashboardContent />

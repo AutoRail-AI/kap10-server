@@ -67,8 +67,9 @@ export interface IRelationalStore {
     githubFullName?: string
   }): Promise<RepoRecord>
   getDeletionLogs(orgId: string, limit?: number): Promise<DeletionLogRecord[]>
-  // Phase 1: GitHub App installation
+  // Phase 1: GitHub App installations (multiple per org)
   getInstallation(orgId: string): Promise<GitHubInstallationRecord | null>
+  getInstallations(orgId: string): Promise<GitHubInstallationRecord[]>
   getInstallationByInstallationId(installationId: number): Promise<GitHubInstallationRecord | null>
   createInstallation(data: {
     organizationId: string
@@ -78,6 +79,7 @@ export interface IRelationalStore {
     permissions?: unknown
   }): Promise<GitHubInstallationRecord>
   deleteInstallation(orgId: string): Promise<void>
+  deleteInstallationById(installationRecordId: string): Promise<void>
   // Phase 1: Repo indexing status
   updateRepoStatus(
     repoId: string,

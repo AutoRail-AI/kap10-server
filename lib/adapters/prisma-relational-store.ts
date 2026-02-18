@@ -143,9 +143,18 @@ export class PrismaRelationalStore implements IRelationalStore {
   async getInstallation(orgId: string): Promise<GitHubInstallationRecord | null> {
     const row = await this.prisma.gitHubInstallation.findFirst({
       where: { organizationId: orgId },
+      orderBy: { createdAt: "asc" },
     })
     if (!row) return null
     return this.mapInstallation(row)
+  }
+
+  async getInstallations(orgId: string): Promise<GitHubInstallationRecord[]> {
+    const rows = await this.prisma.gitHubInstallation.findMany({
+      where: { organizationId: orgId },
+      orderBy: { createdAt: "asc" },
+    })
+    return rows.map((r) => this.mapInstallation(r))
   }
 
   async getInstallationByInstallationId(installationId: number): Promise<GitHubInstallationRecord | null> {
@@ -202,6 +211,12 @@ export class PrismaRelationalStore implements IRelationalStore {
   async deleteInstallation(orgId: string): Promise<void> {
     await this.prisma.gitHubInstallation.deleteMany({
       where: { organizationId: orgId },
+    })
+  }
+
+  async deleteInstallationById(installationRecordId: string): Promise<void> {
+    await this.prisma.gitHubInstallation.delete({
+      where: { id: installationRecordId },
     })
   }
 

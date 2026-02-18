@@ -34,22 +34,35 @@
 
 Phase 1 has five actor journeys. Each is described with a Mermaid sequence diagram and step-by-step system-level actions.
 
-### Post-signup & workspace provisioning
+### Terminology: Organization vs workspace
 
-Organization creation is **not** required at signup. New users land on a **welcome screen** with two paths:
+| Term | Meaning |
+|------|--------|
+| **Organization** (or "org") | Account-level entity in Better Auth. Personal or team. Holds repos, GitHub installations, and settings. Switched via `AccountProvider`. |
+| **Workspace** | **Repo-level working context** — Shadow Workspace overlay (Phase 2), cloned repo directory for SCIP indexing (`prepareWorkspace`), monorepo sub-package root. Not the same as organization. |
 
-| Path | Action | Outcome |
-|------|--------|---------|
-| **Connect GitHub** | User clicks → `GET /api/github/install` → GitHub App install → callback | If user has **no org**, the callback **auto-creates a workspace** (e.g. `{accountLogin}'s workspace`), bootstraps ArangoDB, creates the installation and repo rows, then redirects to `/`. User sees dashboard with repos (or empty state to add more). |
-| **Start without GitHub** | User clicks "Start without GitHub" | Server action `createDefaultWorkspace()` creates an org (e.g. `{displayName}'s workspace`), bootstraps ArangoDB, redirects to `/`. User sees dashboard with "Connect GitHub" CTA for later. |
+GitHub connects to an **organization** (account-level entity). The **repositories** you add under that org are managed within the organization context.
 
-**Implementation:** `createOrganizationForUser()` in `lib/auth` (server-side); `createOrgUseCase()` for ArangoDB bootstrap; GitHub callback checks `listOrganizations()` and creates org when empty; `app/actions/create-workspace.ts` for the "Start without GitHub" flow. Visiting `/settings` or `/repos` with zero orgs redirects to `/`.
+### Post-signup & organization provisioning
+
+A personal organization is **auto-provisioned on signup** via Better Auth `databaseHooks.user.create.after` in `lib/auth/auth.ts`. The hook inserts directly into `organization` + `member` tables (pg Pool, Better Auth's `generateId()`). Every user has at least one org from their first login — no welcome screen or manual org creation step needed.
+
+| Scenario | What happens |
+|----------|-------------|
+| **New user signs up** | `databaseHooks.user.create.after` → INSERT `organization` (`"{name}'s workspace"`) + INSERT `member` (role: `owner`). User lands on dashboard with empty-state-repos. |
+| **User connects GitHub** | Dashboard → "Connect GitHub" → `GET /api/github/install?orgId=xxx` → GitHub → callback → installation attached to existing org, repos imported. |
+
+**Key principle:** Organizations are the account-level grouping in kap10. They are auto-provisioned at signup (not from GitHub account names). GitHub connections (installations) link a GitHub account/org to an existing kap10 organization. The callback **strictly requires** an `orgId` in the state payload and never creates organizations.
+
+**Multiple GitHub connections:** A single organization can have **multiple** GitHub accounts or orgs connected. Each connection is a separate `github_installations` row. Repos from all connections are listed in the organization's dashboard. Users manage connections via `/settings/connections` (add, remove).
+
+**Implementation:** `databaseHooks.user.create.after` in `lib/auth/auth.ts` (auto-create org on signup); `setActiveOrganization()` in `lib/auth` (server-side session update); Install route stores `{ orgId }` in state → callback reads it back to attach installation to that organization. Removed: `createOrganizationForUser()`, `app/actions/create-workspace.ts`, `EmptyStateNoOrg`, `CreateWorkspaceFirstBanner`.
 
 ### Flow 1: GitHub App Installation
 
-**Actor:** Authenticated user (may have no org yet)
-**Precondition:** Logged in
-**Outcome:** GitHub App installed; if user had no org, a workspace is auto-created and repos are imported
+**Actor:** Authenticated user with an existing organization
+**Precondition:** Logged in, at least one organization exists
+**Outcome:** GitHub App installed and linked to the active organization; repos imported
 
 ```mermaid
 sequenceDiagram
@@ -60,18 +73,15 @@ sequenceDiagram
     participant Supabase as Supabase (kap10)
 
     User->>Dashboard: Click "Connect GitHub"
-    Dashboard->>NextAPI: GET /api/github/install
+    Dashboard->>NextAPI: GET /api/github/install?orgId=xxx
+    NextAPI->>NextAPI: Verify user has organization, store { orgId } in state
     NextAPI-->>User: Redirect to github.com/apps/kap10/installations/new
     User->>GitHub: Authorize & select repositories
-    GitHub-->>NextAPI: GET /api/github/callback?installation_id=123&setup_action=install
-    NextAPI->>NextAPI: Verify state param (CSRF)
+    GitHub-->>NextAPI: GET /api/github/callback?installation_id=123&setup_action=install&state=...
+    NextAPI->>NextAPI: Verify state param → extract orgId
     NextAPI->>GitHub: POST /app/installations/123/access_tokens (via @octokit/auth-app)
     GitHub-->>NextAPI: Installation access token (1hr TTL)
-    alt User has no org
-        NextAPI->>Supabase: Create org ("{accountLogin}'s workspace") + bootstrap ArangoDB
-    else User already has org
-        Note over NextAPI: Skip creation, use existing orgId
-    end
+    Note over NextAPI: Attach installation to existing organization (orgId from state)
     NextAPI->>Supabase: INSERT INTO kap10.github_installations (org_id, installation_id, ...)
     NextAPI->>Supabase: INSERT INTO kap10.repos (one per selected repo, status=pending)
     NextAPI-->>User: Redirect to /?connected=true
@@ -83,11 +93,27 @@ sequenceDiagram
 |----------|--------|-----------|
 | GitHub App vs. OAuth App | GitHub App | Per-repo permissions, installation tokens (no user token needed for background jobs), webhook events. OAuth tokens are tied to users — if the user revokes, all background indexing breaks. |
 | Store installation token? | No — fetch on demand | Installation tokens expire in 1 hour. Store `installation_id` and call `@octokit/auth-app` to generate fresh tokens when needed. |
-| One GitHub App per org? | One App, multiple installations | Each org installs the same GitHub App. The `installation_id` links the org to its GitHub access scope. |
+| One GitHub App per org? | One App, multiple installations per organization | Each GitHub account/org installs the same GitHub App. Multiple `installation_id`s can link to a single organization. |
+| Auto-create organization from GitHub? | **No** | Organizations are the account-level grouping, not a mirror of GitHub. GitHub is a connected source to add repos. |
+| Multiple GitHub connections per organization? | **Yes** | An organization can aggregate repos from multiple GitHub accounts/orgs. Each connection is a separate installation row. |
 
 **State changes:**
-- Supabase `kap10.github_installations`: new row with `installation_id`, `org_id`, `account_login`, `account_type`
+- Supabase `kap10.github_installations`: new row with `installation_id`, `org_id`, `account_login`, `account_type` (additive — does not replace existing installations)
 - Supabase `kap10.repos`: one row per selected repo with `status: "pending"`
+
+### Flow 1b: Managing GitHub Connections
+
+**Actor:** Authenticated user (organization owner/admin)
+**Precondition:** Organization exists
+**Outcome:** User can view, add, and remove GitHub connections from `/settings/connections`
+
+| Action | API | Behavior |
+|--------|-----|----------|
+| **View connections** | `GET /api/github/connections` | Lists all `github_installations` for the active org |
+| **Add connection** | `GET /api/github/install?orgId=xxx` | Same as Flow 1 — installs a new GitHub App installation and links it to the organization |
+| **Remove connection** | `DELETE /api/github/connections` `{ connectionId }` | Deletes the `github_installations` row. Existing repos from that connection remain but won't receive updates. |
+
+**Implementation:** `app/api/github/connections/route.ts` (GET, DELETE); `app/(dashboard)/settings/connections/page.tsx` + `components/dashboard/github-connections-list.tsx` (UI).
 
 ---
 
@@ -951,15 +977,16 @@ Seam 5: Repo status → readiness for Q&A
 - [x] **P1-API-02: `GET /api/github/callback` — GitHub App installation callback** — M
   - Receives `installation_id`, `setup_action`, `state` from GitHub
   - Validates `state` param against Redis (CSRF protection)
-  - **If user has no organization:** auto-creates workspace (e.g. `{accountLogin}'s workspace`) via `createOrganizationForUser()` and `createOrgUseCase()` (ArangoDB bootstrap)
+  - **Resolves org strictly from state:** decodes `{ orgId }` from state payload, validates against user's orgs. Redirects to `/?error=no_org_context` if no matching org (never auto-creates orgs).
+  - Calls `setActiveOrganization(reqHeaders, orgId)` to update session
   - Fetches installation details from GitHub API
   - Creates `GitHubInstallation` record in Supabase
   - Creates `Repo` records for each selected repository (status: `pending`)
   - Redirects to `/?connected=true`
-  - **Test:** Valid callback with known state → installation created, repos created, redirect to /. No org → org created then installation/repos.
+  - **Test:** Valid callback with known state + orgId → installation created, repos created, redirect to /. No orgId in state → redirect with error.
   - **Depends on:** P1-API-01, P1-DB-01, P1-DB-02, P1-ADAPT-12
   - **Files:** `app/api/github/callback/route.ts`
-  - **Acceptance:** Installation and repos persisted. Invalid state → 403. Missing installation_id → 400. Auto-workspace when no org.
+  - **Acceptance:** Installation and repos persisted. Invalid state → 403. Missing installation_id → 400. Missing orgId → redirect to `/?error=no_org_context`.
   - Notes: Done.
 
 - [x] **P1-API-03: `GET /api/repos/available` — List installable repos** — S
@@ -1143,12 +1170,12 @@ Seam 5: Repo status → readiness for Q&A
 ### GitHub Connection Flow
 
 - [x] **P1-UI-01: "Connect GitHub" button on empty state + repos page** — M
-  - Welcome screen (no org): two paths — "Connect GitHub" (→ `/api/github/install`) and "Start without GitHub" (server action `createDefaultWorkspace()`). See § Post-signup & workspace provisioning.
-  - Empty state with org but no installation: "Connect GitHub" → `GET /api/github/install`. If already connected: show "Add Repository" button.
-  - **Test:** No org → welcome screen with both options. No installation → "Connect GitHub" visible. Click → redirected to GitHub. After install → "Add Repository" shown.
+  - Dashboard (org auto-provisioned): No installation → `EmptyStateRepos` with "Connect GitHub" → `GET /api/github/install?orgId=xxx`. After install → "Add Repository" button.
+  - `RepositorySwitcher` (sidebar top-left): "Add missing repository" link → GitHub App install.
+  - **Test:** No installation → "Connect GitHub" visible. Click → redirected to GitHub. After install → "Add Repository" shown.
   - **Depends on:** P1-API-01
-  - **Files:** `components/dashboard/empty-state-no-org.tsx`, `components/dashboard/empty-state-repos.tsx`, `app/(dashboard)/page.tsx`, `app/(dashboard)/repos/page.tsx`, `app/actions/create-workspace.ts`
-  - **Acceptance:** Welcome screen and button states match org/installation status. Design system compliant.
+  - **Files:** `components/dashboard/empty-state-repos.tsx`, `components/dashboard/repository-switcher.tsx`, `app/(dashboard)/page.tsx`, `app/(dashboard)/repos/page.tsx`
+  - **Acceptance:** Empty state and button states match installation status. Design system compliant.
   - Notes: Done.
 
 - [x] **P1-UI-02: Repository picker modal** — M

@@ -46,17 +46,15 @@ export async function GET(req: NextRequest) {
     return errorResponse("Invalid installation_id", 400)
   }
 
-  const orgs = await listOrganizations(reqHeaders)
+  // Resolve org strictly from state — never auto-create
   const { orgId: stateOrgId } = parseStatePayload(stored)
-
-  if (orgs.length === 0) {
-    return NextResponse.redirect(`${BASE_URL}/?error=create_workspace_first`)
-  }
+  const orgs = await listOrganizations(reqHeaders)
 
   const orgId =
-    stateOrgId && orgs.some((o) => o.id === stateOrgId) ? stateOrgId : orgs[0]?.id ?? ""
+    stateOrgId && orgs.some((o) => o.id === stateOrgId) ? stateOrgId : null
+
   if (!orgId) {
-    return NextResponse.redirect(`${BASE_URL}/?error=create_workspace_first`)
+    return NextResponse.redirect(`${BASE_URL}/?error=no_org_context`)
   }
 
   try {
@@ -68,9 +66,9 @@ export async function GET(req: NextRequest) {
 
     await setActiveOrganization(reqHeaders, orgId)
 
-    const existing = await container.relationalStore.getInstallation(orgId)
-    if (existing) {
-      await container.relationalStore.deleteInstallation(orgId)
+    const existingByInstId = await container.relationalStore.getInstallationByInstallationId(installationId)
+    if (existingByInstId) {
+      await container.relationalStore.deleteInstallationById(existingByInstId.id)
     }
     await container.relationalStore.createInstallation({
       organizationId: orgId,

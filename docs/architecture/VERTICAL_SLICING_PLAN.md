@@ -953,13 +953,15 @@ model DeletionLog {
 
 ## Phase 0 — Foundation Wiring
 
-**Feature:** _"I can sign up and either connect a GitHub repo (a workspace is created automatically) or start without GitHub (create an empty workspace); I then see a dashboard where I can connect repositories."_
+**Feature:** _"I can sign up and create an organization (or start without GitHub), then connect one or more GitHub accounts to that organization. I see a dashboard where I can manage repositories."_
 
 ### What ships
 - Auth flow works end-to-end (Better Auth — already scaffolded)
-- Welcome screen (no onboarding wizard): two paths — Connect GitHub (auto-creates workspace on callback) or Start without GitHub (server action creates empty workspace)
-- Dashboard shell with sidebar nav (Repos, Search, Settings) + Claude-style UserProfileMenu (account context switcher, theme toggle, sign out)
-- `AccountProvider`: global context for Personal vs Organization account switching, persisted to `localStorage`
+- Personal organization **auto-provisioned on signup** via Better Auth `databaseHooks` (no welcome screen). Users land directly on the dashboard. GitHub callback strictly requires `orgId` in state — never auto-creates organizations.
+- **Multiple GitHub connections per organization:** An organization can connect to multiple GitHub accounts and organizations. Each connection is a separate `github_installations` row. Available repos are aggregated across all connections.
+- **GitHub connections management:** `/settings/connections` page for viewing, adding, and removing GitHub connections. API: `GET /api/github/connections`, `DELETE /api/github/connections`.
+- Dashboard shell with sidebar: `RepositorySwitcher` (top — repo/scope navigation), `DashboardNav` (Repos, Search, Settings), `UserProfileMenu` (bottom — identity/account switching, theme toggle, sign out). Identity decoupled from resource context.
+- `AccountProvider`: dashboard-only context for organization context switching (only loads on authenticated dashboard routes)
 - `ThemeProvider` (next-themes): dark/light mode toggle (default: dark)
 - **Ports & Adapters foundation:** All 11 port interfaces defined (`lib/ports/`), production adapters wired (`lib/adapters/`), DI container factory (`lib/di/container.ts`) with `createProductionContainer()` + `createTestContainer()`
 - ArangoDB connection established + health check (via `ArangoGraphStore` adapter)
@@ -1093,17 +1095,19 @@ app/
     repos/page.tsx                 ← Repository management
     settings/page.tsx              ← Org settings (redirects to / if no org)
   api/
-    github/callback/route.ts       ← GitHub App callback (org auto-creation for "Connect GitHub" path)
-  actions/
-    create-workspace.ts            ← Server action: auto-create empty workspace
+    github/callback/route.ts       ← GitHub App callback (attaches installation to existing organization)
+    github/connections/route.ts    ← GET (list connections), DELETE (remove connection)
 components/
   dashboard/
-    user-profile-menu.tsx          ← Claude-style account switcher dropdown
-    dashboard-nav.tsx              ← Sidebar navigation
-    empty-state-no-org.tsx         ← Welcome screen (Connect GitHub | Start without GitHub)
+    repository-switcher.tsx        ← Sidebar top-left: repo/scope navigation (Command-based search)
+    user-profile-menu.tsx          ← Sidebar bottom-left: identity/account switcher dropdown
+    dashboard-nav.tsx              ← Sidebar navigation (Repos, Search, Settings)
+    empty-state-repos.tsx          ← Empty state: no repos connected, CTA to connect GitHub
+    github-connections-list.tsx    ← Manage GitHub connections (add, remove)
+    dashboard-account-provider.tsx ← Dashboard-only AccountProvider wrapper
   providers/
-    account-context.tsx            ← AccountProvider (Personal vs Org, persisted)
-    index.tsx                      ← Root Providers (ThemeProvider + AuthProvider + AccountProvider)
+    account-context.tsx            ← AccountProvider (organization context switching)
+    index.tsx                      ← Root Providers (ThemeProvider + AuthProvider; no AccountProvider)
 ```
 
 ### Docker Compose services
@@ -1123,7 +1127,7 @@ components/
 - `pnpm test` — `createProductionContainer()` returns all 11 adapters with correct interface compliance
 - `pnpm test` — `createTestContainer()` returns all in-memory fakes; overrides replace individual adapters
 - `pnpm test` — Domain functions (entity hashing, rule resolution) work with zero external dependencies
-- `e2e` — Sign up → see welcome screen (Connect GitHub | Start without GitHub) → connect GitHub or create empty workspace → dashboard with "Connect GitHub" or repo list
+- `e2e` — Sign up → dashboard (org auto-provisioned) → connect GitHub → repos imported → repo list
 
 ---
 
@@ -1134,10 +1138,12 @@ components/
 ### What ships
 - GitHub OAuth integration (via Better Auth social provider)
 - GitHub App installation flow (repo access permissions)
-- "Connect Repository" modal → select from GitHub repos
+- **Multiple GitHub connections per organization:** One organization can connect to multiple GitHub accounts and organizations. Each connection is a separate `github_installations` row.
+- **GitHub connections management:** `/settings/connections` page + `GET/DELETE /api/github/connections` API. Users can add new GitHub accounts/orgs and remove existing connections.
+- "Connect Repository" modal → select from repos across all connected GitHub installations
 - Temporal workflow: `indexRepoWorkflow` — prepare workspace → SCIP index → parse → extract → write to ArangoDB
 - Dashboard: repo card shows indexing progress (0% → 100%) via Temporal query
-- If user has no org at GitHub App installation time, a workspace is auto-created from the GitHub account name during the callback
+- **Auto-provisioned org:** Personal organization created on signup via `databaseHooks`. GitHub callback strictly requires `orgId` in state — never creates organizations.
 - After indexing: browsable file tree + entity list
 
 ### Processing pipeline — SCIP + Tree-sitter

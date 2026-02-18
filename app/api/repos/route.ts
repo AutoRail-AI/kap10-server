@@ -30,8 +30,8 @@ export const POST = withAuth(async (req: NextRequest) => {
   }
 
   const container = getContainer()
-  const installation = await container.relationalStore.getInstallation(orgId)
-  if (!installation) {
+  const installations = await container.relationalStore.getInstallations(orgId)
+  if (installations.length === 0) {
     return errorResponse("GitHub App not installed for this organization", 400)
   }
 
@@ -45,16 +45,24 @@ export const POST = withAuth(async (req: NextRequest) => {
     return errorResponse(`Maximum ${MAX_CONCURRENT_INDEXING} concurrent indexing workflows`, 429)
   }
 
-  const available = await container.gitHost.getInstallationRepos(installation.installationId)
-  const availableIds = new Set(available.map((r) => r.id))
+  const repoInstMap = new Map<number, { fullName: string; defaultBranch: string; installationId: number }>()
+  for (const inst of installations) {
+    const repos = await container.gitHost.getInstallationRepos(inst.installationId)
+    for (const r of repos) {
+      if (!repoInstMap.has(r.id)) {
+        repoInstMap.set(r.id, { fullName: r.fullName, defaultBranch: r.defaultBranch, installationId: inst.installationId })
+      }
+    }
+  }
+
   const existingIds = new Set(existingRepos.map((r) => r.githubRepoId).filter(Boolean) as number[])
-  const toAdd = githubRepoIds.filter((id) => availableIds.has(id) && !existingIds.has(id))
+  const toAdd = githubRepoIds.filter((id) => repoInstMap.has(id) && !existingIds.has(id))
 
   const workflowEngine = container.workflowEngine
   const created: { id: string; name: string; status: string }[] = []
 
   for (const ghRepoId of toAdd) {
-    const meta = available.find((r) => r.id === ghRepoId)
+    const meta = repoInstMap.get(ghRepoId)
     const fullName = meta?.fullName ?? `repo-${ghRepoId}`
     const name = fullName.split("/").pop() ?? fullName
     const providerId = String(ghRepoId)
@@ -71,6 +79,7 @@ export const POST = withAuth(async (req: NextRequest) => {
     })
     created.push({ id: repo.id, name: repo.name, status: repo.status })
 
+    const installationId = meta?.installationId ?? installations[0]?.installationId ?? 0
     const workflowId = `index-${orgId}-${repo.id}`
     try {
       await workflowEngine.startWorkflow({
@@ -79,7 +88,7 @@ export const POST = withAuth(async (req: NextRequest) => {
         args: [{
           orgId,
           repoId: repo.id,
-          installationId: installation.installationId,
+          installationId,
           cloneUrl: `https://github.com/${fullName}.git`,
           defaultBranch: repo.defaultBranch ?? "main",
         }],

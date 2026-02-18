@@ -113,6 +113,9 @@ export class InMemoryRelationalStore implements IRelationalStore {
   async getInstallation(orgId: string): Promise<GitHubInstallationRecord | null> {
     return this.installations.find((i) => i.organizationId === orgId) ?? null
   }
+  async getInstallations(orgId: string): Promise<GitHubInstallationRecord[]> {
+    return this.installations.filter((i) => i.organizationId === orgId)
+  }
   async getInstallationByInstallationId(installationId: number): Promise<GitHubInstallationRecord | null> {
     return this.installations.find((i) => i.installationId === installationId) ?? null
   }
@@ -139,6 +142,9 @@ export class InMemoryRelationalStore implements IRelationalStore {
   }
   async deleteInstallation(orgId: string): Promise<void> {
     this.installations = this.installations.filter((i) => i.organizationId !== orgId)
+  }
+  async deleteInstallationById(installationRecordId: string): Promise<void> {
+    this.installations = this.installations.filter((i) => i.id !== installationRecordId)
   }
   async updateRepoStatus(
     repoId: string,

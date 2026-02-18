@@ -64,11 +64,11 @@ Incoming request: Authorization: Bearer {token}
            User must have active org membership + repo access
 ```
 
-> **Precondition for all Phase 2 flows:** The user must have at least one workspace
-> (organization) with indexed repos. Users in the "Personal" context (no org) cannot
-> create API keys or initiate OAuth MCP connections. The dashboard gates these UI
-> elements behind having a workspace. This state resolves automatically when the user
-> connects GitHub or starts without GitHub (Phase 0/1).
+> **Precondition for all Phase 2 flows:** The user must have at least one organization
+> with indexed repos. Users without an organization cannot create API keys or initiate
+> OAuth MCP connections. The dashboard gates these UI elements behind having an
+> organization. This state resolves automatically when the user connects GitHub or
+> starts without GitHub (Phase 0/1).
 
 ### Flow 1: OAuth 2.1 Connection (Mode A — Claude Code, VS Code)
 
