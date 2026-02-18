@@ -34,11 +34,15 @@ export function getInstallationOctokit(installationId: number): Octokit {
     throw new Error("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY are required for GitHub App")
   }
   const OctokitClass = getOctokitRest()
-  const auth = getCreateAppAuth()({
-    appId,
-    privateKey: privateKey.replace(/\\n/g, "\n"),
+  const createAppAuthFn = getCreateAppAuth()
+  return new OctokitClass({
+    authStrategy: createAppAuthFn,
+    auth: {
+      appId,
+      privateKey: privateKey.replace(/\\n/g, "\n"),
+      installationId,
+    },
   })
-  return new OctokitClass({ authStrategy: auth, auth: { type: "installation", installationId } })
 }
 
 export async function getInstallationToken(installationId: number): Promise<string> {

@@ -23,25 +23,51 @@ async function getClient(): Promise<Client> {
 }
 
 export class TemporalWorkflowEngine implements IWorkflowEngine {
-  async startWorkflow<T>(_params: {
+  async startWorkflow<T>(params: {
     workflowId: string
     workflowFn: string
     args: unknown[]
     taskQueue: TaskQueue
   }): Promise<WorkflowHandle<T>> {
-    throw new Error("Phase 0: no workflows started yet")
+    const client = await getClient()
+    const handle = await client.workflow.start(params.workflowFn as never, {
+      taskQueue: params.taskQueue,
+      workflowId: params.workflowId,
+      args: params.args as never,
+    })
+    return {
+      workflowId: handle.workflowId,
+      runId: handle.firstExecutionRunId ?? "",
+      result: () => handle.result() as Promise<T>,
+    }
   }
 
-  async signalWorkflow(_workflowId: string, _signal: string, _data?: unknown): Promise<void> {
-    throw new Error("Phase 0: not implemented")
+  async signalWorkflow(workflowId: string, signal: string, data?: unknown): Promise<void> {
+    const client = await getClient()
+    const handle = client.workflow.getHandle(workflowId)
+    await handle.signal(signal as never, data)
   }
 
-  async getWorkflowStatus(_workflowId: string): Promise<WorkflowStatus> {
-    throw new Error("Phase 0: not implemented")
+  async getWorkflowStatus(workflowId: string): Promise<WorkflowStatus> {
+    const client = await getClient()
+    const handle = client.workflow.getHandle(workflowId)
+    const desc = await handle.describe()
+    const status = desc.status.name
+    let progress: number | undefined
+    try {
+      if (status === "RUNNING" && typeof handle.query === "function") {
+        progress = await handle.query("getProgress" as never)
+      }
+    } catch {
+      // query not supported or workflow not ready
+    }
+    return { workflowId, status, progress }
   }
 
-  async cancelWorkflow(_workflowId: string): Promise<void> {
-    throw new Error("Phase 0: not implemented")
+  async cancelWorkflow(workflowId: string): Promise<void> {
+    const client = await getClient()
+    const handle = client.workflow.getHandle(workflowId)
+    await handle.cancel()
   }
 
   async healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }> {

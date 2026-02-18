@@ -19,7 +19,18 @@ export interface CreatePRParams {
 
 export interface FileEntry {
   path: string
+  type?: "file" | "dir"
+  size?: number
   [key: string]: unknown
+}
+
+/** Repo accessible to a GitHub App installation (from GET /installation/repositories) */
+export interface GitHubRepo {
+  id: number
+  fullName: string
+  defaultBranch: string
+  language: string | null
+  private: boolean
 }
 
 export interface IGitHost {
@@ -27,6 +38,10 @@ export interface IGitHost {
   getPullRequest(owner: string, repo: string, prNumber: number): Promise<PullRequest>
   createPullRequest(owner: string, repo: string, params: CreatePRParams): Promise<PullRequest>
   getDiff(owner: string, repo: string, base: string, head: string): Promise<string>
-  listFiles(owner: string, repo: string, ref?: string): Promise<FileEntry[]>
+  listFiles(owner: string, repo: string, ref?: string, installationId?: number): Promise<FileEntry[]>
   createWebhook(owner: string, repo: string, events: string[], url: string): Promise<void>
+  /** Phase 1: List repos accessible to this GitHub App installation */
+  getInstallationRepos(installationId: number): Promise<GitHubRepo[]>
+  /** Phase 1: Get installation-scoped token (1hr TTL, not stored) */
+  getInstallationToken(installationId: number): Promise<string>
 }

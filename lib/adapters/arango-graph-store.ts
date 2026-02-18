@@ -41,6 +41,9 @@ const DOC_COLLECTIONS = [
 const EDGE_COLLECTIONS = ["contains", "calls", "imports", "extends", "implements"] as const
 
 const TENANT_INDEX_FIELDS = ["org_id", "repo_id"]
+const FILE_PATH_INDEX_FIELDS = ["org_id", "repo_id", "file_path"]
+const ENTITY_COLLECTIONS_FOR_FILE = ["functions", "classes", "interfaces", "variables"] as const
+const BATCH_SIZE = 1000
 
 function getConfig() {
   const url = process.env.ARANGODB_URL ?? "http://localhost:8529"
@@ -97,6 +100,17 @@ export class ArangoGraphStore implements IGraphStore {
         } catch {
           // index exists
         }
+        if (["files", "functions", "classes", "interfaces", "variables"].includes(name)) {
+          try {
+            await col.ensureIndex({
+              type: "persistent",
+              fields: FILE_PATH_INDEX_FIELDS,
+              name: `idx_${name}_org_repo_file`,
+            })
+          } catch {
+            // index exists
+          }
+        }
       }
       for (const name of EDGE_COLLECTIONS) {
         const col = db.collection(name)
@@ -126,26 +140,87 @@ export class ArangoGraphStore implements IGraphStore {
     // Phase 1
     return Promise.resolve()
   }
-  async getEntity(_orgId: string, _entityId: string): Promise<EntityDoc | null> {
-    return Promise.resolve(null)
+  async getEntity(orgId: string, entityId: string): Promise<EntityDoc | null> {
+    const db = await getDbAsync()
+    for (const collName of ENTITY_COLLECTIONS_FOR_FILE) {
+      const col = db.collection(collName)
+      try {
+        const doc = await col.document(entityId)
+        if (doc && (doc as { org_id?: string }).org_id === orgId) {
+          const { _key, _id, ...rest } = doc as { _key: string; _id: string; org_id?: string; [k: string]: unknown }
+          return { id: _key, ...rest } as EntityDoc
+        }
+      } catch {
+        // not in this collection
+      }
+    }
+    return null
   }
+
   async deleteEntity(_orgId: string, _entityId: string): Promise<void> {
     return Promise.resolve()
   }
   async upsertEdge(_orgId: string, _edge: EdgeDoc): Promise<void> {
     return Promise.resolve()
   }
-  async getCallersOf(_orgId: string, _entityId: string, _depth?: number): Promise<EntityDoc[]> {
-    return Promise.resolve([])
+
+  private async getConnectedEntities(
+    orgId: string,
+    entityId: string,
+    direction: "inbound" | "outbound"
+  ): Promise<EntityDoc[]> {
+    const db = await getDbAsync()
+    const possibleIds = ENTITY_COLLECTIONS_FOR_FILE.map((c) => `${c}/${entityId}`)
+    const filter = direction === "inbound" ? "e._to" : "e._from"
+    const cursor = await db.query(
+      `
+      FOR e IN calls
+        FILTER e.org_id == @orgId AND ${filter} IN @possibleIds
+        LIMIT 500
+        LET doc = DOCUMENT(${direction === "inbound" ? "e._from" : "e._to"})
+        FILTER doc != null
+        RETURN doc
+      `,
+      { orgId, possibleIds }
+    )
+    const docs = await cursor.all()
+    return docs.map((d: { _key: string; _id?: string; [k: string]: unknown }) => {
+      const { _key, _id, ...rest } = d
+      return { id: _key, ...rest } as EntityDoc
+    })
   }
-  async getCalleesOf(_orgId: string, _entityId: string, _depth?: number): Promise<EntityDoc[]> {
-    return Promise.resolve([])
+
+  async getCallersOf(orgId: string, entityId: string): Promise<EntityDoc[]> {
+    return this.getConnectedEntities(orgId, entityId, "inbound")
+  }
+  async getCalleesOf(orgId: string, entityId: string): Promise<EntityDoc[]> {
+    return this.getConnectedEntities(orgId, entityId, "outbound")
   }
   async impactAnalysis(_orgId: string, _entityId: string, _maxDepth: number): Promise<ImpactResult> {
     return Promise.resolve({ entityId: "", affected: [] })
   }
-  async getEntitiesByFile(_orgId: string, _filePath: string): Promise<EntityDoc[]> {
-    return Promise.resolve([])
+  async getEntitiesByFile(orgId: string, repoId: string, filePath: string): Promise<EntityDoc[]> {
+    const db = await getDbAsync()
+    const results: EntityDoc[] = []
+    const bindVars = { orgId, repoId, filePath }
+    for (const collName of ENTITY_COLLECTIONS_FOR_FILE) {
+      const cursor = await db.query(
+        `
+        FOR doc IN @@coll
+          FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.file_path == @filePath
+          SORT doc.line ASC
+          RETURN doc
+        `,
+        { ...bindVars, "@coll": collName }
+      )
+      const docs = await cursor.all()
+      for (const d of docs) {
+        const { _key, _id, ...rest } = d as { _key: string; _id: string; [k: string]: unknown }
+        results.push({ id: _key, ...rest } as EntityDoc)
+      }
+    }
+    results.sort((a, b) => (Number(a.line) ?? 0) - (Number(b.line) ?? 0))
+    return results
   }
   async upsertRule(_orgId: string, _rule: RuleDoc): Promise<void> {
     return Promise.resolve()
@@ -171,11 +246,81 @@ export class ArangoGraphStore implements IGraphStore {
   async getBlueprint(_orgId: string, _repoId: string): Promise<BlueprintData> {
     return Promise.resolve({ features: [] })
   }
-  async bulkUpsertEntities(_orgId: string, _entities: EntityDoc[]): Promise<void> {
-    return Promise.resolve()
+  async bulkUpsertEntities(orgId: string, entities: EntityDoc[]): Promise<void> {
+    if (entities.length === 0) return
+    const db = await getDbAsync()
+    const byKind = new Map<string, EntityDoc[]>()
+    for (const e of entities) {
+      const kind = (e.kind as string) ?? "functions"
+      const coll = ["files", "functions", "classes", "interfaces", "variables"].includes(kind) ? kind : "functions"
+      if (!byKind.has(coll)) byKind.set(coll, [])
+      const key = (e.id ?? (e as { _key?: string })._key) as string
+      byKind.get(coll)!.push({ ...e, _key: key, org_id: e.org_id ?? orgId } as EntityDoc & { _key: string })
+    }
+    for (const [collName, list] of Array.from(byKind.entries())) {
+      const col = db.collection(collName)
+      for (let i = 0; i < list.length; i += BATCH_SIZE) {
+        const batch = list.slice(i, i + BATCH_SIZE).map((e) => {
+          const { id, ...rest } = e
+          return { _key: (e as EntityDoc & { _key?: string })._key ?? id, ...rest }
+        })
+        await col.import(batch, { onDuplicate: "update" })
+      }
+    }
   }
-  async bulkUpsertEdges(_orgId: string, _edges: EdgeDoc[]): Promise<void> {
-    return Promise.resolve()
+
+  async bulkUpsertEdges(orgId: string, edges: EdgeDoc[]): Promise<void> {
+    if (edges.length === 0) return
+    const db = await getDbAsync()
+    const byKind = new Map<string, EdgeDoc[]>()
+    for (const e of edges) {
+      const kind = (e.kind as string) ?? "calls"
+      const coll = EDGE_COLLECTIONS.includes(kind as (typeof EDGE_COLLECTIONS)[number]) ? kind : "calls"
+      if (!byKind.has(coll)) byKind.set(coll, [])
+      byKind.get(coll)!.push({ ...e, org_id: e.org_id ?? orgId })
+    }
+    for (const [collName, list] of Array.from(byKind.entries())) {
+      const col = db.collection(collName)
+      for (let i = 0; i < list.length; i += BATCH_SIZE) {
+        const batch = list.slice(i, i + BATCH_SIZE).map((e) => ({
+          _from: e._from,
+          _to: e._to,
+          org_id: e.org_id,
+          repo_id: e.repo_id,
+          kind: e.kind,
+        }))
+        await col.import(batch, { onDuplicate: "update" })
+      }
+    }
+  }
+
+  async getFilePaths(orgId: string, repoId: string): Promise<{ path: string }[]> {
+    const db = await getDbAsync()
+    const cursor = await db.query(
+      `FOR doc IN files FILTER doc.org_id == @orgId AND doc.repo_id == @repoId SORT doc.file_path ASC RETURN { path: doc.file_path }`,
+      { orgId, repoId }
+    )
+    return cursor.all() as Promise<{ path: string }[]>
+  }
+
+  async deleteRepoData(orgId: string, repoId: string): Promise<void> {
+    const db = await getDbAsync()
+    const docCols = [...DOC_COLLECTIONS]
+    const edgeCols = [...EDGE_COLLECTIONS]
+    for (const name of docCols) {
+      const cursor = await db.query(
+        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId REMOVE doc IN @@coll`,
+        { "@coll": name, orgId, repoId }
+      )
+      await cursor.all()
+    }
+    for (const name of edgeCols) {
+      const cursor = await db.query(
+        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId REMOVE doc IN @@coll`,
+        { "@coll": name, orgId, repoId }
+      )
+      await cursor.all()
+    }
   }
 
   async healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }> {

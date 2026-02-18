@@ -63,7 +63,7 @@ export function RepoDetailClient({
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Link href="/repos" className="text-electric-cyan hover:underline">Repositories</Link>
+        <Link href="/" className="text-electric-cyan hover:underline">Repositories</Link>
         <span>/</span>
         <span className="text-foreground">{repoName}</span>
       </div>

@@ -1,4 +1,5 @@
 import { headers } from "next/headers"
+import { redirect } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { auth, listOrganizations } from "@/lib/auth"
 
@@ -14,6 +15,10 @@ export default async function SettingsPage() {
   }
 
   const activeOrg = organizations[0]
+
+  if (organizations.length === 0) {
+    redirect("/")
+  }
 
   return (
     <div className="space-y-6 py-6 animate-fade-in">

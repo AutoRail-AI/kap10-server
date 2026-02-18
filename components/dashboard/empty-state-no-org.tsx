@@ -1,7 +1,6 @@
 "use client"
 
 import { GitBranch, Laptop } from "lucide-react"
-import Link from "next/link"
 import { useTransition } from "react"
 import { createDefaultWorkspace } from "@/app/actions/create-workspace"
 import { Spinner } from "@/components/ui/spinner"
@@ -22,8 +21,8 @@ export function EmptyStateNoOrg() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        {/* Path 1: Connect GitHub */}
-        <Link
+        {/* Path 1: Connect GitHub — use <a> for full page navigation so 302 redirect is not followed by fetch (avoids CORS) */}
+        <a
           href="/api/github/install"
           className="glass-card border-border group flex flex-col items-center gap-3 rounded-lg border p-6 text-center transition hover:shadow-glow-purple"
         >
@@ -34,13 +33,13 @@ export function EmptyStateNoOrg() {
             Connect GitHub
           </h3>
           <p className="text-xs text-muted-foreground">
-            Install the kap10 GitHub App, pick your repos, and a workspace is
-            created automatically.
+            Create a workspace first, then install the kap10 GitHub App to
+            connect repos to that workspace.
           </p>
           <span className="text-xs font-medium text-electric-cyan group-hover:underline">
             Get started &rarr;
           </span>
-        </Link>
+        </a>
 
         {/* Path 2: Start without GitHub */}
         <button

@@ -76,6 +76,7 @@ export interface WorkflowHandle<T = unknown> {
 export interface WorkflowStatus {
   workflowId: string
   status: string
+  progress?: number
   [key: string]: unknown
 }
 

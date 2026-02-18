@@ -27,6 +27,24 @@ enum RepoProvider {
   @@schema("kap10")
 }
 
+// Phase 1: GitHub App installation per org (installation token fetched on demand)
+model GitHubInstallation {
+  id              String    @id @default(uuid())
+  organizationId  String    @map("organization_id")
+  installationId  BigInt    @map("installation_id")
+  accountLogin    String    @map("account_login")
+  accountType     String    @map("account_type")
+  permissions     Json?
+  suspendedAt     DateTime? @map("suspended_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@unique([organizationId, installationId])
+  @@index([organizationId])
+  @@map("github_installations")
+  @@schema("kap10")
+}
+
 model Repo {
   id              String      @id @default(uuid())
   organizationId  String      @map("organization_id")
@@ -39,6 +57,16 @@ model Repo {
   lastIndexedAt   DateTime?   @map("last_indexed_at")
   createdAt       DateTime    @default(now()) @map("created_at")
   updatedAt      DateTime    @updatedAt @map("updated_at")
+  // Phase 1 indexing fields
+  githubRepoId    BigInt?     @map("github_repo_id")
+  githubFullName  String?     @map("github_full_name")
+  lastIndexedSha  String?     @map("last_indexed_sha")
+  indexProgress   Int         @default(0) @map("index_progress")
+  fileCount       Int         @default(0) @map("file_count")
+  functionCount   Int         @default(0) @map("function_count")
+  classCount      Int         @default(0) @map("class_count")
+  errorMessage    String?     @map("error_message")
+  workflowId      String?     @map("workflow_id")
 
   @@unique([organizationId, provider, providerId])
   @@index([organizationId])

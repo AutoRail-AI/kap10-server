@@ -1,14 +1,24 @@
 import { headers } from "next/headers"
 import { NextRequest, NextResponse } from "next/server"
-import { auth , listOrganizations } from "@/lib/auth"
+import { auth, listOrganizations, setActiveOrganization } from "@/lib/auth"
 import { getContainer } from "@/lib/di/container"
 import { getInstallationOctokit } from "@/lib/github/client"
 import { errorResponse } from "@/lib/utils/api-response"
 
 const BASE_URL = process.env.BETTER_AUTH_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
 
+function parseStatePayload(stored: string): { orgId: string | null } {
+  try {
+    const parsed = JSON.parse(stored) as { orgId?: string }
+    return { orgId: parsed?.orgId ?? null }
+  } catch {
+    return { orgId: null }
+  }
+}
+
 export async function GET(req: NextRequest) {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const reqHeaders = await headers()
+  const session = await auth.api.getSession({ headers: reqHeaders })
   if (!session) {
     return errorResponse("Unauthorized", 401)
   }
@@ -29,22 +39,24 @@ export async function GET(req: NextRequest) {
   await container.cacheStore.invalidate(`github:install:state:${state}`)
 
   if (!installationIdRaw) {
-    return NextResponse.redirect(`${BASE_URL}/repos?error=missing_installation`)
+    return NextResponse.redirect(`${BASE_URL}/?error=missing_installation`)
   }
   const installationId = Number(installationIdRaw)
   if (!Number.isFinite(installationId)) {
     return errorResponse("Invalid installation_id", 400)
   }
 
-  let orgId: string
-  try {
-    const orgs = await listOrganizations(await headers())
-    orgId = orgs[0]?.id ?? ""
-  } catch {
-    return errorResponse("Could not resolve organization", 500)
+  const orgs = await listOrganizations(reqHeaders)
+  const { orgId: stateOrgId } = parseStatePayload(stored)
+
+  if (orgs.length === 0) {
+    return NextResponse.redirect(`${BASE_URL}/?error=create_workspace_first`)
   }
+
+  const orgId =
+    stateOrgId && orgs.some((o) => o.id === stateOrgId) ? stateOrgId : orgs[0]?.id ?? ""
   if (!orgId) {
-    return NextResponse.redirect(`${BASE_URL}/repos?error=no_org`)
+    return NextResponse.redirect(`${BASE_URL}/?error=create_workspace_first`)
   }
 
   try {
@@ -53,6 +65,8 @@ export async function GET(req: NextRequest) {
     const account = inst.account as { login?: string; type?: string } | null
     const accountLogin = account?.login ?? "unknown"
     const accountType = account?.type === "Organization" ? "Organization" : "User"
+
+    await setActiveOrganization(reqHeaders, orgId)
 
     const existing = await container.relationalStore.getInstallation(orgId)
     if (existing) {
@@ -91,9 +105,9 @@ export async function GET(req: NextRequest) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     console.error("[github/callback]", message)
-    return NextResponse.redirect(`${BASE_URL}/repos?error=callback_failed`)
+    return NextResponse.redirect(`${BASE_URL}/?error=callback_failed`)
   }
 
-  const redirectUrl = setupAction === "install" ? `${BASE_URL}/repos?connected=true` : `${BASE_URL}/repos`
+  const redirectUrl = setupAction === "install" ? `${BASE_URL}/?connected=true` : `${BASE_URL}/`
   return NextResponse.redirect(redirectUrl)
 }

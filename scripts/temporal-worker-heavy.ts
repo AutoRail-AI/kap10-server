@@ -9,6 +9,7 @@
 
 import { NativeConnection, Worker } from "@temporalio/worker"
 import path from "node:path"
+import * as indexingHeavy from "@/lib/temporal/activities/indexing-heavy"
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233"
 const TASK_QUEUE = "heavy-compute-queue"
@@ -33,8 +34,11 @@ async function createWorkerWithRetry(): Promise<Worker> {
         workflowsPath: path.resolve(process.cwd(), "lib/temporal/workflows"),
         taskQueue: TASK_QUEUE,
         connection,
-        // Phase 0: no activities
-        activities: {},
+        activities: {
+          prepareWorkspace: indexingHeavy.prepareWorkspace,
+          runSCIP: indexingHeavy.runSCIP,
+          parseRest: indexingHeavy.parseRest,
+        },
       })
       return worker
     } catch (error: unknown) {

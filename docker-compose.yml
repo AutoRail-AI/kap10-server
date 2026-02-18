@@ -86,10 +86,11 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "temporal", "operator", "cluster", "health"]
+      test: ["CMD", "nc", "-z", "temporal", "7233"]
       interval: 10s
-      timeout: 10s
-      retries: 5
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # Temporal UI (web dashboard for workflow visibility)
   temporal-ui:
@@ -134,10 +135,12 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Temporal heavy-compute worker (Phase 0: idle, no activities yet)
+  # Temporal heavy-compute worker (Phase 1: prepareWorkspace, runSCIP, parseRest)
   temporal-worker-heavy:
     profiles: ["app", "worker"]
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.heavy-worker
     container_name: kap10-temporal-worker-heavy
     command: pnpm temporal:worker:heavy
     environment:
@@ -146,6 +149,8 @@ services:
       - TASK_QUEUE=heavy-compute-queue
     env_file:
       - .env.local
+    volumes:
+      - workspaces:/data/workspaces
     depends_on:
       temporal:
         condition: service_healthy
@@ -153,9 +158,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 8G
 
-  # Temporal light-llm worker (Phase 0: idle, no activities yet)
+  # Temporal light-llm worker (Phase 1: writeToArango, deleteRepoData)
   temporal-worker-light:
     profiles: ["app", "worker"]
     build: .
@@ -174,7 +179,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 128M
+          memory: 512M
 
   # ── Optional debugging tools ───────────────────────────────────────
 
@@ -194,3 +199,4 @@ volumes:
   redis_data:
   arangodb_data:
   postgresql_data:
+  workspaces:

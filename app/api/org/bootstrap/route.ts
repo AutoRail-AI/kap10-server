@@ -5,7 +5,7 @@ import { getContainer } from "@/lib/di/container"
 import { withAuth } from "@/lib/middleware/api-handler"
 import { createOrgUseCase } from "@/lib/use-cases/create-org"
 
-export const POST = withAuth(async (req: NextRequest, { session }) => {
+export const POST = withAuth(async (req: NextRequest, { session: _session }) => {
   const body = (await req.json()) as { organizationId?: string; name?: string }
   const { organizationId, name } = body
   if (!organizationId || !name) {

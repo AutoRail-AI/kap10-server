@@ -89,7 +89,7 @@ export function RegisterForm() {
 
         <p className="text-center text-sm text-foreground">
           Already verified?{" "}
-          <Link href="/login" className="text-primary hover:underline">
+          <Link href="/login" className="text-electric-cyan hover:underline">
             Sign in
           </Link>
         </p>
@@ -175,7 +175,7 @@ export function RegisterForm() {
         </div>
       </div>
 
-      <Button type="submit" size="sm" className="w-full" disabled={isLoading}>
+      <Button type="submit" size="sm" className="w-full bg-rail-fade hover:opacity-90" disabled={isLoading}>
         {isLoading ? (
           <>
             <Spinner className="mr-2 h-3.5 w-3.5" />
@@ -188,18 +188,18 @@ export function RegisterForm() {
 
       <p className="text-center text-sm text-foreground">
         Already have an account?{" "}
-        <Link href="/login" className="text-primary hover:underline">
+        <Link href="/login" className="text-electric-cyan hover:underline">
           Sign in
         </Link>
       </p>
 
       <p className="text-center text-xs text-foreground">
         By creating an account, you agree to our{" "}
-        <Link href="/terms" className="underline hover:text-primary">
+        <Link href="/terms" className="text-electric-cyan underline hover:opacity-90">
           Terms of Service
         </Link>{" "}
         and{" "}
-        <Link href="/privacy" className="underline hover:text-primary">
+        <Link href="/privacy" className="text-electric-cyan underline hover:opacity-90">
           Privacy Policy
         </Link>
       </p>

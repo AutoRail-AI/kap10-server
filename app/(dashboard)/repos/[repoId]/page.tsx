@@ -21,7 +21,7 @@ async function RepoDetailContent({ repoId }: { repoId: string }) {
     return (
       <div className="space-y-6 py-6">
         <p className="text-muted-foreground text-sm">This repository is not ready for browsing yet. Status: {repo.status}</p>
-        <Link href="/repos" className="text-electric-cyan text-sm hover:underline">Back to Repositories</Link>
+        <Link href="/" className="text-electric-cyan text-sm hover:underline">Back to Repositories</Link>
       </div>
     )
   }

@@ -1,14 +1,15 @@
 "use client"
 
+import { useRouter } from "next/navigation"
 import {
   createContext,
   type ReactNode,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
   useState,
 } from "react"
+import { authClient } from "@/lib/auth/client"
 
 export interface OrgAccount {
   id: string
@@ -16,75 +17,82 @@ export interface OrgAccount {
   slug: string
 }
 
-export type AccountContext =
-  | { type: "personal" }
-  | { type: "org"; org: OrgAccount }
-
 interface AccountContextValue {
-  activeAccount: AccountContext
-  organizations: OrgAccount[]
-  setActiveAccount: (account: AccountContext) => void
-  setOrganizations: (orgs: OrgAccount[]) => void
+  contextType: "personal" | "organization"
+  currentContextName: string
   activeOrgId: string | null
+  organizations: OrgAccount[]
+  switchContext: (orgId: string | null) => Promise<void>
+  isLoading: boolean
 }
-
-const STORAGE_KEY = "kap10:active-account"
 
 const Ctx = createContext<AccountContextValue | null>(null)
 
-function readPersistedAccount(): AccountContext {
-  if (typeof window === "undefined") return { type: "personal" }
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw) as AccountContext
-      if (parsed.type === "org" && parsed.org?.id) return parsed
-    }
-  } catch {
-    // corrupted — fall back
-  }
-  return { type: "personal" }
-}
-
 export function AccountProvider({ children }: { children: ReactNode }) {
-  const [activeAccount, setActiveAccountState] =
-    useState<AccountContext>(readPersistedAccount)
-  const [organizations, setOrganizations] = useState<OrgAccount[]>([])
+  const router = useRouter()
+  const [isLoading, setIsLoading] = useState(false)
 
-  const setActiveAccount = useCallback((account: AccountContext) => {
-    setActiveAccountState(account)
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(account))
-    } catch {
-      // storage full / SSR — ignore
-    }
-  }, [])
+  const { data: activeOrg } = authClient.useActiveOrganization()
+  const { data: orgList } = authClient.useListOrganizations()
 
-  useEffect(() => {
-    if (activeAccount.type === "org") {
-      const stillExists = organizations.some(
-        (o) => o.id === activeAccount.org.id
-      )
-      if (!stillExists && organizations.length > 0) {
-        setActiveAccount({ type: "personal" })
+  const organizations = useMemo<OrgAccount[]>(() => {
+    if (!orgList) return []
+    return orgList.map((o) => ({
+      id: o.id,
+      name: o.name,
+      slug: o.slug,
+    }))
+  }, [orgList])
+
+  const activeOrgId = activeOrg?.id ?? null
+  const contextType: "personal" | "organization" = activeOrgId
+    ? "organization"
+    : "personal"
+
+  const switchContext = useCallback(
+    async (orgId: string | null) => {
+      setIsLoading(true)
+      try {
+        await authClient.organization.setActive({
+          organizationId: orgId,
+        })
+        router.refresh()
+      } catch (error: unknown) {
+        console.error(
+          "Failed to switch context:",
+          error instanceof Error ? error.message : String(error)
+        )
+      } finally {
+        setIsLoading(false)
       }
-    }
-  }, [organizations, activeAccount, setActiveAccount])
-
-  const activeOrgId = useMemo(
-    () => (activeAccount.type === "org" ? activeAccount.org.id : null),
-    [activeAccount]
+    },
+    [router]
   )
+
+  const currentContextName = useMemo(() => {
+    if (contextType === "organization" && activeOrg) {
+      return activeOrg.name
+    }
+    return "Personal"
+  }, [contextType, activeOrg])
 
   const value = useMemo<AccountContextValue>(
     () => ({
-      activeAccount,
-      organizations,
-      setActiveAccount,
-      setOrganizations,
+      contextType,
+      currentContextName,
       activeOrgId,
+      organizations,
+      switchContext,
+      isLoading,
     }),
-    [activeAccount, organizations, setActiveAccount, setOrganizations, activeOrgId]
+    [
+      contextType,
+      currentContextName,
+      activeOrgId,
+      organizations,
+      switchContext,
+      isLoading,
+    ]
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

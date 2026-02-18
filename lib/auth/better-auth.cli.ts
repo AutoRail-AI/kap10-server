@@ -4,14 +4,14 @@
  * Run: pnpm migrate (uses dotenv-cli to load .env.local) or:
  *   pnpm dlx dotenv-cli -e .env.local -- pnpm dlx @better-auth/cli@latest migrate --config ./lib/auth/better-auth.cli.ts --yes
  */
-import dns from "node:dns"
-
-dns.setDefaultResultOrder("ipv4first")
-
 import { betterAuth } from "better-auth"
 import { organization } from "better-auth/plugins"
 import { Pool } from "pg"
 import { Resend } from "resend"
+import dns from "node:dns"
+
+// Force IPv4 to avoid DNS resolution issues with some providers
+dns.setDefaultResultOrder("ipv4first")
 
 const getResendClient = () =>
   process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null

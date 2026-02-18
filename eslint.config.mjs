@@ -38,6 +38,18 @@ const config = typescriptEslint.config(
     },
   },
   {
+    files: [
+      "lib/adapters/**/*.ts",
+      "lib/auth/auth.ts",
+      "lib/db/supabase.ts",
+      "lib/di/container.ts",
+      "lib/queue/redis.ts",
+    ],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
+  {
     settings: {
       tailwindcss: {
         callees: ["classnames", "clsx", "ctl", "cn", "cva"],
@@ -54,6 +66,7 @@ const config = typescriptEslint.config(
         {
           argsIgnorePattern: "^_",
           varsIgnorePattern: "^_",
+          caughtErrorsIgnorePattern: "^_",
         },
       ],
       "sort-imports": [

@@ -8,18 +8,7 @@
  * connection best practices.
  */
 
-import type { IPatternEngine } from "@/lib/ports/pattern-engine"
-import type { IBillingProvider } from "@/lib/ports/billing-provider"
-import type { ICacheStore } from "@/lib/ports/cache-store"
-import type { ICodeIntelligence } from "@/lib/ports/code-intelligence"
-import type { IGitHost } from "@/lib/ports/git-host"
-import type { IGraphStore } from "@/lib/ports/graph-store"
-import type { ILLMProvider } from "@/lib/ports/llm-provider"
-import type { IObservability } from "@/lib/ports/observability"
-import type { IRelationalStore } from "@/lib/ports/relational-store"
-import type { IVectorSearch } from "@/lib/ports/vector-search"
-import type { IWorkflowEngine } from "@/lib/ports/workflow-engine"
-
+import PrismaRelationalStore from "@/lib/adapters/prisma-relational-store"
 import {
   FakeCodeIntelligence,
   FakeGitHost,
@@ -33,8 +22,19 @@ import {
   MockLLMProvider,
   NoOpBillingProvider,
 } from "@/lib/di/fakes"
+import type { IBillingProvider } from "@/lib/ports/billing-provider"
+import type { ICacheStore } from "@/lib/ports/cache-store"
+import type { ICodeIntelligence } from "@/lib/ports/code-intelligence"
+import type { IGitHost } from "@/lib/ports/git-host"
+import type { IGraphStore } from "@/lib/ports/graph-store"
+import type { ILLMProvider } from "@/lib/ports/llm-provider"
+import type { IObservability } from "@/lib/ports/observability"
+import type { IPatternEngine } from "@/lib/ports/pattern-engine"
+import type { IRelationalStore } from "@/lib/ports/relational-store"
+import type { IVectorSearch } from "@/lib/ports/vector-search"
+import type { IWorkflowEngine } from "@/lib/ports/workflow-engine"
 
-import PrismaRelationalStore from "@/lib/adapters/prisma-relational-store"
+
 
 export interface Container {
   graphStore: IGraphStore

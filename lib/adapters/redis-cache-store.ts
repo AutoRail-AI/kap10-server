@@ -30,6 +30,13 @@ export class RedisCacheStore implements ICacheStore {
     }
   }
 
+  async setIfNotExists(key: string, value: string, ttlSeconds: number): Promise<boolean> {
+    const redis = getRedis()
+    const fullKey = PREFIX + key
+    const result = await redis.set(fullKey, value, "EX", ttlSeconds, "NX")
+    return result === "OK"
+  }
+
   async invalidate(key: string): Promise<void> {
     const redis = getRedis()
     await redis.del(PREFIX + key)

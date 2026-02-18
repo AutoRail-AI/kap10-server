@@ -1,19 +1,10 @@
-import {
-  FolderGit2,
-  Search,
-  Settings,
-  User,
-} from "lucide-react"
 import { headers } from "next/headers"
-import Link from "next/link"
 import { redirect } from "next/navigation"
-import { auth, listOrganizations } from "@/lib/auth"
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip"
+import { DashboardAccountProvider } from "@/components/dashboard/dashboard-account-provider"
+import { DashboardNav } from "@/components/dashboard/dashboard-nav"
+import { GitHubScopeSwitcher } from "@/components/dashboard/github-scope-switcher"
+import { UserProfileMenu } from "@/components/dashboard/user-profile-menu"
+import { auth } from "@/lib/auth"
 
 export default async function DashboardLayout({
   children,
@@ -25,74 +16,20 @@ export default async function DashboardLayout({
     redirect("/login")
   }
 
-  let organizations: { id: string; name: string; slug: string }[] = []
-  try {
-    organizations = await listOrganizations(await headers())
-  } catch {
-    organizations = []
-  }
-
-  if (organizations.length === 0) {
-    redirect("/onboarding")
-  }
-
-  const activeOrg = organizations[0]
-
   return (
-    <div className="flex min-h-screen bg-background">
-      <aside className="glass-panel border-border flex w-56 flex-col border-r">
-        <div className="flex h-14 items-center border-b border-border px-4">
-          <span className="font-grotesk text-sm font-semibold text-foreground">
-            kap10
-          </span>
-        </div>
-        <nav className="flex flex-1 flex-col gap-1 p-2">
-          <Link
-            href="/"
-            className="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-foreground hover:bg-muted"
-          >
-            <FolderGit2 className="h-4 w-4" />
-            Repos
-          </Link>
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span
-                  className="flex cursor-not-allowed items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground"
-                  aria-disabled
-                >
-                  <Search className="h-4 w-4" />
-                  Search
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="right">
-                <p>Search coming soon</p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-          <Link
-            href="/settings"
-            className="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-foreground hover:bg-muted"
-          >
-            <Settings className="h-4 w-4" />
-            Settings
-          </Link>
-        </nav>
-        <div className="border-t border-border p-2">
-          <div className="flex items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground">
-            <User className="h-4 w-4" />
-            <span className="truncate">
-              {session.user.name ?? session.user.email}
-            </span>
+    <DashboardAccountProvider>
+      <div className="flex min-h-screen bg-background">
+        <aside className="glass-panel border-border flex w-56 flex-col border-r">
+          <div className="border-b border-border p-2">
+            <GitHubScopeSwitcher />
           </div>
-          {activeOrg && (
-            <div className="px-3 py-1 text-xs text-muted-foreground">
-              {activeOrg.name}
-            </div>
-          )}
-        </div>
-      </aside>
-      <main className="flex-1 overflow-y-auto p-6">{children}</main>
-    </div>
+          <DashboardNav />
+          <div className="border-t border-border p-2">
+            <UserProfileMenu serverUser={session.user} />
+          </div>
+        </aside>
+        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+      </div>
+    </DashboardAccountProvider>
   )
 }

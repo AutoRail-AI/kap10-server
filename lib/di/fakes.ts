@@ -5,12 +5,12 @@
 import type { IBillingProvider } from "@/lib/ports/billing-provider"
 import type { ICacheStore } from "@/lib/ports/cache-store"
 import type { Definition, ICodeIntelligence, Reference } from "@/lib/ports/code-intelligence"
-import type { FileEntry, IGitHost, PullRequest } from "@/lib/ports/git-host"
+import type { FileEntry, GitHubRepo, IGitHost, PullRequest } from "@/lib/ports/git-host"
 import type { IGraphStore } from "@/lib/ports/graph-store"
 import type { ILLMProvider } from "@/lib/ports/llm-provider"
 import type { CostBreakdown, IObservability, ModelUsageEntry } from "@/lib/ports/observability"
 import type { IPatternEngine, PatternMatch } from "@/lib/ports/pattern-engine"
-import type { DeletionLogRecord, IRelationalStore, RepoRecord } from "@/lib/ports/relational-store"
+import type { DeletionLogRecord, GitHubInstallationRecord, IRelationalStore, RepoRecord } from "@/lib/ports/relational-store"
 import type { BlueprintData, EntityDoc, FeatureDoc, ImpactResult, PatternDoc, RuleDoc, SnippetDoc } from "@/lib/ports/types"
 import type { IVectorSearch } from "@/lib/ports/vector-search"
 import type { IWorkflowEngine } from "@/lib/ports/workflow-engine"
@@ -35,7 +35,7 @@ export class InMemoryGraphStore implements IGraphStore {
   async impactAnalysis(): Promise<ImpactResult> {
     return { entityId: "", affected: [] }
   }
-  async getEntitiesByFile(): Promise<EntityDoc[]> {
+  async getEntitiesByFile(_orgId: string, _repoId: string, _filePath: string): Promise<EntityDoc[]> {
     return []
   }
   async upsertRule(): Promise<void> {}
@@ -58,17 +58,25 @@ export class InMemoryGraphStore implements IGraphStore {
   }
   async bulkUpsertEntities(): Promise<void> {}
   async bulkUpsertEdges(): Promise<void> {}
+  async getFilePaths(): Promise<{ path: string }[]> {
+    return []
+  }
+  async deleteRepoData(): Promise<void> {}
 }
 
 export class InMemoryRelationalStore implements IRelationalStore {
   private repos: RepoRecord[] = []
   private deletionLogs: DeletionLogRecord[] = []
+  private installations: GitHubInstallationRecord[] = []
 
   async healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }> {
     return { status: "up", latencyMs: 0 }
   }
   async getRepos(orgId: string): Promise<RepoRecord[]> {
     return this.repos.filter((r) => r.organizationId === orgId)
+  }
+  async getRepo(orgId: string, repoId: string): Promise<RepoRecord | null> {
+    return this.repos.find((r) => r.organizationId === orgId && r.id === repoId) ?? null
   }
   async createRepo(data: {
     organizationId: string
@@ -78,6 +86,8 @@ export class InMemoryRelationalStore implements IRelationalStore {
     providerId: string
     status?: string
     defaultBranch?: string
+    githubRepoId?: number
+    githubFullName?: string
   }): Promise<RepoRecord> {
     const rec: RepoRecord = {
       id: `repo-${Date.now()}`,
@@ -91,12 +101,77 @@ export class InMemoryRelationalStore implements IRelationalStore {
       lastIndexedAt: null,
       createdAt: new Date(),
       updatedAt: new Date(),
+      githubRepoId: data.githubRepoId ?? null,
+      githubFullName: data.githubFullName ?? undefined,
     }
     this.repos.push(rec)
     return rec
   }
   async getDeletionLogs(orgId: string, limit = 50): Promise<DeletionLogRecord[]> {
     return this.deletionLogs.filter((l) => l.organizationId === orgId).slice(0, limit)
+  }
+  async getInstallation(orgId: string): Promise<GitHubInstallationRecord | null> {
+    return this.installations.find((i) => i.organizationId === orgId) ?? null
+  }
+  async getInstallationByInstallationId(installationId: number): Promise<GitHubInstallationRecord | null> {
+    return this.installations.find((i) => i.installationId === installationId) ?? null
+  }
+  async createInstallation(data: {
+    organizationId: string
+    installationId: number
+    accountLogin: string
+    accountType: string
+    permissions?: unknown
+  }): Promise<GitHubInstallationRecord> {
+    const rec: GitHubInstallationRecord = {
+      id: `inst-${Date.now()}`,
+      organizationId: data.organizationId,
+      installationId: data.installationId,
+      accountLogin: data.accountLogin,
+      accountType: data.accountType,
+      permissions: data.permissions ?? null,
+      suspendedAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }
+    this.installations.push(rec)
+    return rec
+  }
+  async deleteInstallation(orgId: string): Promise<void> {
+    this.installations = this.installations.filter((i) => i.organizationId !== orgId)
+  }
+  async updateRepoStatus(
+    repoId: string,
+    data: {
+      status: string
+      progress?: number
+      workflowId?: string | null
+      fileCount?: number
+      functionCount?: number
+      classCount?: number
+      errorMessage?: string | null
+      lastIndexedSha?: string | null
+    }
+  ): Promise<void> {
+    const r = this.repos.find((x) => x.id === repoId)
+    if (!r) return
+    if (data.status) r.status = data.status
+    if (data.progress !== undefined) r.indexProgress = data.progress
+    if (data.workflowId !== undefined) r.workflowId = data.workflowId
+    if (data.fileCount !== undefined) r.fileCount = data.fileCount
+    if (data.functionCount !== undefined) r.functionCount = data.functionCount
+    if (data.classCount !== undefined) r.classCount = data.classCount
+    if (data.errorMessage !== undefined) r.errorMessage = data.errorMessage
+    if (data.lastIndexedSha !== undefined) r.lastIndexedSha = data.lastIndexedSha
+  }
+  async getRepoByGithubId(orgId: string, githubRepoId: number): Promise<RepoRecord | null> {
+    return this.repos.find((r) => r.organizationId === orgId && r.githubRepoId === githubRepoId) ?? null
+  }
+  async getReposByStatus(orgId: string, status: string): Promise<RepoRecord[]> {
+    return this.repos.filter((r) => r.organizationId === orgId && r.status === status)
+  }
+  async deleteRepo(repoId: string): Promise<void> {
+    this.repos = this.repos.filter((r) => r.id !== repoId)
   }
 }
 
@@ -148,6 +223,12 @@ export class FakeGitHost implements IGitHost {
     return []
   }
   async createWebhook(): Promise<void> {}
+  async getInstallationRepos(): Promise<GitHubRepo[]> {
+    return []
+  }
+  async getInstallationToken(): Promise<string> {
+    return "fake-token"
+  }
 }
 
 export class InMemoryVectorSearch implements IVectorSearch {
@@ -209,6 +290,12 @@ export class InMemoryCacheStore implements ICacheStore {
     const serialized = typeof value === "string" ? value : JSON.stringify(value)
     const expires = ttlSeconds != null ? Date.now() + ttlSeconds * 1000 : undefined
     cache.set(key, { value: serialized, expires })
+  }
+  async setIfNotExists(key: string, value: string, ttlSeconds: number): Promise<boolean> {
+    if (cache.has(key)) return false
+    const expires = Date.now() + ttlSeconds * 1000
+    cache.set(key, { value, expires })
+    return true
   }
   async invalidate(key: string): Promise<void> {
     cache.delete(key)

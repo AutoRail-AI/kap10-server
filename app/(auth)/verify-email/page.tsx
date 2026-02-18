@@ -70,7 +70,7 @@ function VerifyEmailContent() {
 
         <div>
           <Link href="/login">
-            <Button variant="outline" size="sm">Back to login</Button>
+            <Button variant="outline" size="sm" className="border-rail-purple/30 text-electric-cyan hover:bg-rail-purple/10">Back to login</Button>
           </Link>
         </div>
       </div>
@@ -115,7 +115,7 @@ function VerifyEmailContent() {
 
         <div>
           <Link href="/login">
-            <Button size="sm">Continue to login</Button>
+            <Button size="sm" className="bg-rail-fade hover:opacity-90">Continue to login</Button>
           </Link>
         </div>
       </div>
@@ -146,7 +146,7 @@ function VerifyEmailContent() {
           Need a new verification link?
         </p>
         <Link href="/register">
-          <Button variant="outline" size="sm">Try registering again</Button>
+          <Button variant="outline" size="sm" className="border-rail-purple/30 text-electric-cyan hover:bg-rail-purple/10">Try registering again</Button>
         </Link>
       </div>
     </div>

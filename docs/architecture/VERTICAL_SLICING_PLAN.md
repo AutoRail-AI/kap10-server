@@ -953,12 +953,14 @@ model DeletionLog {
 
 ## Phase 0 — Foundation Wiring
 
-**Feature:** _"I can sign up, create an org, and see an empty dashboard with a 'Connect Repository' button."_
+**Feature:** _"I can sign up and either connect a GitHub repo (a workspace is created automatically) or start without GitHub (create an empty workspace); I then see a dashboard where I can connect repositories."_
 
 ### What ships
 - Auth flow works end-to-end (Better Auth — already scaffolded)
-- Org creation with onboarding wizard
-- Empty dashboard shell with nav: Repos, Search, Settings
+- Welcome screen (no onboarding wizard): two paths — Connect GitHub (auto-creates workspace on callback) or Start without GitHub (server action creates empty workspace)
+- Dashboard shell with sidebar nav (Repos, Search, Settings) + Claude-style UserProfileMenu (account context switcher, theme toggle, sign out)
+- `AccountProvider`: global context for Personal vs Organization account switching, persisted to `localStorage`
+- `ThemeProvider` (next-themes): dark/light mode toggle (default: dark)
 - **Ports & Adapters foundation:** All 11 port interfaces defined (`lib/ports/`), production adapters wired (`lib/adapters/`), DI container factory (`lib/di/container.ts`) with `createProductionContainer()` + `createTestContainer()`
 - ArangoDB connection established + health check (via `ArangoGraphStore` adapter)
 - Temporal server running + health check (both task queues registered, via `TemporalWorkflowEngine` adapter)
@@ -1086,10 +1088,22 @@ prisma/
 docker-compose.yml                 ← Add arangodb + temporal services
 app/
   (dashboard)/
-    layout.tsx                     ← Authenticated dashboard shell
-    page.tsx                       ← Repos list (empty state)
+    layout.tsx                     ← Authenticated dashboard shell (sidebar + UserProfileMenu)
+    page.tsx                       ← Welcome screen (no org) or repos list
     repos/page.tsx                 ← Repository management
-    settings/page.tsx              ← Org settings
+    settings/page.tsx              ← Org settings (redirects to / if no org)
+  api/
+    github/callback/route.ts       ← GitHub App callback (org auto-creation for "Connect GitHub" path)
+  actions/
+    create-workspace.ts            ← Server action: auto-create empty workspace
+components/
+  dashboard/
+    user-profile-menu.tsx          ← Claude-style account switcher dropdown
+    dashboard-nav.tsx              ← Sidebar navigation
+    empty-state-no-org.tsx         ← Welcome screen (Connect GitHub | Start without GitHub)
+  providers/
+    account-context.tsx            ← AccountProvider (Personal vs Org, persisted)
+    index.tsx                      ← Root Providers (ThemeProvider + AuthProvider + AccountProvider)
 ```
 
 ### Docker Compose services
@@ -1109,7 +1123,7 @@ app/
 - `pnpm test` — `createProductionContainer()` returns all 11 adapters with correct interface compliance
 - `pnpm test` — `createTestContainer()` returns all in-memory fakes; overrides replace individual adapters
 - `pnpm test` — Domain functions (entity hashing, rule resolution) work with zero external dependencies
-- `e2e` — Sign up → create org → see empty dashboard → "Connect Repository" CTA visible
+- `e2e` — Sign up → see welcome screen (Connect GitHub | Start without GitHub) → connect GitHub or create empty workspace → dashboard with "Connect GitHub" or repo list
 
 ---
 
@@ -1123,6 +1137,7 @@ app/
 - "Connect Repository" modal → select from GitHub repos
 - Temporal workflow: `indexRepoWorkflow` — prepare workspace → SCIP index → parse → extract → write to ArangoDB
 - Dashboard: repo card shows indexing progress (0% → 100%) via Temporal query
+- If user has no org at GitHub App installation time, a workspace is auto-created from the GitHub account name during the callback
 - After indexing: browsable file tree + entity list
 
 ### Processing pipeline — SCIP + Tree-sitter

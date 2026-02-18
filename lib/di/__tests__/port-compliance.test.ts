@@ -29,7 +29,7 @@ describe("Port Compliance — Fakes", () => {
       await expect(graphStore.getCallersOf("o1", "e1")).resolves.toEqual([])
       await expect(graphStore.getCalleesOf("o1", "e1")).resolves.toEqual([])
       await expect(graphStore.impactAnalysis("o1", "e1", 3)).resolves.toMatchObject({ entityId: "", affected: [] })
-      await expect(graphStore.getEntitiesByFile("o1", "a.ts")).resolves.toEqual([])
+      await expect(graphStore.getEntitiesByFile("o1", "r1", "a.ts")).resolves.toEqual([])
       await expect(graphStore.upsertRule("o1", { id: "r1", org_id: "o1", name: "rule1" })).resolves.toBeUndefined()
       await expect(graphStore.queryRules("o1", { orgId: "o1" })).resolves.toEqual([])
       await expect(graphStore.upsertPattern("o1", { id: "p1", org_id: "o1", name: "pat1" })).resolves.toBeUndefined()
@@ -40,6 +40,8 @@ describe("Port Compliance — Fakes", () => {
       await expect(graphStore.getBlueprint("o1", "r1")).resolves.toEqual({ features: [] })
       await expect(graphStore.bulkUpsertEntities("o1", [entity])).resolves.toBeUndefined()
       await expect(graphStore.bulkUpsertEdges("o1", [edge])).resolves.toBeUndefined()
+      await expect(graphStore.getFilePaths("o1", "r1")).resolves.toEqual([])
+      await expect(graphStore.deleteRepoData("o1", "r1")).resolves.toBeUndefined()
     })
   })
 
@@ -72,6 +74,45 @@ describe("Port Compliance — Fakes", () => {
       expect(repos).toHaveLength(1)
 
       await expect(relationalStore.getDeletionLogs("o1")).resolves.toEqual([])
+    })
+
+    it("implements Phase 1: getRepo, getInstallation, createInstallation, updateRepoStatus, getRepoByGithubId, getReposByStatus, deleteRepo", async () => {
+      const { relationalStore } = getContainer()
+
+      const repo = await relationalStore.createRepo({
+        organizationId: "o2",
+        name: "phase1-repo",
+        fullName: "org/phase1-repo",
+        provider: "github",
+        providerId: "67890",
+        githubRepoId: 123,
+        githubFullName: "org/phase1-repo",
+      })
+      await expect(relationalStore.getRepo("o2", repo.id)).resolves.toMatchObject({ id: repo.id, name: "phase1-repo" })
+      await expect(relationalStore.getRepoByGithubId("o2", 123)).resolves.toMatchObject({ githubRepoId: 123 })
+
+      await expect(relationalStore.getInstallation("o2")).resolves.toBeNull()
+      const inst = await relationalStore.createInstallation({
+        organizationId: "o2",
+        installationId: 999,
+        accountLogin: "test-org",
+        accountType: "Organization",
+      })
+      expect(inst.installationId).toBe(999)
+      await expect(relationalStore.getInstallation("o2")).resolves.toMatchObject({ installationId: 999 })
+      await expect(relationalStore.getInstallationByInstallationId(999)).resolves.toMatchObject({ accountLogin: "test-org" })
+
+      await relationalStore.updateRepoStatus(repo.id, { status: "indexing", progress: 50 })
+      const updated = await relationalStore.getRepo("o2", repo.id)
+      expect(updated?.status).toBe("indexing")
+      expect(updated?.indexProgress).toBe(50)
+
+      await expect(relationalStore.getReposByStatus("o2", "indexing")).resolves.toHaveLength(1)
+      await relationalStore.deleteInstallation("o2")
+      await expect(relationalStore.getInstallation("o2")).resolves.toBeNull()
+
+      await relationalStore.deleteRepo(repo.id)
+      await expect(relationalStore.getRepo("o2", repo.id)).resolves.toBeNull()
     })
   })
 
@@ -117,7 +158,7 @@ describe("Port Compliance — Fakes", () => {
   })
 
   describe("IGitHost (FakeGitHost)", () => {
-    it("implements cloneRepo, getPullRequest, createPullRequest, getDiff, listFiles, createWebhook", async () => {
+    it("implements cloneRepo, getPullRequest, createPullRequest, getDiff, listFiles, createWebhook, getInstallationRepos, getInstallationToken", async () => {
       const { gitHost } = getContainer()
 
       await expect(gitHost.cloneRepo("url", "/tmp/dest")).resolves.toBeUndefined()
@@ -128,6 +169,8 @@ describe("Port Compliance — Fakes", () => {
       await expect(gitHost.getDiff("owner", "repo", "main", "feat")).resolves.toBe("")
       await expect(gitHost.listFiles("owner", "repo")).resolves.toEqual([])
       await expect(gitHost.createWebhook("owner", "repo", ["push"], "https://hook")).resolves.toBeUndefined()
+      await expect(gitHost.getInstallationRepos(123)).resolves.toEqual([])
+      await expect(gitHost.getInstallationToken(123)).resolves.toBe("fake-token")
     })
   })
 
@@ -191,6 +234,15 @@ describe("Port Compliance — Fakes", () => {
       const result = await cacheStore.get("ttl-key")
       // Result may or may not be null depending on timing, just verify no error
       expect(result === null || result === "val").toBe(true)
+    })
+
+    it("implements setIfNotExists (Phase 1 webhook deduplication)", async () => {
+      const { cacheStore } = getContainer()
+      const key = "phase1-dedup-" + Date.now()
+      const first = await cacheStore.setIfNotExists(key, "delivery-1", 60)
+      const second = await cacheStore.setIfNotExists(key, "delivery-2", 60)
+      expect(first).toBe(true)
+      expect(second).toBe(false)
     })
   })
 

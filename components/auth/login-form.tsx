@@ -75,7 +75,7 @@ export function LoginForm() {
           <Label htmlFor="password" className="text-xs text-muted-foreground">Password</Label>
           <Link
             href="/forgot-password"
-            className="text-xs text-primary hover:underline"
+            className="text-electric-cyan text-xs hover:underline"
           >
             Forgot password?
           </Link>
@@ -95,7 +95,7 @@ export function LoginForm() {
         </div>
       </div>
 
-      <Button type="submit" size="sm" className="w-full" disabled={isLoading}>
+      <Button type="submit" size="sm" className="w-full bg-rail-fade hover:opacity-90" disabled={isLoading}>
         {isLoading ? (
           <>
             <Spinner className="mr-2 h-3.5 w-3.5" />
@@ -108,7 +108,7 @@ export function LoginForm() {
 
       <p className="text-center text-sm text-foreground">
         Don&apos;t have an account?{" "}
-        <Link href="/register" className="text-primary hover:underline">
+        <Link href="/register" className="text-electric-cyan hover:underline">
           Sign up
         </Link>
       </p>

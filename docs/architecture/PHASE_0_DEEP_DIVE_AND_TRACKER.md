@@ -1,8 +1,10 @@
 # Phase 0 — Foundation Wiring: Deep Dive & Implementation Tracker
 
-> **Phase Feature Statement:** _"I can sign up, create an org, and see an empty dashboard with a 'Connect Repository' button."_
+> **Phase Feature Statement:** _"I can sign up and either connect a GitHub repo (a workspace is created automatically) or start without GitHub (create an empty workspace). I then see a dashboard where I can connect repositories."_
 >
 > **Source:** [`VERTICAL_SLICING_PLAN.md`](./VERTICAL_SLICING_PLAN.md) — Phase 0
+>
+> **Note (post–Phase 1):** Organization creation is no longer required at signup. New users see a welcome screen with two paths: **Connect GitHub** (workspace auto-created on callback) or **Start without GitHub** (empty workspace via server action). See [PHASE_1_GITHUB_CONNECT_AND_INDEXING.md § Post-signup & workspace provisioning](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md#post-signup--workspace-provisioning).
 >
 > **Database convention:** All kap10 Supabase tables use PostgreSQL schema `kap10`. See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split) for the full rule.
 
@@ -51,7 +53,8 @@ Step  Actor Action                System Action                                 
                                   autoSignInAfterVerification: true → session active
 5     Redirect to /               proxy.ts: session cookie present → pass-through          None
                                   Dashboard page loads → server component checks
-                                  for orgs → none found → redirect to onboarding
+                                  for orgs → none found → render welcome screen
+                                  (Connect GitHub | Start without GitHub)
 ```
 
 **Critical decision — What happens between step 3 and step 4?**
@@ -65,7 +68,7 @@ The user has a session cookie but `emailVerified = false`. Phase 0 must decide o
 
 **Recommendation: Strategy A.** It is the safer default — enforcement at the perimeter, not scattered across UI components. The `cookieCache` (already configured at 5 minutes in `auth.ts`) prevents the session lookup from becoming a per-request DB query. Implementation detail: `proxy.ts` calls `auth.api.getSession()` which returns `session.user.emailVerified`. If false and path is not `/verify-email` or `/api/auth/*`, redirect to `/verify-email`.
 
-### Flow 2: Verified User → Org Creation (Onboarding Wizard)
+### Flow 2: Verified User → Welcome Screen (Connect GitHub or Start without GitHub)
 
 **Actor:** Authenticated user with no organizations
 **Precondition:** Email verified, zero org memberships
@@ -75,66 +78,61 @@ Step  Actor Action                System Action                                 
 ────  ─────────────────────────   ──────────────────────────────────────────────────────   ─────────────────────────────
 1     Land on /                   Server component: fetch user's orgs via Better Auth      None
                                   organization plugin → empty array →
-                                  render onboarding wizard (not redirect, to avoid
-                                  flash-of-content)
-2     Enter org name              Client-side validation: non-empty, 2-50 chars,           None
-                                  alphanumeric + spaces + hyphens
-3     (Optional) Upload logo      Uploadthing handles file → returns URL                   Uploadthing: file stored
-4     Submit                      POST /api/auth/organization/create →                     Supabase: organization row
-                                  Better Auth org plugin creates org                        + membership (role: owner)
-                                  Server creates matching org context in ArangoDB:           ArangoDB: org_id namespace
-                                  ensure collections exist, verify tenant indexes            created (idempotent)
-5     Redirect to dashboard       Server component: fetch orgs → found →                   None
-                                  render dashboard shell with empty repos state
+                                  render welcome screen (two paths)
+2a    Click "Connect GitHub"      GET /api/github/install → redirect to GitHub App       Redis: state token stored
+                                  install; user authorizes and selects repos
+2b    GitHub redirects back        GET /api/github/callback?installation_id=...            If no org: create org
+                                  Callback: if user has no org → auto-create workspace       (e.g. "{login}'s workspace"),
+                                  (e.g. "{accountLogin}'s workspace"), bootstrap ArangoDB,     bootstrap ArangoDB,
+                                  create installation + repo rows; redirect to /             create installation + repos
+2c    Click "Start without        Server action createDefaultWorkspace():                   Supabase: organization row
+      GitHub"                     createOrganizationForUser(name, slug),                     + membership (role: owner)
+                                  createOrgUseCase (bootstrap ArangoDB), redirect to /        ArangoDB: org namespace ready
+3     Dashboard with workspace    Server component: fetch orgs → found →                   None
+                                  render dashboard (repos list or empty-state-repos)
 ```
 
-**Key nuance — step 4, the ArangoDB org bootstrap:**
+**Two user scenarios:**
 
-When a new org is created in Supabase, the system must also prepare ArangoDB for that org's data. This is NOT creating a new database (pool-based multi-tenancy — single `kap10_db`). Instead, it's a **verification step**: ensure all expected collections and indexes exist. This is idempotent — calling it twice is safe.
+| Scenario | Path | Outcome |
+|----------|------|---------|
+| **User has GitHub repos** | Connect GitHub → install App → callback | Workspace auto-created from GitHub account name; repos imported; user lands on dashboard with repo list (or empty state to add repos). |
+| **Local-only / code not on GitHub yet** | Start without GitHub | Empty workspace created from user display name; user lands on dashboard with "Connect GitHub" CTA for later. |
 
-Pseudo-code for the org bootstrap:
-```
-FUNCTION bootstrapOrgInGraphStore(orgId):
-    FOR EACH collection IN [repos, files, functions, classes, interfaces,
-                             variables, patterns, rules, snippets, ledger]:
-        ENSURE collection EXISTS in kap10_db
-        ENSURE persistent index on [org_id, repo_id] EXISTS
-    FOR EACH edgeCollection IN [contains, calls, imports, extends, implements]:
-        ENSURE edgeCollection EXISTS in kap10_db
-        ENSURE persistent index on [org_id, repo_id] EXISTS
-    RETURN { status: "ready", orgId }
-```
+**Key nuance — ArangoDB org bootstrap:**
 
-This runs synchronously during org creation. Latency is ~50ms (index creation is a no-op if they already exist). No Temporal workflow needed — it's fast and idempotent.
+When a workspace is created (either in the callback or via the server action), the system calls `createOrgUseCase()` to prepare ArangoDB for that org. This ensures all expected collections and indexes exist. Idempotent — calling it twice is safe. Latency ~50ms. See [PHASE_1_GITHUB_CONNECT_AND_INDEXING.md](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) for callback and server action details.
 
-### Flow 3: Returning User → Dashboard (Empty State)
+**Settings and repos when no org:** Visiting `/settings` or `/repos` with zero orgs redirects to `/` so the user always sees the welcome screen first.
 
-**Actor:** Authenticated user with at least one org
-**Precondition:** Logged in, has org, zero connected repos
+### Flow 3: Returning User → Dashboard (With Workspace)
+
+**Actor:** Authenticated user with at least one workspace (org)
+**Precondition:** Logged in, has workspace, zero or more connected repos
 
 ```
 Step  Actor Action                System Action                                           State Change
 ────  ─────────────────────────   ──────────────────────────────────────────────────────   ─────────────────────────────
 1     Visit /                     proxy.ts: session valid → pass-through                   None
 2     Dashboard renders           Server component:                                        None
-                                  1. Fetch active org from session/cookie
-                                  2. Fetch repos for org → empty array
-                                  3. Render empty state with "Connect Repository" CTA
-3     Navigate to Settings        /settings → org settings page loads                      None
-                                  Shows org name, members, danger zone (delete org)
-4     Navigate to Repos           /repos → same empty state as dashboard home              None
-5     Click "Connect Repository"  Phase 0: disabled button with tooltip                   None
-                                  "Coming in the next update" OR
-                                  modal stub that shows "GitHub integration coming soon"
+                                  1. Fetch orgs → found
+                                  2. Fetch repos + installation for active org
+                                  3. Render ReposList (or EmptyStateRepos if no install)
+                                  Sidebar: DashboardNav + UserProfileMenu (footer)
+3     UserProfileMenu             Trigger: avatar + context label (e.g. "Jaswanth's        AccountContext
+                                  Personal") → DropdownMenu with sections:                 updated (Personal
+                                  Accounts (Personal + Orgs), Settings, Help,              ↔ Org) on switch
+                                  Upgrade, Theme toggle, Sign Out
+4     Navigate to Settings        /settings → org settings page (name, members, danger)    None
+5     Navigate to Repos           /repos → same repos list as dashboard home               None
+6     Click "Connect GitHub"      GET /api/github/install → redirect to GitHub             Redis: state token
 ```
 
-**The "Connect Repository" button is the Phase 1 entry point.** In Phase 0, it must exist in the UI but be non-functional. Options:
-
-| Approach | UX | Recommended |
-|----------|-----|-------------|
-| Disabled button + tooltip | Clean, honest. `<Button disabled>` with a Tooltip explaining it's coming. | Yes |
-| Opens a stub modal | More engaging, but sets expectation it should work. | No — confusing |
-| Links to a waitlist | Appropriate for a public beta, overkill for Phase 0. | No |
+**UserProfileMenu replaces the old static user info.** It provides:
+- Account context switching (Personal vs Organization) — persisted via `AccountProvider` in `localStorage`
+- Dark/light mode toggle (via `next-themes`)
+- Navigation to Settings, sign out
+- Placeholder items: Help & Support, Upgrade Plan, Invite Friends
 
 ---
 
@@ -757,7 +755,7 @@ Seam 5: ArangoDB
 
 - [x] **Wire org creation use case into auth flow** — S
   - POST `/api/org/bootstrap` (session required); frontend calls after Better Auth `organization.create`; runs createOrgUseCase
-  - **Test:** E2E — onboarding create org → POST bootstrap → ArangoDB bootstrap.
+  - **Test:** E2E — welcome screen → callback or createDefaultWorkspace → createOrgUseCase → ArangoDB bootstrap.
   - Notes: Implemented 2026-02-17.
 
 ### Proxy.ts Enhancement (Email Verification Enforcement)
@@ -795,10 +793,15 @@ Seam 5: ArangoDB
 ### Dashboard Shell
 
 - [x] **`app/(dashboard)/layout.tsx` — Authenticated dashboard layout** — M
-  - Sidebar: Repos, Search (disabled with tooltip), Settings; org switcher, user menu; redirect to `/onboarding` if no orgs
-  - Uses design system: `bg-background`, `glass-panel`, `font-grotesk`
-  - **Test:** Manual/E2E: log in → sidebar and org switcher visible.
-  - Notes: Implemented 2026-02-17.
+  - Sidebar: `DashboardNav` (Repos, Search disabled, Settings); `UserProfileMenu` in footer (Claude-style account context switcher)
+  - `UserProfileMenu`: avatar + context label trigger → DropdownMenu with sections: email header, Personal/Org account switcher, Settings/Help, Upgrade/Invite, dark/light toggle (next-themes), Sign Out
+  - `AccountProvider`: global context (Personal vs Org), persisted to `localStorage`, resets when org removed
+  - `ThemeProvider` (next-themes): `defaultTheme="dark"`, `attribute="class"`, wired into root `<Providers>`
+  - No redirect to `/onboarding` — users without orgs see the welcome screen (see Flow 2)
+  - Uses design system: `bg-background`, `glass-panel`, `font-grotesk`, `bg-rail-fade` avatars
+  - **Test:** Manual/E2E: log in → sidebar, UserProfileMenu visible. Switch between Personal and Org context. Toggle theme. Sign out.
+  - **Files:** `app/(dashboard)/layout.tsx`, `components/dashboard/user-profile-menu.tsx`, `components/providers/account-context.tsx`, `components/providers/index.tsx`
+  - Notes: Implemented 2026-02-17. Updated 2026-02-18: UserProfileMenu replaces static user info; AccountProvider + ThemeProvider added.
 
 - [x] **`app/(dashboard)/page.tsx` — Dashboard home (repos list)** — M
   - Server component: fetches repos for active org via relational store; empty state when zero repos
@@ -820,13 +823,18 @@ Seam 5: ArangoDB
   - **Test:** Org name and member list visible.
   - Notes: Implemented 2026-02-17.
 
-### Onboarding Wizard
+### Onboarding / Welcome Screen
 
-- [x] **Onboarding flow for first-time users (no orgs)** — M
-  - `app/onboarding/page.tsx` + `onboarding-create-org.tsx`: org name (2–50 chars) → Better Auth `organization.create` → POST `/api/org/bootstrap` → redirect `/`
-  - Design system: `glass-card`, `bg-rail-fade` submit button
-  - **Test:** E2E: new user → onboarding → create org → dashboard.
-  - Notes: Implemented 2026-02-17. Logo upload deferred.
+- [x] **Welcome screen for first-time users (no orgs)** — M
+  - No onboarding wizard — users see a welcome screen on the dashboard with two paths:
+    1. **Connect GitHub**: links to `/api/github/install`. On callback, workspace auto-created from GitHub account name, repos imported.
+    2. **Start without GitHub**: server action `createDefaultWorkspace()` creates empty workspace from display name.
+  - `/settings` and `/repos` redirect to `/` when no org exists (single entry point for welcome flow).
+  - `app/onboarding/page.tsx` exists as a legacy fallback — not reachable from normal flows (welcome screen replaced it). Redirects to `/` if user already has an org.
+  - Design system: `glass-card`, `bg-rail-fade` icons, `text-electric-cyan` links
+  - **Files:** `components/dashboard/empty-state-no-org.tsx`, `app/actions/create-workspace.ts`, `app/api/github/callback/route.ts`
+  - **Test:** E2E: new user → welcome screen → Connect GitHub or Start without GitHub → dashboard.
+  - Notes: Implemented 2026-02-17. Updated 2026-02-18: replaced onboarding wizard with welcome screen.
 
 ---
 
@@ -881,8 +889,8 @@ Seam 5: ArangoDB
 
 ### E2E Tests (Playwright)
 
-- [ ] **Full signup → onboarding → dashboard flow** — L
-  - Register → verify email → onboarding → create org → empty dashboard, CTA disabled.
+- [ ] **Full signup → welcome screen → dashboard flow** — L
+  - Register → verify email → welcome screen → Connect GitHub or Start without GitHub → dashboard (repos list or empty-state-repos).
   - **Test:** `pnpm e2e:headless`
   - Notes: Deferred to Phase 1. Manual flow verified.
 
@@ -948,7 +956,7 @@ Backend / API ──────────────────────
 Frontend / UI ───────────────────────────┤ (depends on Backend / API)
   Dashboard layout + shell               │
   Empty state component                  │
-  Onboarding wizard                      │
+  Welcome screen                         │
   Settings page                          │
                                          │
 Testing & Verification ──────────────────┘ (runs after all layers)
@@ -971,3 +979,4 @@ Testing & Verification ──────────────────┘
 | 2026-02-17 | — | **Supabase schema `kap10`.** Switched from table prefix to PostgreSQL schema: all kap10 tables live in schema `kap10` (multi-app same Supabase project). Prisma: `schemas = ["public", "kap10"]`, `@@schema("kap10")` on models/enums; `@@map("repos")`, `@@map("deletion_logs")`. Migration moves tables and enums into `kap10`. Rule and rationale in VERTICAL_SLICING_PLAN.md and PHASE_0_DEEP_DIVE_AND_TRACKER.md. |
 | 2026-02-17 | — | **Schema approach documented everywhere.** Updated README, CLAUDE.md, .cursorrules, RULESETS.md, VERTICAL_SLICING_PLAN (§ mandatory "from now on" schema convention). All new kap10 tables MUST use schema `kap10`. Removed docs/architecture/README.md; convention lives in VERTICAL_SLICING_PLAN § Storage & Infrastructure Split and Phase 0 doc references it. |
 | 2026-02-17 | — | **Testing plan & frameworks verification.** Confirmed §2.6 is the Phase 0 testing plan. Vitest and Playwright are installed and configured (vitest.config.ts, playwright.config.ts, scripts, vitest.setup.ts, e2e/example.spec.ts). Marked "E2E Test Framework Setup" [x] with implementation notes. Added "Testing frameworks installed & configured" table and summary under §2.6. Updated completeness verification to state testing plan and frameworks are in place; only port/DI/domain unit tests, ArangoDB/Temporal integration tests, and E2E flow specs remain deferred to Phase 1. |
+| 2026-02-18 | — | **UserProfileMenu & AccountContext.** Replaced static user info in sidebar footer with Claude-style `UserProfileMenu` (Radix DropdownMenu). Sections: email header, Personal/Org account switcher (with check marks), Settings/Help, Upgrade Plan (electric-cyan), dark/light theme toggle, Sign Out. Added `AccountProvider` (global Personal-vs-Org context, persisted to `localStorage`). Added `ThemeProvider` (next-themes, `defaultTheme="dark"`). Wired into root `<Providers>` tree. Updated Flow 2 (onboarding wizard → welcome screen), Flow 3 (returning user — UserProfileMenu in sidebar). Updated §2.5 dashboard shell tracker item and onboarding section. |

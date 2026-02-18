@@ -9,6 +9,7 @@
 
 import { NativeConnection, Worker } from "@temporalio/worker"
 import path from "node:path"
+import * as indexingLight from "@/lib/temporal/activities/indexing-light"
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233"
 const TASK_QUEUE = "light-llm-queue"
@@ -33,8 +34,11 @@ async function createWorkerWithRetry(): Promise<Worker> {
         workflowsPath: path.resolve(process.cwd(), "lib/temporal/workflows"),
         taskQueue: TASK_QUEUE,
         connection,
-        // Phase 0: no activities
-        activities: {},
+        activities: {
+          writeToArango: indexingLight.writeToArango,
+          updateRepoError: indexingLight.updateRepoError,
+          deleteRepoData: indexingLight.deleteRepoData,
+        },
       })
       return worker
     } catch (error: unknown) {

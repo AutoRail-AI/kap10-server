@@ -14,7 +14,7 @@ export interface IGraphStore {
   getCalleesOf(orgId: string, entityId: string, depth?: number): Promise<EntityDoc[]>
 
   impactAnalysis(orgId: string, entityId: string, maxDepth: number): Promise<ImpactResult>
-  getEntitiesByFile(orgId: string, filePath: string): Promise<EntityDoc[]>
+  getEntitiesByFile(orgId: string, repoId: string, filePath: string): Promise<EntityDoc[]>
 
   upsertRule(orgId: string, rule: RuleDoc): Promise<void>
   queryRules(orgId: string, filter: RuleFilter): Promise<RuleDoc[]>
@@ -29,4 +29,8 @@ export interface IGraphStore {
 
   bulkUpsertEntities(orgId: string, entities: EntityDoc[]): Promise<void>
   bulkUpsertEdges(orgId: string, edges: EdgeDoc[]): Promise<void>
+  /** Phase 1: List file paths for a repo (for file tree) */
+  getFilePaths(orgId: string, repoId: string): Promise<{ path: string }[]>
+  /** Phase 1: Delete all graph data for a repo */
+  deleteRepoData(orgId: string, repoId: string): Promise<void>
 }

@@ -107,11 +107,12 @@ The GitHub App is used for **connecting repositories and indexing** (Phase 1). I
      - **Webhook URL:** `http://localhost:3000/api/webhooks/github` (or your ngrok URL).
      - **Webhook secret:** Generate with `openssl rand -hex 32` and set the same value in GitHub and in `.env.local` as `GITHUB_WEBHOOK_SECRET`.
 
-4. **Repository permissions**
+4. **Repository permissions** (required for repo selection during install)
    - **Contents:** Read-only  
    - **Metadata:** Read-only  
    - **Pull requests:** Read and write  
    - **Webhooks:** Read and write (if webhook is active)
+   - GitHub shows “Select repositories” or “All repositories” during install only if the app has at least one repository permission. Without these, the install may complete without letting you pick repos.
 
 5. **Subscribe to events**
    - `push`, `pull_request`, `installation`, `installation_repositories`
@@ -282,6 +283,17 @@ You’re calling code that needs the GitHub App (e.g. listing or connecting repo
 ### “Connect GitHub” redirects to the wrong app
 
 Set `GITHUB_APP_SLUG` in `.env.local` to the slug of your app (same as in the URL `https://github.com/apps/<slug>`). The slug is usually the app name in lowercase with hyphens (e.g. `kap10-local`).
+
+### Cannot select repositories during GitHub App install
+
+- Ensure the app has **at least one repository permission** (e.g. **Contents: Read-only**, **Metadata: Read-only**) in the app’s **Permissions and events** → **Repository permissions**. Without these, GitHub may not show the repository selection step.
+- Ensure your GitHub account (or the org you’re installing into) **has at least one repository**. If there are no repos, there is nothing to select.
+- If the install page only offers “Install” with no repo list, try: GitHub → **Settings** → **Applications** → **Installed GitHub Apps** → find your app → **Configure** → you can change “Only select repositories” and add/remove repos there after install.
+
+### Callback fails with `?error=callback_failed` or “Cannot read properties of undefined (reading 'bind')”
+
+- Confirm `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are set in `.env.local` and the private key is valid (full PEM including `-----BEGIN ... KEY-----` and `-----END ... KEY-----`; if using a single line, use `\n` for newlines).
+- Restart the dev server after changing env vars so the Octokit client picks them up.
 
 ### Migrations fail or schema errors
 

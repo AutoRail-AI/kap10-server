@@ -11,9 +11,13 @@ import type { RepoRecord } from "@/lib/ports/relational-store"
 export function ReposList({
   repos,
   hasInstallation,
+  githubAccountLogin = null,
+  installHref = "/api/github/install",
 }: {
   repos: RepoRecord[]
   hasInstallation: boolean
+  githubAccountLogin?: string | null
+  installHref?: string
 }) {
   const [modalOpen, setModalOpen] = useState(false)
 
@@ -46,9 +50,12 @@ export function ReposList({
       ) : repos.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-lg border border-border glass-card p-12 text-center">
           <p className="font-grotesk text-lg font-semibold text-foreground">No repositories yet</p>
-          <p className="text-muted-foreground mt-0.5 text-sm">Add repositories from your GitHub installation.</p>
+          <p className="text-foreground mt-0.5 text-sm">
+            Add repositories from your GitHub installation
+            {githubAccountLogin != null ? ` (@${githubAccountLogin})` : ""}.
+          </p>
           <Button
-            size="sm"
+            size="lg"
             className="bg-rail-fade hover:opacity-90 mt-6"
             onClick={() => setModalOpen(true)}
             aria-label="Add repository"

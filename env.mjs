@@ -7,58 +7,55 @@ export const env = createEnv({
       .enum(["true", "false"])
       .optional()
       .transform((value) => value === "true"),
-    // Database (Supabase)
+
+    // ── Database (Supabase PostgreSQL) ──────────────────────────────
     SUPABASE_URL: z.string().url().optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().optional(),
     SUPABASE_SECRET_KEY: z.string().optional(),
     SUPABASE_DB_URL: z.string().optional(),
-    // Redis (for job queues)
+
+    // ── Redis (Cache & Rate Limits) ─────────────────────────────────
     REDIS_URL: z.string().refine((val) => !val || /^redis(s)?:\/\//.test(val), "Invalid Redis URL").optional(),
-    // ArangoDB (graph store)
+
+    // ── ArangoDB (Graph Store) ──────────────────────────────────────
     ARANGODB_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid ArangoDB URL").optional(),
     ARANGODB_DATABASE: z.string().optional(),
     ARANGO_ROOT_PASSWORD: z.string().optional(),
-    // Temporal (workflow orchestration)
+
+    // ── Temporal (Workflow Orchestration) ────────────────────────────
     TEMPORAL_ADDRESS: z.string().optional(),
-    // Langfuse (LLM observability)
+
+    // ── Langfuse (LLM Observability) ────────────────────────────────
     LANGFUSE_SECRET_KEY: z.string().optional(),
     LANGFUSE_PUBLIC_KEY: z.string().optional(),
     LANGFUSE_BASEURL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid Langfuse URL").optional(),
-    // Better Auth
+
+    // ── Better Auth ─────────────────────────────────────────────────
     BETTER_AUTH_SECRET: z.string().min(32).optional(),
     BETTER_AUTH_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
-    // Google OAuth
+
+    // ── OAuth Providers ─────────────────────────────────────────────
     GOOGLE_CLIENT_ID: z.string().optional(),
     GOOGLE_CLIENT_SECRET: z.string().optional(),
-    // GitHub OAuth (Better Auth)
     GITHUB_CLIENT_ID: z.string().optional(),
     GITHUB_CLIENT_SECRET: z.string().optional(),
-    // Email (Resend)
+
+    // ── GitHub App (Phase 1 — repo access, installation tokens) ─────
+    GITHUB_APP_ID: z.string().optional(),
+    GITHUB_APP_PRIVATE_KEY: z.string().optional(),
+    GITHUB_APP_SLUG: z.string().optional(),
+    GITHUB_WEBHOOK_SECRET: z.string().optional(),
+
+    // ── Email (Resend) ──────────────────────────────────────────────
     RESEND_API_KEY: z.string().optional(),
-    EMAIL_FROM: z.string().refine((val) => !val || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val), "Invalid email").optional(),
-    // Uploadthing (file uploads)
-    UPLOADTHING_TOKEN: z.string().optional(),
-    // AI Agent Configuration
-    OPENAI_API_KEY: z.string().optional(),
-    ANTHROPIC_API_KEY: z.string().optional(),
-    TAVILY_API_KEY: z.string().optional(),
-    // Organization Settings
+    EMAIL_FROM: z.string().optional(),
+
+    // ── Organization Limits ─────────────────────────────────────────
     ORGANIZATION_LIMIT: z.string().optional(),
     MEMBERSHIP_LIMIT: z.string().optional(),
-    // Stripe Billing
-    STRIPE_SECRET_KEY: z.string().optional(),
-    STRIPE_WEBHOOK_SECRET: z.string().optional(),
-    STRIPE_PRICE_ID_FREE: z.string().optional(),
-    STRIPE_PRICE_ID_PRO: z.string().optional(),
-    STRIPE_PRICE_ID_ENTERPRISE: z.string().optional(),
-    // PostHog Analytics
-    NEXT_PUBLIC_POSTHOG_KEY: z.string().optional(),
-    NEXT_PUBLIC_POSTHOG_HOST: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
-    // Sentry Error Tracking
+
+    // ── Sentry (Error Tracking) ─────────────────────────────────────
     SENTRY_DSN: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
-    SENTRY_AUTH_TOKEN: z.string().optional(),
-    // Feature Flags
-    FEATURE_FLAGS_ENABLED: z.string().optional(),
   },
   client: {
     NEXT_PUBLIC_APP_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
@@ -70,51 +67,50 @@ export const env = createEnv({
   },
   runtimeEnv: {
     ANALYZE: process.env.ANALYZE,
+    // Database
     SUPABASE_URL: process.env.SUPABASE_URL,
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
     SUPABASE_SECRET_KEY: process.env.SUPABASE_SECRET_KEY,
     SUPABASE_DB_URL: process.env.SUPABASE_DB_URL,
+    // Redis
     REDIS_URL: process.env.REDIS_URL,
+    // ArangoDB
     ARANGODB_URL: process.env.ARANGODB_URL,
     ARANGODB_DATABASE: process.env.ARANGODB_DATABASE,
     ARANGO_ROOT_PASSWORD: process.env.ARANGO_ROOT_PASSWORD,
+    // Temporal
     TEMPORAL_ADDRESS: process.env.TEMPORAL_ADDRESS,
+    // Langfuse
     LANGFUSE_SECRET_KEY: process.env.LANGFUSE_SECRET_KEY,
     LANGFUSE_PUBLIC_KEY: process.env.LANGFUSE_PUBLIC_KEY,
     LANGFUSE_BASEURL: process.env.LANGFUSE_BASEURL,
+    // Better Auth
     BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
     BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
+    // OAuth
     GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID,
     GOOGLE_CLIENT_SECRET: process.env.GOOGLE_CLIENT_SECRET,
     GITHUB_CLIENT_ID: process.env.GITHUB_CLIENT_ID,
     GITHUB_CLIENT_SECRET: process.env.GITHUB_CLIENT_SECRET,
+    // GitHub App
+    GITHUB_APP_ID: process.env.GITHUB_APP_ID,
+    GITHUB_APP_PRIVATE_KEY: process.env.GITHUB_APP_PRIVATE_KEY,
+    GITHUB_APP_SLUG: process.env.GITHUB_APP_SLUG,
+    GITHUB_WEBHOOK_SECRET: process.env.GITHUB_WEBHOOK_SECRET,
+    // Email
     RESEND_API_KEY: process.env.RESEND_API_KEY,
     EMAIL_FROM: process.env.EMAIL_FROM,
-    UPLOADTHING_TOKEN: process.env.UPLOADTHING_TOKEN,
+    // Organization Limits
+    ORGANIZATION_LIMIT: process.env.ORGANIZATION_LIMIT,
+    MEMBERSHIP_LIMIT: process.env.MEMBERSHIP_LIMIT,
+    // Sentry
+    SENTRY_DSN: process.env.SENTRY_DSN,
+    // Public
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
-    // AI Agent Configuration
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-    TAVILY_API_KEY: process.env.TAVILY_API_KEY,
-    // Organization Settings
-    ORGANIZATION_LIMIT: process.env.ORGANIZATION_LIMIT,
-    MEMBERSHIP_LIMIT: process.env.MEMBERSHIP_LIMIT,
-    // Stripe Billing
-    STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY,
-    STRIPE_WEBHOOK_SECRET: process.env.STRIPE_WEBHOOK_SECRET,
-    STRIPE_PRICE_ID_FREE: process.env.STRIPE_PRICE_ID_FREE,
-    STRIPE_PRICE_ID_PRO: process.env.STRIPE_PRICE_ID_PRO,
-    STRIPE_PRICE_ID_ENTERPRISE: process.env.STRIPE_PRICE_ID_ENTERPRISE,
-    // PostHog Analytics
     NEXT_PUBLIC_POSTHOG_KEY: process.env.NEXT_PUBLIC_POSTHOG_KEY,
     NEXT_PUBLIC_POSTHOG_HOST: process.env.NEXT_PUBLIC_POSTHOG_HOST,
-    // Sentry Error Tracking
-    SENTRY_DSN: process.env.SENTRY_DSN,
-    SENTRY_AUTH_TOKEN: process.env.SENTRY_AUTH_TOKEN,
-    // Feature Flags
-    FEATURE_FLAGS_ENABLED: process.env.FEATURE_FLAGS_ENABLED,
   },
 })

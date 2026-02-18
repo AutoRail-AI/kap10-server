@@ -34,13 +34,121 @@
 
 ## 1.1 Core User Flows
 
-Phase 2 has five actor journeys. Two actors exist: the **human user** (configures MCP, manages API keys) and the **AI agent** (Cursor, Claude Code, or any MCP-compatible client that invokes tools autonomously).
+Phase 2 has five actor journeys. Two actors exist: the **human user** (configures MCP, manages API keys, authorizes via OAuth) and the **AI agent** (Cursor, Claude Code, or any MCP-compatible client that invokes tools autonomously).
 
-### Flow 1: API Key Provisioning
+### Flow 0: Authentication Model — Dual-Mode Auth
 
-**Actor:** Authenticated user (org admin)
-**Precondition:** At least one repo with `status: "ready"` (indexed in Phase 1)
-**Outcome:** User has a scoped API key for MCP access
+> **MCP Spec Reference:** The MCP specification (2025-03-26 revision) mandates OAuth 2.1 for remote HTTP servers. The old HTTP+SSE transport (2024-11-05) with API keys in URLs is **deprecated**. kap10 implements **dual-mode auth**: spec-compliant OAuth 2.1 as primary, with API key Bearer fallback for client compatibility.
+
+**Why dual-mode:**
+
+| Client | OAuth 2.1 Support | API Key Fallback Needed? |
+|--------|-------------------|--------------------------|
+| **Claude Code** | Full — auto-DCR, token stored in system keychain | No, but supported for CI/bots |
+| **Claude.ai (web)** | Required — DCR mandatory, no alternative | No |
+| **Cursor** | Partial/buggy — known issues with DCR + PKCE ([#3734](https://github.com/cursor/cursor/issues/3734), [#3522](https://github.com/cursor/cursor/issues/3522)) | **Yes — primary connection path for Cursor** |
+| **VS Code (Copilot)** | Yes | No, but supported |
+| **CI/automation/bots** | No browser available | **Yes — only viable path** |
+
+**The dual-mode detection logic:**
+
+```
+Incoming request: Authorization: Bearer {token}
+  │
+  ├── token starts with "kap10_sk_"?
+  │     YES → Mode B (API Key): SHA-256 lookup in kap10.api_keys
+  │     Resolves: orgId, repoId, scopes from API key record
+  │
+  └── NO → Mode A (OAuth JWT): validate JWT signature, check exp/aud/scope
+           Resolves: userId, orgId, repoId from JWT claims
+           User must have active org membership + repo access
+```
+
+> **Precondition for all Phase 2 flows:** The user must have at least one workspace
+> (organization) with indexed repos. Users in the "Personal" context (no org) cannot
+> create API keys or initiate OAuth MCP connections. The dashboard gates these UI
+> elements behind having a workspace. This state resolves automatically when the user
+> connects GitHub or starts without GitHub (Phase 0/1).
+
+### Flow 1: OAuth 2.1 Connection (Mode A — Claude Code, VS Code)
+
+**Actor:** User configuring Claude Code or VS Code
+**Precondition:** User has a kap10 account, at least one indexed repo
+**Outcome:** IDE has a valid OAuth token, MCP tools available — no API key needed
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant IDE as Claude Code / VS Code
+    participant MCP as MCP Server (Fly.io)
+    participant BetterAuth as Better Auth (kap10)
+    participant Supabase as Supabase (kap10)
+
+    User->>IDE: Add MCP server: https://mcp.kap10.dev/mcp
+    IDE->>MCP: POST /mcp (unauthenticated — initial request)
+    MCP-->>IDE: 401 WWW-Authenticate: Bearer resource_metadata="https://mcp.kap10.dev/.well-known/oauth-protected-resource"
+
+    IDE->>MCP: GET /.well-known/oauth-protected-resource
+    MCP-->>IDE: { resource: "https://mcp.kap10.dev/mcp", authorization_servers: ["https://mcp.kap10.dev"], scopes_supported: ["mcp:read", "mcp:sync"] }
+
+    IDE->>MCP: GET /.well-known/oauth-authorization-server
+    MCP-->>IDE: { authorization_endpoint: "/oauth/authorize", token_endpoint: "/oauth/token", registration_endpoint: "/oauth/register" }
+
+    IDE->>MCP: POST /oauth/register (Dynamic Client Registration)
+    MCP-->>IDE: { client_id: "dyn_xxx", client_secret: "...", redirect_uris: [...] }
+
+    IDE->>IDE: Generate PKCE code_verifier + code_challenge
+    IDE->>User: Open browser → https://mcp.kap10.dev/oauth/authorize?client_id=...&code_challenge=...&scope=mcp:read
+
+    User->>BetterAuth: Login (or existing session)
+    BetterAuth->>User: Consent screen: "Allow {IDE} to access {org} code intelligence?"
+    User->>BetterAuth: Approve
+    BetterAuth-->>IDE: Redirect with authorization code
+
+    IDE->>MCP: POST /oauth/token { code, code_verifier }
+    MCP->>MCP: Verify PKCE, mint JWT { sub: userId, org: orgId, scope: "mcp:read mcp:sync", aud: "https://mcp.kap10.dev/mcp", exp: +1h }
+    MCP-->>IDE: { access_token: "eyJ...", refresh_token: "...", expires_in: 3600 }
+
+    IDE->>IDE: Store tokens in system keychain
+
+    Note over IDE,MCP: All subsequent MCP requests carry: Authorization: Bearer eyJ...
+    IDE->>MCP: POST /mcp { method: "tools/list" }
+    MCP->>MCP: Validate JWT (signature, exp, aud, scope)
+    MCP-->>IDE: { tools: [9 tools] }
+```
+
+**Better Auth as the OAuth authorization server:**
+
+kap10 does NOT need a separate OAuth server. Better Auth already manages user identity, sessions, and org memberships. The MCP server extends it to act as an OAuth 2.1 authorization server:
+
+| OAuth 2.1 Endpoint | Implementation |
+|---------------------|---------------|
+| `/.well-known/oauth-protected-resource` | Static JSON (RFC 9728 Protected Resource Metadata) |
+| `/.well-known/oauth-authorization-server` | Static JSON (RFC 8414 Authorization Server Metadata) |
+| `/oauth/register` | Dynamic Client Registration (RFC 7591) — stores client in Redis (TTL 24h) |
+| `/oauth/authorize` | Redirects to kap10 login page (Better Auth session). Shows consent screen. Returns auth code. |
+| `/oauth/token` | Validates PKCE code_verifier, mints JWT with user/org/scope claims. Issues refresh token. |
+
+**JWT claims:**
+
+```
+{
+  "sub": "user-uuid",              // Better Auth user ID
+  "org": "org-uuid",               // Active org (from session)
+  "scope": "mcp:read mcp:sync",    // Consented scopes
+  "aud": "https://mcp.kap10.dev/mcp",  // Resource indicator (RFC 8707)
+  "exp": 1708300800,               // 1 hour from issuance
+  "iat": 1708297200
+}
+```
+
+The JWT is signed with `BETTER_AUTH_SECRET` (HMAC-SHA256). The MCP server validates it locally — no Supabase lookup on every request (unlike API key mode). Repo scoping is determined at query time: the user's org membership grants access to all repos in that org.
+
+### Flow 2: API Key Connection (Mode B — Cursor, CI/Bots)
+
+**Actor:** User configuring Cursor or a CI pipeline
+**Precondition:** User has generated an API key in the dashboard
+**Outcome:** MCP tools available via Bearer token header
 
 ```mermaid
 sequenceDiagram
@@ -50,139 +158,167 @@ sequenceDiagram
     participant Supabase as Supabase (kap10)
 
     User->>Dashboard: Navigate to /repos/[repoId]/connect
-    Dashboard->>NextAPI: GET /api/repos/[repoId]
-    NextAPI->>Supabase: SELECT * FROM kap10.repos WHERE id = ? AND org_id = ?
-    NextAPI-->>Dashboard: Repo metadata (name, status)
-
     User->>Dashboard: Click "Generate API Key"
     Dashboard->>NextAPI: POST /api/api-keys { repoId, name: "Cursor - main" }
     NextAPI->>NextAPI: Generate key: kap10_sk_{random(32)}
-    NextAPI->>Supabase: INSERT INTO kap10.api_keys (key_hash, repo_id, org_id, name, transport)
+    NextAPI->>Supabase: INSERT INTO kap10.api_keys (key_hash, repo_id, org_id, name)
     Note over NextAPI: Store SHA-256 hash of key, NOT the raw key
     NextAPI-->>Dashboard: { key: "kap10_sk_a3f7c2...", id: "uuid" }
-
     Dashboard-->>User: API key shown ONCE (masked after dismiss)
-    Dashboard-->>User: Copy-paste instructions for Cursor / Claude Code
 ```
 
-**Critical decisions:**
+The user then configures their IDE:
+
+**Cursor (`.cursor/mcp.json`):**
+```json
+{
+  "mcpServers": {
+    "kap10": {
+      "url": "https://mcp.kap10.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer kap10_sk_a3f7c2..."
+      }
+    }
+  }
+}
+```
+
+**Cursor workaround (if native header support is flaky):**
+```json
+{
+  "mcpServers": {
+    "kap10": {
+      "command": "npx",
+      "args": ["mcp-remote", "https://mcp.kap10.dev/mcp",
+               "--header", "Authorization: Bearer kap10_sk_a3f7c2..."]
+    }
+  }
+}
+```
+
+**Claude Code (CLI):**
+```bash
+claude mcp add --transport http kap10 https://mcp.kap10.dev/mcp \
+  --header "Authorization: Bearer kap10_sk_a3f7c2..."
+```
+
+**CI pipeline (`.mcp.json` in repo root):**
+```json
+{
+  "mcpServers": {
+    "kap10": {
+      "type": "http",
+      "url": "https://mcp.kap10.dev/mcp",
+      "headers": {
+        "Authorization": "Bearer ${KAP10_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+**API Key critical decisions:**
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Key format | `kap10_sk_{random(32)}` prefixed | Prefix enables GitHub secret scanning to auto-revoke leaked keys. `sk_` is a common convention (Stripe, OpenAI). |
-| Storage | SHA-256 hash in DB, raw key shown once | Industry standard. If DB is compromised, hashed keys are useless. The user must copy the key on creation. |
+| Storage | SHA-256 hash in DB, raw key shown once | Industry standard. If DB is compromised, hashed keys are useless. |
 | Scope | Per-repo | Least privilege. A key for repo A cannot query repo B. Multi-repo keys are a Phase 5+ feature. |
 | Rotation | Revoke + regenerate | No key rotation (swap). User revokes old key, generates new one. Simpler, fewer race conditions. |
-| Rate limit identity | API key (not user, not IP) | API keys map 1:1 to a repo scope. Rate limiting per key prevents one agent session from starving others on the same org. |
+| Rate limit identity | API key or JWT subject (not IP) | Per-identity rate limiting prevents one agent from starving others. |
 
 ---
 
-### Flow 2: MCP Connection from IDE
+### Flow 3: MCP Tool Invocation (Streamable HTTP Transport)
 
-**Actor:** AI agent (Cursor / Claude Code) via user configuration
-**Precondition:** User has API key, MCP URL configured in IDE
-**Outcome:** Agent establishes SSE connection to MCP server, tools available
+**Actor:** AI agent (autonomous tool invocation during a coding task)
+**Precondition:** Authenticated via OAuth JWT or API key Bearer token
+**Outcome:** Agent receives structured code intelligence data
 
-```mermaid
-sequenceDiagram
-    actor Agent as AI Agent (Cursor)
-    participant MCP as MCP Server (Fly.io)
-    participant Redis
-    participant Supabase as Supabase (kap10)
-
-    Note over Agent: User adds MCP config to .cursor/mcp.json or claude_desktop_config.json
-    Agent->>MCP: GET /api/mcp/kap10_sk_a3f7c2.../sse (SSE handshake)
-    MCP->>MCP: Extract API key from URL path
-    MCP->>Supabase: SELECT * FROM kap10.api_keys WHERE key_hash = SHA256(key) AND revoked_at IS NULL
-    Supabase-->>MCP: { orgId, repoId, scopes }
-    MCP->>MCP: Validate key → resolve org + repo context
-    MCP->>Redis: INCR rate:mcp:{keyId}:connections (max 5 concurrent)
-
-    alt Key valid, under connection limit
-        MCP-->>Agent: 200 OK, SSE stream open
-        MCP-->>Agent: SSE: event=endpoint, data={sessionId, postUrl}
-        MCP-->>Agent: SSE: event=capabilities, data={tools: [9 tools]}
-        Note over Agent,MCP: SSE stream stays open for IDE session lifetime
-    else Key invalid or revoked
-        MCP-->>Agent: 401 Unauthorized {error: "Invalid or revoked API key"}
-    else Connection limit reached
-        MCP-->>Agent: 429 Too Many Connections {error: "Max 5 concurrent sessions per key"}
-    end
-```
-
-**MCP transport model — HTTP+SSE (Streamable HTTP):**
+**MCP transport model — Streamable HTTP (MCP spec 2025-03-26):**
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│              MCP Transport: HTTP + SSE                         │
+│        MCP Transport: Streamable HTTP (2025-03-26 spec)       │
 │                                                               │
-│  Client (Cursor)                    Server (Fly.io)           │
-│  ──────────────                     ─────────────             │
+│  Client (Cursor/Claude Code)       Server (Fly.io)            │
+│  ──────────────────────            ─────────────              │
 │                                                               │
-│  GET /api/mcp/{key}/sse ──────────► SSE stream opened         │
-│                          ◄──────── event: endpoint            │
-│                          ◄──────── event: capabilities        │
+│  Single endpoint: https://mcp.kap10.dev/mcp                  │
 │                                                               │
-│  POST /api/mcp/{key}/message ────► tool_call: search_code    │
-│                          ◄──────── SSE: tool_result           │
+│  POST /mcp ─────────────────────► tool_call: search_code     │
+│    Authorization: Bearer {token}   Response: application/json │
+│    Accept: application/json,       OR text/event-stream (SSE) │
+│            text/event-stream                                  │
+│                          ◄──────── { result: {...} }          │
 │                                                               │
-│  POST /api/mcp/{key}/message ────► tool_call: get_function   │
-│                          ◄──────── SSE: tool_result           │
+│  POST /mcp ─────────────────────► tool_call: get_function    │
+│                          ◄──────── { result: {...} }          │
 │                                                               │
-│  [... session continues for minutes to hours ...]             │
+│  GET /mcp (optional) ───────────► SSE stream for server       │
+│    Mcp-Session-Id: {id}           notifications               │
+│                          ◄──────── event: notification        │
 │                                                               │
-│  Connection closed ──────────────► Cleanup session state      │
+│  Sessions managed via Mcp-Session-Id header                   │
 └───────────────────────────────────────────────────────────────┘
 ```
 
-**Why this cannot run on Vercel:** SSE requires the server to hold an open TCP connection for the duration of the IDE session (minutes to hours). Vercel serverless functions timeout at 10–60 seconds. The MCP server must run as a long-lived process on Fly.io, Railway, or ECS.
+**Key differences from the old HTTP+SSE transport (deprecated):**
 
----
+| Aspect | Old (2024-11-05) | New Streamable HTTP (2025-03-26) |
+|--------|-------------------|----------------------------------|
+| Endpoint | Two endpoints: `/sse` + `/message` | **Single endpoint: `/mcp`** |
+| Auth | API key in URL path | **`Authorization: Bearer` header** |
+| Tool calls | POST to `/message`, result via SSE | **POST to `/mcp`, response in same HTTP response** (JSON or SSE) |
+| Sessions | SSE connection = session | **`Mcp-Session-Id` header**, persistent across requests |
+| Server notifications | SSE stream required | **Optional `GET /mcp`** for SSE stream |
+| Connection lifetime | Long-lived SSE mandatory | **Stateless HTTP requests** (SSE optional) |
 
-### Flow 3: AI Agent Invokes an MCP Tool
-
-**Actor:** AI agent (autonomous tool invocation during a coding task)
-**Precondition:** SSE connection established, tools available
-**Outcome:** Agent receives structured code intelligence data
+**Why Streamable HTTP changes the Vercel constraint:** With the new transport, each tool call is an independent HTTP POST that returns in milliseconds — no long-lived SSE connection required. The optional SSE stream for server-initiated notifications (e.g., workspace sync events) still needs a long-running process, but the **core tool invocation path is now compatible with serverless**. However, the OAuth endpoints, session management, and optional SSE still benefit from a dedicated container. The Phase 2 architecture retains the Fly.io deployment for robustness, with a future option to move tool-call-only traffic to Vercel Edge Functions.
 
 ```mermaid
 sequenceDiagram
     actor Agent as AI Agent
     participant MCP as MCP Server
+    participant Auth as Auth Middleware
     participant Scrubber as Secret Scrubber
     participant RateLimit as Rate Limiter
     participant ArangoDB
     participant Formatter as Semantic Truncator
 
-    Agent->>MCP: POST /message { tool: "get_function", args: { name: "validateCredentials" } }
+    Agent->>MCP: POST /mcp { method: "tools/call", params: { name: "get_function", arguments: { name: "validateCredentials" } } }
+    Note over Agent,MCP: Authorization: Bearer {JWT or kap10_sk_...}
+
+    MCP->>Auth: Validate token
+    alt JWT (OAuth Mode A)
+        Auth->>Auth: Verify signature, exp, aud, scope
+        Auth-->>MCP: { userId, orgId, scopes }
+    else API Key (Mode B)
+        Auth->>Auth: Detect kap10_sk_ prefix → SHA-256 lookup (Redis cache → Supabase fallback)
+        Auth-->>MCP: { orgId, repoId, scopes }
+    end
 
     MCP->>Scrubber: Scrub incoming payload
-    Scrubber->>Scrubber: Regex patterns (AWS keys, tokens, passwords)
-    Scrubber->>Scrubber: Entropy analysis (high-entropy strings > 4.5 bits/char)
     Scrubber-->>MCP: Cleaned payload (secrets replaced with [REDACTED])
 
-    MCP->>RateLimit: Check sliding window (apiKeyId)
+    MCP->>RateLimit: Check sliding window (identity = JWT sub or API key ID)
     RateLimit->>Redis: EVALSHA rate_limit_script
     Redis-->>RateLimit: { allowed: true, remaining: 42 }
 
     alt Rate limit exceeded
-        RateLimit-->>MCP: { allowed: false }
-        MCP-->>Agent: SSE: tool_result { error: "Rate limit exceeded. You are calling tools too rapidly — this usually means the agent is in a loop. Pause, review your context, and ask the user for clarification." }
+        MCP-->>Agent: { error: { code: -32000, message: "Rate limit exceeded. You are calling tools too rapidly..." } }
     end
 
-    MCP->>ArangoDB: Search entity by name across functions, classes collections
-    ArangoDB-->>MCP: EntityDoc { name, signature, file_path, line, body }
-    MCP->>ArangoDB: FOR v IN 1..1 INBOUND @entityId calls RETURN v
-    ArangoDB-->>MCP: Caller entities
-    MCP->>ArangoDB: FOR v IN 1..1 OUTBOUND @entityId calls RETURN v
-    ArangoDB-->>MCP: Callee entities
+    MCP->>ArangoDB: Search entity by name
+    ArangoDB-->>MCP: EntityDoc
+    MCP->>ArangoDB: Callers + callees (parallel)
+    ArangoDB-->>MCP: Related entities
 
     MCP->>Formatter: Truncate response to MAX_RESPONSE_BYTES
-    Formatter->>Formatter: Prioritize: signature > callers > callees > body
-    Formatter->>Formatter: Trim body at function boundaries (not mid-line)
     Formatter-->>MCP: Truncated, structured response
 
-    MCP-->>Agent: SSE: tool_result { function: {...}, callers: [...], callees: [...] }
+    MCP-->>Agent: 200 OK { result: { function: {...}, callers: [...], callees: [...] } }
+    Note over MCP: Mcp-Session-Id: {sessionId} header in response
 ```
 
 **The three security layers every MCP request passes through:**
@@ -190,12 +326,16 @@ sequenceDiagram
 | Layer | Purpose | Failure mode |
 |-------|---------|-------------|
 | **Edge Secret Scrubber** | Prevent agents from leaking secrets found in source code back to the LLM provider. Catches: AWS keys, GitHub tokens, JWTs, high-entropy strings. | If a secret is missed: LLM provider sees it (data leak). False positive: benign string redacted (minor UX issue). Conservative approach: over-scrub. |
-| **Rate Limiter** | Prevent runaway agent loops from exhausting ArangoDB connections and running up costs. 60 tool calls per 60-second sliding window per API key. | At 429: agent receives structured error in tool result body (not HTTP status). Smart agents (Claude, GPT-4) read this and self-correct. Dumb agents may keep retrying — the rate limit caps damage. |
+| **Rate Limiter** | Prevent runaway agent loops from exhausting ArangoDB connections and running up costs. 60 tool calls per 60-second sliding window per identity. | At 429: agent receives structured JSON-RPC error in response body. Smart agents (Claude, GPT-4) read this and self-correct. Dumb agents may keep retrying — the rate limit caps damage. |
 | **Semantic Truncator** | Prevent MCP responses from exceeding LLM context windows. Truncates large function bodies, long caller/callee lists. Respects function boundaries (never cuts mid-statement). | Over-truncation: agent gets partial info but can call `get_function` again with depth parameter. Under-truncation: token budget exceeded in LLM — the LLM's own context window management handles this. |
+
+**Why this cannot fully run on Vercel (yet):** While tool calls are now stateless HTTP POSTs (serverless-compatible), the OAuth endpoints (`/oauth/authorize`, `/oauth/token`, `/oauth/register`), session management via `Mcp-Session-Id`, and the optional SSE stream for server notifications still benefit from a persistent process. Phase 2 deploys the MCP server on Fly.io. A future optimization could split: tool calls on Vercel Edge, OAuth + SSE on Fly.io.
 
 ---
 
-### Flow 4: Auto-PR Onboarding (Bootstrap Rule Distribution)
+---
+
+### Flow 4: Auto-PR IDE Bootstrap (Bootstrap Rule Distribution)
 
 **Actor:** System (triggered after first successful indexing of a repo)
 **Precondition:** Repo status transitions to `ready` for the first time, org has GitHub App installation
@@ -216,7 +356,7 @@ sequenceDiagram
     Note over Temporal: Bootstrap Rule: pre-flight sync, post-flight sync, tool usage guidelines
 
     Temporal->>Temporal: Generate .cursor/mcp.json content
-    Note over Temporal: { "mcpServers": { "kap10": { "url": "https://mcp.kap10.dev/api/mcp/{key}/sse" } } }
+    Note over Temporal: { "mcpServers": { "kap10": { "url": "https://mcp.kap10.dev/mcp", "headers": { "Authorization": "Bearer {auto-generated-key}" } } } }
 
     Temporal->>GitHub: Create branch: kap10/onboarding-{repoId}
     Temporal->>GitHub: Commit .cursor/rules/kap10.mdc + .cursor/mcp.json
@@ -267,7 +407,7 @@ sequenceDiagram
     participant Supabase as Supabase (kap10)
     participant ArangoDB
 
-    Agent->>MCP: POST /message { tool: "sync_local_diff", args: { diff: "unified diff text..." } }
+    Agent->>MCP: POST /mcp { method: "tools/call", params: { name: "sync_local_diff", arguments: { diff: "unified diff text..." } } }
 
     MCP->>MCP: Parse unified diff → extract modified files, added/removed lines
     MCP->>MCP: Identify affected entities (functions whose line ranges overlap diff hunks)
@@ -315,14 +455,14 @@ Phase 2 introduces a split deployment. The Next.js dashboard and the MCP server 
 ┌──────────────────────────────────┐    ┌──────────────────────────────────┐
 │         Vercel (Dashboard)        │    │       Fly.io (MCP Server)         │
 │                                   │    │                                   │
-│  Next.js 16 SSR/SSG              │    │  Express / Hono + SSE            │
-│  /dashboard/*                     │    │  /api/mcp/:apiKey/sse            │
-│  /api/repos/*                     │    │  /api/mcp/:apiKey/message        │
-│  /api/api-keys/*                  │    │                                   │
-│  /api/webhooks/*                  │    │  Long-lived connections           │
-│  /api/github/*                    │    │  Auto-scaling (min: 1, max: 10)  │
-│                                   │    │  256 MB per instance              │
-│  Serverless (10s–60s timeout)    │    │  Sticky sessions (per API key)   │
+│  Next.js 16 SSR/SSG              │    │  Express / Hono + Streamable HTTP│
+│  /dashboard/*                     │    │  /mcp (single MCP endpoint)      │
+│  /api/repos/*                     │    │  /oauth/* (OAuth 2.1 endpoints)  │
+│  /api/api-keys/*                  │    │  /.well-known/* (discovery)      │
+│  /api/webhooks/*                  │    │                                   │
+│  /api/github/*                    │    │  Stateless HTTP (SSE optional)   │
+│                                   │    │  Auto-scaling (min: 1, max: 10)  │
+│  Serverless (10s–60s timeout)    │    │  256 MB per instance              │
 └──────────────┬───────────────────┘    └──────────────┬───────────────────┘
                │                                        │
                │         Shared Infrastructure          │
@@ -341,11 +481,12 @@ Phase 2 introduces a split deployment. The Next.js dashboard and the MCP server 
 
 | Concern | Dashboard (Vercel) | MCP Server (Fly.io) |
 |---------|-------------------|---------------------|
-| Connection lifetime | Request-response (ms) | SSE stream (minutes–hours) |
-| Scaling model | Serverless (per-request) | Container (per-connection) |
-| Cold start tolerance | Yes (Vercel handles) | No (SSE clients don't retry gracefully) |
+| Connection lifetime | Request-response (ms) | Stateless HTTP + optional SSE for notifications |
+| Scaling model | Serverless (per-request) | Container (OAuth state + session management) |
+| Cold start tolerance | Yes (Vercel handles) | Low tolerance (OAuth flows need fast response) |
 | Cost model | Per-invocation | Per-container-hour |
 | Region affinity | Edge (global CDN) | Single region (close to ArangoDB/Supabase) |
+| Auth responsibility | Better Auth sessions (cookies) | OAuth 2.1 + API key Bearer validation |
 
 **Shared infrastructure access:** Both processes connect to the same Supabase, ArangoDB, Redis, and Temporal instances. The DI container (`getContainer()`) works identically in both processes. The MCP server uses the same `lib/ports/*` and `lib/adapters/*` as the dashboard — no code duplication.
 
@@ -377,36 +518,37 @@ key_prefix      VARCHAR    First 8 chars of raw key (display: "kap10_sk_a3f7****
 org_id          VARCHAR    FK → organization
 repo_id         VARCHAR    FK → repo (nullable for future org-wide keys)
 name            VARCHAR    User-provided label ("Cursor - main branch")
-transport       VARCHAR    "mcp-sse" (Phase 2) | "mcp-stdio" (future)
+transport       VARCHAR    "streamable-http" (Phase 2) | "mcp-stdio" (future)
 scopes          JSONB      ["read"] (Phase 2) | ["read", "write"] (future)
 last_used_at    TIMESTAMP  Updated on every MCP request (async, non-blocking)
 revoked_at      TIMESTAMP  NULL = active, non-NULL = revoked
 created_at      TIMESTAMP
 ```
 
-**Lookup path (on every MCP request):** API key is in the URL path. Server extracts it, computes SHA-256, queries `kap10.api_keys WHERE key_hash = ? AND revoked_at IS NULL`. This lookup is cached in Redis (`kap10:apikey:{hash}`, TTL 5 min) to avoid hitting Supabase on every tool call.
+**Lookup path (on every MCP request — Mode B only):** API key is in the `Authorization: Bearer` header. Server detects `kap10_sk_` prefix, computes SHA-256, queries `kap10.api_keys WHERE key_hash = ? AND revoked_at IS NULL`. This lookup is cached in Redis (`kap10:apikey:{hash}`, TTL 5 min) to avoid hitting Supabase on every tool call. For OAuth Mode A, the JWT is validated locally (signature + expiry) with no database lookup.
 
 ### MCP Session State
 
-Each SSE connection creates a lightweight session tracked in Redis:
+Sessions are managed via the `Mcp-Session-Id` header (MCP spec 2025-03-26). The server generates a session ID on the first authenticated request and returns it in the response header. The client includes this header in all subsequent requests.
 
 ```
 Redis key: kap10:mcp:session:{sessionId}
-TTL: matches SSE connection lifetime + 5 min grace period
+TTL: 1 hour from last request (sliding expiry)
 Value: {
-  apiKeyId: "uuid",
+  authMode: "oauth" | "api_key",
+  identityId: "uuid",       // JWT sub (OAuth) or API key ID
   orgId: "uuid",
-  repoId: "uuid",
-  userId: "uuid",          // resolved from API key owner
+  repoId: "uuid|null",      // null for OAuth (org-scoped), set for API key (repo-scoped)
+  userId: "uuid",            // resolved from JWT or API key owner
   branch: "main",
-  workspaceId: "uuid|null", // linked workspace for sync_local_diff
-  connectedAt: ISO-8601,
-  toolCallCount: number,    // total calls in this session
+  workspaceId: "uuid|null",  // linked workspace for sync_local_diff
+  createdAt: ISO-8601,
+  toolCallCount: number,     // total calls in this session
   lastToolCallAt: ISO-8601
 }
 ```
 
-Session state is ephemeral — if the MCP server restarts, the SSE connection drops, and the client (Cursor/Claude Code) reconnects automatically. The new connection creates a fresh session. Workspace overlays survive reconnection (they're in Supabase + ArangoDB, not Redis).
+Session state is ephemeral — if the MCP server restarts, the `Mcp-Session-Id` becomes invalid. The client detects this (server returns a new session ID) and re-authenticates. Workspace overlays survive server restarts (they're in Supabase + ArangoDB, not Redis). OAuth tokens are stored client-side (system keychain) and survive server restarts.
 
 ### MCP Tool Registry
 
@@ -432,16 +574,17 @@ All 9 Phase 2 tools are read-only (no mutations to the committed graph). `sync_l
 
 | # | Failure Scenario | Probability | Impact | Detection | Recovery Strategy |
 |---|-----------------|-------------|--------|-----------|-------------------|
-| 1 | **MCP server container crash** | Low | All active SSE connections drop. Agents lose tool access. | Fly.io health check fails → auto-restart. | Fly.io auto-restarts container (< 5s). Cursor/Claude Code retry SSE connection automatically. Session state rebuilt from Redis. Workspace overlays survive (Supabase + ArangoDB). |
+| 1 | **MCP server container crash** | Low | In-flight HTTP requests fail. Optional SSE notification streams drop. Agents lose tool access temporarily. | Fly.io health check fails → auto-restart. | Fly.io auto-restarts container (< 5s). Clients retry failed HTTP requests automatically. `Mcp-Session-Id` becomes invalid → server issues new session. OAuth tokens survive (stored client-side in keychain). API keys unaffected (static). Workspace overlays survive (Supabase + ArangoDB). |
 | 2 | **ArangoDB timeout during tool call** | Medium | Single tool call fails. Agent gets error response. | Activity timeout (2s per ArangoDB query). | Return structured error in MCP tool result: `"Database temporarily unavailable. Retry in a few seconds."` Agent can retry. Circuit breaker after 5 consecutive failures → tool returns cached/stale result or graceful error. |
-| 3 | **Runaway agent loop** (60+ calls/min) | Medium–High | ArangoDB connection pool exhausted, other agents starved. | Rate limiter triggers at 60 calls/60s window. | 429 returned in tool result body with self-correction message. Agent reads it and pauses. If agent ignores: rate limit caps damage. No cascading failure to other API keys. |
-| 4 | **SSE connection drop** (network flap) | Medium | Agent loses tool access temporarily. | Server detects broken pipe on SSE write. | Client reconnects automatically (MCP protocol spec). New session created. Workspace overlay preserved. Pending tool results lost (client should re-request). |
+| 3 | **Runaway agent loop** (60+ calls/min) | Medium–High | ArangoDB connection pool exhausted, other agents starved. | Rate limiter triggers at 60 calls/60s window. | 429 returned in tool result body with self-correction message. Agent reads it and pauses. If agent ignores: rate limit caps damage. No cascading failure — rate limit is per identity (JWT sub or API key ID). |
+| 4 | **Network flap during tool call** | Medium | Individual HTTP request fails. Agent does not get tool result. | HTTP timeout or connection reset. | Streamable HTTP is stateless — client simply retries the POST. No session reconstruction needed. `Mcp-Session-Id` persists across retries. Workspace overlay preserved. |
 | 5 | **API key leaked** (committed to public repo) | Low–Medium | Unauthorized access to org's code intelligence data. | GitHub secret scanning detects `kap10_sk_` prefix. `/api/api-keys/[id]/rotate` endpoint. | Auto-revoke via GitHub webhook (`secret_scanning_alert`). Notify org admin via email. Key hash invalidated in Redis immediately. Audit log created. |
 | 6 | **Secret found in MCP response** (scrubber miss) | Low | Secret sent to LLM provider via agent context. | Post-hoc audit: log all MCP responses (hashed), periodic grep for known patterns. | Immediate scrubber rule update. Incident response: rotate the leaked secret. Improve scrubber regex/entropy thresholds. |
 | 7 | **Auto-PR creation fails** (branch protection, no write access) | Medium | Onboarding PR not created. User must manually configure MCP. | Temporal activity failure logged. Repo dashboard shows "Manual setup required". | Fallback: dashboard shows manual copy-paste instructions. Retry Auto-PR on next indexing completion. Log failure reason for debugging. |
 | 8 | **Redis down** (rate limiter unavailable) | Low | Rate limiting disabled (fail-open). Secret scrubber still works (stateless). Session state lost. | Health check reports Redis down. | **Fail-open on rate limiting** — allow requests but log warning. This is safe because ArangoDB's own connection pool limits act as a secondary circuit breaker. API key lookup falls back to Supabase (slower). |
 | 9 | **Stale workspace overlay** (user forgot to re-sync) | High | Agent searches return outdated results that don't match local files. | No automated detection — relies on Bootstrap Rule compliance. | Workspace TTL (1 hour) limits staleness. Dashboard shows workspace last-sync timestamp. Bootstrap Rule instructs agent to sync before and after each task. |
-| 10 | **Concurrent tool calls from same agent** | Medium | Multiple ArangoDB queries in flight. No data corruption risk (read-only). | Connection pool metrics. | ArangoDB connection pool (5 connections) naturally serializes. If pool exhausted: request queues briefly (< 100ms). No data integrity concern for read-only tools. |
+| 10 | **Concurrent tool calls from same agent** | Medium | Multiple ArangoDB queries in flight from parallel HTTP requests. No data corruption risk (read-only). | Connection pool metrics. | ArangoDB connection pool (10 connections per container) handles parallel requests. If pool exhausted: request queues briefly (< 100ms). No data integrity concern for read-only tools. Rate limiter counts all calls regardless of concurrency. |
+| 11 | **OAuth token expiry during agent session** | Medium | Tool call returns 401. Agent cannot refresh without user interaction. | JWT `exp` check on every request. | MCP spec supports token refresh: client uses refresh token to get new access token (no browser needed). If refresh token also expired: client prompts user to re-authorize (opens browser). Session preserved via `Mcp-Session-Id`. |
 
 ### Circuit Breaker Pattern for ArangoDB
 
@@ -475,8 +618,8 @@ Implementation: use a lightweight in-process state machine (no library needed �
 
 | # | Path | Target (p95) | Breakdown | Bottleneck | Mitigation |
 |---|------|-------------|-----------|------------|------------|
-| 1 | **SSE connection handshake** | < 500ms | API key validation (~50ms cached, ~200ms cold) + session creation (~10ms Redis) + tool capability announcement (~5ms) | First connection after API key cache expires. | Cache API key lookup in Redis (TTL 5 min). Warm connection pool on container start. |
-| 2 | **`search_code` tool call** | < 200ms | Scrub (~1ms) + rate check (~5ms Redis) + ArangoDB fulltext (~100ms) + truncation (~5ms) + SSE write (~5ms) | ArangoDB fulltext index performance on large repos (100k+ entities). | Fulltext index on `functions.name` + `functions.signature`. Limit results to top 20. |
+| 1 | **Initial auth + session creation** | < 500ms | Token validation (~5ms JWT local / ~50ms API key cached / ~200ms API key cold) + session creation (~10ms Redis) + `tools/list` response (~5ms) | First request after API key cache expires (Mode B). OAuth JWT validated locally (Mode A — always fast). | Cache API key lookup in Redis (TTL 5 min). JWT signature verification is CPU-only (~2ms). Warm connection pool on container start. |
+| 2 | **`search_code` tool call** | < 200ms | Scrub (~1ms) + rate check (~5ms Redis) + ArangoDB fulltext (~100ms) + truncation (~5ms) + response write (~5ms) | ArangoDB fulltext index performance on large repos (100k+ entities). | Fulltext index on `functions.name` + `functions.signature`. Limit results to top 20. |
 | 3 | **`get_function` tool call** | < 300ms | Entity lookup (~50ms) + callers query (~80ms) + callees query (~80ms) + truncation (~10ms) | Three sequential ArangoDB queries. | Run callers + callees queries in parallel. Entity lookup is a direct `_key` access (O(1)). |
 | 4 | **`get_callers`/`get_callees` (depth 5)** | < 500ms | N-hop graph traversal (~400ms for large graphs) | Explosion of results at depth 5 (callers of callers of callers...). | Hard cap: 500 results per traversal (already in `ArangoGraphStore`). Depth max: 5. Semantic truncation drops least-relevant results. |
 | 5 | **`sync_local_diff`** | < 1s | Diff parsing (~50ms) + entity lookup (~100ms) + workspace upsert (~200ms Supabase) + ArangoDB overlay write (~300ms) | Large diffs (1000+ line changes across 20+ files). | Limit diff size to 50KB. Reject larger diffs with message: "Diff too large. Commit your changes first, then re-sync." |
@@ -496,12 +639,13 @@ Implementation: use a lightweight in-process state machine (no library needed �
 | Component | Memory | Rationale |
 |-----------|--------|-----------|
 | Node.js baseline | 50 MB | Express/Hono + MCP SDK |
-| SSE connection state (per connection) | ~2 KB | Session ID, org/repo context, rate limit counters |
+| Session state (per active session) | ~2 KB | Mcp-Session-Id, auth context, rate limit counters |
 | ArangoDB connection pool | 10 MB | 10 connections × ~1 MB TCP buffer each |
 | Redis connection | 2 MB | Single multiplexed connection |
 | Secret scrubber regex cache | 5 MB | Compiled regex patterns, entropy lookup tables |
 | Headroom | 189 MB | GC overhead, spike handling |
-| **Total per container** | **256 MB** | Supports ~500 concurrent SSE connections per container |
+| OAuth endpoint overhead | 5 MB | DCR client cache, PKCE code verifier store, JWT signing |
+| **Total per container** | **256 MB** | Supports ~500 concurrent active sessions per container |
 
 ---
 
@@ -518,7 +662,7 @@ Phase 3 (Semantic Search) and Phase 4 (Business Justification) build directly on
 | Secret scrubber | Applied to all tools including new semantic search results. |
 | Rate limiter | Same 60 calls/min limit covers new tools. |
 | Semantic truncation (`formatter.ts`) | Embedding search results go through the same truncation pipeline. |
-| API key system | Same keys grant access to new tools (backward-compatible scope expansion). |
+| Auth system (OAuth + API keys) | Same OAuth tokens and API keys grant access to new tools (backward-compatible scope expansion). |
 | Dashboard "Connect IDE" page | Phase 3 adds search demo/playground widget on the same page. |
 | Workspace overlay system | Semantic search respects workspace overlays — search results include uncommitted changes. |
 
@@ -582,11 +726,12 @@ Seam 5: IVectorSearch activation
 
 - [ ] **P2-INFRA-01: Create MCP server entry point and project structure** — M
   - Create `mcp-server/` directory at project root (separate from Next.js app)
-  - Entry point: `mcp-server/index.ts` — Express/Hono HTTP server
+  - Entry point: `mcp-server/index.ts` — Express/Hono HTTP server with Streamable HTTP transport
+  - Routes: `POST /mcp` (tool calls), `GET /mcp` (optional SSE), `/.well-known/*` (OAuth discovery), `/oauth/*` (OAuth 2.1 endpoints), `/health`
   - Imports from shared `lib/` (ports, adapters, DI container) — same codebase, different process
   - `tsconfig.mcp.json` extending root `tsconfig.json` with MCP-specific paths
   - `package.json` script: `pnpm mcp:dev` (local dev) and `pnpm mcp:build` (production)
-  - **Test:** `pnpm mcp:dev` starts HTTP server on port 3001. `curl localhost:3001/health` returns 200.
+  - **Test:** `pnpm mcp:dev` starts HTTP server on port 3001. `curl localhost:3001/health` returns 200. `curl localhost:3001/.well-known/oauth-protected-resource` returns valid PRM JSON.
   - **Depends on:** Nothing
   - **Files:** `mcp-server/index.ts`, `mcp-server/tsconfig.json`, `package.json` (scripts)
   - **Acceptance:** MCP server starts independently of Next.js. Shares `lib/` code via TypeScript path aliases.
@@ -632,8 +777,10 @@ Seam 5: IVectorSearch activation
   - Notes: _____
 
 - [ ] **P2-INFRA-05: Add MCP-specific env vars to `env.mjs`** — S
-  - New variables: `MCP_SERVER_URL` (public URL for Auto-PR configuration), `MCP_SERVER_PORT` (default 3001)
-  - Optional: `MCP_MAX_CONNECTIONS_PER_KEY` (default 5), `MCP_RATE_LIMIT_PER_MINUTE` (default 60)
+  - New variables: `MCP_SERVER_URL` (public URL, e.g., `https://mcp.kap10.dev` — used for OAuth discovery and Auto-PR), `MCP_SERVER_PORT` (default 3001)
+  - OAuth: `MCP_JWT_AUDIENCE` (default `https://mcp.kap10.dev/mcp`), `MCP_OAUTH_DCR_TTL_HOURS` (default 24 — DCR client cache TTL)
+  - Rate limiting: `MCP_RATE_LIMIT_PER_MINUTE` (default 60)
+  - Note: JWT signing uses existing `BETTER_AUTH_SECRET` (no new secret needed)
   - **Test:** `pnpm build` succeeds. Missing MCP vars don't crash dashboard (lazy init).
   - **Depends on:** Nothing
   - **Files:** `env.mjs`, `.env.example`
@@ -647,7 +794,7 @@ Seam 5: IVectorSearch activation
 ### Prisma Schema Updates
 
 - [ ] **P2-DB-01: Add `ApiKey` model to Prisma schema** — M
-  - Fields: `id` (UUID PK), `keyHash` (String — SHA-256 of raw key, indexed), `keyPrefix` (String — first 8 chars for display), `orgId` (String FK), `repoId` (String? FK), `name` (String — user label), `transport` (String, default "mcp-sse"), `scopes` (Json — `["read"]`), `lastUsedAt` (DateTime?), `revokedAt` (DateTime?), `createdAt`, `updatedAt`
+  - Fields: `id` (UUID PK), `keyHash` (String — SHA-256 of raw key, indexed), `keyPrefix` (String — first 8 chars for display), `orgId` (String FK), `repoId` (String? FK), `name` (String — user label), `transport` (String, default "streamable-http"), `scopes` (Json — `["read"]`), `lastUsedAt` (DateTime?), `revokedAt` (DateTime?), `createdAt`, `updatedAt`
   - Unique index: `keyHash`
   - Relations: `Repo` (optional), `Organization` (via `orgId`)
   - Schema: `@@schema("kap10")`, `@@map("api_keys")`
@@ -760,26 +907,28 @@ Seam 5: IVectorSearch activation
 ### MCP Server Core
 
 - [ ] **P2-API-01: Implement MCP server using `@modelcontextprotocol/sdk`** — L
-  - Use `@modelcontextprotocol/sdk` Server class with HTTP+SSE transport
-  - Per-connection server instance with resolved org/repo context
+  - Use `@modelcontextprotocol/sdk` Server class with **Streamable HTTP transport** (2025-03-26 spec)
+  - Single endpoint: `POST /mcp` for tool calls (returns JSON or SSE), optional `GET /mcp` for server notifications
+  - Session management via `Mcp-Session-Id` header (server generates, client echoes)
+  - Per-session server instance with resolved auth context (org/repo from JWT claims or API key)
   - Register all 9 tools via `server.setRequestHandler(ListToolsRequestSchema, ...)` and `server.setRequestHandler(CallToolRequestSchema, ...)`
   - Tool handlers receive DI container (same `getContainer()` pattern as Next.js API routes)
   - **Test:** Connect MCP Inspector to local server → tools listed → invoke `get_project_stats` → returns data.
-  - **Depends on:** P2-INFRA-01
+  - **Depends on:** P2-INFRA-01, P2-API-02
   - **Files:** `lib/mcp/server.ts`, `lib/mcp/transport.ts`
-  - **Acceptance:** MCP protocol compliant. Tools discoverable by any MCP client.
+  - **Acceptance:** MCP protocol compliant (2025-03-26 spec). Tools discoverable by any MCP client. Both JSON and SSE response modes work.
   - Notes: _____
 
-- [ ] **P2-API-02: Implement MCP API key authentication middleware** — M
-  - Extract API key from URL path (`/api/mcp/{apiKey}/sse` and `/api/mcp/{apiKey}/message`)
-  - Compute SHA-256 hash, lookup in Redis cache (TTL 5 min), fallback to Supabase
-  - Resolve `orgId`, `repoId`, `scopes` from API key record
-  - Reject revoked keys (401), expired keys (401), missing keys (401)
-  - Attach resolved context to request for downstream handlers
-  - **Test:** Valid key → 200 + context resolved. Revoked key → 401. Unknown key → 401. Cached lookup < 5ms.
-  - **Depends on:** P2-ADAPT-06
+- [ ] **P2-API-02: Implement dual-mode authentication middleware** — L
+  - Extract `Authorization: Bearer {token}` header from every MCP request
+  - **Mode A (OAuth JWT):** If token does NOT start with `kap10_sk_` → validate JWT signature (HMAC-SHA256 with `BETTER_AUTH_SECRET`), check `exp`, `aud` (must match `MCP_JWT_AUDIENCE`), extract `sub` (userId), `org` (orgId), `scope` claims. No database lookup needed (local validation).
+  - **Mode B (API Key):** If token starts with `kap10_sk_` → compute SHA-256 hash, lookup in Redis cache (TTL 5 min), fallback to Supabase `kap10.api_keys`. Resolve `orgId`, `repoId`, `scopes` from record.
+  - Reject: missing header (401 with `WWW-Authenticate: Bearer resource_metadata="..."`), invalid JWT (401), revoked API key (401), expired JWT (401)
+  - Attach resolved auth context (`{ authMode, userId, orgId, repoId?, scopes }`) to request for downstream handlers
+  - **Test:** Valid JWT → 200 + context resolved. Valid API key → 200 + context resolved. Expired JWT → 401. Revoked key → 401. Missing header → 401 with PRM URL. Cached API key lookup < 5ms.
+  - **Depends on:** P2-ADAPT-06, P2-API-19
   - **Files:** `lib/mcp/auth.ts`
-  - **Acceptance:** Auth middleware runs on every MCP request. Cache hit ratio > 90% under normal use.
+  - **Acceptance:** Dual-mode auth runs on every MCP request. OAuth tokens validated locally (no DB). API key cache hit ratio > 90%. Timing-safe comparison for hash lookup.
   - Notes: _____
 
 - [ ] **P2-API-03: Implement edge secret scrubber** — M
@@ -808,7 +957,7 @@ Seam 5: IVectorSearch activation
   - Notes: _____
 
 - [ ] **P2-API-05: Implement semantic truncation formatter** — M
-  - Processes all outgoing MCP tool results before SSE write
+  - Processes all outgoing MCP tool results before response write
   - Max response size: configurable, default 32 KB (fits within LLM context windows)
   - Truncation priority (highest preserved first): entity name + signature → file path + line number → callers/callees (capped at 20 each) → body/source code (truncated at function boundaries, never mid-statement)
   - If truncated: append `"[truncated — call get_function with specific name for full details]"` hint
@@ -946,7 +1095,7 @@ Seam 5: IVectorSearch activation
 - [ ] **P2-API-17: Implement Auto-PR onboarding workflow** — L
   - Temporal activity on `light-llm-queue`, triggered after first successful indexing (status → `ready` AND `onboardingPrUrl IS NULL`)
   - Generates `.cursor/rules/kap10.mdc` (Bootstrap Rule content)
-  - Generates `.cursor/mcp.json` (MCP server URL with auto-generated API key)
+  - Generates `.cursor/mcp.json` (MCP server URL with auto-generated API key in `headers.Authorization`)
   - Creates branch `kap10/onboarding-{repoId}` via GitHub API (installation token)
   - Commits both files to branch
   - Opens PR with title "Enable kap10 Code Intelligence for your AI agents" and descriptive body
@@ -967,6 +1116,47 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Stale workspaces removed. No committed data affected.
   - Notes: _____
 
+### OAuth 2.1 Endpoints (MCP Auth — Mode A)
+
+- [ ] **P2-API-19: Implement OAuth 2.1 discovery endpoints** — M
+  - `GET /.well-known/oauth-protected-resource` — RFC 9728 Protected Resource Metadata. Static JSON: `{ resource: "{MCP_SERVER_URL}/mcp", authorization_servers: ["{MCP_SERVER_URL}"], scopes_supported: ["mcp:read", "mcp:sync"] }`
+  - `GET /.well-known/oauth-authorization-server` — RFC 8414 Authorization Server Metadata. Static JSON: `{ issuer, authorization_endpoint, token_endpoint, registration_endpoint, response_types_supported, grant_types_supported, code_challenge_methods_supported: ["S256"], scopes_supported }`
+  - **Test:** `curl /.well-known/oauth-protected-resource` returns valid JSON with correct URLs. `curl /.well-known/oauth-authorization-server` returns valid metadata.
+  - **Depends on:** P2-INFRA-01
+  - **Files:** `lib/mcp/oauth/discovery.ts`
+  - **Acceptance:** Both endpoints return spec-compliant JSON. URLs use `MCP_SERVER_URL` env var.
+  - Notes: _____
+
+- [ ] **P2-API-20: Implement Dynamic Client Registration (DCR)** — M
+  - `POST /oauth/register` — RFC 7591. Accepts `{ client_name, redirect_uris, grant_types, response_types, token_endpoint_auth_method }`.
+  - Generates `client_id` (prefixed `dyn_`) and optional `client_secret`.
+  - Stores client in Redis with TTL (default 24h, configurable via `MCP_OAUTH_DCR_TTL_HOURS`).
+  - Validates `redirect_uris` (must be localhost or registered domain).
+  - **Test:** POST register → returns `client_id`. Use `client_id` in authorize → works. After TTL → `client_id` invalid.
+  - **Depends on:** Nothing
+  - **Files:** `lib/mcp/oauth/dcr.ts`
+  - **Acceptance:** DCR compliant with RFC 7591. Clients auto-expire. Invalid redirect URIs rejected.
+  - Notes: _____
+
+- [ ] **P2-API-21: Implement OAuth authorization + consent flow** — L
+  - `GET /oauth/authorize` — Validates `client_id`, `redirect_uri`, `code_challenge` (PKCE S256 required), `scope`, `state`. Redirects to kap10 login if no session. Shows consent screen listing requested scopes and org context. On approval: generates auth code, stores in Redis (TTL 10 min) with `code_challenge`, redirects to `redirect_uri?code=...&state=...`.
+  - Consent screen: Next.js page at `/oauth/consent` — "Allow {client_name} to access {org_name} code intelligence?" with scope list and Approve/Deny buttons.
+  - **Test:** Full browser flow: authorize → login → consent → redirect with code. Missing PKCE → 400. Invalid `client_id` → 400.
+  - **Depends on:** P2-API-20, Better Auth session
+  - **Files:** `lib/mcp/oauth/authorize.ts`, `app/(auth)/oauth/consent/page.tsx`
+  - **Acceptance:** PKCE mandatory (S256 only). Auth code single-use. Consent screen shows correct org/scopes. Session required (not accessible without login).
+  - Notes: _____
+
+- [ ] **P2-API-22: Implement OAuth token endpoint** — M
+  - `POST /oauth/token` — Supports `grant_type=authorization_code` (initial) and `grant_type=refresh_token` (refresh).
+  - For auth code: validates `code_verifier` (PKCE), consumes code (single-use), mints JWT `{ sub, org, scope, aud, exp, iat }` signed with `BETTER_AUTH_SECRET` (HMAC-SHA256). Returns `{ access_token, token_type: "Bearer", expires_in: 3600, refresh_token, scope }`.
+  - For refresh: validates refresh token (stored in Redis, TTL 30 days), mints new JWT, rotates refresh token (old one invalidated).
+  - **Test:** Exchange code for token → valid JWT. Use refresh token → new JWT. Replay auth code → 400. Replay refresh token → 400 (rotation).
+  - **Depends on:** P2-API-21
+  - **Files:** `lib/mcp/oauth/token.ts`
+  - **Acceptance:** JWT claims correct. PKCE verified. Refresh token rotation prevents replay. Token expiry enforced.
+  - Notes: _____
+
 ---
 
 ## 2.5 Frontend / UI Layer
@@ -975,10 +1165,12 @@ Seam 5: IVectorSearch activation
 
 - [ ] **P2-UI-01: "Connect to IDE" page at `/repos/[repoId]/connect`** — M
   - Shows for repos with status "ready"
-  - Sections: (1) Generate API Key form, (2) Cursor setup instructions (copy-paste `.cursor/mcp.json`), (3) Claude Code setup instructions (copy-paste `claude_desktop_config.json`), (4) Active API keys list
+  - Two connection paths displayed as tabs:
+    - **Tab A: "OAuth (Recommended)"** — For Claude Code, VS Code. Shows: (1) MCP server URL to paste into IDE (`https://mcp.kap10.dev/mcp`), (2) "Your IDE will open a browser for authentication — no API key needed", (3) Copy-to-clipboard button for URL
+    - **Tab B: "API Key"** — For Cursor, CI/bots. Shows: (1) Generate API Key form, (2) Cursor `.cursor/mcp.json` config with `headers.Authorization`, (3) Claude Code CLI `claude mcp add` command, (4) CI `.mcp.json` example with `${KAP10_API_KEY}` env var
   - API key shown once in a dismissable alert after generation (masked after dismiss)
-  - Copy-to-clipboard button for MCP URL
-  - **Test:** Navigate to connect page → generate key → instructions displayed with key embedded in URL.
+  - Active API keys list (both tabs)
+  - **Test:** Navigate to connect page → OAuth tab shows URL. API Key tab → generate key → instructions displayed with Bearer token in config.
   - **Depends on:** P2-API-14, P2-API-15
   - **Files:** `app/(dashboard)/repos/[repoId]/connect/page.tsx`, `components/repo/connect-ide.tsx`
   - **Acceptance:** Instructions match Cursor/Claude Code MCP configuration format. Key masked after first view.
@@ -1004,13 +1196,13 @@ Seam 5: IVectorSearch activation
   - Notes: _____
 
 - [ ] **P2-UI-04: MCP connection status indicator** — S
-  - Shows on repo detail page: "N active sessions" (fetched from Redis session count)
+  - Shows on repo detail page: "N active sessions" (fetched from Redis session count — sessions with `lastToolCallAt` within 5 min)
   - Refreshes every 30 seconds
   - Shows "No active sessions" when idle
-  - **Test:** Connect an MCP client → counter increments. Disconnect → counter decrements.
+  - **Test:** Make MCP tool call → counter increments. Wait 5 min with no calls → counter decrements.
   - **Depends on:** P2-API-01 (session tracking in Redis)
   - **Files:** `components/repo/mcp-status.tsx`, `app/api/repos/[repoId]/mcp-sessions/route.ts`
-  - **Acceptance:** Count matches actual SSE connections. Auto-refreshes.
+  - **Acceptance:** Count reflects recently active sessions (within 5 min window). Auto-refreshes.
   - Notes: _____
 
 ---
@@ -1086,21 +1278,19 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** All tools return correct data. Error cases return structured error messages (not stack traces).
   - Notes: _____
 
-- [ ] **P2-TEST-07: API key generation and auth tests** — M
-  - Key format: `kap10_sk_{32 random chars}`
-  - Hash stored, raw key not stored
-  - Lookup by hash → correct record
-  - Revoked key → rejected
-  - Redis cache → hit on second lookup
+- [ ] **P2-TEST-07: Dual-mode auth tests** — L
+  - **Mode A (OAuth JWT):** Valid JWT → context resolved. Expired JWT → 401. Wrong audience → 401. Invalid signature → 401. Missing `org` claim → 401.
+  - **Mode B (API Key):** Key format: `kap10_sk_{32 random chars}`. Hash stored, raw key not stored. Lookup by hash → correct record. Revoked key → rejected. Redis cache → hit on second lookup.
+  - **Dual-mode detection:** `kap10_sk_` prefix → Mode B. Everything else → Mode A (JWT). Missing header → 401 with `WWW-Authenticate` header containing PRM URL.
   - **Test:** `pnpm test lib/mcp/auth.test.ts`
-  - **Depends on:** P2-API-02
+  - **Depends on:** P2-API-02, P2-API-19
   - **Files:** `lib/mcp/auth.test.ts`
-  - **Acceptance:** Auth flow correct. Timing-safe comparison used for hash lookup.
+  - **Acceptance:** Both auth modes verified. Timing-safe comparison for API key hash. JWT validated locally (no DB call).
   - Notes: _____
 
 - [ ] **P2-TEST-08: Bootstrap Rule and Auto-PR content tests** — S
   - Generated `.cursor/rules/kap10.mdc` contains pre-flight and post-flight sync instructions
-  - Generated `.cursor/mcp.json` contains correct MCP server URL with key placeholder
+  - Generated `.cursor/mcp.json` contains correct MCP server URL (`https://mcp.kap10.dev/mcp`) with `headers.Authorization: Bearer {key}`
   - Content is valid YAML/JSON respectively
   - **Test:** `pnpm test lib/onboarding/`
   - **Depends on:** P2-API-17
@@ -1112,14 +1302,17 @@ Seam 5: IVectorSearch activation
 
 - [ ] **P2-TEST-09: MCP server end-to-end integration test** — L
   - Start MCP server locally with test container (in-memory fakes)
-  - Connect via MCP Inspector or raw HTTP+SSE client
+  - Connect via MCP Inspector or raw HTTP client (Streamable HTTP — `POST /mcp`)
+  - Test both auth modes: (1) OAuth JWT (sign test JWT with test secret), (2) API key Bearer
   - Invoke all 9 tools → verify correct responses
+  - Verify `Mcp-Session-Id` header returned and persisted across requests
   - Verify rate limiting triggers at 61st call
   - Verify secret scrubbing on payload with embedded AWS key
+  - Verify unauthenticated request returns 401 with `WWW-Authenticate` header
   - **Test:** `pnpm test mcp-server/integration.test.ts`
-  - **Depends on:** P2-API-01..13
+  - **Depends on:** P2-API-01..13, P2-API-19
   - **Files:** `mcp-server/integration.test.ts`
-  - **Acceptance:** Full MCP protocol compliance. All security layers active.
+  - **Acceptance:** Full MCP protocol compliance (2025-03-26 spec). Dual-mode auth verified. All security layers active.
   - Notes: _____
 
 - [ ] **P2-TEST-10: ArangoDB fulltext search integration test** — M
@@ -1163,7 +1356,12 @@ Seam 5: IVectorSearch activation
 P2-INFRA-01 (MCP server entry point)
     ├── P2-INFRA-02 (Dockerfile) ── P2-INFRA-03 (Fly.io config)
     │                              └── P2-INFRA-04 (Docker Compose)
-    └── P2-API-01 (MCP server core)
+    ├── P2-API-19 (OAuth discovery endpoints)
+    │     └── P2-API-20 (DCR)
+    │           └── P2-API-21 (OAuth authorize + consent)
+    │                 └── P2-API-22 (OAuth token endpoint)
+    └── P2-API-02 (Dual-mode auth middleware) ─── depends on P2-API-19, P2-ADAPT-06
+          └── P2-API-01 (MCP server core — Streamable HTTP)
 
 P2-INFRA-05 (env vars) ── independent
 
@@ -1179,12 +1377,13 @@ P2-ADAPT-04 (getProjectStats) ───┤
 P2-ADAPT-05 (workspace overlay) ─┤
 P2-ADAPT-06 (relational CRUD) ───┘
     │
-    ├── P2-API-01..05 (MCP server core: auth, scrubber, rate limiter, formatter)
+    ├── P2-API-01..05 (MCP server core: dual-mode auth, scrubber, rate limiter, formatter)
     ├── P2-API-06..13 (9 MCP tools)
     ├── P2-API-14..16 (API key CRUD routes)
-    └── P2-API-17..18 (Auto-PR + workspace cleanup)
+    ├── P2-API-17..18 (Auto-PR + workspace cleanup)
+    └── P2-API-19..22 (OAuth 2.1 endpoints)
         │
-        ├── P2-UI-01..04 (Connect IDE page, key manager, badges)
+        ├── P2-UI-01..04 (Connect IDE page with OAuth/API key tabs, key manager, badges)
         └── P2-TEST-01..12 (all tests)
 ```
 
@@ -1193,11 +1392,12 @@ P2-ADAPT-06 (relational CRUD) ───┘
 1. **Infrastructure** (P2-INFRA-01..05) — MCP server scaffold, Docker, Fly.io, env vars
 2. **Database** (P2-DB-01..04) — Prisma migrations, ArangoDB fulltext indexes
 3. **Adapters** (P2-ADAPT-01..06) — Graph store additions, relational CRUD, workspace overlay
-4. **MCP core** (P2-API-01..05) — Server, auth, scrubber, rate limiter, formatter
-5. **MCP tools** (P2-API-06..13) — All 9 tools (can be parallelized across developers)
-6. **Dashboard APIs** (P2-API-14..18) — API key routes, Auto-PR, workspace cleanup
-7. **Frontend** (P2-UI-01..04) — Connect IDE page, key management, badges
-8. **Testing** (P2-TEST-01..12) — Unit, integration, E2E
+4. **OAuth endpoints** (P2-API-19..22) — Discovery, DCR, authorize/consent, token (must precede auth middleware)
+5. **MCP core** (P2-API-01..05) — Server (Streamable HTTP), dual-mode auth, scrubber, rate limiter, formatter
+6. **MCP tools** (P2-API-06..13) — All 9 tools (can be parallelized across developers)
+7. **Dashboard APIs** (P2-API-14..18) — API key routes, Auto-PR, workspace cleanup
+8. **Frontend** (P2-UI-01..04) — Connect IDE page (OAuth + API key tabs), key management, badges
+9. **Testing** (P2-TEST-01..12) — Unit, integration, E2E
 
 ---
 
@@ -1210,10 +1410,15 @@ mcp-server/
 lib/
   mcp/
     server.ts                              ← MCP server factory (@modelcontextprotocol/sdk)
-    transport.ts                           ← HTTP+SSE transport adapter
-    auth.ts                                ← API key validation + context resolution
+    transport.ts                           ← Streamable HTTP transport adapter (2025-03-26 spec)
+    auth.ts                                ← Dual-mode auth: OAuth JWT validation + API key Bearer lookup
     formatter.ts                           ← Semantic truncation + pagination
     workspace.ts                           ← Workspace resolution (per-user, per-repo, per-branch)
+    oauth/
+      discovery.ts                         ← RFC 9728 + RFC 8414 well-known endpoints
+      dcr.ts                               ← Dynamic Client Registration (RFC 7591)
+      authorize.ts                         ← Authorization endpoint + PKCE validation
+      token.ts                             ← Token endpoint (JWT minting, refresh rotation)
     security/
       scrubber.ts                          ← Edge secret scrubbing (regex + entropy)
       rate-limiter.ts                      ← Sliding window rate limiter (Redis)
@@ -1234,6 +1439,9 @@ lib/
       onboarding.ts                        ← Auto-PR creation activity
       workspace-cleanup.ts                 ← Workspace expiry activity
 app/
+  (auth)/
+    oauth/
+      consent/page.tsx                     ← OAuth consent screen ("Allow {IDE} to access {org}?")
   api/
     api-keys/
       [id]/route.ts                        ← DELETE — revoke API key
@@ -1276,4 +1484,5 @@ components/dashboard/repo-card.tsx         ← Add Auto-PR badge
 
 | Date | Author | Change |
 |------|--------|--------|
-| 2026-02-18 | — | Initial document created. Part 1: 5 user flows with Mermaid diagrams (API key provisioning, MCP connection, tool invocation with 3 security layers, Auto-PR onboarding, sync_local_diff shadow workspace), system logic (two-process architecture, API key lifecycle, MCP session state, 9-tool registry), 10 failure scenarios with circuit breaker pattern, 7 performance budgets with connection pool sizing, Phase 3/4 bridge with 5 seam points. Part 2: 46 tracker items across 6 layers (Infrastructure: 5, Database: 4, Adapters: 6, API: 18, UI: 4, Testing: 12). |
+| 2026-02-18 | — | Initial document created. 46 tracker items across 6 layers. |
+| 2026-02-18 | — | **Auth & transport overhaul.** Replaced deprecated HTTP+SSE transport with Streamable HTTP (MCP spec 2025-03-26). Replaced API-key-in-URL with dual-mode auth: OAuth 2.1 (Mode A — Claude Code, VS Code) + API key Bearer header (Mode B — Cursor, CI/bots). Added Flow 0 (auth model overview), rewrote Flows 1–3 (OAuth, API key, Streamable HTTP). Better Auth serves as OAuth authorization server (no separate OAuth infra). Added 4 new tracker items: P2-API-19 (OAuth discovery), P2-API-20 (DCR), P2-API-21 (authorize + consent), P2-API-22 (token endpoint). Added failure scenario #11 (OAuth token expiry). Updated: deployment topology, session state (Mcp-Session-Id), API key lookup path, all failure scenarios, performance targets, memory budget, dependency graph, recommended implementation order, new files summary. Updated P2-API-01 (Streamable HTTP), P2-API-02 (dual-mode auth), P2-DB-01 (transport field), P2-UI-01 (OAuth/API key tabs), P2-TEST-07 (dual-mode tests), P2-TEST-09 (OAuth integration). Total: **50 tracker items** (was 46). |

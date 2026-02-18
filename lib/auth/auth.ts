@@ -360,3 +360,45 @@ export async function listOrganizations(headers: Headers): Promise<OrgListItem[]
   }
   return api.listOrganizations({ headers })
 }
+
+/**
+ * Create an organization server-side for the currently authenticated user.
+ * Used when auto-provisioning a workspace (e.g. during GitHub App callback).
+ */
+export async function createOrganizationForUser(
+  reqHeaders: Headers,
+  orgName: string,
+  orgSlug: string
+): Promise<OrgListItem> {
+  const api = auth.api as unknown as {
+    createOrganization: (opts: {
+      body: { name: string; slug: string }
+      headers: Headers
+    }) => Promise<OrgListItem>
+  }
+  return api.createOrganization({
+    body: { name: orgName, slug: orgSlug },
+    headers: reqHeaders,
+  })
+}
+
+/**
+ * Set the active organization for the current session (server-side).
+ * Pass null to clear. Used after auto-provisioning a workspace so the
+ * session cookie reflects the new org immediately.
+ */
+export async function setActiveOrganization(
+  reqHeaders: Headers,
+  organizationId: string | null
+): Promise<unknown> {
+  const api = auth.api as unknown as {
+    setActiveOrganization: (opts: {
+      body: { organizationId: string | null }
+      headers: Headers
+    }) => Promise<unknown>
+  }
+  return api.setActiveOrganization({
+    body: { organizationId },
+    headers: reqHeaders,
+  })
+}

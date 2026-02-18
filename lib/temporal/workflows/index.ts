@@ -1,6 +1,8 @@
 /**
- * Temporal workflow entry point (Phase 0: no workflows yet).
- * Phase 1+ will export indexRepoWorkflow, deleteRepoWorkflow, etc.
+ * Temporal workflow exports (Phase 1).
  */
 
-export {}
+export { indexRepoWorkflow, getProgressQuery } from "./index-repo"
+export type { IndexRepoInput } from "./index-repo"
+export { deleteRepoWorkflow } from "./delete-repo"
+export type { DeleteRepoInput } from "./delete-repo"

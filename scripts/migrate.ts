@@ -7,15 +7,14 @@
  * Requires: SUPABASE_DB_URL in .env.local (or DATABASE_URL).
  */
 
+import { config } from "dotenv"
+import { Pool } from "pg"
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
-import { config } from "dotenv"
 
 // Load .env.local first (Next.js convention), then .env
 config({ path: path.resolve(process.cwd(), ".env.local"), quiet: true })
 config({ path: path.resolve(process.cwd(), ".env"), quiet: true })
-
-import { Pool } from "pg"
 
 const MIGRATIONS_DIR = path.join(process.cwd(), "supabase", "migrations")
 const MIGRATION_TABLE = "schema_migrations"
@@ -67,7 +66,7 @@ async function main(): Promise<void> {
   let migrationsDir: string[]
   try {
     migrationsDir = await readdir(MIGRATIONS_DIR)
-  } catch (err) {
+  } catch (_err) {
     console.error("Migrations directory not found:", MIGRATIONS_DIR)
     process.exit(1)
   }

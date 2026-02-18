@@ -94,6 +94,8 @@ DI container: `createProductionContainer()` for runtime, `createTestContainer(ov
 
 ### Development Setup (recommended)
 
+**Full step-by-step guide:** [docs/DEV_SETUP.md](docs/DEV_SETUP.md) — prerequisites, Supabase, GitHub App (how to get App ID and private key), and running the platform locally.
+
 Run infrastructure in Docker, web server on your machine for fast iteration:
 
 ```bash

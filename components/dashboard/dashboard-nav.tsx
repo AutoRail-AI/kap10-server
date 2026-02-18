@@ -18,7 +18,7 @@ export function DashboardNav() {
       <Link
         href="/"
         className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors ${
-          pathname === "/"
+          pathname === "/" || pathname.startsWith("/repos")
             ? "text-electric-cyan bg-muted/30"
             : "text-muted-foreground hover:bg-muted hover:text-foreground"
         }`}
