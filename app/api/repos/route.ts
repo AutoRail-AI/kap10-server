@@ -1,0 +1,109 @@
+import { NextRequest } from "next/server"
+import { getActiveOrgId } from "@/lib/api/get-active-org"
+import { getContainer } from "@/lib/di/container"
+import { withAuth } from "@/lib/middleware/api-handler"
+import { errorResponse, successResponse } from "@/lib/utils/api-response"
+
+const MAX_REPOS_PER_ORG = 50
+const MAX_CONCURRENT_INDEXING = 3
+
+export const GET = withAuth(async () => {
+  const orgId = await getActiveOrgId()
+  if (!orgId) {
+    return errorResponse("No organization", 400)
+  }
+  const container = getContainer()
+  const repos = await container.relationalStore.getRepos(orgId)
+  return successResponse({ repos })
+})
+
+export const POST = withAuth(async (req: NextRequest) => {
+  const orgId = await getActiveOrgId()
+  if (!orgId) {
+    return errorResponse("No organization", 400)
+  }
+
+  const body = (await req.json()) as { githubRepoIds?: number[] }
+  const githubRepoIds = body.githubRepoIds
+  if (!Array.isArray(githubRepoIds) || githubRepoIds.length === 0) {
+    return errorResponse("githubRepoIds array is required", 400)
+  }
+
+  const container = getContainer()
+  const installation = await container.relationalStore.getInstallation(orgId)
+  if (!installation) {
+    return errorResponse("GitHub App not installed for this organization", 400)
+  }
+
+  const existingRepos = await container.relationalStore.getRepos(orgId)
+  if (existingRepos.length + githubRepoIds.length > MAX_REPOS_PER_ORG) {
+    return errorResponse(`Maximum ${MAX_REPOS_PER_ORG} repos per organization`, 400)
+  }
+
+  const indexing = await container.relationalStore.getReposByStatus(orgId, "indexing")
+  if (indexing.length >= MAX_CONCURRENT_INDEXING) {
+    return errorResponse(`Maximum ${MAX_CONCURRENT_INDEXING} concurrent indexing workflows`, 429)
+  }
+
+  const available = await container.gitHost.getInstallationRepos(installation.installationId)
+  const availableIds = new Set(available.map((r) => r.id))
+  const existingIds = new Set(existingRepos.map((r) => r.githubRepoId).filter(Boolean) as number[])
+  const toAdd = githubRepoIds.filter((id) => availableIds.has(id) && !existingIds.has(id))
+
+  const workflowEngine = container.workflowEngine
+  const created: { id: string; name: string; status: string }[] = []
+
+  for (const ghRepoId of toAdd) {
+    const meta = available.find((r) => r.id === ghRepoId)
+    const fullName = meta?.fullName ?? `repo-${ghRepoId}`
+    const name = fullName.split("/").pop() ?? fullName
+    const providerId = String(ghRepoId)
+    const repo = await container.relationalStore.createRepo({
+      organizationId: orgId,
+      name,
+      fullName,
+      provider: "github",
+      providerId,
+      status: "pending",
+      defaultBranch: meta?.defaultBranch ?? "main",
+      githubRepoId: ghRepoId,
+      githubFullName: fullName,
+    })
+    created.push({ id: repo.id, name: repo.name, status: repo.status })
+
+    const workflowId = `index-${orgId}-${repo.id}`
+    try {
+      await workflowEngine.startWorkflow({
+        workflowId,
+        workflowFn: "indexRepoWorkflow",
+        args: [{
+          orgId,
+          repoId: repo.id,
+          installationId: installation.installationId,
+          cloneUrl: `https://github.com/${fullName}.git`,
+          defaultBranch: repo.defaultBranch ?? "main",
+        }],
+        taskQueue: "heavy-compute-queue",
+      })
+      await container.relationalStore.updateRepoStatus(repo.id, {
+        status: "indexing",
+        workflowId,
+      })
+      const c = created.find((x) => x.id === repo.id)
+      if (c) c.status = "indexing"
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      await container.relationalStore.updateRepoStatus(repo.id, {
+        status: "error",
+        errorMessage: message,
+      })
+      const c = created.find((x) => x.id === repo.id)
+      if (c) c.status = "error"
+    }
+  }
+
+  return successResponse({
+    repos: await container.relationalStore.getRepos(orgId),
+    indexingStarted: created.some((c) => c.status === "indexing"),
+  })
+})
