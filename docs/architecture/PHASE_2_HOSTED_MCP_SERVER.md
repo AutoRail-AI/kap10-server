@@ -437,6 +437,8 @@ When an MCP tool (e.g., `get_function`) executes, the query path is:
 3. If no workspace: query committed graph directly (Phase 1 behavior)
 ```
 
+> **Phase 5.5 CLI repos note:** For repos ingested via `kap10 push` (provider: `local_cli`), the uploaded + indexed snapshot serves as the "base commit" equivalent. The `sync_local_diff` overlay works identically — workspace-scoped entities override the committed graph. The `baseSha` field is set to a hash of the upload timestamp (e.g., `cli:{timestamp}`) since there is no git SHA for local repos. `kap10 watch` streams diffs against this baseline, and `kap10 push` resets it.
+
 **Critical constraint — workspace TTL:**
 
 Workspaces expire 1 hour after last `sync_local_diff` call. This prevents stale overlays from polluting search results. The TTL is enforced via:

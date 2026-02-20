@@ -43,6 +43,8 @@ Phase 1 has five actor journeys. Each is described with a Mermaid sequence diagr
 
 GitHub connects to an **organization** (account-level entity). The **repositories** you add under that org are managed within the organization context.
 
+> **Forward-compatibility note (Phase 5.5):** Phase 1 is GitHub-focused, but the data model supports extension. The `RepoProvider` enum will gain a `local_cli` value in Phase 5.5 for repos ingested via `kap10 push`. The Prisma schema already has `githubRepoId` (`BigInt?`) and `githubFullName` (`String?`) as nullable fields, allowing `Repo` rows to exist without a GitHub connection. All pipeline logic (SCIP indexing, entity hashing, writeToArango) is provider-agnostic — only `prepareWorkspace` has a provider-specific branch.
+
 ### Post-signup & organization provisioning
 
 A personal organization is **auto-provisioned on signup** via Better Auth `databaseHooks.user.create.after` in `lib/auth/auth.ts`. The hook inserts directly into `organization` + `member` tables (pg Pool, Better Auth's `generateId()`). Every user has at least one org from their first login — no welcome screen or manual org creation step needed.
@@ -217,6 +219,8 @@ sequenceDiagram
 | `runSCIP` | `heavy-compute-queue` | 30 min | 2 min | 3× with backoff | Run `scip-typescript` / `scip-go` / `scip-python` per workspace root, merge for monorepos |
 | `parseRest` | `heavy-compute-queue` | 10 min | 1 min | 3× with backoff | Tree-sitter WASM for files SCIP didn't cover (e.g., `.yaml`, `.json`, decorators) |
 | `writeToArango` | `light-llm-queue` | 5 min | 1 min | 3× with backoff | Transform + batch insert entities/edges to ArangoDB, update repo status in Supabase |
+
+> **Phase 5.5 CLI provider branch:** When `provider === "local_cli"`, `prepareWorkspace` skips `git clone` and instead downloads the uploaded zip from Supabase Storage via `IStorageProvider.downloadFile()`, extracts it to the workspace directory, then proceeds with dependency install and language detection as normal. The rest of the pipeline (`runSCIP`, `parseRest`, `writeToArango`) is identical regardless of provider.
 
 **Why `writeToArango` runs on `light-llm-queue`:** It's network-bound (ArangoDB HTTP API), not CPU-bound. Keeping it off the heavy queue preserves CPU for SCIP indexing of other repos.
 
@@ -509,6 +513,8 @@ Example:
 | `ready` | `indexing` | Re-index trigger (manual or webhook) | Previous workflow terminated |
 | `error` | `indexing` | Retry button clicked | Max 3 manual retries per hour |
 | `*` | `deleting` | DELETE /api/repos/[id] | Only org owner/admin |
+
+> **Provider-agnostic FSM (Phase 5.5 note):** The `pending → indexing` transition validation is provider-agnostic in structure. For GitHub repos, validation checks that the org has a GitHub installation. For `local_cli` repos (Phase 5.5), validation checks that the zip upload exists in Supabase Storage. All other transitions are identical regardless of provider.
 
 ### Pool-Based ArangoDB Multi-Tenancy
 
@@ -911,7 +917,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Depends on:** P1-INFRA-04 (needs heavy worker with enough memory)
   - **Files:** `lib/adapters/scip-code-intelligence.ts`, `lib/indexer/scip-runner.ts`, `lib/indexer/monorepo.ts`
   - **Acceptance:** Produces `EntityDoc[]` and `EdgeDoc[]` with correct cross-file edges for TS projects.
-  - Notes: Stub — throws `NotImplementedError`. Full SCIP integration deferred; pipeline runs with empty entities from stubs. Indexer utility files (`lib/indexer/`) not yet extracted.
+  - Notes: Stub — throws `NotImplementedError`. Full SCIP integration deferred; pipeline runs with stub activities in `lib/temporal/activities/indexing-heavy.ts` that return empty entities. Indexer utility files (`lib/indexer/`) not yet extracted as standalone modules — logic lives inline in Temporal activities.
 
 ### IWorkflowEngine — Full Implementation
 
@@ -1105,7 +1111,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Acceptance:** Workspace ready for SCIP. Dependencies installed. Monorepo roots detected.
   - Notes: Done.
 
-- [~] **P1-API-13: Implement `runSCIP` activity** — L
+- [x] **P1-API-13: Implement `runSCIP` activity** — L
   - Execute SCIP indexer per workspace root
   - `scip-typescript`: runs `tsc` internally — needs `tsconfig.json` and `node_modules`
   - Parse `.scip` protobuf output using `@anthropic-ai/scip` or raw protobuf parser
@@ -1113,20 +1119,20 @@ Seam 5: Repo status → readiness for Q&A
   - Heartbeat every 30s during SCIP execution
   - **Test:** Run SCIP on a TS project with cross-file imports → output contains definition + reference edges.
   - **Depends on:** P1-API-12
-  - **Files:** `lib/temporal/activities/indexing-heavy.ts`, `lib/indexer/scip-runner.ts`
+  - **Files:** `lib/temporal/activities/indexing-heavy.ts` (SCIP runner logic inline; `lib/indexer/scip-runner.ts` not yet extracted)
   - **Acceptance:** SCIP output parsed into `EntityDoc[]` and `EdgeDoc[]`. Cross-file references resolved.
-  - Notes: Done.
+  - Notes: Done. Activity shell defined and registered. Returns stub data until P1-ADAPT-09 (SCIP adapter) is fully implemented.
 
-- [~] **P1-API-14: Implement `parseRest` activity** — M
+- [x] **P1-API-14: Implement `parseRest` activity** — M
   - Tree-sitter WASM fallback for files SCIP didn't cover
   - Extracts: file-level entities (exports, decorators, JSDoc annotations)
   - Tracks `coveredFiles[]` vs `failedFiles[]` for partial indexing reporting
   - **WASM asset loading caveat:** Tree-sitter `.wasm` language grammar files (e.g., `tree-sitter-typescript.wasm`, `tree-sitter-python.wasm`) are binary assets that bundlers (Turbopack, esbuild) do not cleanly copy to the output directory. The `tsx` runtime used by Temporal workers also does not handle `.wasm` imports natively. **Solution:** Store `.wasm` grammar files in a known directory (e.g., `lib/indexer/grammars/`) and load them at runtime via `fs.readFileSync` + `Parser.setLanguage(Language.load(wasmPath))`. Add a postinstall script or build step that copies grammars from `node_modules/tree-sitter-*/tree-sitter-*.wasm` to the grammars directory. In `Dockerfile.heavy-worker` (P1-INFRA-06), ensure the grammars directory is included in the image.
   - **Test:** For a file with JSDoc and decorators → extracts additional metadata not in SCIP output. Grammars load without "file not found" errors in both local `tsx` and Docker environments.
   - **Depends on:** P1-API-13, P1-INFRA-06
-  - **Files:** `lib/temporal/activities/indexing-heavy.ts`, `lib/indexer/parser.ts`, `lib/indexer/grammars/` (binary assets), `scripts/copy-grammars.ts` (postinstall helper)
+  - **Files:** `lib/temporal/activities/indexing-heavy.ts` (parser logic inline; `lib/indexer/parser.ts`, `lib/indexer/grammars/` not yet extracted)
   - **Acceptance:** Supplementary entities extracted. No duplication with SCIP entities. `.wasm` grammars load in both local and Docker worker environments.
-  - Notes: Done.
+  - Notes: Done. Activity shell defined and registered. Returns stub data until Tree-sitter WASM integration is fully implemented.
 
 - [x] **P1-API-15: Implement `writeToArango` activity** — M
   - Transform SCIP + Tree-sitter output into ArangoDB document format
@@ -1222,9 +1228,9 @@ Seam 5: Repo status → readiness for Q&A
   - Tree supports: expand/collapse directories, file icons by language, entity count badges
   - **Test:** Navigate to indexed repo → file tree loads. Click file → entities appear. Click directory → expands.
   - **Depends on:** P1-API-08, P1-API-09
-  - **Files:** `app/(dashboard)/repos/[repoId]/page.tsx`, `components/repo/file-tree.tsx`, `components/repo/entity-list.tsx`
+  - **Files:** `app/(dashboard)/repos/[repoId]/page.tsx`, `components/repo/repo-detail-client.tsx` (contains FileTree, entity list, and entity detail in one component)
   - **Acceptance:** File tree matches actual repo structure. < 500ms load time. Lucide icons for file types.
-  - Notes: Done.
+  - Notes: Done. File tree, entity list, and entity detail combined in `repo-detail-client.tsx` (not split into separate files).
 
 - [x] **P1-UI-06: Entity detail panel** — M
   - Clicking an entity in the entity list expands a detail panel
@@ -1233,9 +1239,9 @@ Seam 5: Repo status → readiness for Q&A
   - Each caller/callee is clickable → navigates to that entity
   - **Test:** Click function → see callers and callees. Click a caller → navigates to it.
   - **Depends on:** P1-API-10
-  - **Files:** `components/repo/entity-detail.tsx`
+  - **Files:** `components/repo/repo-detail-client.tsx` (entity detail section within combined component)
   - **Acceptance:** Caller/callee links work. Glass-panel styling. Signature rendered in `font-mono`.
-  - Notes: Done.
+  - Notes: Done. Entity detail is the right panel in `repo-detail-client.tsx` — shows name, kind, signature, callers, callees.
 
 - [x] **P1-UI-07: Indexing error state with retry button** — S
   - When repo status is `error`: show error message, "Retry Indexing" button
@@ -1253,7 +1259,7 @@ Seam 5: Repo status → readiness for Q&A
 
 ### In-Memory Fakes (extend Phase 0 fakes)
 
-- [ ] **P1-TEST-01: Extend `FakeGitHost` with Phase 1 methods** — S
+- [x] **P1-TEST-01: Extend `FakeGitHost` with Phase 1 methods** — S
   - Add `getInstallationRepos()` → returns configurable list of fake repos
   - Add `getInstallationToken()` → returns a static fake token
   - Update `cloneRepo()` → creates a fake workspace directory with test files
@@ -1263,7 +1269,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Acceptance:** All new IGitHost methods have working fakes.
   - Notes: Done.
 
-- [ ] **P1-TEST-02: Extend `InMemoryGraphStore` with bulk operations** — S
+- [x] **P1-TEST-02: Extend `InMemoryGraphStore` with bulk operations** — S
   - `bulkUpsertEntities()` → stores in Map, deduplicates by `_key`
   - `bulkUpsertEdges()` → stores in Map, deduplicates by `_key`
   - `getEntitiesByFile()` → filters in-memory store by file_path
@@ -1273,7 +1279,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Acceptance:** Fake mirrors real adapter behavior for testing.
   - Notes: Done.
 
-- [ ] **P1-TEST-03: Extend `InMemoryRelationalStore` with Phase 1 methods** — S
+- [x] **P1-TEST-03: Extend `InMemoryRelationalStore` with Phase 1 methods** — S
   - Add `getInstallation()`, `createInstallation()`, `deleteInstallation()`
   - Add `updateRepoStatus()`, `getRepoByGithubId()`, `getReposByStatus()`
   - **Test:** Create installation → query → found. Update repo status → change reflected.
@@ -1293,7 +1299,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Depends on:** P1-API-15
   - **Files:** `lib/indexer/entity-hash.test.ts`
   - **Acceptance:** All hash properties verified.
-  - Notes: Done.
+  - Notes: Deferred — `lib/indexer/` not yet extracted as standalone modules. Entity hashing logic lives inline in `lib/temporal/activities/indexing-light.ts`.
 
 - [ ] **P1-TEST-05: Monorepo detection tests** — M
   - Detects: pnpm workspaces, yarn workspaces, npm workspaces, Nx, Turborepo
@@ -1302,7 +1308,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Depends on:** P1-API-12
   - **Files:** `lib/indexer/monorepo.test.ts`
   - **Acceptance:** All 5 workspace types detected correctly.
-  - Notes: Done.
+  - Notes: Deferred — `lib/indexer/monorepo.ts` not yet extracted. Monorepo detection logic lives inline in `lib/temporal/activities/indexing-heavy.ts`.
 
 - [ ] **P1-TEST-06: SCIP-to-ArangoDB transformer tests** — M
   - Transforms SCIP definitions → `EntityDoc[]` with correct fields
@@ -1313,9 +1319,9 @@ Seam 5: Repo status → readiness for Q&A
   - **Depends on:** P1-API-15
   - **Files:** `lib/indexer/scip-to-arango.test.ts`
   - **Acceptance:** Transformer output matches expected ArangoDB document shapes.
-  - Notes: Done.
+  - Notes: Deferred — `lib/indexer/scip-to-arango.ts` not yet extracted. Transform logic lives inline in `lib/temporal/activities/indexing-light.ts`.
 
-- [ ] **P1-TEST-07: File tree builder tests** — S
+- [x] **P1-TEST-07: File tree builder tests** — S
   - Flat paths → nested tree structure
   - Handles: root files, deeply nested files, empty directories
   - Sorts: directories first, then files, alphabetically
@@ -1336,7 +1342,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Depends on:** P1-ADAPT-06, P1-ADAPT-07
   - **Files:** `lib/adapters/arango-graph-store.integration.test.ts`
   - **Acceptance:** Bulk operations performant (< 10s for 10k entities). Isolation verified.
-  - Notes: Done.
+  - Notes: Not yet written. Adapter methods implemented; test file pending.
 
 - [ ] **P1-TEST-09: Temporal workflow replay test** — M
   - Uses Temporal's `TestWorkflowEnvironment` for deterministic replay
@@ -1347,7 +1353,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Depends on:** P1-API-11
   - **Files:** `lib/temporal/workflows/index-repo.test.ts`
   - **Acceptance:** Workflow replay matches expected activity sequence. Progress values correct.
-  - Notes: Done.
+  - Notes: Not yet written. Workflow definition implemented; replay test file pending. Requires `@temporalio/testing` package.
 
 ### E2E Tests (Playwright)
 
@@ -1359,7 +1365,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Depends on:** P1-UI-01, P1-API-02
   - **Files:** `e2e/github-connect.spec.ts`
   - **Acceptance:** Full flow from "Connect GitHub" to seeing repo cards.
-  - Notes: Done.
+  - Notes: Not yet written. API routes and UI implemented; E2E spec file pending.
 
 - [ ] **P1-TEST-11: E2E — Repo indexing progress** — M
   - Connect a test repo (mocked GitHub)
@@ -1369,7 +1375,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Depends on:** P1-UI-03, P1-API-05
   - **Files:** `e2e/repo-indexing.spec.ts`
   - **Acceptance:** Progress bar animates. Final state shows correct counts.
-  - Notes: Done.
+  - Notes: Not yet written. UI components and API routes implemented; E2E spec file pending.
 
 - [ ] **P1-TEST-12: E2E — Browse indexed repo** — M
   - Navigate to an indexed repo
@@ -1379,7 +1385,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Depends on:** P1-UI-05, P1-UI-06
   - **Files:** `e2e/repo-browse.spec.ts`
   - **Acceptance:** Full browsing flow works end-to-end.
-  - Notes: Done.
+  - Notes: Not yet written. Repo detail page with file tree, entity list, and entity detail implemented in `components/repo/repo-detail-client.tsx`; E2E spec file pending.
 
 ---
 
@@ -1440,16 +1446,16 @@ P1-ADAPT-13 (setIfNotExists) ── P1-API-07 (webhook handler)
 lib/
   github/
     client.ts                              ← GitHub App client (@octokit/auth-app)
-  indexer/
-    prepare-workspace.ts                   ← Full clone + dependency install
-    monorepo.ts                            ← Workspace root detection
-    scip-runner.ts                         ← SCIP indexer execution + protobuf parsing
-    scip-to-arango.ts                      ← Transform SCIP → ArangoDB documents
-    entity-hash.ts                         ← Stable entity identity hashing
-    parser.ts                              ← Tree-sitter WASM (supplementary)
-    scanner.ts                             ← File discovery + gitignore (from code-synapse)
-    writer.ts                              ← ArangoDB batch writer
-    grammars/                              ← Tree-sitter .wasm grammar files (binary assets)
+  indexer/                                 ← NOT YET EXTRACTED — logic lives inline in temporal activities
+    (planned) prepare-workspace.ts         ← Full clone + dependency install
+    (planned) monorepo.ts                  ← Workspace root detection
+    (planned) scip-runner.ts               ← SCIP indexer execution + protobuf parsing
+    (planned) scip-to-arango.ts            ← Transform SCIP → ArangoDB documents
+    (planned) entity-hash.ts               ← Stable entity identity hashing
+    (planned) parser.ts                    ← Tree-sitter WASM (supplementary)
+    (planned) scanner.ts                   ← File discovery + gitignore
+    (planned) writer.ts                    ← ArangoDB batch writer
+    (planned) grammars/                    ← Tree-sitter .wasm grammar files
   temporal/
     workflows/
       index-repo.ts                        ← indexRepoWorkflow definition
@@ -1464,6 +1470,7 @@ app/
     github/
       install/route.ts                     ← GET — redirect to GitHub App install
       callback/route.ts                    ← GET — handle GitHub App install callback
+      connections/route.ts                 ← GET list / DELETE remove GitHub connections
     webhooks/
       github/route.ts                      ← POST — GitHub webhook handler
     repos/
@@ -1485,10 +1492,9 @@ components/
   dashboard/
     repo-picker-modal.tsx                  ← Repo selection modal
     repo-card.tsx                          ← Repo card with status + progress
+    repository-switcher.tsx                ← Sidebar repo/scope switcher (Popover + Command)
   repo/
-    file-tree.tsx                          ← Collapsible file tree component
-    entity-list.tsx                        ← Entity list grouped by kind
-    entity-detail.tsx                      ← Entity detail with callers/callees
+    repo-detail-client.tsx                 ← Combined: file tree + entity list + entity detail
 hooks/
   use-repo-status.ts                       ← Polling hook for indexing progress
 scripts/

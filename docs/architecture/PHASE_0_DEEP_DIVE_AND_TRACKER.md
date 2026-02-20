@@ -648,6 +648,11 @@ Seam 5: ArangoDB
   - **Test:** Type-check only.
   - Notes: Implemented 2026-02-17. Stub in Phase 0; Semgrep/ast-grep in Phase 6+.
 
+- [ ] **`lib/ports/storage-provider.ts`** — `IStorageProvider` interface — S *(Phase 5.5)*
+  - `generateUploadUrl()`, `downloadFile()`, `deleteFile()`, `healthCheck()`
+  - 12th port for CLI-based local repo uploads. Production adapter: `SupabaseStorageAdapter` (`lib/adapters/supabase-storage.ts`). Test fake: `InMemoryStorageProvider`.
+  - Notes: Planned for Phase 5.5. Enables `kap10 push` to upload zipped codebases via pre-signed URLs to Supabase Storage.
+
 ### Production Adapters (Phase 0 needs 5 working, 6 stubbed)
 
 **Working adapters (used in Phase 0 user flows):**
@@ -717,7 +722,7 @@ Seam 5: ArangoDB
   - `createTestContainer(overrides?)` — in-memory fakes for all 11 ports
   - `getContainer()` — lazy singleton for production use
   - **Test:** TypeScript compile; createProductionContainer/createTestContainer return all 11 keys; overrides work.
-  - Notes: Implemented 2026-02-17.
+  - Notes: Implemented 2026-02-17. Phase 5.5: Container grows to 12 ports with the addition of `IStorageProvider` (for CLI-based local repo uploads via Supabase Storage).
 
 ### Test Fakes (for `createTestContainer`)
 
@@ -851,15 +856,15 @@ Seam 5: ArangoDB
 
 ### Unit Tests
 
-- [ ] **Port interface compliance tests** — M
+- [x] **Port interface compliance tests** — M
   - For each of the 11 ports: verify production adapter AND test fake both satisfy the TypeScript interface
   - **Test:** `pnpm test lib/di/` — all 22 checks pass (11 adapters + 11 fakes).
-  - Notes: Deferred to Phase 1. TypeScript compile + manual verification used in Phase 0.
+  - Notes: Implemented. `lib/di/__tests__/port-compliance.test.ts` — exercises all 11 fakes against port interfaces.
 
-- [ ] **DI container factory tests** — S
+- [x] **DI container factory tests** — S
   - `createProductionContainer()` / `createTestContainer()` return all 11 keys; overrides work.
   - **Test:** `pnpm test lib/di/container.test.ts`
-  - Notes: Deferred to Phase 1.
+  - Notes: Implemented. `lib/di/__tests__/container.test.ts` — verifies all 11 keys and override behavior.
 
 - [ ] **Domain function tests (pure logic, zero deps)** — S
   - `entity-hashing.ts`, `rule-resolution.ts` (minimal in Phase 0)
@@ -885,24 +890,24 @@ Seam 5: ArangoDB
 
 ### E2E Tests (Playwright)
 
-- [ ] **Full signup → dashboard flow** — L
+- [~] **Full signup → dashboard flow** — L
   - Register → verify email → dashboard (org auto-provisioned) → Connect GitHub → repos imported.
   - **Test:** `pnpm e2e:headless`
-  - Notes: Deferred to Phase 1. Manual flow verified.
+  - Notes: Partial. `e2e/auth-flows.spec.ts` covers unauthenticated redirect, login/register page rendering, protected route guards. Full authenticated flow (signup → verify → dashboard) requires test auth helper — skipped in CI.
 
-- [ ] **Returning user → dashboard** — S
+- [~] **Returning user → dashboard** — S
   - Login → dashboard, nav (Repos, Settings).
   - **Test:** `pnpm e2e:headless`
-  - Notes: Deferred to Phase 1.
+  - Notes: Partial. `e2e/auth-flows.spec.ts` covers redirect to `/login` and page structure. Authenticated flow skipped pending test auth helper.
 
-- [ ] **Org settings page** — S
+- [~] **Org settings page** — S
   - Settings → org name, member list.
   - **Test:** `pnpm e2e:headless`
-  - Notes: Deferred to Phase 1.
+  - Notes: Partial. `e2e/auth-flows.spec.ts` has settings test (skipped — needs auth). Protected route redirect verified.
 
 ### Phase 0 verification & tech stack alignment
 
-**Completeness verification (2026-02-17):** Phase 0 is implemented per this tracker and per VERTICAL_SLICING_PLAN.md Phase 0 "What ships". All feature deliverables (auth + org creation + onboarding, empty dashboard shell, 11 ports, 5 working + 6 stub adapters, DI container, health checks, proxy email verification, Temporal workers, instrumentation) are in place. **Testing plan:** §2.6 Testing & Verification. **Testing frameworks:** Vitest and Playwright are installed and configured (see "Testing frameworks installed & configured" above); E2E framework setup item is marked complete. The only items left unchecked are **port/DI/domain unit tests**, **ArangoDB/Temporal integration tests**, and **E2E flow specs** — all explicitly deferred to Phase 1 with manual/compile verification used for Phase 0.
+**Completeness verification (2026-02-20):** Phase 0 is implemented per this tracker and per VERTICAL_SLICING_PLAN.md Phase 0 "What ships". All feature deliverables (auth + auto-provisioned org on signup, dashboard shell with RepositorySwitcher + UserProfileMenu, 11 ports, 5 working + 6 stub adapters, DI container, health checks, proxy email verification, Temporal workers, instrumentation) are in place. **Testing:** Port compliance tests (`lib/di/__tests__/port-compliance.test.ts`) and DI container factory tests (`lib/di/__tests__/container.test.ts`) now implemented [x]. E2E auth flows partially implemented (`e2e/auth-flows.spec.ts`) — unauthenticated flows pass, authenticated flows skipped pending test auth helper [~]. **Remaining [ ] items:** domain function tests (minimal in Phase 0), ArangoDB/Temporal integration tests (require Docker), `IStorageProvider` port (Phase 5.5).
 
 Implementation uses the **Temporal TypeScript SDK** (not Python); Temporal platform concepts (determinism, versioning, retries) apply and align with [Temporal TypeScript developer guide](https://docs.temporal.io/develop/typescript/). Gemini is not used in Phase 0 and is planned for later phases.
 

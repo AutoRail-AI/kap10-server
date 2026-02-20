@@ -26,8 +26,12 @@ Developer's IDE                        kap10 Cloud
     │  Repos   │◄────────────────────►│  │ ArangoDB   │    │ Supabase        │      │
     └──────────┘                      │  │ (Graph DB) │    │ (App + Vectors) │      │
                                       │  └───────────┘    └─────────────────┘      │
-                                      │        │                                    │
-                                      │  ┌─────▼───────────────────────────┐       │
+       kap10 CLI (Phase 5.5)          │        │                  │                 │
+    ┌──────────────┐  Pre-signed URL  │  ┌─────▼──────────────────▼────────┐       │
+    │  kap10 push  │─────────────────►│  │ Supabase Storage (cli_uploads)  │       │
+    │  (zip upload)│                  │  └─────────────────┬───────────────┘       │
+    └──────────────┘                  │                    ▼                        │
+                                      │  ┌─────────────────────────────────┐       │
                                       │  │ Temporal (Workflow Orchestration) │       │
                                       │  │  ├─ heavy-compute-queue          │       │
                                       │  │  └─ light-llm-queue             │       │
@@ -43,6 +47,7 @@ Developer's IDE                        kap10 Cloud
 | **ArangoDB** | Graph knowledge store | Files, functions, classes, interfaces, relationships (calls, imports, extends, implements), justifications, classifications, features, change ledger |
 | **Temporal** | Workflow orchestration | All multi-step pipelines: repo indexing, justification, pattern detection, PR review, incremental re-indexing |
 | **Redis** | Cache, rate limits, MCP sessions | Hot query cache, API rate limiting, MCP connection state |
+| **Supabase Storage** | File uploads (CLI) | Zipped codebase uploads from `kap10 push`; pre-signed URLs for direct client upload; auto-cleaned after indexing *(Phase 5.5)* |
 
 **Supabase: schema approach (mandatory).** All kap10-managed Supabase tables live in PostgreSQL schema **`kap10`** (we use the schema approach, not a table prefix). From now on, every new kap10 table MUST be created in schema `kap10` via Prisma with `@@schema("kap10")`; do not add kap10 app tables to `public`. Prisma: `schemas = ["public", "kap10"]` in the datasource; use `@@schema("kap10")` on every kap10 model and enum. Table names are unprefixed (e.g. `repos`, `deletion_logs`). Better Auth tables stay in `public` (user, session, account, organization, member, invitation, verification); we do not migrate those. This is required when sharing one Supabase project with multiple apps (clear separation, no name clashes, simpler permissions). [Prisma multi-schema](https://www.prisma.io/docs/orm/prisma-schema/data-model/multi-schema).
 
@@ -1190,6 +1195,8 @@ code-synapse uses custom Tree-sitter traversals to find "which function calls wh
 **Pipeline detail:**
 1. **`prepareWorkspace`** (replaces `cloneRepo`) — Full clone (not shallow!) via **`simple-git`** to a **persistent workspace directory** (`/data/workspaces/{orgId}/{repoId}/`), detect language from `package.json`/`go.mod`/etc., then run language-appropriate dependency install (`npm ci`, `go mod download`, `pip install -r requirements.txt`). **Monorepo detection** (see below). This ensures SCIP indexers can resolve the full type graph. Runs on `heavy-compute-queue`.
 
+> **Phase 5.5 forward-compatibility:** `prepareWorkspace` will gain a conditional branch: if `provider === "local_cli"`, download zip from Supabase Storage via `IStorageProvider.downloadFile()` and extract to the persistent workspace directory instead of `git clone`. The rest of the pipeline (SCIP, entity hashing, writeToArango) remains unchanged.
+
 > **Why `simple-git` (not `execAsync('git clone ...')`):** Running raw shell Git commands in Temporal workers is brittle across OS environments and fails silently with massive diffs. `simple-git` provides a promise-based API with proper auth handling, command queuing, and concurrent operation safety.
 
 > **Implementation Gotcha — The `npm install` Bottleneck:** Enterprise monorepos take 3–5 minutes for a fresh `npm install`. For incremental indexing (Phase 5), this is unacceptable for a 1-line code change. The `heavy-compute-queue` Temporal workers **must use persistent volume claims (PVCs)** or aggressive local disk caching. On incremental re-index: `git.pull()` into the existing cloned directory → `npm install` (2 seconds if `package.json` unchanged) → run SCIP on changed files only. Never clone from scratch for incremental updates.
@@ -1334,6 +1341,8 @@ model Repo {
   @@map("repos")
 }
 ```
+
+> **Forward-compatibility note:** In the actual Prisma schema, `githubRepoId` is `BigInt?` and `githubFullName` is `String?` (nullable). This is intentional — it allows the `Repo` model to represent non-GitHub repositories (e.g., local CLI uploads in Phase 5.5). In Phase 5.5, the `RepoProvider` enum gains a `local_cli` value, and repos created via `kap10 push` will have `githubRepoId = null` and `githubFullName = null`.
 
 ### Temporal workflows & activities
 
@@ -2773,6 +2782,17 @@ npm install -g @kap10/cli
 # Authenticate
 kap10 auth login
 
+# --- Local Repo Ingestion (Phase 5.5) ---
+
+# Initialize a local repo for kap10 indexing
+kap10 init --org my-org
+
+# Push codebase for indexing (zip + upload + trigger)
+kap10 push
+kap10 push -m "Added new auth module"
+
+# --- Ledger & Rewind ---
+
 # Start watching (streams changes to ledger in real-time)
 kap10 watch --repo owner/repo --branch main
 
@@ -2840,6 +2860,94 @@ async function watchMode(config: WatchConfig): Promise<void> {
 1. **Agent-initiated changes:** When the agent calls `sync_local_diff` via MCP, the prompt is already part of the MCP context — the agent sends it as metadata.
 2. **CLI watch mode:** The CLI watches for file changes. It tries to extract the prompt from agent logs (`.cursor/prompts/`, Claude Code conversation context, etc.). If no prompt is found, it records the change as `[manual edit]`.
 3. **Hybrid:** The Bootstrap Rule instructs the agent to call `sync_local_diff` with the prompt. The CLI is a fallback for changes the agent doesn't report.
+
+### CLI-First Local Ingestion
+
+In addition to the ledger/rewind capabilities above, Phase 5.5 adds **local repo ingestion** — allowing users to index codebases that aren't hosted on GitHub. Users zip and upload their local repo via `kap10 push`, and the same indexing pipeline (SCIP, entity hashing, writeToArango) processes it.
+
+#### New CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `kap10 init` | Initialize a local repo for kap10 indexing. Creates `.kap10/config.json` with `repoId`, `orgId`, and API key. Calls `POST /api/cli/init` to register the repo in Supabase with `provider: "local_cli"`. |
+| `kap10 push` | Zip the current directory (`.gitignore`-aware via `ignore` + `archiver`), request a pre-signed upload URL from the server, upload directly to Supabase Storage, then call `POST /api/cli/index` to trigger the indexing workflow. |
+
+```bash
+# Initialize a local repo
+kap10 init --org my-org
+# → Creates .kap10/config.json, registers repo in Supabase
+
+# Push codebase for indexing
+kap10 push
+# → Zips repo (respecting .gitignore), uploads via pre-signed URL, triggers indexing
+
+# Push with message (for tracking)
+kap10 push -m "Added new auth module"
+```
+
+#### Why Pre-Signed Upload (Not Direct POST)
+
+Vercel serverless functions have a **30-second timeout** and **4.5 MB body limit**. Codebases routinely exceed both. The flow is:
+
+1. CLI calls `POST /api/cli/init` → server creates repo row, returns `repoId`
+2. CLI calls `POST /api/cli/index` → server generates a **pre-signed upload URL** via `IStorageProvider.generateUploadUrl()` and returns it
+3. CLI uploads zip **directly to Supabase Storage** using the pre-signed URL (bypasses Vercel entirely — no timeout, no body limit)
+4. CLI calls `POST /api/cli/index` again with `{ uploaded: true }` → server triggers `indexRepoWorkflow` via Temporal
+
+#### New API Routes
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/api/cli/init` | `POST` | Register a local repo. Creates `Repo` row with `provider: "local_cli"`, `githubRepoId: null`. Returns `repoId` + API key. |
+| `/api/cli/index` | `POST` | Phase 1: Generate pre-signed upload URL. Phase 2 (after upload): Trigger `indexRepoWorkflow` with `provider: "local_cli"`. |
+
+#### Sync Drift Challenge
+
+Unlike GitHub repos (where webhooks notify of changes), local repos have no push event. The codebase can drift between `kap10 push` invocations.
+
+**Solutions:**
+- **Periodic re-sync:** Users run `kap10 push` whenever they want the index updated (manual trigger, similar to `git push`)
+- **20% drift threshold:** If `kap10 watch` detects >20% of indexed files have local modifications, it prompts the user to run `kap10 push` to re-index
+- **Incremental push (future):** Phase 5's incremental indexing can be extended to accept diffs from the CLI, but initial implementation is full re-index on each push
+
+#### `IStorageProvider` — 12th Port
+
+Phase 5.5 introduces the **12th port** in the hexagonal architecture:
+
+```typescript
+// lib/ports/storage-provider.ts
+export interface IStorageProvider {
+  /**
+   * Generate a pre-signed URL for direct client upload.
+   * @param bucket - Storage bucket name (e.g., "cli_uploads")
+   * @param path - Object path within the bucket (e.g., "{orgId}/{repoId}/{timestamp}.zip")
+   * @param expiresInSeconds - URL validity duration (default: 600 = 10 minutes)
+   * @returns Pre-signed upload URL
+   */
+  generateUploadUrl(bucket: string, path: string, expiresInSeconds?: number): Promise<string>;
+
+  /**
+   * Download a file from storage.
+   * Used by `prepareWorkspace` to fetch the uploaded zip for local_cli repos.
+   */
+  downloadFile(bucket: string, path: string): Promise<Buffer>;
+
+  /**
+   * Delete a file from storage.
+   * Called after successful indexing to clean up the uploaded zip.
+   */
+  deleteFile(bucket: string, path: string): Promise<void>;
+
+  /** Health check for the storage backend. */
+  healthCheck(): Promise<{ status: 'up' | 'down'; latencyMs: number }>;
+}
+```
+
+**Production adapter:** `SupabaseStorageAdapter` (`lib/adapters/supabase-storage.ts`) — wraps `@supabase/storage-js`. Bucket: `cli_uploads` (created via Supabase dashboard or migration script). Objects stored at path `{orgId}/{repoId}/{timestamp}.zip`. Auto-cleaned after indexing completes.
+
+**Test fake:** `InMemoryStorageProvider` — stores files in a `Map<string, Buffer>`. Returns `data:` URLs for `generateUploadUrl()`. Added to `lib/di/fakes.ts`.
+
+**DI Container:** `createProductionContainer()` gains a 12th getter for `storageProvider`. `createTestContainer()` wires `InMemoryStorageProvider`.
 
 ### ArangoDB Collections
 
@@ -2926,6 +3034,10 @@ lib/
     snapshot.ts            ← Working state snapshot creation + retrieval
     rollup.ts              ← Commit roll-up logic (mark committed, create summary)
     anti-pattern.ts        ← LLM-powered anti-pattern rule synthesis after rewind
+  ports/
+    storage-provider.ts    ← IStorageProvider interface (12th port) — pre-signed upload, download, delete
+  adapters/
+    supabase-storage.ts    ← SupabaseStorageAdapter implements IStorageProvider (bucket: cli_uploads)
   mcp/tools/
     rewind.ts              ← revert_to_working_state MCP tool
     timeline.ts            ← get_timeline, mark_working MCP tools
@@ -2934,6 +3046,8 @@ packages/
     src/
       index.ts             ← CLI entry point (commander.js)
       commands/
+        init.ts            ← kap10 init — register local repo, create .kap10/config.json
+        push.ts            ← kap10 push — zip + pre-signed upload + trigger indexing
         watch.ts           ← kap10 watch — file watcher + ledger streaming
         rewind.ts          ← kap10 rewind — restore from terminal
         timeline.ts        ← kap10 timeline — view prompt history
@@ -2943,6 +3057,10 @@ packages/
       client.ts            ← HTTP client for kap10 API
       prompt-detector.ts   ← Extract agent prompt from Cursor/Claude Code/Windsurf logs
 app/
+  api/
+    cli/
+      init/route.ts        ← POST /api/cli/init — register local repo (provider: local_cli)
+      index/route.ts       ← POST /api/cli/index — pre-signed URL generation + trigger indexing
   (dashboard)/
     repos/
       [repoId]/
@@ -4149,7 +4267,8 @@ Phase 5: Incremental Indexing (entity hash diff + cascade re-justify)
 Phase 5.5: Prompt Ledger + Rewind + Branching
 (+ append-only timeline + working-state snapshots
  + anti-pattern rule synthesis + kap10 CLI
- + commit roll-up)
+ + commit roll-up
+ + CLI-first local ingestion via IStorageProvider)
     │
     ├──────────────────┐
     ▼                  ▼
@@ -4181,7 +4300,7 @@ Phase 9: Code Snippet Library (post-launch)
 | 3 | ~8 | ~3 | 1 Prisma | 2 | 1 (`embedRepo`) |
 | 4 | ~16 | ~3 | 4 ArangoDB + 2 edge | 4 | 3 (`justifyRepo`, `justifyEntity`, `healthReport`) |
 | 5 | ~8 | ~4 | 0 | 1 | 1 (`incrementalIndex`) |
-| 5.5 | ~20 | ~4 | 3 ArangoDB (`ledger`, `snapshots`, `ledger_summaries`) + 1 Prisma (`LedgerSnapshot`) | 3 (`revert_to_working_state`, `get_timeline`, `mark_working`) | 0 |
+| 5.5 | ~26 | ~6 | 3 ArangoDB (`ledger`, `snapshots`, `ledger_summaries`) + 1 Prisma (`LedgerSnapshot`) + 1 Supabase Storage bucket (`cli_uploads`) | 3 (`revert_to_working_state`, `get_timeline`, `mark_working`) | 0 |
 | 6 | ~18 | ~4 | 2 ArangoDB (`patterns` + `rules`) | 5 (+`get_rules`, `check_rules`) | 1 (`detectPatterns`) |
 | 7 | ~12 | ~3 | 2 Prisma | 0 | 1 (`reviewPr`) |
 | 8 | ~12 | ~6 | 3 Prisma | 0 | 1 (`syncBilling`) |
@@ -4236,6 +4355,9 @@ Phase 9: Code Snippet Library (post-launch)
 |---------|---------|-------|
 | `commander` | CLI framework for `@kap10/cli` | 5.5 |
 | `chokidar` | File watcher for CLI watch mode (ledger streaming) | 5.5 |
+| `archiver` | ZIP creation for `kap10 push` (`.gitignore`-aware codebase packaging) | 5.5 |
+| `ignore` | `.gitignore`-aware file filtering for `kap10 push` (excludes `node_modules`, build artifacts, etc.) | 5.5 |
+| `@supabase/storage-js` | Supabase Storage client for `SupabaseStorageAdapter` (pre-signed URLs, file download/delete) | 5.5 |
 
 ### Visualization
 
