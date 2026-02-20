@@ -928,27 +928,29 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
 - [ ] **P10a-CLI-04: Implement query router** — M
   - Static routing table: map of tool name → `"local"` | `"cloud"`
   - For `local` tools: dispatch to CozoDB adapter, format response
-  - For `cloud` tools: proxy full JSON-RPC request to cloud MCP endpoint
-  - For unknown tools: default to `cloud` (forward-compatible)
+  - For `cloud` tools: proxy full JSON-RPC request to cloud MCP endpoint via P10a-CLI-05 (which injects workspace context)
+  - For unknown tools: default to `cloud` (forward-compatible — future tools in Phases 4–6 work automatically)
   - Cloud proxy: uses `~/.kap10/credentials.json` for auth header
+  - `semantic_search` is **not** handled locally — it is routed to cloud via the proxy. The proxy's workspace context injection (P10a-CLI-05) ensures the cloud's hybrid search includes the developer's uncommitted local changes from the ArangoDB workspace overlay.
   - Response format: identical to cloud MCP server responses. Adds `_meta.source: "local" | "cloud" | "cloud_fallback"` for observability.
-  - **Test:** `get_function` → routed to local. `sync_local_diff` → routed to cloud. `unknown_tool` → routed to cloud. Local failure → fallback to cloud with `_meta.source: "cloud_fallback"`.
+  - **Test:** `get_function` → routed to local. `sync_local_diff` → routed to cloud. `semantic_search` → routed to cloud with workspace context. `unknown_tool` → routed to cloud. Local failure → fallback to cloud with `_meta.source: "cloud_fallback"`.
   - **Depends on:** P10a-ADAPT-01
   - **Files:** `packages/cli/src/query-router.ts`
-  - **Acceptance:** Routing table dispatches correctly. Cloud proxy includes auth. Fallback works. `_meta.source` set correctly.
+  - **Acceptance:** Routing table dispatches correctly. Cloud proxy includes auth + workspace context. Fallback works. `_meta.source` set correctly.
   - Notes: _____
 
 - [ ] **P10a-CLI-05: Implement cloud MCP proxy client** — M
   - HTTP/2 client that proxies MCP JSON-RPC requests to the cloud MCP server
   - URL: reads `mcpServerUrl` from `~/.kap10/config.json` (default: `https://mcp.kap10.dev`)
   - Auth: includes `Authorization: Bearer {token}` or `Authorization: Bearer {apiKey}` from credentials
+  - **Workspace context injection (Critical):** The local proxy MUST capture the active `Mcp-Session-Id` (or the active `workspaceId`) from the agent's connection and inject it as an HTTP header `X-Kap10-Workspace-Id` when forwarding requests to the cloud MCP server. Without this, the cloud `semantic_search` handler has no way to identify which ArangoDB workspace overlay to query — search results would be blind to the developer's uncommitted local changes. The cloud MCP server must read this header in `handleSemanticSearch()` and pass it as `workspaceId` to the hybrid search pipeline.
   - Timeout: 10s per request (cloud tools should respond within 1s, 10s is generous timeout)
   - Connection pooling: reuse HTTP/2 connection across requests
   - Error handling: on network error, return MCP error response (don't crash CLI)
-  - **Test:** Proxy a `sync_local_diff` call → cloud responds → response relayed to stdio. Cloud timeout → MCP error returned. Cloud 401 → prompt re-auth.
+  - **Test:** Proxy a `sync_local_diff` call → cloud responds → response relayed to stdio. Cloud timeout → MCP error returned. Cloud 401 → prompt re-auth. **Proxy a `semantic_search` call → `X-Kap10-Workspace-Id` header present in forwarded request → cloud uses workspace overlay for keyword leg.**
   - **Depends on:** P10a-CLI-03
   - **Files:** `packages/cli/src/cloud-proxy.ts`
-  - Notes: _____
+  - Notes: This is the critical bridge between Phase 3's workspace-aware search and Phase 10a's local CLI proxy. Without workspace context injection, cloud-proxied search ignores uncommitted local code.
 
 - [ ] **P10a-CLI-06: Implement stale graph detection and auto-pull** — S
   - On `kap10 serve` startup: check each repo's `lastPulledAt` in manifest

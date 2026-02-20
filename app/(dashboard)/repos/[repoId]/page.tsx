@@ -2,8 +2,10 @@ import { headers } from "next/headers"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
-import { ChevronRight, FileCode, GitBranch, Layers } from "lucide-react"
+import { ChevronRight, Download, FileCode, GitBranch, Layers, Plug } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { RepoDetailClient } from "@/components/repo/repo-detail-client"
+import { McpStatus } from "@/components/repo/mcp-status"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { auth } from "@/lib/auth"
@@ -50,6 +52,20 @@ async function RepoDetailContent({ repoId }: { repoId: string }) {
   const paths = await container.graphStore.getFilePaths(orgId, repoId)
   const tree = buildFileTree(paths)
 
+  // Fetch snapshot metadata for local sync status
+  let snapshot: { status: string; sizeBytes: number; entityCount: number; edgeCount: number; generatedAt: Date | null } | null = null
+  try {
+    const { PrismaClient } = require("@prisma/client") as typeof import("@prisma/client")
+    const prisma = new PrismaClient()
+    const meta = await prisma.graphSnapshotMeta.findUnique({ where: { repoId } })
+    if (meta) {
+      snapshot = { status: meta.status, sizeBytes: meta.sizeBytes, entityCount: meta.entityCount, edgeCount: meta.edgeCount, generatedAt: meta.generatedAt }
+    }
+    await prisma.$disconnect()
+  } catch {
+    // Snapshot metadata not available — non-critical
+  }
+
   return (
     <div className="space-y-4">
       {/* Breadcrumb + stats */}
@@ -65,6 +81,7 @@ async function RepoDetailContent({ repoId }: { repoId: string }) {
           <p className="text-sm text-muted-foreground">{repo.fullName}</p>
         </div>
         <div className="flex items-center gap-2">
+          <McpStatus repoId={repoId} />
           <div className="flex items-center gap-1.5 rounded-md border border-border bg-muted/20 px-2.5 py-1">
             <FileCode className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="text-xs text-muted-foreground">{repo.fileCount ?? 0} files</span>
@@ -77,6 +94,20 @@ async function RepoDetailContent({ repoId }: { repoId: string }) {
             <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="text-xs text-muted-foreground">{repo.defaultBranch ?? "main"}</span>
           </div>
+          {snapshot && snapshot.status === "available" && (
+            <div className="flex items-center gap-1.5 rounded-md border border-emerald-400/30 bg-emerald-400/5 px-2.5 py-1">
+              <Download className="h-3.5 w-3.5 text-emerald-400" />
+              <span className="text-xs text-emerald-400">
+                Local Sync · {(snapshot.sizeBytes / 1024).toFixed(0)}KB
+              </span>
+            </div>
+          )}
+          <Link href={`/repos/${repoId}/connect`}>
+            <Button size="sm" className="bg-rail-fade hover:opacity-90 gap-1.5 h-7 text-xs">
+              <Plug className="h-3 w-3" />
+              Connect to IDE
+            </Button>
+          </Link>
         </div>
       </div>
 

@@ -10,6 +10,8 @@
 import { NativeConnection, Worker } from "@temporalio/worker"
 import path from "node:path"
 import * as indexingLight from "@/lib/temporal/activities/indexing-light"
+import * as graphExport from "@/lib/temporal/activities/graph-export"
+import * as graphUpload from "@/lib/temporal/activities/graph-upload"
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233"
 const TASK_QUEUE = "light-llm-queue"
@@ -38,6 +40,12 @@ async function createWorkerWithRetry(): Promise<Worker> {
           writeToArango: indexingLight.writeToArango,
           updateRepoError: indexingLight.updateRepoError,
           deleteRepoData: indexingLight.deleteRepoData,
+          // Phase 10a: Graph snapshot activities
+          queryCompactGraph: graphExport.queryCompactGraph,
+          serializeToMsgpack: graphExport.serializeToMsgpack,
+          uploadToStorage: graphUpload.uploadToStorage,
+          updateSnapshotStatus: graphUpload.updateSnapshotStatus,
+          notifyConnectedClients: graphUpload.notifyConnectedClients,
         },
       })
       return worker

@@ -3,6 +3,7 @@ import Image from "next/image"
 import { redirect } from "next/navigation"
 import { DashboardAccountProvider } from "@/components/dashboard/dashboard-account-provider"
 import { DashboardNav } from "@/components/dashboard/dashboard-nav"
+import { GlobalSearch } from "@/components/dashboard/global-search"
 import { UserProfileMenu } from "@/components/dashboard/user-profile-menu"
 import { auth } from "@/lib/auth"
 
@@ -25,6 +26,9 @@ export default async function DashboardLayout({
             <span className="font-grotesk text-sm font-semibold tracking-tight text-foreground">kap10</span>
           </div>
           <div className="mx-3 border-t border-border" />
+          <div className="px-3 pt-3">
+            <GlobalSearch />
+          </div>
           <DashboardNav />
           <div className="border-t border-border p-2">
             <UserProfileMenu serverUser={session.user} />

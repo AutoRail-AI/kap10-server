@@ -1,0 +1,145 @@
+/**
+ * kap10 pull — Download graph snapshot for a repo.
+ *
+ * Fetches pre-signed URL from server, downloads msgpack, verifies checksum,
+ * stores in ~/.kap10/snapshots/{repoId}.msgpack with manifest.
+ */
+
+import { Command } from "commander"
+import { createHash } from "node:crypto"
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
+import { getCredentials } from "./auth.js"
+
+const KAP10_DIR = join(homedir(), ".kap10")
+const SNAPSHOTS_DIR = join(KAP10_DIR, "snapshots")
+const MANIFESTS_DIR = join(KAP10_DIR, "manifests")
+
+export interface SnapshotManifest {
+  repoId: string
+  checksum: string
+  sizeBytes: number
+  entityCount: number
+  edgeCount: number
+  generatedAt: string | null
+  pulledAt: string
+  snapshotPath: string
+}
+
+export function getManifest(repoId: string): SnapshotManifest | null {
+  const path = join(MANIFESTS_DIR, `${repoId}.json`)
+  if (!existsSync(path)) return null
+  try {
+    return JSON.parse(readFileSync(path, "utf-8")) as SnapshotManifest
+  } catch {
+    return null
+  }
+}
+
+export function getSnapshotBuffer(repoId: string): Buffer | null {
+  const manifest = getManifest(repoId)
+  if (!manifest) return null
+  if (!existsSync(manifest.snapshotPath)) return null
+  return readFileSync(manifest.snapshotPath)
+}
+
+export function registerPullCommand(program: Command): void {
+  program
+    .command("pull")
+    .description("Download graph snapshot for a repo")
+    .requiredOption("--repo <repoId>", "Repository ID")
+    .option("--force", "Force re-download even if up to date")
+    .action(async (opts: { repo: string; force?: boolean }) => {
+      const creds = getCredentials()
+      if (!creds) {
+        console.error("Not authenticated. Run: kap10 auth login")
+        process.exit(1)
+      }
+
+      const { repo: repoId, force } = opts
+
+      // Check existing manifest
+      if (!force) {
+        const existing = getManifest(repoId)
+        if (existing) {
+          console.log(`Existing snapshot found (${existing.checksum.slice(0, 8)}...)`)
+        }
+      }
+
+      // Step 1: Get download URL
+      console.log("Fetching download URL...")
+      const metaRes = await fetch(`${creds.serverUrl}/api/graph-snapshots/${repoId}/download`, {
+        headers: { Authorization: `Bearer ${creds.apiKey}` },
+      })
+
+      if (!metaRes.ok) {
+        const body = (await metaRes.json().catch(() => ({}))) as { error?: string }
+        console.error(`Failed to get download URL: ${body.error ?? metaRes.statusText}`)
+        process.exit(1)
+      }
+
+      const meta = (await metaRes.json()) as {
+        data: {
+          url: string
+          checksum: string
+          entityCount: number
+          edgeCount: number
+          sizeBytes: number
+          generatedAt: string | null
+        }
+      }
+
+      const { url, checksum, entityCount, edgeCount, sizeBytes, generatedAt } = meta.data
+
+      // Check if already up to date
+      if (!force) {
+        const existing = getManifest(repoId)
+        if (existing && existing.checksum === checksum) {
+          console.log("Snapshot is already up to date.")
+          return
+        }
+      }
+
+      // Step 2: Download
+      console.log(`Downloading snapshot (${(sizeBytes / 1024).toFixed(1)} KB)...`)
+      const downloadRes = await fetch(url)
+      if (!downloadRes.ok) {
+        console.error("Download failed")
+        process.exit(1)
+      }
+
+      const buffer = Buffer.from(await downloadRes.arrayBuffer())
+
+      // Step 3: Verify checksum
+      console.log("Verifying checksum...")
+      const computedChecksum = createHash("sha256").update(buffer).digest("hex")
+      if (computedChecksum !== checksum) {
+        console.error(`Checksum mismatch! Expected ${checksum.slice(0, 8)}..., got ${computedChecksum.slice(0, 8)}...`)
+        process.exit(1)
+      }
+
+      // Step 4: Save snapshot
+      mkdirSync(SNAPSHOTS_DIR, { recursive: true })
+      mkdirSync(MANIFESTS_DIR, { recursive: true })
+
+      const snapshotPath = join(SNAPSHOTS_DIR, `${repoId}.msgpack`)
+      writeFileSync(snapshotPath, buffer)
+
+      // Step 5: Save manifest
+      const manifest: SnapshotManifest = {
+        repoId,
+        checksum,
+        sizeBytes: buffer.length,
+        entityCount,
+        edgeCount,
+        generatedAt,
+        pulledAt: new Date().toISOString(),
+        snapshotPath,
+      }
+      writeFileSync(join(MANIFESTS_DIR, `${repoId}.json`), JSON.stringify(manifest, null, 2))
+
+      console.log(`Done! ${entityCount} entities, ${edgeCount} edges`)
+      console.log(`Saved to ${snapshotPath}`)
+    })
+}

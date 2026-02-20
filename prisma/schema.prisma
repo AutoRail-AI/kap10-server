@@ -1,21 +1,25 @@
-// Prisma schema for kap10 app tables (Phase 0).
+// Prisma schema for kap10 app tables (Phase 0 + Phase 2 + Phase 3).
 // All kap10-managed tables live in PostgreSQL schema "kap10" (same Supabase project, multi-app).
 // Better Auth tables (user, session, account, etc.) stay in "public"; we do not migrate those.
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  schemas  = ["public", "kap10"]
+  provider   = "postgresql"
+  schemas    = ["public", "kap10"]
+  extensions = [vector(map: "vector", schema: "extensions")]
 }
 
 enum RepoStatus {
   pending
   indexing
+  embedding
   ready
   error
+  embed_failed
   deleting
 
   @@schema("kap10")
@@ -67,6 +71,13 @@ model Repo {
   classCount      Int         @default(0) @map("class_count")
   errorMessage    String?     @map("error_message")
   workflowId      String?     @map("workflow_id")
+  // Phase 2: Auto-PR onboarding fields
+  onboardingPrUrl    String?  @map("onboarding_pr_url")
+  onboardingPrNumber Int?     @map("onboarding_pr_number")
+  // Phase 2: Relations
+  apiKeys           ApiKey[]
+  // Phase 3: Embeddings relation
+  entityEmbeddings  EntityEmbedding[]
 
   @@unique([organizationId, provider, providerId])
   @@index([organizationId])
@@ -97,5 +108,98 @@ model DeletionLog {
   @@index([organizationId])
   @@index([status])
   @@map("deletion_logs")
+  @@schema("kap10")
+}
+
+// Phase 2: API keys for MCP server access (per-repo, scoped)
+model ApiKey {
+  id              String    @id @default(uuid())
+  organizationId  String    @map("organization_id")
+  repoId          String    @map("repo_id")
+  name            String
+  keyPrefix       String    @map("key_prefix")
+  keyHash         String    @map("key_hash")
+  scopes          String[]  @default(["mcp:read"])
+  lastUsedAt      DateTime? @map("last_used_at")
+  revokedAt       DateTime? @map("revoked_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  repo            Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([keyHash])
+  @@index([repoId])
+  @@map("api_keys")
+  @@schema("kap10")
+}
+
+// Phase 2: Shadow workspace overlay (per-user, per-repo, per-branch)
+model Workspace {
+  id          String    @id @default(uuid())
+  userId      String    @map("user_id")
+  repoId      String    @map("repo_id")
+  branch      String
+  baseSha     String?   @map("base_sha")
+  lastSyncAt  DateTime? @map("last_sync_at")
+  expiresAt   DateTime  @map("expires_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@unique([userId, repoId, branch])
+  @@index([expiresAt])
+  @@map("workspaces")
+  @@schema("kap10")
+}
+
+// Phase 10a: Graph snapshot status for local-first intelligence proxy
+enum SnapshotStatus {
+  generating
+  available
+  failed
+
+  @@schema("kap10")
+}
+
+model GraphSnapshotMeta {
+  id            String         @id @default(uuid())
+  orgId         String         @map("org_id")
+  repoId        String         @unique @map("repo_id")
+  status        SnapshotStatus @default(generating)
+  checksum      String?        @map("checksum")
+  storagePath   String?        @map("storage_path")
+  sizeBytes     Int            @default(0) @map("size_bytes")
+  entityCount   Int            @default(0) @map("entity_count")
+  edgeCount     Int            @default(0) @map("edge_count")
+  generatedAt   DateTime?      @map("generated_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  @@index([orgId])
+  @@map("graph_snapshot_meta")
+  @@schema("kap10")
+}
+
+// Phase 3: Entity embeddings for semantic search (pgvector)
+// model_version enables zero-downtime blue/green re-embedding on model upgrades
+model EntityEmbedding {
+  id            String    @id @default(uuid())
+  orgId         String    @map("org_id")
+  repoId        String    @map("repo_id")
+  entityKey     String    @map("entity_key")
+  entityType    String    @map("entity_type")
+  entityName    String    @map("entity_name")
+  filePath      String    @map("file_path")
+  textContent   String    @map("text_content")
+  modelVersion  String    @default("nomic-v1.5-768") @map("model_version")
+  embedding     Unsupported("vector(768)")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  repo          Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  @@unique([repoId, entityKey, modelVersion])
+  @@index([orgId, repoId])
+  @@index([modelVersion])
+  @@map("entity_embeddings")
   @@schema("kap10")
 }

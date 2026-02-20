@@ -1,5 +1,6 @@
 /**
  * Relational store port — Supabase/Prisma app data (users, orgs, repos, subscriptions, deletion_logs).
+ * Phase 2: API keys, workspaces, repo onboarding fields.
  */
 
 export interface RepoRecord {
@@ -24,6 +25,9 @@ export interface RepoRecord {
   classCount?: number
   errorMessage?: string | null
   workflowId?: string | null
+  // Phase 2
+  onboardingPrUrl?: string | null
+  onboardingPrNumber?: number | null
 }
 
 export interface GitHubInstallationRecord {
@@ -48,6 +52,33 @@ export interface DeletionLogRecord {
   embeddingsDeleted: number
   status: string
   errorMessage: string | null
+}
+
+// Phase 2: API key record
+export interface ApiKeyRecord {
+  id: string
+  organizationId: string
+  repoId: string
+  name: string
+  keyPrefix: string
+  keyHash: string
+  scopes: string[]
+  lastUsedAt: Date | null
+  revokedAt: Date | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+// Phase 2: Workspace record
+export interface WorkspaceRecord {
+  id: string
+  userId: string
+  repoId: string
+  branch: string
+  baseSha: string | null
+  lastSyncAt: Date | null
+  expiresAt: Date
+  createdAt: Date
 }
 
 export interface IRelationalStore {
@@ -97,4 +128,33 @@ export interface IRelationalStore {
   getRepoByGithubId(orgId: string, githubRepoId: number): Promise<RepoRecord | null>
   getReposByStatus(orgId: string, status: string): Promise<RepoRecord[]>
   deleteRepo(repoId: string): Promise<void>
+
+  // Phase 2: API key management
+  createApiKey(data: {
+    organizationId: string
+    repoId: string
+    name: string
+    keyPrefix: string
+    keyHash: string
+    scopes: string[]
+  }): Promise<ApiKeyRecord>
+  getApiKeyByHash(keyHash: string): Promise<ApiKeyRecord | null>
+  revokeApiKey(id: string): Promise<void>
+  listApiKeys(orgId: string, repoId?: string): Promise<ApiKeyRecord[]>
+  updateApiKeyLastUsed(id: string): Promise<void>
+
+  // Phase 2: Workspace management
+  createWorkspace(data: {
+    userId: string
+    repoId: string
+    branch: string
+    baseSha?: string
+    expiresAt: Date
+  }): Promise<WorkspaceRecord>
+  getWorkspace(userId: string, repoId: string, branch: string): Promise<WorkspaceRecord | null>
+  updateWorkspaceSync(id: string, baseSha?: string): Promise<void>
+  deleteExpiredWorkspaces(): Promise<WorkspaceRecord[]>
+
+  // Phase 2: Repo onboarding
+  updateRepoOnboardingPr(repoId: string, prUrl: string, prNumber: number): Promise<void>
 }

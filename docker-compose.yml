@@ -179,6 +179,40 @@ services:
         limits:
           memory: 512M
 
+  # MCP Server (Phase 2: standalone HTTP server for AI agents)
+  mcp-server:
+    profiles: ["app", "mcp"]
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp-server
+    container_name: kap10-mcp-server
+    ports:
+      - "8787:8787"
+    environment:
+      - NODE_ENV=production
+      - MCP_SERVER_PORT=8787
+      - MCP_SERVER_URL=http://localhost:8787
+      - REDIS_URL=redis://redis:6379
+      - ARANGODB_URL=http://arangodb:8529
+    env_file:
+      - .env.local
+    depends_on:
+      redis:
+        condition: service_healthy
+      arangodb:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8787/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   # ── Optional debugging tools ───────────────────────────────────────
 
   # Redis Commander — uncomment to enable web UI at http://localhost:8081

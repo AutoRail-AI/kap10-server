@@ -1,4 +1,4 @@
-import type { BlueprintData, EdgeDoc, EntityDoc, FeatureDoc, ImpactResult, PatternDoc, PatternFilter, RuleDoc, RuleFilter, SnippetDoc, SnippetFilter } from "./types"
+import type { BlueprintData, EdgeDoc, EntityDoc, FeatureDoc, ImpactResult, ImportChain, PatternDoc, PatternFilter, ProjectStats, RuleDoc, RuleFilter, SearchResult, SnippetDoc, SnippetFilter } from "./types"
 
 export interface IGraphStore {
   bootstrapGraphSchema(): Promise<void>
@@ -33,4 +33,20 @@ export interface IGraphStore {
   getFilePaths(orgId: string, repoId: string): Promise<{ path: string }[]>
   /** Phase 1: Delete all graph data for a repo */
   deleteRepoData(orgId: string, repoId: string): Promise<void>
+
+  // Phase 2: MCP methods
+  /** Fulltext search across entity names and signatures */
+  searchEntities(orgId: string, repoId: string, query: string, limit?: number): Promise<SearchResult[]>
+  /** Traverse import edges to specified depth */
+  getImports(orgId: string, repoId: string, filePath: string, depth?: number): Promise<ImportChain[]>
+  /** Aggregate entity counts and language distribution */
+  getProjectStats(orgId: string, repoId: string): Promise<ProjectStats>
+
+  // Phase 2: Workspace overlay
+  /** Upsert an overlay entity scoped to a workspace */
+  upsertWorkspaceEntity(orgId: string, workspaceId: string, entity: EntityDoc): Promise<void>
+  /** Get entity with workspace overlay (overlay takes precedence) */
+  getEntityWithOverlay(orgId: string, entityId: string, workspaceId?: string): Promise<EntityDoc | null>
+  /** Remove all overlay entities for a workspace */
+  cleanupExpiredWorkspaces(workspaceId: string): Promise<void>
 }

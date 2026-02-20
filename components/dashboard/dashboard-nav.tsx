@@ -1,6 +1,6 @@
 "use client"
 
-import { FolderGit2, Key, LayoutDashboard, Settings } from "lucide-react"
+import { FolderGit2, Key, LayoutDashboard, Search, Settings } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { Badge } from "@/components/ui/badge"
@@ -16,6 +16,7 @@ interface NavItem {
 const platformLinks: NavItem[] = [
   { label: "Overview", href: "/", icon: LayoutDashboard },
   { label: "Repositories", href: "/repos", icon: FolderGit2 },
+  { label: "Search", href: "/search", icon: Search },
 ]
 
 const configLinks: NavItem[] = [

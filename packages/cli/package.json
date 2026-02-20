@@ -1,0 +1,33 @@
+{
+  "name": "@kap10/cli",
+  "version": "0.1.0",
+  "description": "Local-first code intelligence CLI for kap10",
+  "type": "module",
+  "bin": {
+    "kap10": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --target node20 --dts --clean",
+    "dev": "tsx watch src/index.ts",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "cozo-node": "^0.7.6",
+    "msgpackr": "^1.11.0",
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT"
+}

@@ -1,6 +1,7 @@
 /**
  * ArangoGraphStore — IGraphStore implementation using ArangoDB.
  * Phase 0: bootstrapGraphSchema + health; other methods implemented but unused until Phase 1+.
+ * Phase 2: searchEntities, getImports, getProjectStats, workspace overlay.
  *
  * We use the arangojs driver (Node.js HTTP client), not ArangoDB's in-server JavaScript API.
  * The in-server API (require("@arangodb").db, Foxx, arangosh) runs inside arangod; it cannot
@@ -17,10 +18,13 @@ import type {
   EntityDoc,
   FeatureDoc,
   ImpactResult,
+  ImportChain,
   PatternDoc,
   PatternFilter,
+  ProjectStats,
   RuleDoc,
   RuleFilter,
+  SearchResult,
   SnippetDoc,
   SnippetFilter,
 } from "@/lib/ports/types"
@@ -43,6 +47,7 @@ const EDGE_COLLECTIONS = ["contains", "calls", "imports", "extends", "implements
 const TENANT_INDEX_FIELDS = ["org_id", "repo_id"]
 const FILE_PATH_INDEX_FIELDS = ["org_id", "repo_id", "file_path"]
 const ENTITY_COLLECTIONS_FOR_FILE = ["functions", "classes", "interfaces", "variables"] as const
+const ALL_ENTITY_COLLECTIONS = ["files", ...ENTITY_COLLECTIONS_FOR_FILE] as const
 const BATCH_SIZE = 1000
 
 /** Map singular entity kind (from indexer) → plural ArangoDB collection name. */
@@ -146,6 +151,23 @@ export class ArangoGraphStore implements IGraphStore {
           }
         }
       }
+
+      // Phase 2: Fulltext indexes for search_code tool
+      for (const collName of ["functions", "classes", "interfaces", "variables"] as const) {
+        const col = db.collection(collName)
+        try {
+          // ArangoDB fulltext indexes — type not in TS driver typings, cast required
+          await (col as { ensureIndex(opts: unknown): Promise<unknown> }).ensureIndex({
+            type: "fulltext",
+            fields: ["name"],
+            name: `idx_${collName}_fulltext_name`,
+            minLength: 2,
+          })
+        } catch {
+          // index exists
+        }
+      }
+
       for (const name of EDGE_COLLECTIONS) {
         const col = db.collection(name)
         try {
@@ -176,8 +198,7 @@ export class ArangoGraphStore implements IGraphStore {
   }
   async getEntity(orgId: string, entityId: string): Promise<EntityDoc | null> {
     const db = await getDbAsync()
-    const allEntityCollections = ["files", ...ENTITY_COLLECTIONS_FOR_FILE] as const
-    for (const collName of allEntityCollections) {
+    for (const collName of ALL_ENTITY_COLLECTIONS) {
       const col = db.collection(collName)
       try {
         const doc = await col.document(entityId)
@@ -202,21 +223,46 @@ export class ArangoGraphStore implements IGraphStore {
   private async getConnectedEntities(
     orgId: string,
     entityId: string,
-    direction: "inbound" | "outbound"
+    direction: "inbound" | "outbound",
+    depth = 1
   ): Promise<EntityDoc[]> {
     const db = await getDbAsync()
     const possibleIds = ENTITY_COLLECTIONS_FOR_FILE.map((c) => `${c}/${entityId}`)
     const filter = direction === "inbound" ? "e._to" : "e._from"
+    const maxDepth = Math.min(Math.max(depth, 1), 5)
+
+    if (maxDepth === 1) {
+      const cursor = await db.query(
+        `
+        FOR e IN calls
+          FILTER e.org_id == @orgId AND ${filter} IN @possibleIds
+          LIMIT 500
+          LET doc = DOCUMENT(${direction === "inbound" ? "e._from" : "e._to"})
+          FILTER doc != null
+          RETURN doc
+        `,
+        { orgId, possibleIds }
+      )
+      const docs = await cursor.all()
+      return docs.map((d: { _key: string; _id?: string; [k: string]: unknown }) => {
+        const { _key, _id, ...rest } = d
+        return { id: _key, ...rest } as EntityDoc
+      })
+    }
+
+    // Multi-hop traversal
+    const traverseDir = direction === "inbound" ? "INBOUND" : "OUTBOUND"
     const cursor = await db.query(
       `
-      FOR e IN calls
-        FILTER e.org_id == @orgId AND ${filter} IN @possibleIds
-        LIMIT 500
-        LET doc = DOCUMENT(${direction === "inbound" ? "e._from" : "e._to"})
-        FILTER doc != null
-        RETURN doc
+      FOR startId IN @possibleIds
+        LET startDoc = DOCUMENT(startId)
+        FILTER startDoc != null AND startDoc.org_id == @orgId
+        FOR v, e IN 1..@maxDepth ${traverseDir} startDoc calls
+          FILTER v.org_id == @orgId
+          LIMIT 500
+          RETURN DISTINCT v
       `,
-      { orgId, possibleIds }
+      { orgId, possibleIds, maxDepth }
     )
     const docs = await cursor.all()
     return docs.map((d: { _key: string; _id?: string; [k: string]: unknown }) => {
@@ -225,15 +271,38 @@ export class ArangoGraphStore implements IGraphStore {
     })
   }
 
-  async getCallersOf(orgId: string, entityId: string): Promise<EntityDoc[]> {
-    return this.getConnectedEntities(orgId, entityId, "inbound")
+  async getCallersOf(orgId: string, entityId: string, depth?: number): Promise<EntityDoc[]> {
+    return this.getConnectedEntities(orgId, entityId, "inbound", depth)
   }
-  async getCalleesOf(orgId: string, entityId: string): Promise<EntityDoc[]> {
-    return this.getConnectedEntities(orgId, entityId, "outbound")
+  async getCalleesOf(orgId: string, entityId: string, depth?: number): Promise<EntityDoc[]> {
+    return this.getConnectedEntities(orgId, entityId, "outbound", depth)
   }
-  async impactAnalysis(_orgId: string, _entityId: string, _maxDepth: number): Promise<ImpactResult> {
-    return Promise.resolve({ entityId: "", affected: [] })
+
+  async impactAnalysis(orgId: string, entityId: string, maxDepth: number): Promise<ImpactResult> {
+    const db = await getDbAsync()
+    const possibleIds = ENTITY_COLLECTIONS_FOR_FILE.map((c) => `${c}/${entityId}`)
+    const clampedDepth = Math.min(Math.max(maxDepth, 1), 10)
+
+    const cursor = await db.query(
+      `
+      FOR startId IN @possibleIds
+        LET startDoc = DOCUMENT(startId)
+        FILTER startDoc != null AND startDoc.org_id == @orgId
+        FOR v, e, p IN 1..@maxDepth INBOUND startDoc calls
+          FILTER v.org_id == @orgId
+          LIMIT 500
+          RETURN DISTINCT v
+      `,
+      { orgId, possibleIds, maxDepth: clampedDepth }
+    )
+    const docs = await cursor.all()
+    const affected = docs.map((d: { _key: string; _id?: string; [k: string]: unknown }) => {
+      const { _key, _id, ...rest } = d
+      return { id: _key, ...rest } as EntityDoc
+    })
+    return { entityId, affected }
   }
+
   async getEntitiesByFile(orgId: string, repoId: string, filePath: string): Promise<EntityDoc[]> {
     const db = await getDbAsync()
     const results: EntityDoc[] = []
@@ -373,6 +442,217 @@ export class ArangoGraphStore implements IGraphStore {
       return { status: "up", latencyMs: Date.now() - start }
     } catch {
       return { status: "down", latencyMs: Date.now() - start }
+    }
+  }
+
+  // ── Phase 2: Search ───────────────────────────────────────────
+
+  async searchEntities(
+    orgId: string,
+    repoId: string,
+    query: string,
+    limit = 20
+  ): Promise<SearchResult[]> {
+    const db = await getDbAsync()
+    const clampedLimit = Math.min(Math.max(limit, 1), 50)
+    const results: SearchResult[] = []
+
+    // Search across entity collections using LIKE for name matching
+    // ArangoDB fulltext indexes use FULLTEXT() function
+    for (const collName of ENTITY_COLLECTIONS_FOR_FILE) {
+      const cursor = await db.query(
+        `
+        FOR doc IN @@coll
+          FILTER doc.org_id == @orgId AND doc.repo_id == @repoId
+          FILTER CONTAINS(LOWER(doc.name), LOWER(@query)) OR CONTAINS(LOWER(doc.signature || ""), LOWER(@query))
+          LIMIT @limit
+          RETURN {
+            name: doc.name,
+            kind: doc.kind,
+            file_path: doc.file_path,
+            line: doc.start_line || 0,
+            signature: doc.signature,
+            score: LENGTH(@query) / LENGTH(doc.name)
+          }
+        `,
+        { "@coll": collName, orgId, repoId, query, limit: clampedLimit }
+      )
+      const docs = await cursor.all()
+      results.push(...(docs as SearchResult[]))
+    }
+
+    // Sort by score descending, deduplicate, limit
+    results.sort((a, b) => (b.score || 0) - (a.score || 0))
+    return results.slice(0, clampedLimit)
+  }
+
+  // ── Phase 2: Import chain ─────────────────────────────────────
+
+  async getImports(
+    orgId: string,
+    repoId: string,
+    filePath: string,
+    depth = 1
+  ): Promise<ImportChain[]> {
+    const db = await getDbAsync()
+    const clampedDepth = Math.min(Math.max(depth, 1), 5)
+
+    // First find the file document
+    const fileCursor = await db.query(
+      `
+      FOR doc IN files
+        FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.file_path == @filePath
+        LIMIT 1
+        RETURN doc
+      `,
+      { orgId, repoId, filePath }
+    )
+    const fileDocs = await fileCursor.all()
+    if (fileDocs.length === 0) return []
+
+    const fileDoc = fileDocs[0] as { _id: string; [k: string]: unknown }
+
+    // Traverse import edges
+    const cursor = await db.query(
+      `
+      FOR v, e, p IN 1..@maxDepth OUTBOUND @fileId imports
+        FILTER v.org_id == @orgId AND v.repo_id == @repoId
+        LET distance = LENGTH(p.edges)
+        LET entities = (
+          FOR ent IN UNION(
+            (FOR e2 IN functions FILTER e2.org_id == @orgId AND e2.repo_id == @repoId AND e2.file_path == v.file_path RETURN e2),
+            (FOR e2 IN classes FILTER e2.org_id == @orgId AND e2.repo_id == @repoId AND e2.file_path == v.file_path RETURN e2),
+            (FOR e2 IN interfaces FILTER e2.org_id == @orgId AND e2.repo_id == @repoId AND e2.file_path == v.file_path RETURN e2),
+            (FOR e2 IN variables FILTER e2.org_id == @orgId AND e2.repo_id == @repoId AND e2.file_path == v.file_path RETURN e2)
+          )
+          RETURN { id: ent._key, name: ent.name, kind: ent.kind, file_path: ent.file_path }
+        )
+        RETURN DISTINCT { path: v.file_path, entities: entities, distance: distance }
+      `,
+      { orgId, repoId, fileId: fileDoc._id, maxDepth: clampedDepth }
+    )
+
+    const results = await cursor.all()
+    return results as ImportChain[]
+  }
+
+  // ── Phase 2: Project stats ────────────────────────────────────
+
+  async getProjectStats(orgId: string, repoId: string): Promise<ProjectStats> {
+    const db = await getDbAsync()
+    const bindVars = { orgId, repoId }
+
+    // Count entities per collection
+    const countQueries = ["files", "functions", "classes", "interfaces", "variables"].map(
+      async (collName) => {
+        const cursor = await db.query(
+          `RETURN LENGTH(FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId RETURN 1)`,
+          { ...bindVars, "@coll": collName }
+        )
+        const result = await cursor.all()
+        return { collection: collName, count: (result[0] as number) || 0 }
+      }
+    )
+
+    // Language distribution from files collection
+    const langCursor = await db.query(
+      `
+      FOR doc IN files
+        FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.language != null
+        COLLECT lang = doc.language WITH COUNT INTO cnt
+        RETURN { language: lang, count: cnt }
+      `,
+      bindVars
+    )
+    const langDocs = await langCursor.all()
+
+    const counts = await Promise.all(countQueries)
+    const countMap: Record<string, number> = {}
+    for (const c of counts) {
+      countMap[c.collection] = c.count
+    }
+
+    const languages: Record<string, number> = {}
+    for (const ld of langDocs as { language: string; count: number }[]) {
+      languages[ld.language] = ld.count
+    }
+
+    return {
+      files: countMap["files"] ?? 0,
+      functions: countMap["functions"] ?? 0,
+      classes: countMap["classes"] ?? 0,
+      interfaces: countMap["interfaces"] ?? 0,
+      variables: countMap["variables"] ?? 0,
+      languages,
+    }
+  }
+
+  // ── Phase 2: Workspace overlay ────────────────────────────────
+
+  async upsertWorkspaceEntity(orgId: string, workspaceId: string, entity: EntityDoc): Promise<void> {
+    const db = await getDbAsync()
+    const kind = (entity.kind as string) ?? "function"
+    const collName = KIND_TO_COLLECTION[kind] ?? "functions"
+    const col = db.collection(collName)
+    const overlayKey = `ws:${workspaceId}:${entity.id}`
+
+    await col.save(
+      {
+        _key: overlayKey,
+        ...entity,
+        id: overlayKey,
+        org_id: entity.org_id ?? orgId,
+        _workspace_id: workspaceId,
+      },
+      { overwriteMode: "update" }
+    )
+  }
+
+  async getEntityWithOverlay(
+    orgId: string,
+    entityId: string,
+    workspaceId?: string
+  ): Promise<EntityDoc | null> {
+    if (workspaceId) {
+      // Check overlay first
+      const overlayKey = `ws:${workspaceId}:${entityId}`
+      const db = await getDbAsync()
+      for (const collName of ALL_ENTITY_COLLECTIONS) {
+        const col = db.collection(collName)
+        try {
+          const doc = await col.document(overlayKey)
+          if (doc && (doc as { org_id?: string }).org_id === orgId) {
+            const { _key, _id, _workspace_id, ...rest } = doc as {
+              _key: string
+              _id: string
+              _workspace_id?: string
+              [k: string]: unknown
+            }
+            return { id: entityId, ...rest } as EntityDoc
+          }
+        } catch {
+          // not in this collection
+        }
+      }
+    }
+    // Fall back to committed entity
+    return this.getEntity(orgId, entityId)
+  }
+
+  async cleanupExpiredWorkspaces(workspaceId: string): Promise<void> {
+    const db = await getDbAsync()
+    const prefix = `ws:${workspaceId}:`
+
+    for (const collName of ALL_ENTITY_COLLECTIONS) {
+      const cursor = await db.query(
+        `
+        FOR doc IN @@coll
+          FILTER STARTS_WITH(doc._key, @prefix)
+          REMOVE doc IN @@coll
+        `,
+        { "@coll": collName, prefix }
+      )
+      await cursor.all()
     }
   }
 }

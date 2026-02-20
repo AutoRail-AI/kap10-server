@@ -10,10 +10,12 @@
 import { PrismaPg } from "@prisma/adapter-pg"
 import { PrismaClient } from "@prisma/client"
 import type {
+  ApiKeyRecord,
   DeletionLogRecord,
   GitHubInstallationRecord,
   IRelationalStore,
   RepoRecord,
+  WorkspaceRecord,
 } from "@/lib/ports/relational-store"
 
 let prismaInstance: PrismaClient | null = null
@@ -73,6 +75,8 @@ export class PrismaRelationalStore implements IRelationalStore {
     classCount: number
     errorMessage: string | null
     workflowId: string | null
+    onboardingPrUrl?: string | null
+    onboardingPrNumber?: number | null
   }): RepoRecord {
     return {
       id: r.id,
@@ -95,6 +99,8 @@ export class PrismaRelationalStore implements IRelationalStore {
       classCount: r.classCount,
       errorMessage: r.errorMessage ?? undefined,
       workflowId: r.workflowId ?? undefined,
+      onboardingPrUrl: r.onboardingPrUrl ?? undefined,
+      onboardingPrNumber: r.onboardingPrNumber ?? undefined,
     }
   }
 
@@ -283,6 +289,205 @@ export class PrismaRelationalStore implements IRelationalStore {
       status: r.status,
       errorMessage: r.errorMessage,
     }))
+  }
+
+  // ── Phase 2: API key management ───────────────────────────────
+
+  async createApiKey(data: {
+    organizationId: string
+    repoId: string
+    name: string
+    keyPrefix: string
+    keyHash: string
+    scopes: string[]
+  }): Promise<ApiKeyRecord> {
+    const row = await this.prisma.apiKey.create({
+      data: {
+        organizationId: data.organizationId,
+        repoId: data.repoId,
+        name: data.name,
+        keyPrefix: data.keyPrefix,
+        keyHash: data.keyHash,
+        scopes: data.scopes,
+      },
+    })
+    return {
+      id: row.id,
+      organizationId: row.organizationId,
+      repoId: row.repoId,
+      name: row.name,
+      keyPrefix: row.keyPrefix,
+      keyHash: row.keyHash,
+      scopes: row.scopes,
+      lastUsedAt: row.lastUsedAt,
+      revokedAt: row.revokedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }
+  }
+
+  async getApiKeyByHash(keyHash: string): Promise<ApiKeyRecord | null> {
+    const row = await this.prisma.apiKey.findFirst({
+      where: { keyHash, revokedAt: null },
+    })
+    if (!row) return null
+    return {
+      id: row.id,
+      organizationId: row.organizationId,
+      repoId: row.repoId,
+      name: row.name,
+      keyPrefix: row.keyPrefix,
+      keyHash: row.keyHash,
+      scopes: row.scopes,
+      lastUsedAt: row.lastUsedAt,
+      revokedAt: row.revokedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }
+  }
+
+  async revokeApiKey(id: string): Promise<void> {
+    await this.prisma.apiKey.update({
+      where: { id },
+      data: { revokedAt: new Date() },
+    })
+  }
+
+  async listApiKeys(orgId: string, repoId?: string): Promise<ApiKeyRecord[]> {
+    const rows = await this.prisma.apiKey.findMany({
+      where: {
+        organizationId: orgId,
+        ...(repoId && { repoId }),
+      },
+      orderBy: { createdAt: "desc" },
+    })
+    return rows.map((row) => ({
+      id: row.id,
+      organizationId: row.organizationId,
+      repoId: row.repoId,
+      name: row.name,
+      keyPrefix: row.keyPrefix,
+      keyHash: row.keyHash,
+      scopes: row.scopes,
+      lastUsedAt: row.lastUsedAt,
+      revokedAt: row.revokedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }))
+  }
+
+  async updateApiKeyLastUsed(id: string): Promise<void> {
+    await this.prisma.apiKey.update({
+      where: { id },
+      data: { lastUsedAt: new Date() },
+    })
+  }
+
+  // ── Phase 2: Workspace management ─────────────────────────────
+
+  async createWorkspace(data: {
+    userId: string
+    repoId: string
+    branch: string
+    baseSha?: string
+    expiresAt: Date
+  }): Promise<WorkspaceRecord> {
+    const row = await this.prisma.workspace.upsert({
+      where: {
+        userId_repoId_branch: {
+          userId: data.userId,
+          repoId: data.repoId,
+          branch: data.branch,
+        },
+      },
+      create: {
+        userId: data.userId,
+        repoId: data.repoId,
+        branch: data.branch,
+        baseSha: data.baseSha,
+        expiresAt: data.expiresAt,
+        lastSyncAt: new Date(),
+      },
+      update: {
+        baseSha: data.baseSha,
+        expiresAt: data.expiresAt,
+        lastSyncAt: new Date(),
+      },
+    })
+    return {
+      id: row.id,
+      userId: row.userId,
+      repoId: row.repoId,
+      branch: row.branch,
+      baseSha: row.baseSha,
+      lastSyncAt: row.lastSyncAt,
+      expiresAt: row.expiresAt,
+      createdAt: row.createdAt,
+    }
+  }
+
+  async getWorkspace(userId: string, repoId: string, branch: string): Promise<WorkspaceRecord | null> {
+    const row = await this.prisma.workspace.findUnique({
+      where: {
+        userId_repoId_branch: { userId, repoId, branch },
+      },
+    })
+    if (!row) return null
+    return {
+      id: row.id,
+      userId: row.userId,
+      repoId: row.repoId,
+      branch: row.branch,
+      baseSha: row.baseSha,
+      lastSyncAt: row.lastSyncAt,
+      expiresAt: row.expiresAt,
+      createdAt: row.createdAt,
+    }
+  }
+
+  async updateWorkspaceSync(id: string, baseSha?: string): Promise<void> {
+    const ttlHours = parseInt(process.env.MCP_WORKSPACE_TTL_HOURS ?? "12", 10)
+    await this.prisma.workspace.update({
+      where: { id },
+      data: {
+        lastSyncAt: new Date(),
+        expiresAt: new Date(Date.now() + ttlHours * 60 * 60 * 1000),
+        ...(baseSha && { baseSha }),
+      },
+    })
+  }
+
+  async deleteExpiredWorkspaces(): Promise<WorkspaceRecord[]> {
+    const expired = await this.prisma.workspace.findMany({
+      where: { expiresAt: { lt: new Date() } },
+    })
+    if (expired.length > 0) {
+      await this.prisma.workspace.deleteMany({
+        where: { expiresAt: { lt: new Date() } },
+      })
+    }
+    return expired.map((row) => ({
+      id: row.id,
+      userId: row.userId,
+      repoId: row.repoId,
+      branch: row.branch,
+      baseSha: row.baseSha,
+      lastSyncAt: row.lastSyncAt,
+      expiresAt: row.expiresAt,
+      createdAt: row.createdAt,
+    }))
+  }
+
+  // ── Phase 2: Repo onboarding ──────────────────────────────────
+
+  async updateRepoOnboardingPr(repoId: string, prUrl: string, prNumber: number): Promise<void> {
+    await this.prisma.repo.update({
+      where: { id: repoId },
+      data: {
+        onboardingPrUrl: prUrl,
+        onboardingPrNumber: prNumber,
+      },
+    })
   }
 }
 

@@ -60,9 +60,11 @@ export async function writeToArango(input: WriteToArangoInput): Promise<WriteToA
   if (allEdges.length > 0) {
     await container.graphStore.bulkUpsertEdges(input.orgId, allEdges)
   }
+  // Phase 3: Status stays "indexing" — embedRepoWorkflow will transition to "embedding" → "ready"
+  // We still update progress and counts so the dashboard reflects indexing completion
   await container.relationalStore.updateRepoStatus(input.repoId, {
-    status: "ready",
-    progress: 100,
+    status: "indexing",
+    progress: 90,
     fileCount: input.fileCount,
     functionCount: input.functionCount,
     classCount: input.classCount,

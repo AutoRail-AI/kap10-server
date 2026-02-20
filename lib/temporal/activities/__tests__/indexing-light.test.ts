@@ -254,7 +254,7 @@ describe("writeToArango", () => {
     expect(mockBulkUpsertEdges).not.toHaveBeenCalled()
   })
 
-  it("updates repo status to ready with correct counts", async () => {
+  it("updates repo status to indexing with correct counts", async () => {
     await writeToArango({
       orgId: "org-1",
       repoId: "repo-1",
@@ -266,8 +266,8 @@ describe("writeToArango", () => {
     })
 
     expect(mockUpdateRepoStatus).toHaveBeenCalledWith("repo-1", {
-      status: "ready",
-      progress: 100,
+      status: "indexing",
+      progress: 90,
       fileCount: 10,
       functionCount: 25,
       classCount: 5,

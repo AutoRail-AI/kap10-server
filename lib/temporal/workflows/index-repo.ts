@@ -1,6 +1,8 @@
-import { defineQuery, proxyActivities, setHandler } from "@temporalio/workflow"
+import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild } from "@temporalio/workflow"
 import type * as heavy from "../activities/indexing-heavy"
 import type * as light from "../activities/indexing-light"
+import { embedRepoWorkflow } from "./embed-repo"
+import { syncLocalGraphWorkflow } from "./sync-local-graph"
 
 const heavyActivities = proxyActivities<typeof heavy>({
   taskQueue: "heavy-compute-queue",
@@ -91,6 +93,26 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
       functionCount,
       classCount,
     })
+    progress = 95
+
+    // Step 5: Fire-and-forget the embedding workflow (Phase 3)
+    // Uses ParentClosePolicy.ABANDON so the embed workflow runs independently
+    // even if this parent workflow completes/terminates.
+    await startChild(embedRepoWorkflow, {
+      workflowId: `embed-${input.orgId}-${input.repoId}`,
+      taskQueue: "light-llm-queue",
+      args: [{ orgId: input.orgId, repoId: input.repoId }],
+      parentClosePolicy: ParentClosePolicy.ABANDON,
+    })
+
+    // Step 6: Fire-and-forget the local graph sync workflow (Phase 10a)
+    await startChild(syncLocalGraphWorkflow, {
+      workflowId: `sync-${input.orgId}-${input.repoId}`,
+      taskQueue: "light-llm-queue",
+      args: [{ orgId: input.orgId, repoId: input.repoId }],
+      parentClosePolicy: ParentClosePolicy.ABANDON,
+    })
+
     progress = 100
     return result
   } catch (err: unknown) {

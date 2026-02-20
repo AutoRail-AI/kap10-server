@@ -153,16 +153,28 @@ These architectural patterns span multiple phases and are referenced throughout.
 description: kap10 integration rules — always active
 globs: ["**/*"]
 alwaysApply: true
+kap10_rule_version: "1.0.0"
 ---
 
 ## Pre-flight (before ANY code generation task)
-1. Call `sync_local_diff` with the current git diff (`git diff HEAD`)
+1. Call `sync_local_diff` with a filtered git diff that excludes lockfiles and build artifacts:
+   git diff HEAD -- . ':!package-lock.json' ':!pnpm-lock.yaml' ':!yarn.lock'
+     ':!Gemfile.lock' ':!poetry.lock' ':!Cargo.lock' ':!go.sum'
+     ':!composer.lock' ':!node_modules/' ':!dist/' ':!.next/' ':!build/'
 2. Wait for confirmation that the cloud graph is updated
 
 ## Post-flight (after ANY code generation task)
-1. Call `sync_local_diff` again to push the new changes
+1. Call `sync_local_diff` again (same filtered diff) to push the new changes
 2. Call `check_patterns` on any newly written code
+
+## Path formatting (IMPORTANT for monorepos)
+Always format file paths relative to the ROOT of the git repository when
+calling kap10 MCP tools, regardless of your current working directory.
+Example: use "packages/frontend/src/auth.ts" not "src/auth.ts".
+Run `git rev-parse --show-toplevel` to find the repo root if unsure.
 ```
+
+> **Rule versioning:** The `kap10_rule_version` field enables automated update PRs. When kap10 ships a new Bootstrap Rule version, the Auto-PR workflow compares the installed version against the latest and opens an update PR if outdated. Semver convention: patch = wording tweaks, minor = new rules/tools added, major = breaking agent workflow changes.
 
 #### `sync_local_diff` MCP Tool
 
@@ -172,25 +184,40 @@ const SyncLocalDiffTool = {
   name: 'sync_local_diff',
   description: 'Sync uncommitted local changes to kap10 cloud graph',
   inputSchema: z.object({
-    diff: z.string().describe('Output of `git diff HEAD`'),
+    diff: z.string().describe('Output of `git diff HEAD` (exclude lockfiles)'),
     branch: z.string().describe('Current git branch name'),
     baseSha: z.string().describe('HEAD commit SHA'),
   }),
   handler: async ({ diff, branch, baseSha }, ctx) => {
-    // 1. Resolve workspace (per-user, per-repo, per-branch)
-    const workspace = await resolveWorkspace(ctx.userId, ctx.repoId, branch);
+    // 0. Acquire Redis distributed lock (prevents concurrent writes to same workspace)
+    const lockKey = `kap10:lock:workspace:${ctx.userId}:${ctx.repoId}:${branch}`;
+    const lock = await acquireLock(lockKey, { ttl: 30_000, retries: 3, backoff: 200 });
 
-    // 2. Parse diff into structured overlay using parse-diff (not custom regex)
-    //    parse-diff converts raw git diff → { files, chunks, additions, deletions }
-    const overlay = parseDiffToOverlay(diff, baseSha);  // Uses parse-diff internally
+    try {
+      // 0.5. Strip lockfile/build artifact hunks before size validation
+      const filteredDiff = stripLockfileHunks(diff);
+      if (filteredDiff.length > 50 * 1024) {
+        throw new DiffTooLargeError('Diff too large after lockfile exclusion. Commit first.');
+      }
 
-    // 3. Re-index only changed files (incremental, in-memory)
-    const delta = await indexOverlay(overlay, workspace.graphSnapshot);
+      // 1. Resolve workspace (per-user, per-repo, per-branch)
+      //    Cold-start: if expired, purge stale overlay and rebuild from latest commit
+      const workspace = await resolveWorkspace(ctx.userId, ctx.repoId, branch);
 
-    // 4. Store as ephemeral workspace layer (TTL: 1 hour, refreshed on next sync)
-    await workspace.applyDelta(delta);
+      // 2. Parse diff into structured overlay using parse-diff (not custom regex)
+      //    parse-diff converts raw git diff → { files, chunks, additions, deletions }
+      const overlay = parseDiffToOverlay(filteredDiff, baseSha);
 
-    return { updated: delta.changedEntities.length, workspace: workspace.id };
+      // 3. Re-index only changed files (incremental, in-memory)
+      const delta = await indexOverlay(overlay, workspace.graphSnapshot);
+
+      // 4. Store as ephemeral workspace layer (TTL: 12 hours, sliding window)
+      await workspace.applyDelta(delta);
+
+      return { updated: delta.changedEntities.length, workspace: workspace.id };
+    } finally {
+      await lock.release();
+    }
   },
 };
 ```
@@ -209,7 +236,7 @@ Workspaces
 ```
 
 - **Branch auto-detection:** When the agent sends `sync_local_diff` with `branch: "feature/auth"`, kap10 checks if that branch matches a known remote branch. If yes, it layers the diff on top of the latest indexed state for that branch. If no, it layers on top of `main`.
-- **TTL:** Workspace overlays expire after 1 hour of inactivity. The Bootstrap Rule's pre-flight sync refreshes it.
+- **TTL:** Workspace overlays expire after **12 hours** of inactivity (configurable per-org, range 1–24 h, default 12 h). The extended TTL ensures workspaces survive overnight sessions and timezone gaps. On cold start (first sync after expiry), the stale overlay is purged and rebuilt from the latest indexed commit. The Bootstrap Rule's pre-flight sync refreshes the sliding window.
 - **Conflict resolution:** Cloud graph wins on conflict — the overlay is ephemeral, the indexed state is the source of truth.
 
 ### 2. Token Exhaustion — Semantic Truncation & Pagination
@@ -273,7 +300,7 @@ function formatForAgent<T>(results: T[], summarizer: (item: T) => string): MCPRe
 
 ### 3. Edge Secret Scrubbing
 
-**Problem:** Developers paste `git diff` output containing API keys, connection strings, or tokens into `sync_local_diff`. These must never reach LLM prompts or ArangoDB storage.
+**Problem:** Developers paste `git diff` output containing API keys, connection strings, or tokens into `sync_local_diff`. These must never reach LLM prompts or ArangoDB storage. (Note: lockfile hunks and build artifacts are stripped *before* secret scrubbing — see `sync_local_diff` tool above — reducing the scrubbing surface and avoiding false positives from lockfile hash values.)
 
 **Solution:** TruffleHog's open-source regex ruleset + entropy scrubber on all MCP payloads at the edge, before any processing.
 
@@ -1628,7 +1655,7 @@ async function createOnboardingPR(repo: Repo, apiKey: string) {
   const files = [
     {
       path: '.cursor/rules/kap10.mdc',
-      content: generateBootstrapRule(),  // Pre-flight/post-flight sync rules
+      content: generateBootstrapRule(),  // Pre-flight/post-flight sync rules (includes kap10_rule_version in frontmatter)
     },
     {
       path: '.cursor/mcp.json',
@@ -1671,13 +1698,15 @@ lib/
       inspect.ts           ← get_function, get_class, get_file
       graph.ts             ← get_callers, get_callees, get_imports
       stats.ts             ← get_project_stats
-      sync.ts              ← sync_local_diff tool
+      sync.ts              ← sync_local_diff tool (Redis lock + cold-start + lockfile stripping)
+      diff-filter.ts       ← Strip lockfile/build artifact hunks from diffs
     auth.ts                ← API key validation + repo resolution
     formatter.ts           ← Semantic truncation + pagination for LLM consumption
     workspace.ts           ← Workspace resolution (per-user, per-repo, per-branch)
   onboarding/
     auto-pr.ts             ← Create onboarding PR with Bootstrap Rule + MCP config
-    bootstrap-rule.ts      ← Generate kap10.mdc content
+    bootstrap-rule.ts      ← Generate kap10.mdc content (with kap10_rule_version)
+    rule-updater.ts        ← Compare installed vs latest rule version, open update PR
 app/
   api/
     mcp/
@@ -1709,7 +1738,7 @@ model Workspace {
   branch      String
   baseSha     String?  @map("base_sha")     // commit SHA this overlay is based on
   lastSyncAt  DateTime? @map("last_sync_at")
-  expiresAt   DateTime @map("expires_at")    // TTL: 1 hour from last sync
+  expiresAt   DateTime @map("expires_at")    // TTL: 12 hours from last sync (configurable per-org, 1–24 h)
   createdAt   DateTime @default(now()) @map("created_at")
 
   @@unique([userId, repoId, branch])

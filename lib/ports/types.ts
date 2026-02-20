@@ -101,3 +101,29 @@ export interface SnippetFilter {
   repoId?: string
   [key: string]: unknown
 }
+
+// Phase 2: MCP types
+
+export interface ProjectStats {
+  files: number
+  functions: number
+  classes: number
+  interfaces: number
+  variables: number
+  languages: Record<string, number>
+}
+
+export interface SearchResult {
+  name: string
+  kind: string
+  file_path: string
+  line: number
+  signature?: string
+  score: number
+}
+
+export interface ImportChain {
+  path: string
+  entities: EntityDoc[]
+  distance: number
+}

@@ -115,26 +115,34 @@ Step  Actor Action                     System Action                            
       semantic_search({
         query: "functions that
           validate permissions",
+        mode: "hybrid",             // optional: "hybrid" | "semantic" | "keyword"
         limit: 10
       })
 2                                      Hybrid search pipeline:                                  —
                                        a) Embed query via nomic-embed-text (local, <50ms)
                                        b) pgvector: cosine similarity search (top 20)
-                                       c) ArangoDB: fulltext search on entity names+bodies (top 20)
+                                       c) ArangoDB: fulltext search on entity names+bodies
+                                          (top 20, includes workspace overlay if active)
                                        d) Reciprocal Rank Fusion: merge + de-duplicate
-                                       e) Take top `limit` (default 10)
+                                       e) Exact match boost: entities with exact name match → top
+                                       f) Take top `limit` (default 10)
 3                                      Graph enrichment (ArangoDB):                             —
                                        For each result entity:
                                        - File path + line range
-                                       - Callers (1-hop)
-                                       - Callees (1-hop)
+                                       - Callers (1-hop, names only)
+                                       - Callees (1-hop, names only)
                                        - Parent class/module
-4                                      Semantic truncation (Phase 2):                           —
-                                       Apply MAX_RESPONSE_BYTES limit
-                                       Paginate if necessary
-5                                      Return MCP tool response                                JSON with entities,
-                                                                                                scores, graph context
+4                                      Summary-first response:                                  —
+                                       Strip full entity bodies (Two-Step RAG)
+                                       Return lightweight summaries only
+5                                      Return MCP tool response                                JSON with entity
+                                                                                                summaries, scores,
+                                                                                                graph context (no bodies)
+6     Agent identifies promising        Agent calls get_function or get_class                    Full entity body
+      result from summaries             to retrieve full body of specific entity                 with complete code
 ```
+
+> **Two-Step RAG pattern:** By returning summaries (name, signature, file path, callers/callees) without full bodies, a 10-result search response is ~1,500 tokens instead of ~20,000 tokens. The agent then selectively retrieves full bodies for 1–3 relevant results using `get_function`/`get_class`. This eliminates "lost in the middle" syndrome and reduces time-to-first-token latency by keeping the LLM's context window lean.
 
 **Query embedding reuse:** The query embedding is generated using the same `nomic-embed-text-v1.5` model and the same embedding function as the index-time embeddings. This ensures cosine similarity is meaningful (same vector space).
 
@@ -337,23 +345,32 @@ LlamaIndex Document:
 The hybrid search merges results from two independent retrieval systems (pgvector semantic search and ArangoDB fulltext search). RRF is a simple, robust fusion algorithm that doesn't require score normalization (which is problematic because pgvector cosine scores and ArangoDB BM25 scores are on different scales).
 
 ```
-Algorithm: Reciprocal Rank Fusion
+Algorithm: Reciprocal Rank Fusion (with Exact Match Boost)
 
 Input:
   - rankings: list of ranked result lists (one per retrieval source)
   - k: smoothing constant (default: 60)
   - limit: max results to return
+  - query_tokens: tokenized query terms (for exact match detection)
 
-For each entity appearing in any ranking:
-  rrf_score = 0
-  For each ranking where the entity appears:
-    rrf_score += 1 / (k + rank_position)
+Phase 1 — Standard RRF:
+  For each entity appearing in any ranking:
+    rrf_score = 0
+    For each ranking where the entity appears:
+      rrf_score += 1 / (k + rank_position)
 
-Sort entities by rrf_score descending
+Phase 2 — Exact Match Boost:
+  For each entity in the merged list:
+    If entity.entityName matches any query_token exactly (case-insensitive):
+      rrf_score = 1.0   // Guaranteed top rank
+
+Sort entities by rrf_score descending (exact matches first, then RRF-ranked)
 Return top `limit` entities
 ```
 
 **Why k=60:** This is the standard value from the original RRF paper (Cormack et al., 2009). It prevents low-ranked results from being dominated by high-ranked results while still giving meaningful weight to top-5 results.
+
+**Exact match boost rationale:** In code search, an exact name match is almost always the correct answer. If a developer searches for `validatePayment` and ArangoDB finds a function literally named `validatePayment`, it should not have to compete with a semantically similar but differently-named function for the #1 spot. The boost score of `1.0` is intentionally much higher than any possible RRF score (the theoretical max for a dual-source rank-1 result is `2 * 1/(60+1) ≈ 0.033`). Multiple exact matches are all boosted and sorted alphabetically among themselves.
 
 **De-duplication:** An entity may appear in both keyword and semantic results. RRF naturally handles this — duplicates get a higher combined score (as intended). The merge step uses `entity_key` as the de-duplication key.
 
@@ -455,9 +472,11 @@ Degraded mode 1 — ArangoDB fulltext unavailable:
   → _meta.degraded: { keyword: false, reason: "ArangoDB fulltext timeout" }
 
 Degraded mode 2 — pgvector unavailable:
-  keyword (ArangoDB fulltext) + graph enrichment (ArangoDB)
+  keyword (ArangoDB fulltext, incl. workspace overlay) + graph enrichment (ArangoDB)
   → skip RRF, use keyword ranking only → truncation → response
   → _meta.degraded: { semantic: false, reason: "pgvector connection failed" }
+  Note: Workspace overlay entities are ALWAYS searchable via keyword (ArangoDB),
+  even when pgvector is unavailable, because overlay entities are stored in ArangoDB.
 
 Degraded mode 3 — Both search backends unavailable:
   → Return error: "Search is temporarily unavailable. Please try again."
@@ -578,7 +597,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ### Environment & Configuration
 
-- [ ] **P3-INFRA-01: Add embedding model env vars to `env.mjs`** — S
+- [x] **P3-INFRA-01: Add embedding model env vars to `env.mjs`** — S
   - New variables: `EMBEDDING_MODEL_NAME` (default: `"nomic-ai/nomic-embed-text-v1.5"`), `EMBEDDING_DIMENSIONS` (default: `768`), `EMBEDDING_BATCH_SIZE` (default: `100`)
   - All optional with defaults — no breaking change to existing deployments
   - **Test:** `pnpm build` succeeds. Embedding pipeline uses defaults when vars are absent.
@@ -586,7 +605,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `env.mjs`, `.env.example`
   - Notes: _____
 
-- [ ] **P3-INFRA-02: Pre-download embedding model in `Dockerfile.light-worker`** — S
+- [x] **P3-INFRA-02: Pre-download embedding model in `Dockerfile.light-worker`** — S
   - Add warm-up step to `Dockerfile.light-worker` that downloads `nomic-embed-text-v1.5` ONNX model into the image layer
   - Eliminates cold-start latency (model download is ~500 MB, takes 30-60s on first run without this)
   - **Test:** `docker compose build temporal-worker-light` succeeds. Inside container: model files exist at `~/.cache/huggingface/`. Embedding a test string returns a 768-dim vector without network calls.
@@ -594,7 +613,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `Dockerfile.light-worker` (or equivalent light worker Dockerfile)
   - Notes: _____
 
-- [ ] **P3-INFRA-03: Update `.env.example` with Phase 3 variables** — S
+- [x] **P3-INFRA-03: Update `.env.example` with Phase 3 variables** — S
   - Add: `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_BATCH_SIZE`
   - Document: comment block explaining local embedding model (no API key needed)
   - **Test:** `cp .env.example .env.local` + fill → app starts with embedding pipeline functional.
@@ -606,20 +625,20 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ## 2.2 Database & Schema Layer
 
-- [ ] **P3-DB-01: Add `EntityEmbedding` model to Prisma schema** — M
-  - New model in `kap10` schema with fields: `id`, `orgId`, `repoId`, `entityKey`, `entityType`, `entityName`, `filePath`, `textContent`, `embedding` (`Unsupported("vector(768)")`), `createdAt`, `updatedAt`
-  - Unique constraint on `(repoId, entityKey)` for upsert semantics
-  - Index on `(orgId, repoId)` for tenant-scoped queries
+- [x] **P3-DB-01: Add `EntityEmbedding` model to Prisma schema** — M
+  - New model in `kap10` schema with fields: `id`, `orgId`, `repoId`, `entityKey`, `entityType`, `entityName`, `filePath`, `textContent`, `modelVersion` (default `"nomic-v1.5-768"`), `embedding` (`Unsupported("vector(768)")`), `createdAt`, `updatedAt`
+  - **Vector Model Versioning:** Unique constraint on `(repoId, entityKey, modelVersion)` — includes model version to prevent data collisions during model upgrades. Enables zero-downtime blue/green re-embedding: new model writes to new version key, old embeddings coexist until cutover. Without this, upgrading from `nomic-v1.5` to `nomic-v2` would overwrite embeddings with incompatible vectors.
+  - Index on `(orgId, repoId)` for tenant-scoped queries, index on `(modelVersion)` for version-scoped queries
   - Foreign key: `repoId` → `Repo.id` with `onDelete: Cascade` (deleting a repo removes all embeddings)
   - **Important:** Use `@@schema("kap10")` — all kap10 tables live in the `kap10` PostgreSQL schema
   - **Important:** `createTable: false` in LlamaIndex PGVectorStore config — Prisma owns the schema
-  - **Test:** `pnpm migrate` runs migration successfully. `\d kap10.entity_embeddings` shows correct columns, constraints, and indexes.
+  - **Test:** `pnpm migrate` runs migration successfully. `\d kap10.entity_embeddings` shows `model_version` column. Upsert by `(repoId, entityKey, modelVersion)` works. Two rows with same `(repoId, entityKey)` but different `modelVersion` coexist.
   - **Depends on:** Nothing
   - **Files:** `prisma/schema.prisma`, new migration file
-  - **Acceptance:** Table exists with correct schema. Upsert by `(repoId, entityKey)` works without constraint violation.
-  - Notes: _____
+  - **Acceptance:** Table exists with correct schema including `model_version`. Version-aware upsert works. Blue/green coexistence verified.
+  - Notes: Model version auto-computed as `nomic-v1.5-{dims}` or overridden via `EMBEDDING_MODEL_VERSION` env var.
 
-- [ ] **P3-DB-02: Enable pgvector extension in Supabase** — S
+- [x] **P3-DB-02: Enable pgvector extension in Supabase** — S
   - SQL migration: `CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions;`
   - Must run before the EntityEmbedding migration (Prisma can't manage extensions directly)
   - Supabase dashboard: verify `vector` extension is enabled
@@ -628,7 +647,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `supabase/migrations/YYYYMMDDHHMMSS_enable_pgvector.sql`
   - Notes: _____
 
-- [ ] **P3-DB-03: Create HNSW index on embedding column** — S
+- [x] **P3-DB-03: Create HNSW index on embedding column** — S
   - SQL migration: `CREATE INDEX idx_entity_embeddings_hnsw ON kap10.entity_embeddings USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);`
   - Also create composite index: `CREATE INDEX idx_entity_embeddings_repo_entity ON kap10.entity_embeddings (repo_id, entity_key);`
   - **Test:** `\di kap10.idx_entity_embeddings_hnsw` shows the index. Search query uses index (verify with `EXPLAIN ANALYZE`).
@@ -637,7 +656,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Acceptance:** Cosine similarity query on 10K embeddings completes in <100ms.
   - Notes: _____
 
-- [ ] **P3-DB-04: Add `embedding` and `embed_failed` to `RepoStatus` enum** — S
+- [x] **P3-DB-04: Add `embedding` and `embed_failed` to `RepoStatus` enum** — S
   - Extend the `RepoStatus` Prisma enum with `embedding` and `embed_failed` values
   - **Test:** Repo status can be set to `embedding` and `embed_failed` without error.
   - **Depends on:** Nothing
@@ -648,28 +667,31 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ## 2.3 Ports & Adapters Layer
 
-- [ ] **P3-ADAPT-01: Implement `IVectorSearch.embed()` with nomic-embed-text** — M
+- [x] **P3-ADAPT-01: Implement `IVectorSearch.embed()` with nomic-embed-text** — M
   - Implement the `embed(texts: string[]): Promise<number[][]>` method using `@xenova/transformers` HuggingFaceEmbedding
-  - Model: `nomic-ai/nomic-embed-text-v1.5` (768 dimensions, ONNX runtime, CPU)
+  - Model: `nomic-ai/nomic-embed-text-v1.5` (768 dimensions native, ONNX runtime, CPU)
+  - **Critical: Nomic task prefixes** — `embed()` prepends `search_document: ` to all texts; `embedQuery()` prepends `search_query: `. These asymmetric bi-encoder prefixes are **required** for correct cosine similarity. Without them, retrieval quality is severely degraded.
+  - **Matryoshka truncation** — Supports dynamic dimension reduction via `EMBEDDING_DIMENSIONS` env var. Vectors are sliced to target dims and re-normalized. Default 768; set to 256 for ~66% storage savings with negligible quality loss.
   - Batch processing: handle arrays up to 100 texts
   - Error handling: wrap `@xenova/transformers` errors in domain-specific `EmbeddingError`
-  - **Test:** `embed(["hello world"])` returns a `number[]` of length 768. `embed(["a", "b"])` returns 2 vectors. Cosine similarity between "authentication" and "auth middleware" > 0.7.
+  - **Test:** `embed(["hello world"])` returns a `number[]` of length `EMBEDDING_DIMENSIONS`. `embed(["a", "b"])` returns 2 vectors. Cosine similarity between "authentication" and "auth middleware" > 0.7.
   - **Depends on:** P3-INFRA-01
   - **Files:** `lib/adapters/llamaindex-vector-search.ts`
-  - **Acceptance:** Local CPU embedding produces consistent 768-dim vectors. No API calls made. Model cached after first load.
-  - Notes: _____
+  - **Acceptance:** Local CPU embedding produces consistent vectors with task prefixes. No API calls made. Model cached after first load. Matryoshka truncation works at 256/384/512/768 dims.
+  - Notes: Nomic prefixes applied exclusively in adapter layer — activities pass raw text.
 
-- [ ] **P3-ADAPT-02: Implement `IVectorSearch.upsert()` with LlamaIndex PGVectorStore** — M
-  - Implement the `upsert(ids: string[], embeddings: number[][], metadata: Record<string, unknown>[]): Promise<void>` method
-  - Use LlamaIndex `PGVectorStore` with `connectionString: process.env.SUPABASE_DB_URL`, `tableName: "entity_embeddings"`, `dimensions: 768`, `createTable: false`
-  - Upsert semantics: ON CONFLICT (repo_id, entity_key) DO UPDATE
-  - **Test:** Upsert 10 embeddings → query → all present. Upsert same 10 with different vectors → vectors updated. Insert + upsert same key → no constraint violation.
+- [x] **P3-ADAPT-02: Implement `IVectorSearch.upsert()` with pgvector direct SQL** — M
+  - Implement the `upsert(ids: string[], embeddings: number[][], metadata: Record<string, unknown>[]): Promise<void>` method using direct `pg` Pool SQL (not LlamaIndex PGVectorStore — avoids abstraction overhead)
+  - Upsert semantics: `ON CONFLICT (repo_id, entity_key, model_version) DO UPDATE` — version-aware upsert for blue/green model migrations
+  - **Matryoshka truncation (optional):** If `EMBEDDING_DIMENSIONS < 768`, vectors are truncated in `embed()` before reaching `upsert()`. The column type remains `vector(768)` — pgvector accepts shorter vectors with zero-padding. For full optimization, update the column type to `vector({EMBEDDING_DIMENSIONS})`.
+  - Includes `model_version` in upsert payload (auto-computed as `nomic-v1.5-{dims}`)
+  - **Test:** Upsert 10 embeddings → query → all present. Upsert same 10 with different vectors → vectors updated. Insert + upsert same key + version → no constraint violation. Different model_version → coexists.
   - **Depends on:** P3-DB-01, P3-DB-02
   - **Files:** `lib/adapters/llamaindex-vector-search.ts`
-  - **Acceptance:** Embeddings persist in Supabase. Upsert is idempotent. `org_id` and `repo_id` metadata stored correctly.
+  - **Acceptance:** Embeddings persist in Supabase. Upsert is idempotent per model version. `org_id`, `repo_id`, and `model_version` stored correctly.
   - Notes: _____
 
-- [ ] **P3-ADAPT-03: Implement `IVectorSearch.search()` with pgvector cosine similarity** — M
+- [x] **P3-ADAPT-03: Implement `IVectorSearch.search()` with pgvector cosine similarity** — M
   - Implement the `search(embedding: number[], topK: number, filter?: { orgId?: string; repoId?: string }): Promise<{ id: string; score: number }[]>` method
   - Use LlamaIndex `VectorStoreIndex.asRetriever()` or direct pgvector SQL: `SELECT entity_key, 1 - (embedding <=> $1) as score FROM kap10.entity_embeddings WHERE org_id = $orgId AND repo_id = $repoId ORDER BY embedding <=> $1 LIMIT $topK`
   - **Critical:** Always include `org_id` filter (multi-tenancy). `repo_id` filter is optional (default: required in Phase 3).
@@ -679,7 +701,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Acceptance:** Search returns ranked results with cosine similarity scores. Multi-tenant isolation enforced. Latency <100ms for 10K embeddings.
   - Notes: _____
 
-- [ ] **P3-ADAPT-04: Update `InMemoryVectorSearch` fake with working implementation** — S
+- [x] **P3-ADAPT-04: Update `InMemoryVectorSearch` fake with working implementation** — S
   - The existing `InMemoryVectorSearch` fake in `lib/di/fakes.ts` must implement `embed()`, `search()`, and `upsert()` for unit tests
   - `embed()`: Return deterministic pseudo-vectors (e.g., hash of text → normalized vector)
   - `search()`: Brute-force cosine similarity over in-memory store
@@ -690,7 +712,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Acceptance:** All Phase 3 unit tests pass with `createTestContainer()` and no external dependencies.
   - Notes: _____
 
-- [ ] **P3-ADAPT-05: Add `searchEntities` fulltext method to `IGraphStore` (if not in Phase 2)** — S
+- [x] **P3-ADAPT-05: Add `searchEntities` fulltext method to `IGraphStore` (if not in Phase 2)** — S
   - Verify Phase 2's `P2-ADAPT-02` (searchEntities) is implemented. If not, implement: fulltext query on entity `name` and body-summary fields in ArangoDB
   - Input: query string, orgId, repoId, limit
   - Output: `{ entityKey: string; score: number }[]`
@@ -705,7 +727,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ### Temporal Workflows & Activities
 
-- [ ] **P3-API-01: Create `embedRepoWorkflow` Temporal workflow** — L
+- [x] **P3-API-01: Create `embedRepoWorkflow` Temporal workflow** — L
   - Workflow ID format: `embed-{orgId}-{repoId}` (idempotent — re-triggering same repo terminates old workflow)
   - Queue: `light-llm-queue`
   - Workflow steps:
@@ -723,7 +745,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Acceptance:** Workflow executes all activities in order. Repo status transitions correctly. Failure sets `embed_failed`. Heartbeat reports progress.
   - Notes: _____
 
-- [ ] **P3-API-02: Create `fetchEntities` activity** — M
+- [x] **P3-API-02: Create `fetchEntities` activity** — M
   - Query ArangoDB for all entities matching `org_id` and `repo_id`
   - Return: array of entity docs with `_key`, `name`, `kind`, `signature`, `body`, `file_path`
   - **Test:** With 100 entities in ArangoDB fake → returns 100 entities with correct fields.
@@ -731,7 +753,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `lib/temporal/activities/embedding.ts`
   - Notes: _____
 
-- [ ] **P3-API-03: Create `buildDocuments` activity** — M
+- [x] **P3-API-03: Create `buildDocuments` activity** — M
   - Transform entity docs into LlamaIndex-compatible text + metadata format
   - Text format: `"{Kind}: {name}\nFile: {filePath}\nSignature: {signature}\n\n{body}"`
   - Truncation: bodies exceeding 8000 tokens are truncated with `[truncated — {N} tokens total]`
@@ -741,7 +763,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `lib/temporal/activities/embedding.ts`
   - Notes: _____
 
-- [ ] **P3-API-04: Create `generateEmbeds` activity** — L
+- [x] **P3-API-04: Create `generateEmbeds` activity** — L
   - Batch entities into groups of `EMBEDDING_BATCH_SIZE` (default 100)
   - For each batch: call `vectorSearch.embed(texts)` → receive vectors
   - Report progress via Temporal heartbeat: `{ batchIndex, totalBatches, entitiesProcessed, totalEntities }`
@@ -752,7 +774,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Acceptance:** All entities embedded. Heartbeat reports accurate progress. Adaptive batch sizing handles OOM.
   - Notes: _____
 
-- [ ] **P3-API-05: Create `storeInPGVector` activity** — M
+- [x] **P3-API-05: Create `storeInPGVector` activity** — M
   - For each batch of (entity, embedding) pairs: call `vectorSearch.upsert(ids, embeddings, metadata)`
   - Upsert semantics: existing embeddings for the same `entity_key` are updated
   - **Test:** Upsert 100 embeddings → all present in pgvector. Re-upsert → no duplicates.
@@ -760,7 +782,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `lib/temporal/activities/embedding.ts`
   - Notes: _____
 
-- [ ] **P3-API-06: Create `deleteOrphanedEmbeddings` activity** — S
+- [x] **P3-API-06: Create `deleteOrphanedEmbeddings` activity** — S
   - Query current entity keys from ArangoDB (via `IGraphStore`)
   - Delete from pgvector any rows where `entity_key NOT IN (current keys)` for the given `repo_id`
   - **Test:** Insert 100 embeddings. Remove 10 entities from ArangoDB fake. Run activity → 10 embeddings deleted, 90 remain.
@@ -769,7 +791,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Acceptance:** Orphaned embeddings are removed. Non-orphaned embeddings are untouched.
   - Notes: _____
 
-- [ ] **P3-API-07: Chain `embedRepoWorkflow` trigger from `indexRepoWorkflow` completion** — M
+- [x] **P3-API-07: Chain `embedRepoWorkflow` trigger from `indexRepoWorkflow` completion** — M
   - After `indexRepoWorkflow` completes successfully, start `embedRepoWorkflow`
   - Implementation: in the `POST /api/repos` handler (or indexing completion callback), call `workflowEngine.startWorkflow("embedRepoWorkflow", ...)` after indexing succeeds
   - Alternatively: use a Temporal signal or continuation pattern
@@ -781,21 +803,22 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ### Hybrid Search Pipeline
 
-- [ ] **P3-API-08: Create hybrid search module** — L
-  - Implement the three-stage pipeline: semantic search + keyword search + RRF merge
-  - Input: `{ query: string, orgId: string, repoId: string, mode: "hybrid" | "semantic" | "keyword", limit: number }`
-  - Semantic leg: embed query → `vectorSearch.search()` → top 20 candidates
-  - Keyword leg: `graphStore.searchEntities()` → top 20 candidates
-  - Merge: Reciprocal Rank Fusion (k=60) on entity_key
+- [x] **P3-API-08: Create hybrid search module** — L
+  - Implement the three-stage pipeline: semantic search + keyword search + Weighted RRF merge
+  - Input: `{ query: string, orgId: string, repoId: string, workspaceId?: string, mode: "hybrid" | "semantic" | "keyword", limit: number }`
+  - Semantic leg: embed query → `vectorSearch.search()` → top 20 candidates (base repo only — pgvector does not contain uncommitted workspace overlay entities)
+  - Keyword leg: `graphStore.searchEntities()` → top 20 candidates. **Workspace overlay inclusion:** If `workspaceId` is provided, the ArangoDB fulltext query MUST search both committed entities AND workspace overlay entities (prefixed `ws:{workspaceId}:*`). This ensures that brand-new functions created in the developer's local IDE (uploaded via `sync_local_diff` but not yet committed or embedded in pgvector) are discoverable through keyword matching. The Weighted RRF merge will rank these overlay results alongside pgvector semantic matches.
+  - Merge: **Weighted Reciprocal Rank Fusion** (k=30, keyword weight=1.0, semantic weight=0.7) on entity_key. Code search relies heavily on exact lexical matches — the keyword leg gets higher weight to explicitly favor naming precision. k=30 (down from standard 60) creates steeper rank degradation, giving significantly more influence to top-ranked exact keyword matches.
+  - **Exact match boost:** Before standard RRF scoring, check if any keyword-leg result has an `entityName` that exactly matches a query token (case-insensitive). If so, artificially set its final RRF score to `1.0` (the theoretical maximum for a single-source rank-1 result is `1/(60+1) ≈ 0.016`, so `1.0` guarantees it appears first). This ensures that searching for `validatePayment` when a function literally named `validatePayment` exists always returns it at rank #1, regardless of the semantic leg's ranking. Multiple exact matches are all boosted and sorted alphabetically among themselves.
   - De-duplicate: single entity appearing in both legs gets a combined RRF score
   - Mode filtering: `semantic` = skip keyword leg, `keyword` = skip semantic leg, `hybrid` = both
-  - **Test:** Insert entities with known semantics. Hybrid search returns results from both legs. RRF scores are correct. De-duplication works.
+  - **Test:** Insert entities with known semantics. Hybrid search returns results from both legs. RRF scores are correct. De-duplication works. Workspace overlay entities found via keyword leg. Exact name match appears at rank #1 regardless of semantic score.
   - **Depends on:** P3-ADAPT-01, P3-ADAPT-03, P3-ADAPT-05
   - **Files:** `lib/embeddings/hybrid-search.ts`
-  - **Acceptance:** Hybrid search returns relevant results. `mode` parameter filters correctly. RRF merge produces a single ranked list.
+  - **Acceptance:** Hybrid search returns relevant results. `mode` parameter filters correctly. RRF merge produces a single ranked list. Workspace overlay entities included in keyword results. Exact name matches boosted to top.
   - Notes: _____
 
-- [ ] **P3-API-09: Add graph enrichment step to hybrid search** — M
+- [x] **P3-API-09: Add graph enrichment step to hybrid search** — M
   - For each result entity from the RRF merge (top N), query ArangoDB for:
     - File path + line range (already in entity metadata)
     - 1-hop callers (via `graphStore.getCallersOf()`)
@@ -809,7 +832,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Acceptance:** Each search result includes graph context. Batch queries keep latency <2s for top 10 results.
   - Notes: _____
 
-- [ ] **P3-API-10: Apply semantic truncation to search results** — S
+- [x] **P3-API-10: Apply semantic truncation to search results** — S
   - Reuse Phase 2's semantic truncation (formatter) to ensure search results respect `MAX_RESPONSE_BYTES`
   - If results exceed limit: truncate entity bodies, then reduce result count, then omit graph context
   - **Test:** 10 results with large bodies → truncated to fit within byte limit. Metadata (scores, entity keys) never truncated.
@@ -819,20 +842,21 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ### MCP Tools
 
-- [ ] **P3-API-11: Create `semantic_search` MCP tool** — M
+- [x] **P3-API-11: Create `semantic_search` MCP tool** — M
   - Tool name: `semantic_search`
-  - Input schema: `{ query: string, limit?: number (default 10, max 50) }`
-  - Calls hybrid search pipeline (mode: `hybrid`)
-  - Returns: array of `{ entityKey, entityName, entityType, filePath, score, snippet, callers: string[], callees: string[] }`
+  - Input schema: `{ query: string, mode?: "hybrid" | "semantic" | "keyword" (default "hybrid"), limit?: number (default 10, max 50) }`
+  - **Agent-controlled search modes:** The `mode` parameter lets agents choose the optimal retrieval strategy. Tool description includes guidance: *"Use 'keyword' for exact variable/function/class names. Use 'semantic' for conceptual queries like 'authentication logic' or 'error handling patterns'. Use 'hybrid' (default) when unsure — it combines both strategies via Reciprocal Rank Fusion."*
+  - Calls hybrid search pipeline with the specified `mode`
+  - **Summary-First return schema (Two-Step RAG):** Returns lightweight summaries — NO full entity bodies. Each result contains: `{ entityKey, entityName, entityType, filePath, lineStart, lineEnd, signature, score, callers: string[], callees: string[] }`. Tool description explicitly instructs: *"This tool returns summaries only. If a result looks relevant, use `get_function` or `get_class` to retrieve the full body. This two-step approach prevents context window bloat."* This design saves 10,000–20,000+ tokens per search call (10 function bodies @ 50–200 lines each) and eliminates "lost in the middle" syndrome where LLMs ignore code buried in large context payloads.
   - Apply rate limiting (Phase 2 rate limiter)
   - Apply secret scrubbing on results (Phase 2 scrubber)
-  - **Test:** MCP tool call with query returns relevant results. Rate limiter enforced. Response within `MAX_RESPONSE_BYTES`.
+  - **Test:** MCP tool call with query returns summaries (no full bodies). `mode: "keyword"` returns keyword-only results. `mode: "semantic"` returns semantic-only results. Rate limiter enforced. Response within `MAX_RESPONSE_BYTES`. Verify response token count is <2,000 tokens for a 10-result response (vs ~20,000 with full bodies).
   - **Depends on:** P3-API-08, P3-API-09, P3-API-10, Phase 2 MCP tool registration pattern
   - **Files:** `lib/mcp/tools/semantic.ts`
-  - **Acceptance:** Tool registered in MCP server. Returns structured results. Rate limited. Secrets scrubbed.
+  - **Acceptance:** Tool registered in MCP server. Returns summary-only results (no bodies). Mode parameter respected. Rate limited. Secrets scrubbed. Agent can follow up with `get_function` for full details.
   - Notes: _____
 
-- [ ] **P3-API-12: Create `find_similar` MCP tool** — M
+- [x] **P3-API-12: Create `find_similar` MCP tool** — M
   - Tool name: `find_similar`
   - Input schema: `{ entityKey: string, limit?: number (default 5, max 20) }`
   - Flow: look up existing embedding → if exists, nearest-neighbor search (exclude self) → if not, embed entity body on-the-fly → search
@@ -845,7 +869,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ### API Routes
 
-- [ ] **P3-API-13: Create `GET /api/search` route** — M
+- [x] **P3-API-13: Create `GET /api/search` route** — M
   - Query parameters: `q` (required), `repoId` (required), `mode` (optional, default `hybrid`), `limit` (optional, default 10)
   - Auth: Better Auth session required. Verify user has access to org owning the repo.
   - Calls hybrid search pipeline
@@ -855,7 +879,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `app/api/search/route.ts`
   - Notes: _____
 
-- [ ] **P3-API-14: Add Redis caching to search API** — S
+- [x] **P3-API-14: Add Redis caching to search API** — S
   - Cache search results in Redis with TTL of 5 minutes
   - Cache key: `search:{orgId}:{repoId}:{sha256(query)}:{mode}`
   - Cache-bust on embed workflow completion (via Redis key pattern deletion)
@@ -868,7 +892,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ## 2.5 Frontend / UI Layer
 
-- [ ] **P3-UI-01: Create search page** — M
+- [x] **P3-UI-01: Create search page** — M
   - Route: `/dashboard/search` (or integrated into existing dashboard layout)
   - Components:
     - Search input with mode selector (Hybrid / Semantic / Keyword)
@@ -883,7 +907,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Acceptance:** Search page renders. Results are relevant. Mode switching works. Repo scoping works. Design follows design system (glass-card, font-grotesk headings, etc.).
   - Notes: _____
 
-- [ ] **P3-UI-02: Add global search bar to dashboard header** — S
+- [x] **P3-UI-02: Add global search bar to dashboard header** — S
   - Add a search input to the dashboard header/sidebar (existing layout)
   - Keyboard shortcut: `Cmd+K` / `Ctrl+K` to focus
   - On submit: navigate to `/dashboard/search?q={query}&repoId={activeRepoId}`
@@ -893,7 +917,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `components/dashboard/global-search.tsx`, `app/(dashboard)/layout.tsx` (modified)
   - Notes: _____
 
-- [ ] **P3-UI-03: Update repo card with embedding status** — S
+- [x] **P3-UI-03: Update repo card with embedding status** — S
   - Show embedding status on the repo card:
     - "Indexing..." → "Embedding..." → "Ready" (with corresponding icons/colors)
     - "Embedding failed" → red badge with retry button
@@ -904,7 +928,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Acceptance:** Repo card reflects embedding state. Progress updates in near-real-time (polling every 5s during embedding).
   - Notes: _____
 
-- [ ] **P3-UI-04: Add "Search" link to dashboard navigation** — S
+- [x] **P3-UI-04: Add "Search" link to dashboard navigation** — S
   - Add a navigation item in the dashboard sidebar/nav for the search page
   - Icon: Lucide `Search` icon (`h-4 w-4`)
   - Active state: highlighted when on `/dashboard/search`
@@ -919,7 +943,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ### Unit Tests
 
-- [ ] **P3-TEST-01: Embedding adapter tests** — M
+- [x] **P3-TEST-01: Embedding adapter tests** — M
   - `embed()` returns 768-dim vectors
   - `embed([])` returns empty array (no error)
   - Two semantically similar texts produce vectors with cosine similarity > 0.7
@@ -928,7 +952,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `lib/adapters/__tests__/llamaindex-vector-search.test.ts`
   - Notes: _____
 
-- [ ] **P3-TEST-02: Document builder tests** — S
+- [x] **P3-TEST-02: Document builder tests** — S
   - Entity with kind "function" → text starts with "Function:"
   - Entity with kind "class" → text starts with "Class:"
   - Large body (>8000 tokens) → truncated with `[truncated — N tokens total]`
@@ -937,27 +961,32 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `lib/temporal/activities/__tests__/embedding.test.ts`
   - Notes: _____
 
-- [ ] **P3-TEST-03: Hybrid search pipeline tests** — M
+- [x] **P3-TEST-03: Hybrid search pipeline tests** — M
   - Mode `hybrid`: both semantic and keyword results merged
   - Mode `semantic`: only pgvector results
   - Mode `keyword`: only ArangoDB results
   - RRF merge: entity appearing in both legs gets higher score than entity in one leg
   - De-duplication: same entity from both legs → single result
+  - **Exact match boost:** entity with name exactly matching query token → always rank #1 regardless of semantic score
+  - **Workspace overlay:** with `workspaceId` provided, keyword leg includes overlay entities (prefixed `ws:*`). New function in overlay found via keyword search even without pgvector embedding.
   - Graceful degradation: keyword timeout → semantic-only results with `_meta.degraded`
   - **Depends on:** P3-API-08
   - **Files:** `lib/embeddings/__tests__/hybrid-search.test.ts`
   - Notes: _____
 
-- [ ] **P3-TEST-04: RRF algorithm tests** — S
+- [x] **P3-TEST-04: RRF algorithm tests** — S
   - Two rankings with no overlap → union with correct RRF scores
   - Two rankings with full overlap → all items get double weight
   - Empty ranking → other ranking returned as-is
   - k parameter affects score distribution
+  - **Exact match boost:** entity named `validatePayment` + query token `validatePayment` → boosted to score `1.0` → guaranteed rank #1
+  - **Multiple exact matches:** two entities match query token → both boosted, sorted alphabetically
+  - **Case-insensitive:** query `validatepayment` matches entity `validatePayment`
   - **Depends on:** P3-API-08
   - **Files:** `lib/embeddings/__tests__/hybrid-search.test.ts`
   - Notes: _____
 
-- [ ] **P3-TEST-05: Orphaned embedding cleanup tests** — S
+- [x] **P3-TEST-05: Orphaned embedding cleanup tests** — S
   - 100 embeddings, 10 entities removed from graph store → 10 embeddings deleted after cleanup
   - 0 entities removed → 0 embeddings deleted
   - All entities removed → all embeddings deleted
@@ -965,17 +994,20 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `lib/temporal/activities/__tests__/embedding.test.ts`
   - Notes: _____
 
-- [ ] **P3-TEST-06: MCP tool input validation tests** — S
-  - `semantic_search` with valid query → success
+- [x] **P3-TEST-06: MCP tool input validation tests** — S
+  - `semantic_search` with valid query → success (summary-only, no bodies)
   - `semantic_search` with empty query → error
   - `semantic_search` with limit > 50 → clamped to 50
+  - `semantic_search` with `mode: "keyword"` → only keyword results (no pgvector)
+  - `semantic_search` with `mode: "semantic"` → only pgvector results
+  - `semantic_search` with `mode: "hybrid"` (or omitted) → both legs merged
   - `find_similar` with valid entityKey → success
   - `find_similar` with non-existent entityKey → on-the-fly embed → search
   - **Depends on:** P3-API-11, P3-API-12
   - **Files:** `lib/mcp/tools/__tests__/semantic.test.ts`
   - Notes: _____
 
-- [ ] **P3-TEST-07: Multi-tenancy isolation tests** — M
+- [x] **P3-TEST-07: Multi-tenancy isolation tests** — M
   - Embed entities for org A, repo 1 and org B, repo 2
   - Search from org A → only returns org A entities
   - Search from org B → only returns org B entities
@@ -986,14 +1018,14 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ### Integration Tests
 
-- [ ] **P3-TEST-08: Full embedding pipeline integration test** — L
+- [x] **P3-TEST-08: Full embedding pipeline integration test** — L
   - End-to-end: insert entities into ArangoDB → run `embedRepoWorkflow` → verify embeddings in pgvector → search → get results
   - Requires: testcontainers (ArangoDB + PostgreSQL with pgvector)
   - **Depends on:** P3-API-01, P3-API-02, P3-API-03, P3-API-04, P3-API-05
   - **Files:** `lib/temporal/workflows/__tests__/embed-repo.integration.test.ts`
   - Notes: _____
 
-- [ ] **P3-TEST-09: Temporal workflow replay test** — M
+- [x] **P3-TEST-09: Temporal workflow replay test** — M
   - Deterministic replay of `embedRepoWorkflow` with mock activities
   - Verify: correct activity call order, status transitions, heartbeat calls, error handling
   - **Depends on:** P3-API-01
@@ -1002,7 +1034,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ### E2E Tests
 
-- [ ] **P3-TEST-10: Dashboard search E2E** — M
+- [x] **P3-TEST-10: Dashboard search E2E** — M
   - User navigates to search page → types "authentication" → results appear with entity names and file paths
   - User switches mode to "Keyword" → results update
   - User selects different repo → results scoped to new repo
@@ -1010,16 +1042,19 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `e2e/search.spec.ts`
   - Notes: _____
 
-- [ ] **P3-TEST-11: MCP semantic search E2E** — M
-  - Connect MCP client to server → call `semantic_search` tool → receive relevant results with graph context
+- [x] **P3-TEST-11: MCP semantic search E2E** — M
+  - Connect MCP client to server → call `semantic_search` tool → receive relevant summaries (no bodies, Two-Step RAG verified)
+  - Call `semantic_search` with `mode: "keyword"` → only keyword results returned
+  - Call `semantic_search` for exact entity name → exact match appears at rank #1
   - Call `find_similar` tool → receive similar entities
+  - Two-step RAG flow: `semantic_search` → pick result → `get_function` → full body returned
   - **Depends on:** P3-API-11, P3-API-12
   - **Files:** `e2e/mcp-search.spec.ts`
   - Notes: _____
 
 ### Manual Verification
 
-- [ ] **P3-TEST-12: Manual semantic quality check** — M
+- [x] **P3-TEST-12: Manual semantic quality check** — M
   - Index a real repo (e.g., this project's codebase)
   - MCP `semantic_search` "error handling" → returns catch blocks, error boundaries, validators
   - MCP `semantic_search` "database queries" → returns Prisma calls, ArangoDB queries, SQL
@@ -1137,3 +1172,5 @@ app/(dashboard)/layout.tsx            ← Global search bar integration
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-02-20 | — | Initial document created. 14 API items, 5 adapter items, 3 infrastructure items, 4 database items, 4 UI items, 12 test items. Total: **42 tracker items.** |
+| 2026-02-20 | — | **4 agentic workflow optimizations.** (1) **Two-Step RAG** — `semantic_search` MCP tool now returns summary-only results (name, signature, file path, callers/callees) without full entity bodies, saving ~18,000 tokens per 10-result response. Agents follow up with `get_function`/`get_class` for specific bodies. Eliminates "lost in the middle" syndrome. (2) **Workspace overlay in keyword leg** — `P3-API-08` hybrid search module now accepts optional `workspaceId`; ArangoDB fulltext query includes workspace overlay entities (`ws:*`), ensuring uncommitted code (uploaded via `sync_local_diff`) is discoverable even without pgvector embeddings. (3) **Agent-controlled search modes** — `P3-API-11` `semantic_search` tool now exposes `mode: "hybrid" | "semantic" | "keyword"` parameter (default "hybrid"), with guidance in the tool description for optimal usage. (4) **Exact match boost in RRF** — `P3-API-08` RRF algorithm now includes a Phase 2 step: entities with `entityName` exactly matching a query token (case-insensitive) are boosted to score `1.0`, guaranteeing rank #1. Updated: P3-API-08 (workspace overlay, exact match boost), P3-API-11 (summary-first, mode param), P3-TEST-03/04/06/11 (new test cases), RRF algorithm spec, Flow 3 sequence, graceful degradation. |
+| 2026-02-21 | — | **4 data science & production-hardening enhancements.** (1) **Nomic Task Prefixes (P3-ADAPT-01)** — `LlamaIndexVectorSearch.embed()` prepends `search_document: ` to all document texts; `embedQuery()` prepends `search_query: `. These task instruction prefixes are required by the asymmetric bi-encoder architecture of `nomic-embed-text-v1.5` to break symmetry between documents and queries. Without them, cosine similarity scores are severely degraded. Prefixes applied exclusively in the adapter layer — activities and search pipeline pass raw text. (2) **Weighted RRF + k-Value Tuning (P3-API-08)** — Upgraded from standard RRF to Weighted RRF. Keyword leg weight = `1.0`, semantic leg weight = `0.7`. `k` tuned from `60` → `30` (steeper rank degradation → top-ranked exact keyword matches get significantly more influence). Code search relies heavily on exact lexical matches; this weighting explicitly favors naming precision over semantic fuzziness. (3) **Matryoshka Representation Learning (P3-ADAPT-01, P3-INFRA-01)** — `nomic-embed-text-v1.5` was trained with Matryoshka RL; vectors can be safely truncated to 256/384/512 dims with negligible MTEB score loss. Added `getTargetDimensions()` and `truncateVector()` methods to `LlamaIndexVectorSearch`: reads `EMBEDDING_DIMENSIONS` env var, slices vectors, re-normalizes after truncation. Default remains 768; set to 256 to save ~66% pgvector storage. (4) **Vector Model Versioning (P3-DB-01)** — Added `model_version TEXT NOT NULL DEFAULT 'nomic-v1.5-768'` column to `entity_embeddings`. Unique constraint updated from `(repo_id, entity_key)` → `(repo_id, entity_key, model_version)`. Enables zero-downtime blue/green re-embedding migrations: new model writes to new version key, old embeddings coexist until cutover. All adapter methods (upsert, search, getEmbedding, deleteOrphaned) now filter by `model_version`. Version auto-computed as `nomic-v1.5-{dims}` or overridden via `EMBEDDING_MODEL_VERSION` env var. |

@@ -368,10 +368,24 @@ sequenceDiagram
 
 **The Bootstrap Rule (`kap10.mdc`) — what it tells AI agents:**
 
-```
+```markdown
+---
+description: kap10 integration rules — always active
+globs: ["**/*"]
+alwaysApply: true
+kap10_rule_version: "1.0.0"
+---
+
 RULE: Before starting any coding task, call sync_local_diff to upload
 uncommitted changes to kap10's cloud graph. This ensures search results
 reflect your current working state, not just the last commit.
+
+IMPORTANT: When generating the diff for sync_local_diff, EXCLUDE lockfiles
+and build artifacts. Use a filtered diff command:
+  git diff HEAD -- . ':!package-lock.json' ':!pnpm-lock.yaml' ':!yarn.lock'
+    ':!Gemfile.lock' ':!poetry.lock' ':!Cargo.lock' ':!go.sum'
+    ':!composer.lock' ':!node_modules/' ':!dist/' ':!.next/' ':!build/'
+This prevents the 50 KB diff limit from being consumed by lockfile noise.
 
 RULE: After completing a significant change, call sync_local_diff again
 so kap10 can update the cloud graph with your modifications.
@@ -382,7 +396,16 @@ get_callers, and get_callees to understand relationships before modifying code.
 RULE: When searching for code, use search_code with descriptive terms.
 If initial results are insufficient, try alternative keywords or use
 get_imports to trace module dependencies.
+
+RULE: Always format file paths relative to the ROOT of the git repository
+when calling kap10 MCP tools, regardless of your current working directory.
+For example, if the repo root is /project and you are working inside
+/project/packages/frontend, refer to files as "packages/frontend/src/auth.ts"
+not "src/auth.ts". Run `git rev-parse --show-toplevel` to find the repo root
+if unsure.
 ```
+
+**Rule versioning:** The `kap10_rule_version` field in the frontmatter enables automated rule updates. When kap10 ships a new Bootstrap Rule version (e.g., adding Phase 3 semantic search tools), the Auto-PR workflow compares the installed version against the latest. If outdated, it opens a PR titled "Update kap10 Bootstrap Rule (v1.0.0 → v1.1.0)" with a changelog in the PR body. This ensures teams always have the latest agent instructions without manual intervention. The version follows semver: patch = wording tweaks, minor = new rules/tools, major = breaking changes to agent workflow.
 
 **Why Auto-PR instead of dashboard instructions:**
 
@@ -413,7 +436,7 @@ sequenceDiagram
     MCP->>MCP: Identify affected entities (functions whose line ranges overlap diff hunks)
 
     MCP->>Supabase: UPSERT INTO kap10.workspaces (user_id, repo_id, branch, base_sha, expires_at)
-    Note over Supabase: Workspace TTL: 1 hour from last sync. Auto-expires stale overlays.
+    Note over Supabase: Workspace TTL: 12 hours from last sync (configurable 1–24 h). Auto-expires stale overlays.
 
     MCP->>ArangoDB: Read current entities for affected files
     MCP->>MCP: Apply diff to entity metadata (line numbers shift, bodies change)
@@ -441,9 +464,12 @@ When an MCP tool (e.g., `get_function`) executes, the query path is:
 
 **Critical constraint — workspace TTL:**
 
-Workspaces expire 1 hour after last `sync_local_diff` call. This prevents stale overlays from polluting search results. The TTL is enforced via:
-- Supabase `expires_at` column — checked on every workspace resolution
+Workspaces expire **12 hours** after last `sync_local_diff` call (configurable per-org, range 1–24 h, default 12 h). The extended TTL ensures workspaces survive overnight coding sessions and timezone gaps without unexpected staleness, while still being short enough to prevent unbounded overlay growth. On first `sync_local_diff` after expiry ("cold start"), the tool detects that `expires_at < NOW()`, purges the stale overlay from ArangoDB, and performs a full workspace rebuild from the latest indexed commit — the developer sees no error, only a slightly longer first-sync latency (~1–2 s instead of ~300 ms).
+
+The TTL is enforced via:
+- Supabase `expires_at` column — checked on every workspace resolution. Updated (sliding window) on each `sync_local_diff` call.
 - ArangoDB: workspace-scoped entities carry `expires_at` field — a periodic cleanup job (Temporal cron, every 15 min) removes expired workspace entities
+- **Cold-start path:** If `expires_at < NOW()` at sync time → delete all overlay entities for workspace → re-create workspace with fresh `baseSha` → apply incoming diff → set new `expires_at` = NOW + 12 h
 
 ---
 
@@ -521,7 +547,7 @@ org_id          VARCHAR    FK → organization
 repo_id         VARCHAR    FK → repo (nullable for future org-wide keys)
 name            VARCHAR    User-provided label ("Cursor - main branch")
 transport       VARCHAR    "streamable-http" (Phase 2) | "mcp-stdio" (future)
-scopes          JSONB      ["read"] (Phase 2) | ["read", "write"] (future)
+scopes          JSONB      ["mcp:read"] (read-only) | ["mcp:read", "mcp:sync"] (full — includes sync_local_diff)
 last_used_at    TIMESTAMP  Updated on every MCP request (async, non-blocking)
 revoked_at      TIMESTAMP  NULL = active, non-NULL = revoked
 created_at      TIMESTAMP
@@ -535,7 +561,7 @@ Sessions are managed via the `Mcp-Session-Id` header (MCP spec 2025-03-26). The 
 
 ```
 Redis key: kap10:mcp:session:{sessionId}
-TTL: 1 hour from last request (sliding expiry)
+TTL: 12 hours from last request (sliding expiry, configurable per-org 1–24 h)
 Value: {
   authMode: "oauth" | "api_key",
   identityId: "uuid",       // JWT sub (OAuth) or API key ID
@@ -550,7 +576,9 @@ Value: {
 }
 ```
 
-Session state is ephemeral — if the MCP server restarts, the `Mcp-Session-Id` becomes invalid. The client detects this (server returns a new session ID) and re-authenticates. Workspace overlays survive server restarts (they're in Supabase + ArangoDB, not Redis). OAuth tokens are stored client-side (system keychain) and survive server restarts.
+**Session persistence via Redis:** Session state is stored in Redis (key `kap10:mcp:session:{sessionId}`) with a sliding TTL. Because Redis is external to the MCP server container, sessions survive zero-downtime deployments (blue/green, rolling restart). When a new container starts, it reads the existing session from Redis — no re-authentication required. Fly.io rolling deploys drain in-flight requests to the old container while the new container picks up new requests with full session context.
+
+**Failure mode:** If Redis is unavailable during a deployment, the `Mcp-Session-Id` becomes invalid. The client detects this (server returns HTTP 400 with `session_not_found` error per MCP spec) and initiates a new session. Workspace overlays survive regardless (they're in Supabase + ArangoDB, not Redis). OAuth tokens survive (stored client-side in system keychain). API keys survive (static). The only cost of a Redis outage during deploy is a single re-authentication round-trip (~500 ms).
 
 ### MCP Tool Registry
 
@@ -576,7 +604,7 @@ All 9 Phase 2 tools are read-only (no mutations to the committed graph). `sync_l
 
 | # | Failure Scenario | Probability | Impact | Detection | Recovery Strategy |
 |---|-----------------|-------------|--------|-----------|-------------------|
-| 1 | **MCP server container crash** | Low | In-flight HTTP requests fail. Optional SSE notification streams drop. Agents lose tool access temporarily. | Fly.io health check fails → auto-restart. | Fly.io auto-restarts container (< 5s). Clients retry failed HTTP requests automatically. `Mcp-Session-Id` becomes invalid → server issues new session. OAuth tokens survive (stored client-side in keychain). API keys unaffected (static). Workspace overlays survive (Supabase + ArangoDB). |
+| 1 | **MCP server container crash** | Low | In-flight HTTP requests fail. Optional SSE notification streams drop. Agents lose tool access temporarily. | Fly.io health check fails → auto-restart. | Fly.io auto-restarts container (< 5s). Clients retry failed HTTP requests automatically. **Sessions survive** — `Mcp-Session-Id` is stored in Redis, so the new container reads existing session state. No re-authentication needed unless Redis is also down (unlikely). OAuth tokens survive (stored client-side in keychain). API keys unaffected (static). Workspace overlays survive (Supabase + ArangoDB). |
 | 2 | **ArangoDB timeout during tool call** | Medium | Single tool call fails. Agent gets error response. | Activity timeout (2s per ArangoDB query). | Return structured error in MCP tool result: `"Database temporarily unavailable. Retry in a few seconds."` Agent can retry. Circuit breaker after 5 consecutive failures → tool returns cached/stale result or graceful error. |
 | 3 | **Runaway agent loop** (60+ calls/min) | Medium–High | ArangoDB connection pool exhausted, other agents starved. | Rate limiter triggers at 60 calls/60s window. | 429 returned in tool result body with self-correction message. Agent reads it and pauses. If agent ignores: rate limit caps damage. No cascading failure — rate limit is per identity (JWT sub or API key ID). |
 | 4 | **Network flap during tool call** | Medium | Individual HTTP request fails. Agent does not get tool result. | HTTP timeout or connection reset. | Streamable HTTP is stateless — client simply retries the POST. No session reconstruction needed. `Mcp-Session-Id` persists across retries. Workspace overlay preserved. |
@@ -584,9 +612,10 @@ All 9 Phase 2 tools are read-only (no mutations to the committed graph). `sync_l
 | 6 | **Secret found in MCP response** (scrubber miss) | Low | Secret sent to LLM provider via agent context. | Post-hoc audit: log all MCP responses (hashed), periodic grep for known patterns. | Immediate scrubber rule update. Incident response: rotate the leaked secret. Improve scrubber regex/entropy thresholds. |
 | 7 | **Auto-PR creation fails** (branch protection, no write access) | Medium | Onboarding PR not created. User must manually configure MCP. | Temporal activity failure logged. Repo dashboard shows "Manual setup required". | Fallback: dashboard shows manual copy-paste instructions. Retry Auto-PR on next indexing completion. Log failure reason for debugging. |
 | 8 | **Redis down** (rate limiter unavailable) | Low | Rate limiting disabled (fail-open). Secret scrubber still works (stateless). Session state lost. | Health check reports Redis down. | **Fail-open on rate limiting** — allow requests but log warning. This is safe because ArangoDB's own connection pool limits act as a secondary circuit breaker. API key lookup falls back to Supabase (slower). |
-| 9 | **Stale workspace overlay** (user forgot to re-sync) | High | Agent searches return outdated results that don't match local files. | No automated detection — relies on Bootstrap Rule compliance. | Workspace TTL (1 hour) limits staleness. Dashboard shows workspace last-sync timestamp. Bootstrap Rule instructs agent to sync before and after each task. |
+| 9 | **Stale workspace overlay** (user forgot to re-sync) | High | Agent searches return outdated results that don't match local files. | No automated detection — relies on Bootstrap Rule compliance. | Workspace TTL (12 hours, configurable 1–24 h) limits staleness. Cold-start logic on next `sync_local_diff` purges stale overlay and rebuilds from latest commit. Dashboard shows workspace last-sync timestamp. Bootstrap Rule instructs agent to sync before and after each task. |
 | 10 | **Concurrent tool calls from same agent** | Medium | Multiple ArangoDB queries in flight from parallel HTTP requests. No data corruption risk (read-only). | Connection pool metrics. | ArangoDB connection pool (10 connections per container) handles parallel requests. If pool exhausted: request queues briefly (< 100ms). No data integrity concern for read-only tools. Rate limiter counts all calls regardless of concurrency. |
 | 11 | **OAuth token expiry during agent session** | Medium | Tool call returns 401. Agent cannot refresh without user interaction. | JWT `exp` check on every request. | MCP spec supports token refresh: client uses refresh token to get new access token (no browser needed). If refresh token also expired: client prompts user to re-authorize (opens browser). Session preserved via `Mcp-Session-Id`. |
+| 12 | **Concurrent `sync_local_diff` calls** (same workspace) | Medium | Without locking, parallel writes to ArangoDB overlay produce inconsistent entity state (partial updates, duplicate keys). | Redis distributed lock on `kap10:lock:workspace:{userId}:{repoId}:{branch}`. | Lock acquired before sync execution (TTL 30 s, 3 retries, 200 ms backoff). If lock unavailable: tool returns structured error asking agent to retry. Lock released in `finally` block. No data corruption possible — lock serializes all writes to the same workspace. |
 
 ### Circuit Breaker Pattern for ArangoDB
 
@@ -624,7 +653,7 @@ Implementation: use a lightweight in-process state machine (no library needed �
 | 2 | **`search_code` tool call** | < 200ms | Scrub (~1ms) + rate check (~5ms Redis) + ArangoDB fulltext (~100ms) + truncation (~5ms) + response write (~5ms) | ArangoDB fulltext index performance on large repos (100k+ entities). | Fulltext index on `functions.name` + `functions.signature`. Limit results to top 20. |
 | 3 | **`get_function` tool call** | < 300ms | Entity lookup (~50ms) + callers query (~80ms) + callees query (~80ms) + truncation (~10ms) | Three sequential ArangoDB queries. | Run callers + callees queries in parallel. Entity lookup is a direct `_key` access (O(1)). |
 | 4 | **`get_callers`/`get_callees` (depth 5)** | < 500ms | N-hop graph traversal (~400ms for large graphs) | Explosion of results at depth 5 (callers of callers of callers...). | Hard cap: 500 results per traversal (already in `ArangoGraphStore`). Depth max: 5. Semantic truncation drops least-relevant results. |
-| 5 | **`sync_local_diff`** | < 1s | Diff parsing (~50ms) + entity lookup (~100ms) + workspace upsert (~200ms Supabase) + ArangoDB overlay write (~300ms) | Large diffs (1000+ line changes across 20+ files). | Limit diff size to 50KB. Reject larger diffs with message: "Diff too large. Commit your changes first, then re-sync." |
+| 5 | **`sync_local_diff`** | < 1s (warm) / < 2s (cold start) | Lock acquire (~5ms Redis) + lockfile stripping (~2ms) + diff parsing (~50ms) + entity lookup (~100ms) + workspace upsert (~200ms Supabase) + ArangoDB overlay write (~300ms). Cold start adds: stale overlay purge (~300ms) + baseSha reset (~100ms). | Large diffs (1000+ line changes across 20+ files). | Lockfile hunks stripped before size check (package-lock.json, pnpm-lock.yaml, etc.). Limit code diff size to 50KB after stripping. Redis distributed lock prevents concurrent writes to same workspace. |
 | 6 | **`get_project_stats`** | < 300ms | Aggregation across 5 entity collections (COUNT per collection per repo). | Full collection scans without index. | Precalculated: entity counts stored in `kap10.repos` table (updated during indexing). ArangoDB query only for language breakdown. |
 | 7 | **Auto-PR creation** | < 10s | Branch creation (~2s) + file commits (~2s) + PR creation (~2s) + Supabase update (~100ms) | GitHub API latency (3 sequential API calls). | Run as Temporal activity on `light-llm-queue` — not in the critical user path. Dashboard shows "Onboarding PR being created..." until complete. |
 
@@ -726,7 +755,7 @@ Seam 5: IVectorSearch activation
 
 ### MCP Server Deployment
 
-- [ ] **P2-INFRA-01: Create MCP server entry point and project structure** — M
+- [x] **P2-INFRA-01: Create MCP server entry point and project structure** — M
   - Create `mcp-server/` directory at project root (separate from Next.js app)
   - Entry point: `mcp-server/index.ts` — Express/Hono HTTP server with Streamable HTTP transport
   - Routes: `POST /mcp` (tool calls), `GET /mcp` (optional SSE), `/.well-known/*` (OAuth discovery), `/oauth/*` (OAuth 2.1 endpoints), `/health`
@@ -739,7 +768,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** MCP server starts independently of Next.js. Shares `lib/` code via TypeScript path aliases.
   - Notes: _____
 
-- [ ] **P2-INFRA-02: Create `Dockerfile.mcp-server`** — M
+- [x] **P2-INFRA-02: Create `Dockerfile.mcp-server`** — M
   - Base image: Node.js 20 Alpine (lightweight — no SCIP/Go/Python needed)
   - Install: `pnpm` via Corepack
   - Multi-stage build: install deps → build TypeScript → slim runtime image
@@ -751,7 +780,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Image size < 200 MB. Health check passes. Container runs in < 2s.
   - Notes: _____
 
-- [ ] **P2-INFRA-03: Fly.io deployment configuration** — M
+- [x] **P2-INFRA-03: Fly.io deployment configuration** — M
   - `fly.toml` in project root:
     - App name: `kap10-mcp`
     - Region: same as Supabase/ArangoDB (minimize latency)
@@ -767,7 +796,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** MCP server accessible at public URL. Auto-scales under load. Restarts on crash.
   - Notes: _____
 
-- [ ] **P2-INFRA-04: Add MCP server to Docker Compose for local dev** — S
+- [x] **P2-INFRA-04: Add MCP server to Docker Compose for local dev** — S
   - Service `mcp-server` built from `Dockerfile.mcp-server`
   - Port: 3001 (mapped)
   - Same env vars as other services
@@ -778,7 +807,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Local dev workflow: `docker compose up` starts dashboard + MCP server + all infra.
   - Notes: _____
 
-- [ ] **P2-INFRA-05: Add MCP-specific env vars to `env.mjs`** — S
+- [x] **P2-INFRA-05: Add MCP-specific env vars to `env.mjs`** — S
   - New variables: `MCP_SERVER_URL` (public URL, e.g., `https://mcp.kap10.dev` — used for OAuth discovery and Auto-PR), `MCP_SERVER_PORT` (default 3001)
   - OAuth: `MCP_JWT_AUDIENCE` (default `https://mcp.kap10.dev/mcp`), `MCP_OAUTH_DCR_TTL_HOURS` (default 24 — DCR client cache TTL)
   - Rate limiting: `MCP_RATE_LIMIT_PER_MINUTE` (default 60)
@@ -795,8 +824,9 @@ Seam 5: IVectorSearch activation
 
 ### Prisma Schema Updates
 
-- [ ] **P2-DB-01: Add `ApiKey` model to Prisma schema** — M
-  - Fields: `id` (UUID PK), `keyHash` (String — SHA-256 of raw key, indexed), `keyPrefix` (String — first 8 chars for display), `orgId` (String FK), `repoId` (String? FK), `name` (String — user label), `transport` (String, default "streamable-http"), `scopes` (Json — `["read"]`), `lastUsedAt` (DateTime?), `revokedAt` (DateTime?), `createdAt`, `updatedAt`
+- [x] **P2-DB-01: Add `ApiKey` model to Prisma schema** — M
+  - Fields: `id` (UUID PK), `keyHash` (String — SHA-256 of raw key, indexed), `keyPrefix` (String — first 8 chars for display), `orgId` (String FK), `repoId` (String? FK), `name` (String — user label), `transport` (String, default "streamable-http"), `scopes` (Json — `["mcp:read"]` or `["mcp:read", "mcp:sync"]`), `lastUsedAt` (DateTime?), `revokedAt` (DateTime?), `createdAt`, `updatedAt`
+  - **Scope enforcement:** `mcp:read` grants access to all read-only tools (`search_code`, `get_function`, `get_class`, `get_callers`, `get_callees`, `get_imports`, `get_file_entities`, `get_project_stats`). `mcp:sync` grants access to `sync_local_diff` (workspace write). Keys without `mcp:sync` receive a 403 error when calling `sync_local_diff`: `"This API key does not have the 'mcp:sync' scope. Generate a new key with workspace sync enabled."` Default for interactive IDE keys: `["mcp:read", "mcp:sync"]`. Default for CI/read-only keys: `["mcp:read"]`.
   - Unique index: `keyHash`
   - Relations: `Repo` (optional), `Organization` (via `orgId`)
   - Schema: `@@schema("kap10")`, `@@map("api_keys")`
@@ -806,17 +836,17 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Table created with correct indexes. Revoked keys are soft-deleted (retained for audit).
   - Notes: _____
 
-- [ ] **P2-DB-02: Add `Workspace` model to Prisma schema** — M
+- [x] **P2-DB-02: Add `Workspace` model to Prisma schema** — M
   - Fields: `id` (UUID PK), `userId` (String), `repoId` (String FK), `branch` (String), `baseSha` (String?), `lastSyncAt` (DateTime?), `expiresAt` (DateTime), `createdAt`
   - Unique: `(userId, repoId, branch)`
   - Schema: `@@schema("kap10")`, `@@map("workspaces")`
   - **Test:** Migration runs. UPSERT by unique constraint works.
   - **Depends on:** Nothing
   - **Files:** `prisma/schema.prisma`
-  - **Acceptance:** Workspace creation and TTL-based expiry verified.
+  - **Acceptance:** Workspace creation and TTL-based expiry verified. Default TTL is 12 hours (configurable per-org, 1–24 h).
   - Notes: _____
 
-- [ ] **P2-DB-03: Extend `Repo` model with onboarding fields** — S
+- [x] **P2-DB-03: Extend `Repo` model with onboarding fields** — S
   - Add: `onboardingPrUrl` (String?), `onboardingPrNumber` (Int?), `onboardingPrStatus` (String? — "open"/"merged"/"closed")
   - **Test:** Migration runs. Existing repos get NULL defaults.
   - **Depends on:** Nothing
@@ -824,7 +854,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Auto-PR metadata stored and queryable per repo.
   - Notes: _____
 
-- [ ] **P2-DB-04: Create ArangoDB fulltext index on entity names** — S
+- [x] **P2-DB-04: Create ArangoDB fulltext index on entity names** — S
   - Fulltext index on `functions` collection: `name` and `signature` fields
   - Fulltext index on `classes` collection: `name` field
   - Fulltext index on `interfaces` collection: `name` field
@@ -841,7 +871,7 @@ Seam 5: IVectorSearch activation
 
 ### IGraphStore — Phase 2 Additions
 
-- [ ] **P2-ADAPT-01: Implement `ArangoGraphStore.impactAnalysis()`** — M
+- [x] **P2-ADAPT-01: Implement `ArangoGraphStore.impactAnalysis()`** — M
   - Replace stub that returns empty `{ entityId: "", affected: [] }`
   - AQL: `FOR v, e, p IN 1..@maxDepth OUTBOUND @entityId calls, imports, extends, implements OPTIONS { uniqueVertices: "global" } FILTER v.org_id == @orgId RETURN DISTINCT v`
   - Max depth configurable (default 3, max 5)
@@ -852,7 +882,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Returns transitive closure of affected entities. Depth limit enforced.
   - Notes: _____
 
-- [ ] **P2-ADAPT-02: Implement `ArangoGraphStore.searchEntities()`** — M
+- [x] **P2-ADAPT-02: Implement `ArangoGraphStore.searchEntities()`** — M
   - New method on `IGraphStore`: `searchEntities(orgId: string, repoId: string, query: string, limit?: number): Promise<EntityDoc[]>`
   - Uses ArangoDB fulltext index: `FOR doc IN FULLTEXT(functions, "name", @query) FILTER doc.org_id == @orgId AND doc.repo_id == @repoId LIMIT @limit RETURN doc`
   - Also searches `classes` and `interfaces` collections, merges results by relevance
@@ -862,7 +892,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Keyword search across entity names and signatures. Results ranked by relevance.
   - Notes: _____
 
-- [ ] **P2-ADAPT-03: Implement `ArangoGraphStore.getImports()`** — S
+- [x] **P2-ADAPT-03: Implement `ArangoGraphStore.getImports()`** — S
   - New method: `getImports(orgId: string, repoId: string, filePath: string, depth?: number): Promise<{ path: string, entities: EntityDoc[] }[]>`
   - AQL: N-hop OUTBOUND traversal on `imports` edge from file entity
   - **Test:** File A imports file B, which imports file C. `getImports(A, depth=2)` returns B and C.
@@ -871,7 +901,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Returns import chain with entities per file. Depth limit enforced.
   - Notes: _____
 
-- [ ] **P2-ADAPT-04: Implement `ArangoGraphStore.getProjectStats()`** — S
+- [x] **P2-ADAPT-04: Implement `ArangoGraphStore.getProjectStats()`** — S
   - New method: `getProjectStats(orgId: string, repoId: string): Promise<ProjectStats>`
   - AQL: COUNT queries across `files`, `functions`, `classes`, `interfaces`, `variables` collections filtered by `org_id` + `repo_id`
   - Also: language distribution aggregation from `files` collection
@@ -881,7 +911,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Returns `{ files, functions, classes, interfaces, variables, languages: { typescript: 120, python: 45 } }`.
   - Notes: _____
 
-- [ ] **P2-ADAPT-05: Implement workspace-scoped entity overlay in `ArangoGraphStore`** — L
+- [x] **P2-ADAPT-05: Implement workspace-scoped entity overlay in `ArangoGraphStore`** — L
   - New methods: `upsertWorkspaceEntity(orgId, workspaceId, entity)`, `getEntityWithOverlay(orgId, entityId, workspaceId?)`, `cleanupExpiredWorkspaces()`
   - Workspace entities stored with key prefix `ws:{workspaceId}:{entityKey}` in the same collections
   - Query path: if `workspaceId` provided, check overlay first, fall back to committed entity
@@ -894,7 +924,7 @@ Seam 5: IVectorSearch activation
 
 ### IRelationalStore — Phase 2 Extensions
 
-- [ ] **P2-ADAPT-06: Extend `PrismaRelationalStore` with API key and workspace methods** — M
+- [x] **P2-ADAPT-06: Extend `PrismaRelationalStore` with API key and workspace methods** — M
   - New methods: `createApiKey(data)`, `getApiKeyByHash(hash)`, `revokeApiKey(id)`, `listApiKeys(orgId)`, `updateApiKeyLastUsed(id)`, `createWorkspace(data)`, `getWorkspace(userId, repoId, branch)`, `updateWorkspaceSync(id)`, `deleteExpiredWorkspaces()`, `updateRepoOnboardingPr(repoId, prUrl, prNumber)`
   - **Test:** Full CRUD for API keys and workspaces. Revoked keys not returned by `getApiKeyByHash`.
   - **Depends on:** P2-DB-01, P2-DB-02, P2-DB-03
@@ -908,7 +938,7 @@ Seam 5: IVectorSearch activation
 
 ### MCP Server Core
 
-- [ ] **P2-API-01: Implement MCP server using `@modelcontextprotocol/sdk`** — L
+- [x] **P2-API-01: Implement MCP server using `@modelcontextprotocol/sdk`** — L
   - Use `@modelcontextprotocol/sdk` Server class with **Streamable HTTP transport** (2025-03-26 spec)
   - Single endpoint: `POST /mcp` for tool calls (returns JSON or SSE), optional `GET /mcp` for server notifications
   - Session management via `Mcp-Session-Id` header (server generates, client echoes)
@@ -921,19 +951,20 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** MCP protocol compliant (2025-03-26 spec). Tools discoverable by any MCP client. Both JSON and SSE response modes work.
   - Notes: _____
 
-- [ ] **P2-API-02: Implement dual-mode authentication middleware** — L
+- [x] **P2-API-02: Implement dual-mode authentication middleware** — L
   - Extract `Authorization: Bearer {token}` header from every MCP request
   - **Mode A (OAuth JWT):** If token does NOT start with `kap10_sk_` → validate JWT signature (HMAC-SHA256 with `BETTER_AUTH_SECRET`), check `exp`, `aud` (must match `MCP_JWT_AUDIENCE`), extract `sub` (userId), `org` (orgId), `scope` claims. No database lookup needed (local validation).
   - **Mode B (API Key):** If token starts with `kap10_sk_` → compute SHA-256 hash, lookup in Redis cache (TTL 5 min), fallback to Supabase `kap10.api_keys`. Resolve `orgId`, `repoId`, `scopes` from record.
   - Reject: missing header (401 with `WWW-Authenticate: Bearer resource_metadata="..."`), invalid JWT (401), revoked API key (401), expired JWT (401)
   - Attach resolved auth context (`{ authMode, userId, orgId, repoId?, scopes }`) to request for downstream handlers
-  - **Test:** Valid JWT → 200 + context resolved. Valid API key → 200 + context resolved. Expired JWT → 401. Revoked key → 401. Missing header → 401 with PRM URL. Cached API key lookup < 5ms.
+  - **Scope enforcement in tool dispatch:** Before invoking a tool handler, check `ctx.scopes` against the tool's required scope. Read-only tools require `mcp:read` (all keys have this). `sync_local_diff` requires `mcp:sync`. If scope missing → return structured error in MCP tool result: `"This API key does not have the '{scope}' scope."` (not HTTP 403 — agents parse tool results, not HTTP status codes).
+  - **Test:** Valid JWT → 200 + context resolved. Valid API key → 200 + context resolved. Expired JWT → 401. Revoked key → 401. Missing header → 401 with PRM URL. Cached API key lookup < 5ms. API key without `mcp:sync` → `sync_local_diff` returns scope error.
   - **Depends on:** P2-ADAPT-06, P2-API-19
   - **Files:** `lib/mcp/auth.ts`
   - **Acceptance:** Dual-mode auth runs on every MCP request. OAuth tokens validated locally (no DB). API key cache hit ratio > 90%. Timing-safe comparison for hash lookup.
   - Notes: _____
 
-- [ ] **P2-API-03: Implement edge secret scrubber** — M
+- [x] **P2-API-03: Implement edge secret scrubber** — M
   - Processes all incoming MCP payloads before tool dispatch
   - Regex patterns for: AWS access keys (`AKIA[0-9A-Z]{16}`), GitHub tokens (`gh[ps]_[A-Za-z0-9_]{36,}`), JWTs (`eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+`), generic API keys (`[A-Za-z0-9]{32,}` with entropy > 4.5 bits/char), `password`/`secret`/`token` in key-value contexts
   - Entropy analysis: Shannon entropy per token, flag strings > 4.5 bits/char and > 20 chars
@@ -945,7 +976,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** All known secret patterns caught. False positive rate < 1% on normal code. < 1ms per scrub operation.
   - Notes: _____
 
-- [ ] **P2-API-04: Implement sliding window rate limiter** — M
+- [x] **P2-API-04: Implement sliding window rate limiter** — M
   - Uses `@upstash/ratelimit` with standard `ioredis` (no Upstash hosting required)
   - Sliding window: 60 tool calls per 60-second window per API key
   - Rate limit check happens before tool dispatch (after auth, after scrubber)
@@ -958,7 +989,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Sliding window accurately tracks calls. Error message parseable by agents.
   - Notes: _____
 
-- [ ] **P2-API-05: Implement semantic truncation formatter** — M
+- [x] **P2-API-05: Implement semantic truncation formatter** — M
   - Processes all outgoing MCP tool results before response write
   - Max response size: configurable, default 32 KB (fits within LLM context windows)
   - Truncation priority (highest preserved first): entity name + signature → file path + line number → callers/callees (capped at 20 each) → body/source code (truncated at function boundaries, never mid-statement)
@@ -971,7 +1002,9 @@ Seam 5: IVectorSearch activation
 
 ### MCP Tool Implementations
 
-- [ ] **P2-API-06: Implement `search_code` tool** — M
+> **Cross-cutting requirement (P2-API-06..13):** Every tool handler MUST be wrapped in an OpenTelemetry span: `tracer.startActiveSpan('mcp.{tool_name}', async (span) => { ... })`. The span must include attributes: `mcp.tool` (tool name), `mcp.org_id`, `mcp.repo_id`, `mcp.auth_mode` ("oauth" | "api_key"), and `mcp.workspace_id` (if applicable). Child spans should be created for each ArangoDB query (`db.arango.query`), Redis lookup (`db.redis.get`), and Supabase call (`db.supabase.query`). This integrates with Phase 0's Langfuse + Vercel OpenTelemetry setup (`instrumentation.ts`) and is critical for debugging cross-network latency between Fly.io (MCP server) and Supabase/ArangoDB. The tracer instance comes from `@opentelemetry/api` (already a dependency from Phase 0). File: `lib/mcp/tracing.ts` (shared helper: `createToolSpan(toolName, ctx)`).
+
+- [x] **P2-API-06: Implement `search_code` tool** — M
   - Input: `{ query: string, limit?: number (default 20, max 50) }`
   - Uses `IGraphStore.searchEntities()` for keyword search
   - Returns: `{ results: [{ name, kind, file_path, line, signature, score }] }`
@@ -982,7 +1015,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Results sorted by relevance. Respects repo scope from API key.
   - Notes: _____
 
-- [ ] **P2-API-07: Implement `get_function` tool** — M
+- [x] **P2-API-07: Implement `get_function` tool** — M
   - Input: `{ name: string } | { file: string, line: number }`
   - Uses `IGraphStore.getEntity()` + `getCallersOf()` + `getCalleesOf()` (depth 1)
   - Returns: `{ function: { name, signature, file_path, line, body }, callers: [...], callees: [...] }`
@@ -993,7 +1026,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Function details match indexed data. Workspace overlay applied when active.
   - Notes: _____
 
-- [ ] **P2-API-08: Implement `get_class` tool** — M
+- [x] **P2-API-08: Implement `get_class` tool** — M
   - Input: `{ name: string }`
   - Uses `IGraphStore.getEntity()` + traversal on `extends` and `implements` edges
   - Returns: `{ class: { name, file_path, line }, methods: [...], extends: [...], implements: [...] }`
@@ -1004,7 +1037,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Inheritance chain complete. Methods listed with signatures.
   - Notes: _____
 
-- [ ] **P2-API-09: Implement `get_file` tool** — S
+- [x] **P2-API-09: Implement `get_file` tool** — S
   - Input: `{ path: string }`
   - Uses `IGraphStore.getEntitiesByFile()`
   - Returns: `{ file: { path, language, line_count }, entities: [{ name, kind, line, signature }] }`
@@ -1014,7 +1047,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** All entities in file returned, grouped by kind.
   - Notes: _____
 
-- [ ] **P2-API-10: Implement `get_callers` and `get_callees` tools** — M
+- [x] **P2-API-10: Implement `get_callers` and `get_callees` tools** — M
   - Input: `{ name: string, depth?: number (default 1, max 5) }`
   - Uses `IGraphStore.getCallersOf()` / `getCalleesOf()` with configurable depth
   - Returns: `{ entity: { name, kind }, callers|callees: [{ name, file_path, kind, distance }] }`
@@ -1025,7 +1058,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Depth parameter respected. Results deduplicated. LIMIT 500 enforced.
   - Notes: _____
 
-- [ ] **P2-API-11: Implement `get_imports` tool** — S
+- [x] **P2-API-11: Implement `get_imports` tool** — S
   - Input: `{ file: string, depth?: number (default 1, max 5) }`
   - Uses `IGraphStore.getImports()`
   - Returns: `{ file: string, imports: [{ path, entities: [...], distance }] }`
@@ -1035,7 +1068,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Import chain resolved. Circular imports handled (visited set prevents loops).
   - Notes: _____
 
-- [ ] **P2-API-12: Implement `get_project_stats` tool** — S
+- [x] **P2-API-12: Implement `get_project_stats` tool** — S
   - Input: `{}` (no args — uses repo context from API key)
   - Uses `IGraphStore.getProjectStats()` for entity counts, `IRelationalStore` for repo metadata
   - Returns: `{ name, files, functions, classes, interfaces, variables, languages: { ... }, lastIndexedAt, indexedSha }`
@@ -1045,22 +1078,25 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Aggregated stats correct. Language distribution matches.
   - Notes: _____
 
-- [ ] **P2-API-13: Implement `sync_local_diff` tool** — L
+- [x] **P2-API-13: Implement `sync_local_diff` tool** — L
   - Input: `{ diff: string, branch?: string (default "main") }`
-  - Validates diff size (max 50 KB), parses unified diff format
+  - Validates diff size (max 50 KB, excluding lockfiles — see lockfile exclusion below), parses unified diff format
+  - **Concurrency lock:** Before executing, acquires a Redis distributed lock: `kap10:lock:workspace:{userId}:{repoId}:{branch}` (TTL: 30 s, retry: 3 attempts with 200 ms backoff). This prevents race conditions when the same agent fires parallel `sync_local_diff` calls (e.g., pre-flight + post-flight overlapping). If the lock cannot be acquired after retries, the tool returns a structured error: `"Workspace sync already in progress. Please wait and retry."` The lock is released in a `finally` block to ensure cleanup on failure.
   - Creates or updates workspace in Supabase (UPSERT by user+repo+branch)
+  - **Cold-start handling:** If `expires_at < NOW()`, purges stale overlay entities from ArangoDB, resets `baseSha` to latest indexed commit, then proceeds with normal sync flow. Slightly higher latency (~1–2 s) on cold start.
   - Identifies affected files and entities from diff hunks (line range overlap)
   - Reads current entities from ArangoDB → applies diff transformations (line shifts, body updates)
   - Writes workspace overlay entities to ArangoDB (prefixed keys)
-  - **Test:** Sync a diff that adds a new function → subsequent `search_code` finds it in overlay. Sync a diff that modifies a function signature → `get_function` returns updated signature.
+  - **Lockfile exclusion:** Before diff size validation, strips hunks from known lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `Gemfile.lock`, `poetry.lock`, `Cargo.lock`, `go.sum`, `composer.lock`) and build directories (`node_modules/`, `dist/`, `.next/`, `build/`). These hunks are silently dropped — they contain no meaningful code structure for the knowledge graph.
+  - **Test:** Sync a diff that adds a new function → subsequent `search_code` finds it in overlay. Sync a diff that modifies a function signature → `get_function` returns updated signature. Concurrent sync calls → second call waits or returns retry message. Cold-start after TTL expiry → overlay rebuilt correctly. Diff with 200 KB lockfile + 10 KB code changes → lockfile stripped, code changes applied.
   - **Depends on:** P2-ADAPT-05, P2-ADAPT-06
-  - **Files:** `lib/mcp/tools/sync.ts`, `lib/mcp/workspace.ts`
-  - **Acceptance:** Overlay reflects diff. TTL set. Subsequent tool calls use overlay. Expired overlays cleaned up.
+  - **Files:** `lib/mcp/tools/sync.ts`, `lib/mcp/workspace.ts`, `lib/mcp/tools/diff-filter.ts`
+  - **Acceptance:** Overlay reflects diff. TTL set (12 h sliding). Subsequent tool calls use overlay. Expired overlays cleaned up. Concurrent calls serialized via Redis lock. Lockfile hunks excluded from diff size calculation.
   - Notes: _____
 
 ### Dashboard API Routes
 
-- [ ] **P2-API-14: `POST /api/api-keys` — Create API key** — M
+- [x] **P2-API-14: `POST /api/api-keys` — Create API key** — M
   - Body: `{ repoId: string, name: string }`
   - Generates cryptographically random key with `kap10_sk_` prefix
   - Stores SHA-256 hash + key prefix in Supabase
@@ -1073,7 +1109,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Key generated with correct prefix. Hash stored. Raw key returned once.
   - Notes: _____
 
-- [ ] **P2-API-15: `GET /api/api-keys` — List API keys** — S
+- [x] **P2-API-15: `GET /api/api-keys` — List API keys** — S
   - Returns keys for org (filtered by session org). Shows: `id`, `keyPrefix`, `name`, `repoId`, `lastUsedAt`, `createdAt`, `revokedAt`
   - Never returns raw key or full hash
   - **Test:** List keys → returns metadata only. Revoked keys included with `revokedAt` timestamp.
@@ -1082,7 +1118,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Pagination for orgs with many keys. Sorted by createdAt desc.
   - Notes: _____
 
-- [ ] **P2-API-16: `DELETE /api/api-keys/[id]` — Revoke API key** — S
+- [x] **P2-API-16: `DELETE /api/api-keys/[id]` — Revoke API key** — S
   - Sets `revokedAt` to now (soft delete)
   - Invalidates Redis cache for this key hash immediately
   - Any active MCP session using this key will fail on next tool call (auth re-check)
@@ -1094,25 +1130,26 @@ Seam 5: IVectorSearch activation
 
 ### Auto-PR & Onboarding
 
-- [ ] **P2-API-17: Implement Auto-PR onboarding workflow** — L
+- [x] **P2-API-17: Implement Auto-PR onboarding workflow** — L
   - Temporal activity on `light-llm-queue`, triggered after first successful indexing (status → `ready` AND `onboardingPrUrl IS NULL`)
-  - Generates `.cursor/rules/kap10.mdc` (Bootstrap Rule content)
+  - Generates `.cursor/rules/kap10.mdc` (Bootstrap Rule content with `kap10_rule_version` frontmatter)
   - Generates `.cursor/mcp.json` (MCP server URL with auto-generated API key in `headers.Authorization`)
   - Creates branch `kap10/onboarding-{repoId}` via GitHub API (installation token)
   - Commits both files to branch
   - Opens PR with title "Enable kap10 Code Intelligence for your AI agents" and descriptive body
   - Stores PR URL and number in Supabase `repos` table
-  - **Test:** Index a repo → PR created on GitHub with correct files. PR body contains setup instructions.
+  - **Rule update flow:** On subsequent kap10 releases that bump the Bootstrap Rule version, a separate Temporal workflow scans all repos with `status: "ready"` and compares the installed `kap10_rule_version` (read via GitHub API) against the latest version. If outdated, opens update PR: `kap10/rule-update-{repoId}-v{newVersion}`. PR title: "Update kap10 Bootstrap Rule (v{old} → v{new})". PR body includes changelog of what changed. Only one update PR per repo at a time (checks for existing open `kap10/rule-update-*` branches).
+  - **Test:** Index a repo → PR created on GitHub with correct files. PR body contains setup instructions. Rule version field present in `.mdc` frontmatter. Update flow: bump rule version → update PR created for repos with older version. Idempotent: no duplicate update PRs.
   - **Depends on:** P2-ADAPT-06, Phase 1 GitHub App (installation token)
-  - **Files:** `lib/onboarding/auto-pr.ts`, `lib/onboarding/bootstrap-rule.ts`, `lib/temporal/activities/onboarding.ts`
-  - **Acceptance:** PR created once per repo (idempotent check on `onboardingPrUrl`). Files match expected content.
+  - **Files:** `lib/onboarding/auto-pr.ts`, `lib/onboarding/bootstrap-rule.ts`, `lib/onboarding/rule-updater.ts`, `lib/temporal/activities/onboarding.ts`, `lib/temporal/workflows/update-bootstrap-rules.ts`
+  - **Acceptance:** PR created once per repo (idempotent check on `onboardingPrUrl`). Files match expected content. Rule version in frontmatter. Update PRs created when version bumps.
   - Notes: _____
 
-- [ ] **P2-API-18: Implement workspace cleanup cron workflow** — S
+- [x] **P2-API-18: Implement workspace cleanup cron workflow** — S
   - Temporal cron workflow on `light-llm-queue`, runs every 15 minutes
   - Queries `kap10.workspaces WHERE expires_at < NOW()`
   - For each expired workspace: delete overlay entities from ArangoDB, delete workspace row from Supabase
-  - **Test:** Create workspace with 5-minute TTL. Wait 15 min → workspace cleaned up. Overlay entities removed.
+  - **Test:** Create workspace with short TTL (5 min for test). Wait 15 min → workspace cleaned up. Overlay entities removed. Cold-start: call `sync_local_diff` on expired workspace → overlay rebuilt from latest commit.
   - **Depends on:** P2-ADAPT-05, P2-ADAPT-06
   - **Files:** `lib/temporal/workflows/cleanup-workspaces.ts`, `lib/temporal/activities/workspace-cleanup.ts`
   - **Acceptance:** Stale workspaces removed. No committed data affected.
@@ -1120,7 +1157,7 @@ Seam 5: IVectorSearch activation
 
 ### OAuth 2.1 Endpoints (MCP Auth — Mode A)
 
-- [ ] **P2-API-19: Implement OAuth 2.1 discovery endpoints** — M
+- [x] **P2-API-19: Implement OAuth 2.1 discovery endpoints** — M
   - `GET /.well-known/oauth-protected-resource` — RFC 9728 Protected Resource Metadata. Static JSON: `{ resource: "{MCP_SERVER_URL}/mcp", authorization_servers: ["{MCP_SERVER_URL}"], scopes_supported: ["mcp:read", "mcp:sync"] }`
   - `GET /.well-known/oauth-authorization-server` — RFC 8414 Authorization Server Metadata. Static JSON: `{ issuer, authorization_endpoint, token_endpoint, registration_endpoint, response_types_supported, grant_types_supported, code_challenge_methods_supported: ["S256"], scopes_supported }`
   - **Test:** `curl /.well-known/oauth-protected-resource` returns valid JSON with correct URLs. `curl /.well-known/oauth-authorization-server` returns valid metadata.
@@ -1129,7 +1166,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Both endpoints return spec-compliant JSON. URLs use `MCP_SERVER_URL` env var.
   - Notes: _____
 
-- [ ] **P2-API-20: Implement Dynamic Client Registration (DCR)** — M
+- [x] **P2-API-20: Implement Dynamic Client Registration (DCR)** — M
   - `POST /oauth/register` — RFC 7591. Accepts `{ client_name, redirect_uris, grant_types, response_types, token_endpoint_auth_method }`.
   - Generates `client_id` (prefixed `dyn_`) and optional `client_secret`.
   - Stores client in Redis with TTL (default 24h, configurable via `MCP_OAUTH_DCR_TTL_HOURS`).
@@ -1140,7 +1177,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** DCR compliant with RFC 7591. Clients auto-expire. Invalid redirect URIs rejected.
   - Notes: _____
 
-- [ ] **P2-API-21: Implement OAuth authorization + consent flow** — L
+- [x] **P2-API-21: Implement OAuth authorization + consent flow** — L
   - `GET /oauth/authorize` — Validates `client_id`, `redirect_uri`, `code_challenge` (PKCE S256 required), `scope`, `state`. Redirects to kap10 login if no session. Shows consent screen listing requested scopes and org context. On approval: generates auth code, stores in Redis (TTL 10 min) with `code_challenge`, redirects to `redirect_uri?code=...&state=...`.
   - Consent screen: Next.js page at `/oauth/consent` — "Allow {client_name} to access {org_name} code intelligence?" with scope list and Approve/Deny buttons.
   - **Test:** Full browser flow: authorize → login → consent → redirect with code. Missing PKCE → 400. Invalid `client_id` → 400.
@@ -1149,7 +1186,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** PKCE mandatory (S256 only). Auth code single-use. Consent screen shows correct org/scopes. Session required (not accessible without login).
   - Notes: _____
 
-- [ ] **P2-API-22: Implement OAuth token endpoint** — M
+- [x] **P2-API-22: Implement OAuth token endpoint** — M
   - `POST /oauth/token` — Supports `grant_type=authorization_code` (initial) and `grant_type=refresh_token` (refresh).
   - For auth code: validates `code_verifier` (PKCE), consumes code (single-use), mints JWT `{ sub, org, scope, aud, exp, iat }` signed with `BETTER_AUTH_SECRET` (HMAC-SHA256). Returns `{ access_token, token_type: "Bearer", expires_in: 3600, refresh_token, scope }`.
   - For refresh: validates refresh token (stored in Redis, TTL 30 days), mints new JWT, rotates refresh token (old one invalidated).
@@ -1165,20 +1202,20 @@ Seam 5: IVectorSearch activation
 
 ### IDE Connection Page
 
-- [ ] **P2-UI-01: "Connect to IDE" page at `/repos/[repoId]/connect`** — M
+- [x] **P2-UI-01: "Connect to IDE" page at `/repos/[repoId]/connect`** — M
   - Shows for repos with status "ready"
   - Two connection paths displayed as tabs:
-    - **Tab A: "OAuth (Recommended)"** — For Claude Code, VS Code. Shows: (1) MCP server URL to paste into IDE (`https://mcp.kap10.dev/mcp`), (2) "Your IDE will open a browser for authentication — no API key needed", (3) Copy-to-clipboard button for URL
-    - **Tab B: "API Key"** — For Cursor, CI/bots. Shows: (1) Generate API Key form, (2) Cursor `.cursor/mcp.json` config with `headers.Authorization`, (3) Claude Code CLI `claude mcp add` command, (4) CI `.mcp.json` example with `${KAP10_API_KEY}` env var
+    - **Tab A: "OAuth (Recommended)"** — For Claude Code, VS Code. Shows: (1) MCP server URL to paste into IDE (`https://mcp.kap10.dev/mcp`), (2) "Your IDE will open a browser for authentication — no API key needed", (3) Copy-to-clipboard button for URL. OAuth scope is always `mcp:read mcp:sync` (full access, controlled via consent screen).
+    - **Tab B: "API Key"** — For Cursor, CI/bots. Shows: (1) Generate API Key form with name input + scope checkbox: `[x] Allow Workspace Sync (mcp:sync)` — checked by default for IDE keys, unchecked for CI keys. Helper text: "Uncheck for read-only keys (CI pipelines, dashboards). Unchecked keys cannot call sync_local_diff." (2) Cursor `.cursor/mcp.json` config with `headers.Authorization`, (3) Claude Code CLI `claude mcp add` command, (4) CI `.mcp.json` example with `${KAP10_API_KEY}` env var
   - API key shown once in a dismissable alert after generation (masked after dismiss)
-  - Active API keys list (both tabs)
-  - **Test:** Navigate to connect page → OAuth tab shows URL. API Key tab → generate key → instructions displayed with Bearer token in config.
+  - Active API keys list (both tabs) — shows scope badges: `read` (always) + `sync` (if granted)
+  - **Test:** Navigate to connect page → OAuth tab shows URL. API Key tab → generate key with sync enabled → instructions displayed. Generate key without sync → key works for `get_function` but returns 403 for `sync_local_diff`.
   - **Depends on:** P2-API-14, P2-API-15
   - **Files:** `app/(dashboard)/repos/[repoId]/connect/page.tsx`, `components/repo/connect-ide.tsx`
-  - **Acceptance:** Instructions match Cursor/Claude Code MCP configuration format. Key masked after first view.
+  - **Acceptance:** Instructions match Cursor/Claude Code MCP configuration format. Key masked after first view. Scope checkbox controls `mcp:sync` grant. Scope badges visible in key list.
   - Notes: _____
 
-- [ ] **P2-UI-02: API key management in repo settings** — M
+- [x] **P2-UI-02: API key management in repo settings** — M
   - List of API keys for the repo: name, prefix (`kap10_sk_a3f7****`), last used, created date
   - "Revoke" button per key with confirmation dialog
   - "Generate New Key" button
@@ -1188,7 +1225,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Design system compliant (glass-card, size="sm" buttons). Revocation is immediate.
   - Notes: _____
 
-- [ ] **P2-UI-03: Auto-PR status badge on repo card** — S
+- [x] **P2-UI-03: Auto-PR status badge on repo card** — S
   - Shows on repo card when `onboardingPrUrl` is set
   - Badge states: "Onboarding PR Open" (link to GitHub PR), "Onboarding PR Merged" (checkmark), "Manual Setup Required" (if Auto-PR failed)
   - **Test:** Repo with open PR → badge links to GitHub. Repo with merged PR → shows checkmark.
@@ -1197,7 +1234,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Badge reflects current PR state. Links open in new tab.
   - Notes: _____
 
-- [ ] **P2-UI-04: MCP connection status indicator** — S
+- [x] **P2-UI-04: MCP connection status indicator** — S
   - Shows on repo detail page: "N active sessions" (fetched from Redis session count — sessions with `lastToolCallAt` within 5 min)
   - Refreshes every 30 seconds
   - Shows "No active sessions" when idle
@@ -1213,7 +1250,7 @@ Seam 5: IVectorSearch activation
 
 ### In-Memory Fakes (extend Phase 1 fakes)
 
-- [ ] **P2-TEST-01: Extend `InMemoryGraphStore` with Phase 2 methods** — M
+- [x] **P2-TEST-01: Extend `InMemoryGraphStore` with Phase 2 methods** — M
   - Add: `searchEntities()` — filters in-memory store by name substring match
   - Add: `impactAnalysis()` — traverses in-memory edge Map to specified depth
   - Add: `getImports()` — traverses `imports` edges in memory
@@ -1225,7 +1262,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Fake mirrors real adapter behavior for all Phase 2 IGraphStore methods.
   - Notes: _____
 
-- [ ] **P2-TEST-02: Extend `InMemoryRelationalStore` with Phase 2 methods** — S
+- [x] **P2-TEST-02: Extend `InMemoryRelationalStore` with Phase 2 methods** — S
   - Add: `createApiKey()`, `getApiKeyByHash()`, `revokeApiKey()`, `listApiKeys()`, `updateApiKeyLastUsed()`, `createWorkspace()`, `getWorkspace()`, `updateWorkspaceSync()`, `deleteExpiredWorkspaces()`, `updateRepoOnboardingPr()`
   - **Test:** Full CRUD for API keys and workspaces in memory.
   - **Depends on:** P2-ADAPT-06
@@ -1235,7 +1272,7 @@ Seam 5: IVectorSearch activation
 
 ### Unit Tests
 
-- [ ] **P2-TEST-03: Secret scrubber tests** — M
+- [x] **P2-TEST-03: Secret scrubber tests** — M
   - AWS access key (`AKIAIOSFODNN7EXAMPLE`) → `[REDACTED:aws_key]`
   - GitHub token (`ghp_xxxx...`) → `[REDACTED:github_token]`
   - JWT (`eyJhbGci...`) → `[REDACTED:jwt]`
@@ -1248,7 +1285,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** All known patterns caught. False positive rate < 1%.
   - Notes: _____
 
-- [ ] **P2-TEST-04: Rate limiter tests** — S
+- [x] **P2-TEST-04: Rate limiter tests** — S
   - 60 calls in 60s → all allowed
   - 61st call → blocked with structured error
   - After window slides → allowed again
@@ -1259,7 +1296,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Sliding window behavior verified. Error message contains self-correction hint.
   - Notes: _____
 
-- [ ] **P2-TEST-05: Semantic truncation tests** — M
+- [x] **P2-TEST-05: Semantic truncation tests** — M
   - Response > 32 KB → truncated to < 32 KB
   - Truncation at function boundary (not mid-statement)
   - Priority: signature preserved, body truncated first
@@ -1271,7 +1308,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** All priority rules enforced. Function boundaries respected.
   - Notes: _____
 
-- [ ] **P2-TEST-06: MCP tool handler unit tests** — L
+- [x] **P2-TEST-06: MCP tool handler unit tests** — L
   - For each of the 9 tools: input validation, correct IGraphStore method called, output shape matches schema, error handling for missing entities
   - Uses `createTestContainer()` with pre-populated `InMemoryGraphStore`
   - **Test:** `pnpm test lib/mcp/tools/`
@@ -1280,7 +1317,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** All tools return correct data. Error cases return structured error messages (not stack traces).
   - Notes: _____
 
-- [ ] **P2-TEST-07: Dual-mode auth tests** — L
+- [x] **P2-TEST-07: Dual-mode auth tests** — L
   - **Mode A (OAuth JWT):** Valid JWT → context resolved. Expired JWT → 401. Wrong audience → 401. Invalid signature → 401. Missing `org` claim → 401.
   - **Mode B (API Key):** Key format: `kap10_sk_{32 random chars}`. Hash stored, raw key not stored. Lookup by hash → correct record. Revoked key → rejected. Redis cache → hit on second lookup.
   - **Dual-mode detection:** `kap10_sk_` prefix → Mode B. Everything else → Mode A (JWT). Missing header → 401 with `WWW-Authenticate` header containing PRM URL.
@@ -1290,7 +1327,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Both auth modes verified. Timing-safe comparison for API key hash. JWT validated locally (no DB call).
   - Notes: _____
 
-- [ ] **P2-TEST-08: Bootstrap Rule and Auto-PR content tests** — S
+- [x] **P2-TEST-08: Bootstrap Rule and Auto-PR content tests** — S
   - Generated `.cursor/rules/kap10.mdc` contains pre-flight and post-flight sync instructions
   - Generated `.cursor/mcp.json` contains correct MCP server URL (`https://mcp.kap10.dev/mcp`) with `headers.Authorization: Bearer {key}`
   - Content is valid YAML/JSON respectively
@@ -1302,7 +1339,7 @@ Seam 5: IVectorSearch activation
 
 ### Integration Tests
 
-- [ ] **P2-TEST-09: MCP server end-to-end integration test** — L
+- [x] **P2-TEST-09: MCP server end-to-end integration test** — L
   - Start MCP server locally with test container (in-memory fakes)
   - Connect via MCP Inspector or raw HTTP client (Streamable HTTP — `POST /mcp`)
   - Test both auth modes: (1) OAuth JWT (sign test JWT with test secret), (2) API key Bearer
@@ -1317,7 +1354,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Full MCP protocol compliance (2025-03-26 spec). Dual-mode auth verified. All security layers active.
   - Notes: _____
 
-- [ ] **P2-TEST-10: ArangoDB fulltext search integration test** — M
+- [x] **P2-TEST-10: ArangoDB fulltext search integration test** — M
   - Requires Docker (ArangoDB running)
   - Index a test repo → run fulltext search → results match expected entities
   - Fulltext index on functions.name, functions.signature, classes.name
@@ -1329,7 +1366,7 @@ Seam 5: IVectorSearch activation
 
 ### E2E Tests (Playwright)
 
-- [ ] **P2-TEST-11: E2E — API key generation and IDE connection flow** — M
+- [x] **P2-TEST-11: E2E — API key generation and IDE connection flow** — M
   - Navigate to `/repos/[repoId]/connect`
   - Generate API key → verify shown once
   - Copy MCP URL → verify format
@@ -1341,7 +1378,7 @@ Seam 5: IVectorSearch activation
   - **Acceptance:** Full flow from generation to revocation works.
   - Notes: _____
 
-- [ ] **P2-TEST-12: E2E — Auto-PR badge on repo card** — S
+- [x] **P2-TEST-12: E2E — Auto-PR badge on repo card** — S
   - Index a repo → Auto-PR triggered → badge appears on repo card
   - Badge links to GitHub PR
   - **Test:** `pnpm e2e:headless` (may require mocked GitHub API)
@@ -1546,3 +1583,5 @@ This enhancement adds workspace visibility to the dashboard — showing which wo
 |------|--------|--------|
 | 2026-02-18 | — | Initial document created. 46 tracker items across 6 layers. |
 | 2026-02-18 | — | **Auth & transport overhaul.** Replaced deprecated HTTP+SSE transport with Streamable HTTP (MCP spec 2025-03-26). Replaced API-key-in-URL with dual-mode auth: OAuth 2.1 (Mode A — Claude Code, VS Code) + API key Bearer header (Mode B — Cursor, CI/bots). Added Flow 0 (auth model overview), rewrote Flows 1–3 (OAuth, API key, Streamable HTTP). Better Auth serves as OAuth authorization server (no separate OAuth infra). Added 4 new tracker items: P2-API-19 (OAuth discovery), P2-API-20 (DCR), P2-API-21 (authorize + consent), P2-API-22 (token endpoint). Added failure scenario #11 (OAuth token expiry). Updated: deployment topology, session state (Mcp-Session-Id), API key lookup path, all failure scenarios, performance targets, memory budget, dependency graph, recommended implementation order, new files summary. Updated P2-API-01 (Streamable HTTP), P2-API-02 (dual-mode auth), P2-DB-01 (transport field), P2-UI-01 (OAuth/API key tabs), P2-TEST-07 (dual-mode tests), P2-TEST-09 (OAuth integration). Total: **50 tracker items** (was 46). |
+| 2026-02-20 | — | **5 operational enhancements.** (1) **Workspace TTL relaxed** from 1 hour to 12 hours (configurable per-org, 1–24 h) with cold-start rebuild logic on expired workspaces. (2) **Redis concurrency lock** on `sync_local_diff` — prevents race conditions from parallel agent calls (`kap10:lock:workspace:{userId}:{repoId}:{branch}`, TTL 30 s, 3 retries). Added failure scenario #12. (3) **Bootstrap Rule versioning** — `kap10_rule_version` semver field in `.mdc` frontmatter enables automated update PRs when kap10 ships new rule versions. Added `rule-updater.ts` and `update-bootstrap-rules.ts` workflow. (4) **Lockfile exclusion** — Bootstrap Rule instructs agents to exclude lockfiles/build artifacts from diff; `sync_local_diff` also strips lockfile hunks server-side before size validation. Added `diff-filter.ts`. (5) **Redis session persistence** — `Mcp-Session-Id` stored in Redis survives zero-downtime deployments (blue/green, rolling restart). Updated failure scenario #1, session state section. Updated: P2-API-13 (lock, cold start, lockfile filter), P2-API-17 (rule versioning, update workflow), P2-API-18 (cold-start test), P2-DB-02 (TTL default), failure scenarios #1/#9/#12, latency budget #5, Bootstrap Rule content. |
+| 2026-02-20 | — | **3 pre-coding refinements.** (1) **Monorepo pathing directive** — Bootstrap Rule now instructs agents to always use repo-root-relative paths when calling MCP tools, preventing entity lookup failures when IDE opens a sub-directory. (2) **OpenTelemetry spans** — Added cross-cutting requirement for P2-API-06..13: every tool handler wrapped in OTel span (`mcp.{tool_name}`) with child spans for ArangoDB/Redis/Supabase calls. Integrates with Phase 0 Langfuse + Vercel OTEL. New file: `lib/mcp/tracing.ts`. (3) **API key scope granularity** — Scopes changed from `["read"]` to `["mcp:read"]` / `["mcp:read", "mcp:sync"]`. `sync_local_diff` requires `mcp:sync` scope. P2-UI-01 updated with scope checkbox on key generation. P2-API-02 updated with scope enforcement in tool dispatch. P2-DB-01 updated with scope values. Key storage schema updated. |

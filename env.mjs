@@ -56,6 +56,27 @@ export const env = createEnv({
 
     // ── Sentry (Error Tracking) ─────────────────────────────────────
     SENTRY_DSN: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
+
+    // ── Embedding (Phase 3 — Semantic Search) ──────────────────────
+    EMBEDDING_MODEL_NAME: z.string().optional().default("nomic-ai/nomic-embed-text-v1.5"),
+    EMBEDDING_DIMENSIONS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 768),
+    EMBEDDING_BATCH_SIZE: z.string().optional().transform((val) => val ? parseInt(val, 10) : 100),
+    EMBEDDING_MODEL_VERSION: z.string().optional(),
+
+    // ── Graph Snapshots (Phase 10a — Local-First Intelligence) ────
+    GRAPH_SNAPSHOT_BUCKET: z.string().optional().default("graph-snapshots"),
+    GRAPH_SNAPSHOT_TTL_HOURS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 24),
+    GRAPH_SYNC_CRON: z.string().optional().default("0 2 * * *"),
+
+    // ── MCP Server (Phase 2) ──────────────────────────────────────
+    MCP_SERVER_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid MCP Server URL").optional(),
+    MCP_SERVER_PORT: z.string().optional().transform((val) => val ? parseInt(val, 10) : 3001),
+    MCP_JWT_AUDIENCE: z.string().optional().default("kap10-mcp"),
+    MCP_OAUTH_DCR_TTL_HOURS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 24),
+    MCP_RATE_LIMIT_MAX: z.string().optional().transform((val) => val ? parseInt(val, 10) : 60),
+    MCP_RATE_LIMIT_WINDOW_S: z.string().optional().transform((val) => val ? parseInt(val, 10) : 60),
+    MCP_MAX_RESPONSE_BYTES: z.string().optional().transform((val) => val ? parseInt(val, 10) : 32768),
+    MCP_WORKSPACE_TTL_HOURS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 12),
   },
   client: {
     NEXT_PUBLIC_APP_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
@@ -105,6 +126,23 @@ export const env = createEnv({
     MEMBERSHIP_LIMIT: process.env.MEMBERSHIP_LIMIT,
     // Sentry
     SENTRY_DSN: process.env.SENTRY_DSN,
+    // Embedding
+    EMBEDDING_MODEL_NAME: process.env.EMBEDDING_MODEL_NAME,
+    EMBEDDING_DIMENSIONS: process.env.EMBEDDING_DIMENSIONS,
+    EMBEDDING_BATCH_SIZE: process.env.EMBEDDING_BATCH_SIZE,
+    // Graph Snapshots
+    GRAPH_SNAPSHOT_BUCKET: process.env.GRAPH_SNAPSHOT_BUCKET,
+    GRAPH_SNAPSHOT_TTL_HOURS: process.env.GRAPH_SNAPSHOT_TTL_HOURS,
+    GRAPH_SYNC_CRON: process.env.GRAPH_SYNC_CRON,
+    // MCP Server
+    MCP_SERVER_URL: process.env.MCP_SERVER_URL,
+    MCP_SERVER_PORT: process.env.MCP_SERVER_PORT,
+    MCP_JWT_AUDIENCE: process.env.MCP_JWT_AUDIENCE,
+    MCP_OAUTH_DCR_TTL_HOURS: process.env.MCP_OAUTH_DCR_TTL_HOURS,
+    MCP_RATE_LIMIT_MAX: process.env.MCP_RATE_LIMIT_MAX,
+    MCP_RATE_LIMIT_WINDOW_S: process.env.MCP_RATE_LIMIT_WINDOW_S,
+    MCP_MAX_RESPONSE_BYTES: process.env.MCP_MAX_RESPONSE_BYTES,
+    MCP_WORKSPACE_TTL_HOURS: process.env.MCP_WORKSPACE_TTL_HOURS,
     // Public
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,

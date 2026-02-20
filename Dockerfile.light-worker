@@ -1,0 +1,36 @@
+# Phase 3: Light-compute Temporal worker (embedding, LLM, email, webhooks).
+# Needs: Node, pnpm. No git, no build tools.
+# Embedding model (nomic-embed-text-v1.5, ~500MB ONNX) is baked into the image layer.
+FROM node:22-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  openssl \
+  ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml ./
+COPY patches ./patches
+RUN pnpm install
+
+COPY . .
+
+# Generate Prisma client for the container's platform
+RUN pnpm prisma generate
+
+# Pre-download the embedding model so cold start is instant (~500MB ONNX model)
+# The model is cached at ~/.cache/huggingface/ inside the image layer
+RUN node -e " \
+  async function main() { \
+    const { pipeline } = await import('@xenova/transformers'); \
+    const p = await pipeline('feature-extraction', 'nomic-ai/nomic-embed-text-v1.5'); \
+    const result = await p('warm-up test', { pooling: 'mean', normalize: true }); \
+    console.log('Model pre-downloaded. Output dims:', result.dims); \
+  } \
+  main().catch(e => { console.warn('Model pre-download skipped:', e.message); process.exit(0); }); \
+" || true
+
+CMD ["pnpm", "temporal:worker:light"]

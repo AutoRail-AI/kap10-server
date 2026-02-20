@@ -195,8 +195,8 @@ describe("indexing-light activities", () => {
       expect(bulkEntitiesSpy).toHaveBeenCalled()
       expect(bulkEdgesSpy).toHaveBeenCalled()
       expect(updateStatusSpy).toHaveBeenCalledWith(repoId, expect.objectContaining({
-        status: "ready",
-        progress: 100,
+        status: "indexing",
+        progress: 90,
         fileCount: 2,
         functionCount: 1,
         classCount: 1,

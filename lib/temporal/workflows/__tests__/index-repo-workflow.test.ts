@@ -28,6 +28,8 @@ vi.mock("@temporalio/workflow", () => ({
   setHandler: vi.fn((_query: unknown, handler: () => number) => {
     progressHandler = handler
   }),
+  startChild: vi.fn(async () => ({ workflowId: "embed-test", runId: "run-test" })),
+  ParentClosePolicy: { ABANDON: "ABANDON", TERMINATE: "TERMINATE", REQUEST_CANCEL: "REQUEST_CANCEL" },
   proxyActivities: vi.fn((_opts: unknown) => {
     // Return a proxy that captures calls
     return new Proxy(
@@ -67,6 +69,11 @@ vi.mock("@temporalio/workflow", () => ({
       },
     )
   }),
+}))
+
+// Mock the embed-repo workflow module (imported by index-repo)
+vi.mock("../embed-repo", () => ({
+  embedRepoWorkflow: vi.fn(),
 }))
 
 // Import workflow after mocks are set up
@@ -249,6 +256,8 @@ describe("indexRepoWorkflow", () => {
     // Check progress after last step
     if (progressHandler) progressValues.push(progressHandler())
 
+    // Progress captures: inside runSCIP=25, inside parseRest=50, inside writeToArango=75, final=100
+    // (95 is set briefly between writeToArango and startChild but no callback captures it)
     expect(progressValues).toEqual([25, 50, 75, 100])
   })
 
