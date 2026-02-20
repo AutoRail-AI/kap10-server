@@ -6,6 +6,7 @@ import {
   type ReactNode,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
 } from "react"
@@ -18,11 +19,10 @@ export interface OrgAccount {
 }
 
 interface AccountContextValue {
-  contextType: "personal" | "organization"
   currentContextName: string
-  activeOrgId: string | null
+  activeOrgId: string
   organizations: OrgAccount[]
-  switchContext: (orgId: string | null) => Promise<void>
+  switchContext: (orgId: string) => Promise<void>
   isLoading: boolean
 }
 
@@ -44,13 +44,19 @@ export function AccountProvider({ children }: { children: ReactNode }) {
     }))
   }, [orgList])
 
-  const activeOrgId = activeOrg?.id ?? null
-  const contextType: "personal" | "organization" = activeOrgId
-    ? "organization"
-    : "personal"
+  const activeOrgId = activeOrg?.id ?? organizations[0]?.id ?? ""
+
+  // Self-healing: if no active org but orgs exist, auto-activate the first one
+  useEffect(() => {
+    if (!activeOrg && organizations.length > 0 && organizations[0]) {
+      void authClient.organization.setActive({
+        organizationId: organizations[0].id,
+      })
+    }
+  }, [activeOrg, organizations])
 
   const switchContext = useCallback(
-    async (orgId: string | null) => {
+    async (orgId: string) => {
       setIsLoading(true)
       try {
         await authClient.organization.setActive({
@@ -70,15 +76,13 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   )
 
   const currentContextName = useMemo(() => {
-    if (contextType === "organization" && activeOrg) {
-      return activeOrg.name
-    }
-    return "Personal"
-  }, [contextType, activeOrg])
+    if (activeOrg) return activeOrg.name
+    if (organizations[0]) return organizations[0].name
+    return ""
+  }, [activeOrg, organizations])
 
   const value = useMemo<AccountContextValue>(
     () => ({
-      contextType,
       currentContextName,
       activeOrgId,
       organizations,
@@ -86,7 +90,6 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       isLoading,
     }),
     [
-      contextType,
       currentContextName,
       activeOrgId,
       organizations,

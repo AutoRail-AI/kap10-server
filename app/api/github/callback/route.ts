@@ -90,28 +90,8 @@ export async function GET(req: NextRequest) {
       permissions: inst.permissions ?? undefined,
     })
 
-    const { data: reposData } = await octokit.rest.apps.listReposAccessibleToInstallation({
-      per_page: 100,
-    })
-    const repos = "repositories" in reposData ? reposData.repositories : []
-    for (const r of repos) {
-      const fullName = r.full_name ?? `${(r.owner as { login?: string })?.login}/${r.name}`
-      const providerId = String(r.id)
-      const existingRepo = await container.relationalStore.getRepoByGithubId(orgId, r.id)
-      if (!existingRepo) {
-        await container.relationalStore.createRepo({
-          organizationId: orgId,
-          name: r.name ?? fullName,
-          fullName,
-          provider: "github",
-          providerId,
-          status: "pending",
-          defaultBranch: (r.default_branch as string) ?? "main",
-          githubRepoId: r.id,
-          githubFullName: fullName,
-        })
-      }
-    }
+    // Repos are NOT auto-added here. Users select which repos to add
+    // via the repo picker modal, which POSTs to /api/repos.
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     console.error("[github/callback]", message)

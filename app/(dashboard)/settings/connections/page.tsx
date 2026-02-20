@@ -1,5 +1,4 @@
 import { headers } from "next/headers"
-import { redirect } from "next/navigation"
 import { Suspense } from "react"
 import { GitHubConnectionsList } from "@/components/dashboard/github-connections-list"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -19,7 +18,7 @@ async function ConnectionsContent() {
 
   const activeOrg = organizations[0]
   if (!activeOrg) {
-    redirect("/")
+    throw new Error("No active organization found. Every user should have an auto-provisioned organization.")
   }
 
   const container = getContainer()

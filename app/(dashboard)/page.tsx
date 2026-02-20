@@ -20,9 +20,7 @@ async function DashboardContent() {
 
   const activeOrgId = organizations[0]?.id
   if (!activeOrgId) {
-    // Every user gets an auto-provisioned org on signup, so this is
-    // only reachable if the org was deleted or a race condition.
-    return <EmptyStateRepos />
+    throw new Error("No active organization found. Every user should have an auto-provisioned organization.")
   }
 
   const container = getContainer()

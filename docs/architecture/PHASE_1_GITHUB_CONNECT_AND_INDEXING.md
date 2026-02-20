@@ -34,14 +34,38 @@
 
 Phase 1 has five actor journeys. Each is described with a Mermaid sequence diagram and step-by-step system-level actions.
 
-### Terminology: Organization vs workspace
+### Terminology: Organization, workspace, and GitHub disambiguation
+
+> **"Organization" in kap10 is NOT the same as "organization" on GitHub.** The word collision is intentional — both platforms use "organization" for their account-level grouping — but the two are completely independent entities with separate identity, naming, and lifecycle. See the disambiguation table below.
 
 | Term | Meaning |
 |------|--------|
-| **Organization** (or "org") | Account-level entity in Better Auth. Personal or team. Holds repos, GitHub installations, and settings. Switched via `AccountProvider`. |
-| **Workspace** | **Repo-level working context** — Shadow Workspace overlay (Phase 2), cloned repo directory for SCIP indexing (`prepareWorkspace`), monorepo sub-package root. Not the same as organization. |
+| **Kap10 organization** (or "org") | Account-level tenant in Better Auth. Created at signup from the **user's name** (`"{name}'s organization"`). Holds repos, GitHub installations, and settings. Switched via `AccountProvider`. Has no relationship to any GitHub account name. |
+| **GitHub organization** | A GitHub-specific concept — a multi-user account on github.com (e.g., `facebook`, `vercel`). Also includes personal GitHub accounts (type: `"User"`). Kap10 stores this as `accountLogin` on the `github_installations` table — never as the kap10 org name. |
+| **GitHub installation** | A GitHub App installation that links a GitHub account/org to a kap10 organization. Stored in `kap10.github_installations` with `organizationId` (FK to kap10 org) and `accountLogin` (GitHub account name). One kap10 org can have **multiple** GitHub installations. |
+| **Workspace** | **Repo-level working context only** — Shadow Workspace overlay (Phase 2), cloned repo directory for SCIP indexing (`prepareWorkspace`), monorepo sub-package root. **Never used to mean organization.** |
 
-GitHub connects to an **organization** (account-level entity). The **repositories** you add under that org are managed within the organization context.
+**Key rules:**
+- A **kap10 organization** is created from the user's name at signup. It is never created from, renamed to, or derived from a GitHub account name.
+- A **GitHub installation** is an attachment to an existing kap10 org. The install route requires `orgId` upfront; the callback never creates organizations.
+- One kap10 org can connect **multiple** GitHub accounts/orgs (each as a separate `github_installations` row).
+- The word **"workspace"** is reserved for repo-level technical contexts (clone directories, SCIP indexing, monorepo roots, Phase 2 shadow overlays) — never for account-level grouping.
+
+```
+Data model (identity separation):
+
+  kap10 organization                GitHub installation              GitHub repos
+  ┌──────────────────┐             ┌──────────────────────┐        ┌─────────────────┐
+  │ id: "org-abc-123" │◄──FK──────│ organizationId        │        │ organizationId   │
+  │ name: "Jaswanth's │            │ installationId: 12345 │        │ githubRepoId     │
+  │   organization"   │            │ accountLogin: "octocat"│───────│ githubFullName:  │
+  │ slug: "jaswanth"  │            │ accountType: "User"   │        │  "octocat/repo"  │
+  └──────────────────┘             └──────────────────────┘        └─────────────────┘
+       ▲                                  ▲
+       │ Created at signup                │ Created when user
+       │ from user.name                   │ clicks "Connect GitHub"
+       │ (no GitHub involvement)          │ (links to existing org)
+```
 
 > **Forward-compatibility note (Phase 5.5):** Phase 1 is GitHub-focused, but the data model supports extension. The `RepoProvider` enum will gain a `local_cli` value in Phase 5.5 for repos ingested via `kap10 push`. The Prisma schema already has `githubRepoId` (`BigInt?`) and `githubFullName` (`String?`) as nullable fields, allowing `Repo` rows to exist without a GitHub connection. All pipeline logic (SCIP indexing, entity hashing, writeToArango) is provider-agnostic — only `prepareWorkspace` has a provider-specific branch.
 
@@ -51,20 +75,20 @@ A personal organization is **auto-provisioned on signup** via Better Auth `datab
 
 | Scenario | What happens |
 |----------|-------------|
-| **New user signs up** | `databaseHooks.user.create.after` → INSERT `organization` (`"{name}'s workspace"`) + INSERT `member` (role: `owner`). User lands on dashboard with empty-state-repos. |
-| **User connects GitHub** | Dashboard → "Connect GitHub" → `GET /api/github/install?orgId=xxx` → GitHub → callback → installation attached to existing org, repos imported. |
+| **New user signs up** | `databaseHooks.user.create.after` → INSERT `organization` (`"{name}'s organization"`) + INSERT `member` (role: `owner`). User lands on dashboard with empty-state-repos. |
+| **User connects GitHub** | Dashboard → "Connect GitHub" → `GET /api/github/install?orgId=xxx` → GitHub → callback → installation attached to existing org (no repos auto-imported). User then clicks "Add Repository" → selects repos via picker modal → `POST /api/repos`. |
 
 **Key principle:** Organizations are the account-level grouping in kap10. They are auto-provisioned at signup (not from GitHub account names). GitHub connections (installations) link a GitHub account/org to an existing kap10 organization. The callback **strictly requires** an `orgId` in the state payload and never creates organizations.
 
 **Multiple GitHub connections:** A single organization can have **multiple** GitHub accounts or orgs connected. Each connection is a separate `github_installations` row. Repos from all connections are listed in the organization's dashboard. Users manage connections via `/settings/connections` (add, remove).
 
-**Implementation:** `databaseHooks.user.create.after` in `lib/auth/auth.ts` (auto-create org on signup); `setActiveOrganization()` in `lib/auth` (server-side session update); Install route stores `{ orgId }` in state → callback reads it back to attach installation to that organization. Removed: `createOrganizationForUser()`, `app/actions/create-workspace.ts`, `EmptyStateNoOrg`, `CreateWorkspaceFirstBanner`.
+**Implementation:** `databaseHooks.user.create.after` in `lib/auth/auth.ts` (auto-create org on signup); `setActiveOrganization()` in `lib/auth` (server-side session update); Install route stores `{ orgId }` in state → callback reads it back to attach installation to that organization. Removed: `createOrganizationForUser()`, `app/actions/create-workspace.ts` (org creation action), `EmptyStateNoOrg`, `CreateWorkspaceFirstBanner`.
 
 ### Flow 1: GitHub App Installation
 
 **Actor:** Authenticated user with an existing organization
 **Precondition:** Logged in, at least one organization exists
-**Outcome:** GitHub App installed and linked to the active organization; repos imported
+**Outcome:** GitHub App installed and linked to the active organization; installation record created (repos are NOT auto-imported — user selects them via the repo picker modal)
 
 ```mermaid
 sequenceDiagram
@@ -85,7 +109,7 @@ sequenceDiagram
     GitHub-->>NextAPI: Installation access token (1hr TTL)
     Note over NextAPI: Attach installation to existing organization (orgId from state)
     NextAPI->>Supabase: INSERT INTO kap10.github_installations (org_id, installation_id, ...)
-    NextAPI->>Supabase: INSERT INTO kap10.repos (one per selected repo, status=pending)
+    Note over NextAPI: Repos are NOT auto-created here — user selects them via repo picker (Flow 2)
     NextAPI-->>User: Redirect to /?connected=true
 ```
 
@@ -101,7 +125,7 @@ sequenceDiagram
 
 **State changes:**
 - Supabase `kap10.github_installations`: new row with `installation_id`, `org_id`, `account_login`, `account_type` (additive — does not replace existing installations)
-- Supabase `kap10.repos`: one row per selected repo with `status: "pending"`
+- No repo records created — repos are added by the user in Flow 2 (repo picker modal → `POST /api/repos`)
 
 ### Flow 1b: Managing GitHub Connections
 
@@ -584,9 +608,9 @@ Single database `kap10_db`. Every document and edge carries `org_id` + `repo_id`
 
 | # | Path | Target (p95) | Breakdown | Bottleneck | Mitigation |
 |---|------|-------------|-----------|------------|------------|
-| 1 | **GitHub App install callback** | < 2s | State verification (~5ms) + installation token fetch (~200ms) + Supabase inserts (~50ms each, 1–10 repos) | GitHub API latency for token generation | Cache nothing — this is a one-time flow. Parallelize repo inserts. |
+| 1 | **GitHub App install callback** | < 1s | State verification (~5ms) + installation token fetch (~200ms) + Supabase insert (~50ms, installation only) | GitHub API latency for token generation | Cache nothing — this is a one-time flow. No repo inserts (user selects repos later via picker). |
 | 2 | **Repo list fetch** (GET /api/repos) | < 1s | Supabase query (~30ms) + response serialization | Cold Prisma connection on first request | Warm connection via health check. Index on `organization_id`. |
-| 3 | **Available repos from GitHub** (GET /api/repos/available) | < 1s (cached), < 3s (cold) | Installation token fetch (~200ms) + GitHub API (~500ms) + filter already-connected (~5ms) | GitHub API latency | Cache in Redis for 5 min (`kap10:gh-repos:{installationId}`). Invalidate on webhook `installation_repositories` event. |
+| 3 | **Available repos from GitHub** (GET /api/repos/available) | < 1s (cached), < 3s (cold) | Installation token fetch (~200ms) + GitHub API (~500ms) + filter already-connected (~5ms) | GitHub API latency | Cache in Redis for 5 min (`gh-repos:{installationId}`). |
 | 4 | **Indexing trigger** (POST /api/repos) | < 500ms | Supabase insert (~50ms) + Temporal startWorkflow (~100ms) | Should NOT wait for indexing to complete — fire and forget. | Return immediately after workflow start confirmation. |
 | 5 | **Small repo indexing** (< 1k files) | < 5 min | Clone (~30s) + npm install (~60s) + SCIP (~60s) + parse (~30s) + write (~30s) | `npm install` for JS repos. SCIP compilation for TS repos. | Persistent workspace volumes (no re-clone on retry). Cache `node_modules`. |
 | 6 | **Large repo indexing** (10k+ files) | < 30 min | Clone (~2min) + npm install (~5min) + SCIP (~15min) + parse (~3min) + write (~5min) | SCIP compilation (essentially running `tsc`). Monorepo: linear in package count. | Per-package SCIP parallelism (future). Heartbeat every 30s to prevent timeout. |
@@ -1002,9 +1026,9 @@ Seam 5: Repo status → readiness for Q&A
   - Calls `setActiveOrganization(reqHeaders, orgId)` to update session
   - Fetches installation details from GitHub API
   - If installation already exists for this `installationId`, replaces it (delete + re-create)
-  - Creates `Repo` records for each selected repository (status: `pending`)
+  - Repos are NOT auto-created — user selects repos later via repo picker modal (`POST /api/repos`)
   - Redirects to `/?connected=true`
-  - **Test:** Valid callback with known state + orgId → installation created, repos created, redirect to /. No orgId in state → redirect with error.
+  - **Test:** Valid callback with known state + orgId → installation created, redirect to /. No orgId in state → redirect with error.
   - **Depends on:** P1-API-01, P1-DB-01, P1-DB-02, P1-ADAPT-12
   - **Files:** `app/api/github/callback/route.ts`
   - **Acceptance:** Installation and repos persisted. Invalid state → 403. Missing installation_id → 400. Missing orgId → redirect to `/?error=no_org_context`.
@@ -1069,10 +1093,9 @@ Seam 5: Repo status → readiness for Q&A
 
 - [x] **P1-API-07: `POST /api/webhooks/github` — GitHub webhook handler** — M
   - Validates `x-hub-signature-256` using `@octokit/webhooks` (cryptographic verification)
-  - Handles events: `installation` (created/deleted/suspended), `installation_repositories` (added/removed), `push` (log only in Phase 1), `pull_request` (log only in Phase 1)
-  - `installation.deleted`: mark installation as removed, set all org repos to `error`
-  - `installation_repositories.added`: create new `Repo` records
-  - `installation_repositories.removed`: trigger `deleteRepoWorkflow`
+  - Handles events: `installation` (deleted only), `push` (log only in Phase 1), `pull_request` (log only in Phase 1)
+  - `installation.deleted`: mark installation as removed
+  - `installation_repositories` events are **ignored** — repos are only added when user explicitly selects them via the repo picker (`POST /api/repos`)
   - Deduplicate via `x-github-delivery` header stored in Redis (TTL 24h). Uses atomic `setIfNotExists` on `ICacheStore` to prevent race conditions when two webhook deliveries arrive simultaneously (see P1-ADAPT-13).
   - **Test:** Send test webhook from GitHub App settings → 200 OK. Forge signature → 401.
   - **Depends on:** P1-INFRA-02, P1-ADAPT-13
@@ -1204,7 +1227,7 @@ Seam 5: Repo status → readiness for Q&A
 - [x] **P1-UI-01: "Connect GitHub" button on empty state + repos page** — M
   - Dashboard (org auto-provisioned): No installation → `EmptyStateRepos` with "Connect GitHub" → `GET /api/github/install?orgId=xxx`. After install → "Add Repository" button.
   - `EmptyStateRepos` uses `useAccountContext()` to build the install href dynamically with the active org's ID. Button disabled when no org is active.
-  - `RepositorySwitcher` (sidebar top-left): "Add missing repository" link → GitHub App install.
+  - `RepositorySwitcher` removed from sidebar (will be replaced by workspace selector in a future phase). Repos are managed from the dashboard page.
   - **Test:** No installation → "Connect GitHub" visible. Click → redirected to GitHub with orgId. After install → "Add Repository" shown.
   - **Depends on:** P1-API-01
   - **Files:** `components/dashboard/empty-state-repos.tsx`, `components/dashboard/repository-switcher.tsx`, `app/(dashboard)/page.tsx`, `app/(dashboard)/repos/page.tsx`
@@ -1567,6 +1590,8 @@ app/api/repos/route.ts                     ← Add POST handler
 | 2026-02-17 | — | **Phase 1 implementation completed.** Infrastructure: env vars (env.mjs, .env.example), Docker (8 GB heavy worker, workspaces volume), Dockerfile.heavy-worker (Node 22, git, build-essential, python3). Database: GitHubInstallation model + Repo extensions (Prisma + SQL migration), ArangoDB idx on [org_id, repo_id, file_path]. Ports: IGitHost (getInstallationRepos, getInstallationToken), IRelationalStore (getInstallation, createInstallation, deleteInstallation, updateRepoStatus, getRepoByGithubId, getReposByStatus, getRepo, deleteRepo), ICacheStore (setIfNotExists), IGraphStore (getEntitiesByFile with repoId, getFilePaths, deleteRepoData), WorkflowStatus (progress). Adapters: lib/github/client.ts, GitHubHost (cloneRepo, listFiles, getInstallationRepos, getInstallationToken), Prisma + Arango (bulk upsert, getEntitiesByFile, getEntity, getCallersOf, getCalleesOf), Temporal (startWorkflow, getWorkflowStatus, cancelWorkflow), Redis (setIfNotExists). API: github/install, github/callback, repos (GET/POST), repos/[id] (GET/DELETE), repos/[id]/status, repos/[id]/retry, repos/[id]/tree, repos/[id]/entities, repos/[id]/entities/[entityId], webhooks/github. Workflows: indexRepoWorkflow (prepareWorkspace, runSCIP stub, parseRest stub, writeToArango), deleteRepoWorkflow; activities registered in workers. UI: Connect GitHub, repo picker modal, repo cards (status/progress/retry), repos list (ReposList), repo detail (file tree + entities + entity detail). Fakes extended (Phase 1 methods). **In progress:** P1-ADAPT-09 (SCIP), P1-API-13 (runSCIP), P1-API-14 (parseRest) — stubbed so pipeline runs; full SCIP/parseRest implementation deferred. **Not done:** P1-TEST-* (unit/integration/E2E tests). Tracker: 42 items [x], 3 items [~]. |
 | 2026-02-17 | — | **Phase 1 verification.** Codebase checked against tracker: P1-INFRA-01..06 ✓ (env.mjs, .env.example, docker-compose 8G/512M, workspaces volume, Dockerfile.heavy-worker). P1-DB-01..03 ✓ (Prisma GitHubInstallation, Repo Phase 1 fields, migration `20260217120000_phase1_github_installation_and_repo_indexing.sql`, ArangoDB `idx_*_org_repo_file` in bootstrapGraphSchema). P1-ADAPT-01..08, 10..13 ✓ (github-host, arango-graph-store bulk/getEntitiesByFile/getFilePaths/deleteRepoData, temporal-workflow-engine startWorkflow/getWorkflowStatus, prisma-relational-store Phase 1 methods, redis setIfNotExists; fakes extended). P1-ADAPT-09 [~] SCIP stub. P1-API-01..12, 15..17 ✓ (all routes present; get-active-org used; runSCIP/parseRest stubs). P1-API-13, 14 [~]. P1-UI-01..07 ✓ (empty-state-repos, repo-picker-modal, repo-card, repos-list, use-repo-status, repos/[repoId] page + repo-detail-client with file tree and entity detail/callers/callees, file-tree-builder, retry route). P1-TEST-01..12 remain [ ]. Conclusion: Phase 1 implemented as specified; stub-only items and tests documented. |
 | 2026-02-17 | — | **Post-cleanup verification.** Removed 41 boilerplate files (old AppealGen/10XR template code) + 30 empty directories. Fixed `scripts/seed.ts` (referenced deleted `lib/templates/manager`). Fixed all ESLint errors: added `no-require-imports` override for lazy-init files, `caughtErrorsIgnorePattern` for catch blocks, import ordering, unused vars. Fixed Prisma 7 bug (prisma/prisma#28611) — `@prisma/adapter-pg` ignores `@@schema()` directives; workaround: set `search_path=kap10,public` on connection string. Regenerated Prisma client. Verified: `pnpm build` ✓ (21 routes), `pnpm test` ✓ (5 files, 29 tests including `file-tree-builder.test.ts`), `pnpm lint` ✓ (0 errors, 0 warnings). All tracker notes fields filled in. **Final tally: 42 [x], 3 [~] (SCIP/parseRest stubs), 12 [ ] (tests).** |
-| 2026-02-17 | — | **Post-signup flow: add repo first, optional workspace.** Removed requirement to create an org before connecting repos. New users see a **welcome screen** with two paths: (1) **Connect GitHub** — callback auto-creates workspace (e.g. `{accountLogin}'s workspace`) when user has no org, bootstraps ArangoDB, creates installation + repos, redirects to `/`; (2) **Start without GitHub** — server action `createDefaultWorkspace()` creates empty workspace, redirects to `/`. `/settings` and `/repos` redirect to `/` when user has no org. Added § Post-signup & workspace provisioning, updated Flow 1 (precondition, diagram note, redirect to `/?connected=true`), P1-API-02 (auto-workspace in callback), P1-UI-01 (welcome screen, empty-state-no-org, create-workspace action). Phase 0 doc updated to match (Flow 2 = welcome screen, two scenarios). |
+| 2026-02-17 | — | **Post-signup flow: add repo first, optional org.** Removed requirement to create an org before connecting repos. New users see a **welcome screen** with two paths: (1) **Connect GitHub** — callback auto-creates organization (e.g. `{accountLogin}'s organization`) when user has no org, bootstraps ArangoDB, creates installation + repos, redirects to `/`; (2) **Start without GitHub** — server action creates empty organization, redirects to `/`. `/settings` and `/repos` redirect to `/` when user has no org. Added § Post-signup & organization provisioning, updated Flow 1 (precondition, diagram note, redirect to `/?connected=true`), P1-API-02 (auto-org in callback), P1-UI-01 (welcome screen, empty-state-no-org, create-org action). Phase 0 doc updated to match (Flow 2 = welcome screen, two scenarios). |
 | 2026-02-20 | — | **Branch selection + install/callback hardening.** (1) **Branch selection during repo import:** Added `listBranches()` to `IGitHost` port (P1-ADAPT-14) and `GitHubHost` adapter (paginated `octokit.rest.repos.listBranches`). New `GET /api/repos/available/branches` endpoint (P1-API-04b). Updated `POST /api/repos` (P1-API-04) to accept `{ repos: [{ githubRepoId, branch? }] }` with backward-compatible legacy format. Repo picker modal (P1-UI-02) now has two-step flow: step 1 selects repos, step 2 shows per-repo branch dropdowns with info banner. (2) **Install route hardening (P1-API-01):** Now requires explicit `orgId` query param, validates user belongs to the org (403 if not), stores state as object instead of JSON string. (3) **Callback robustness (P1-API-02):** `parseStatePayload()` handles both object and string state defensively (cache store may auto-deserialize JSON). State typed as `{ orgId: string }`. (4) **Empty state context (P1-UI-01):** `EmptyStateRepos` uses `useAccountContext()` to build install href dynamically with `activeOrgId`. Button disabled when no org active. (5) **Prisma config:** `prisma.config.ts` loads `.env.local` first, adds `search_path=kap10,public` to DB URL. Files: `lib/ports/git-host.ts`, `lib/adapters/github-host.ts`, `lib/di/fakes.ts`, `app/api/repos/available/branches/route.ts` (new), `app/api/repos/route.ts`, `app/api/github/install/route.ts`, `app/api/github/callback/route.ts`, `components/dashboard/repo-picker-modal.tsx`, `components/dashboard/repos-list.tsx`, `components/dashboard/empty-state-repos.tsx`, `app/(dashboard)/page.tsx`, `prisma.config.ts`. Verified: `pnpm build` ✓ (28 routes), `pnpm test` ✓ (7 files, 38 tests), `pnpm lint` ✓ (no new errors). |
 | 2026-02-18 | — | **UserProfileMenu & AccountContext (Claude-style sidebar).** Added Claude-style `UserProfileMenu` component to dashboard sidebar footer — replaces static user info. DropdownMenu with: email header, Personal/Org account switcher (check marks on active), Settings, Help & Support (disabled), Upgrade Plan (electric-cyan, disabled), Invite Friends (disabled), dark/light mode toggle (next-themes), Sign Out. Added `AccountProvider` (Personal vs Org context, persisted to `localStorage`, auto-resets if org removed). Added `ThemeProvider` (next-themes, defaultTheme dark) to root Providers. Dashboard layout passes `serverOrgs` to `UserProfileMenu` which hydrates `AccountProvider`. Files: `components/dashboard/user-profile-menu.tsx`, `components/providers/account-context.tsx`, `components/providers/index.tsx`, `app/(dashboard)/layout.tsx`. Phase 0 doc updated (Flows 2–3, §2.5 tracker, revision log). VERTICAL_SLICING_PLAN updated (Phase 0 "What ships", file tree). |
+| 2026-02-20 | — | **Remove "personal" context + user-driven repo selection.** (1) Removed `contextType` from `AccountProvider`; `activeOrgId` is `string` (never null), self-heals by auto-activating first org. Removed "Personal Account" from `UserProfileMenu`. (2) **Repos no longer auto-added on GitHub installation callback.** Callback only creates the `github_installations` record. Repos are added exclusively via user selection in the repo picker modal (`POST /api/repos`). Updated Flow 1 diagram and state changes. (3) Webhook `installation_repositories` event handler removed — repos only added when user explicitly requests. Updated P1-API-02, P1-API-07 tracker items. (4) `getActiveOrgId()` returns `string` (throws if missing). (5) `databaseHooks.user.create.after` retries with randomized slug on conflict. (6) Updated performance budget for callback (no repo inserts). |
+| 2026-02-20 | — | **Remove RepositorySwitcher + Docker DNS fix.** (1) `RepositorySwitcher` removed from sidebar layout — repos managed from dashboard page. Will be replaced by workspace selector in future phase. Updated P1-UI-01 tracker item. (2) Added `dns: [8.8.8.8, 8.8.4.4]` to `temporal-worker-heavy` and `temporal-worker-light` in `docker-compose.yml` — fixes "Can't reach database server" when light worker activities (`writeToArango`, `updateRepoError`) connect to cloud Supabase from Docker. |

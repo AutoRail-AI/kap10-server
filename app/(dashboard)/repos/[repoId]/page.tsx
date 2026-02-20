@@ -13,7 +13,6 @@ async function RepoDetailContent({ repoId }: { repoId: string }) {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session) return null
   const orgId = await getActiveOrgId()
-  if (!orgId) return null
   const container = getContainer()
   const repo = await container.relationalStore.getRepo(orgId, repoId)
   if (!repo) notFound()

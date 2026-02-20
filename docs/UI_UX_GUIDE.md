@@ -94,8 +94,12 @@ Two **internal-only** tenant operating modes (never surfaced in UI):
 #### UX Rules
 - ❌ Never say "personal mode" or "organization mode" in UI
 - ❌ Never say "personal account" or "personal workspace"
+- ❌ Never use a GitHub account/org name as the kap10 organization name — they are independent entities
 - ✅ Use "Settings", "Members", "Your Account", "Enable Teams"
+- ✅ Show GitHub account names as secondary metadata (e.g., "(GitHub: @octocat)"), never as the org identity
 - Teams features: **completely hidden** in Normal mode
+
+> **Disambiguation:** "Organization" in kap10 is the account-level tenant (created at signup from the user's name). It is **not** the same as a GitHub organization. GitHub accounts/orgs connect to kap10 orgs as installations — stored separately with their own `accountLogin` field. One kap10 org can have multiple GitHub connections.
 
 ### 1.3 Authorization & Role System
 

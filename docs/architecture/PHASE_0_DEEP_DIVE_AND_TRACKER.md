@@ -82,18 +82,23 @@ Step  Actor Action                System Action                                 
 2     Click "Connect GitHub"      GET /api/github/install?orgId=xxx →                      Redis: state token with orgId
                                   Redirect to GitHub App install. orgId stored in state.
 3     GitHub callback             GET /api/github/callback → state decoded →               Supabase: github_installation
-                                  orgId validated against user's orgs →                      + repo rows created
-                                  setActiveOrganization → repos imported →
+                                  orgId validated against user's orgs →                      row created (no repos)
+                                  setActiveOrganization → installation saved →
                                   redirect to /?connected=true
+4     Add Repository             Click "Add Repository" → repo picker modal →             Supabase: repo rows created
+                                  select repos → choose branches →                          per user selection
+                                  POST /api/repos → indexing started
 ```
 
-**Important:** Organizations are the account-level grouping in kap10. They hold repos, GitHub installations, and settings. A personal organization (`"{name}'s workspace"`) is **auto-provisioned on signup** via Better Auth `databaseHooks.user.create.after` — direct INSERT into `organization` + `member` tables using Better Auth's `generateId()`. No welcome screen or manual org creation step is needed.
+**Important — kap10 organization ≠ GitHub organization:** "Organization" in kap10 is the account-level tenant, created at signup from the **user's name** (`"{name}'s organization"`). It has no relationship to any GitHub account or organization name. GitHub accounts/orgs connect to a kap10 org as **installations** (stored in `kap10.github_installations` with `accountLogin` for the GitHub name). One kap10 org can have multiple GitHub connections. See [PHASE_1 § Terminology](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md#terminology-organization-workspace-and-github-disambiguation) for the full disambiguation.
+
+A personal organization is **auto-provisioned on signup** via Better Auth `databaseHooks.user.create.after` — direct INSERT into `organization` + `member` tables using Better Auth's `generateId()`. No welcome screen or manual org creation step is needed.
 
 **Two user scenarios:**
 
 | Scenario | Path | Outcome |
 |----------|------|---------|
-| **User has GitHub repos** | Dashboard → Connect GitHub → install App → callback → Add Repository → select repos → choose branch per repo → Connect & Index | GitHub installation attached to auto-provisioned organization; repos imported with user-chosen branches. |
+| **User has GitHub repos** | Dashboard → Connect GitHub → install App → callback → "Add Repository" → select repos → choose branch per repo → Connect & Index | GitHub installation attached to auto-provisioned organization. Repos are **not** auto-imported — user selects which repos to add via the repo picker modal. |
 | **Local-only / code not on GitHub yet** | Dashboard | User sees empty-state-repos with "Connect GitHub" CTA for later. |
 
 **Key nuance — ArangoDB org bootstrap:**
@@ -115,8 +120,8 @@ Step  Actor Action                System Action                                 
                                   3. Render ReposList (or EmptyStateRepos if no install)
                                   Sidebar: DashboardNav + UserProfileMenu (footer)
 3     UserProfileMenu             Trigger: avatar + context label (e.g. "Jaswanth's        AccountContext
-                                  Personal") → DropdownMenu with sections:                 updated (Personal
-                                  Accounts (Personal + Orgs), Settings, Help,              ↔ Org) on switch
+                                  organization") → DropdownMenu with sections:             updated on org switch
+                                  Organization switcher, Settings, Help,
                                   Upgrade, Theme toggle, Sign Out
 4     Navigate to Settings        /settings → org settings page (name, members, danger)    None
 5     Navigate to Repos           /repos → same repos list as dashboard home               None
@@ -124,10 +129,10 @@ Step  Actor Action                System Action                                 
 ```
 
 **UserProfileMenu replaces the old static user info.** It provides:
-- Account context switching (Personal vs Organization) — persisted via `AccountProvider` in `localStorage`
+- Organization switching — persisted via Better Auth `setActive`. No "personal" context; users always have an active organization.
 - Dark/light mode toggle (via `next-themes`)
 - Navigation to Settings, sign out
-- Placeholder items: Help & Support, Upgrade Plan, Invite Friends
+- Placeholder items: Help & Support, Upgrade Plan
 
 ---
 
@@ -793,15 +798,15 @@ Seam 5: ArangoDB
 ### Dashboard Shell
 
 - [x] **`app/(dashboard)/layout.tsx` — Authenticated dashboard layout** — M
-  - Sidebar: `RepositorySwitcher` (top — repo/scope navigation), `DashboardNav` (Repos, Search disabled, Settings), `UserProfileMenu` (bottom — identity/account switching)
-  - `RepositorySwitcher` (top-left): Popover with Command-based search. Shows active repo or "All Repositories". Lists repos from `GET /api/repos` (filtered by `activeOrgId`). Status dots. "Add missing repository" → GitHub App install. Active repo derived from URL.
-  - `UserProfileMenu` (bottom-left): avatar + context label → DropdownMenu: email header, Personal/Org account switcher, Settings/Help, Upgrade, dark/light toggle (next-themes), Sign Out
+  - Sidebar: `DashboardNav` (Repos, Search disabled, Settings), `UserProfileMenu` (bottom — identity/org switching)
+  - `RepositorySwitcher` removed from sidebar — repos are managed from the dashboard page, not the sidebar. Will be replaced by a workspace selector in a future phase.
+  - `UserProfileMenu` (bottom-left): avatar + context label → DropdownMenu: email header, organization switcher (no "Personal Account" item), Settings/Help, Upgrade, dark/light toggle (next-themes), Sign Out
   - `DashboardAccountProvider`: wraps dashboard with `AccountProvider` so org hooks only run when authenticated
-  - `AccountProvider`: global context (Personal vs Org), persisted via Better Auth `setActive`
+  - `AccountProvider`: organization context (always has active org — no "personal" mode), persisted via Better Auth `setActive`, self-heals by auto-activating first org if none active
   - `ThemeProvider` (next-themes): `defaultTheme="dark"`, `attribute="class"`, wired into root `<Providers>`
-  - **Design principle:** Identity = bottom-left (UserProfileMenu). Resource = top-left (RepositorySwitcher). Active repo is URL-driven.
+  - **Design principle:** Identity = bottom-left (UserProfileMenu). Repo management on dashboard pages.
   - Uses design system: `bg-background`, `glass-panel`, `font-grotesk`, `bg-rail-fade` avatars
-  - **Test:** Manual/E2E: log in → sidebar with repo switcher + nav + profile menu. Switch repos, switch identity, toggle theme, sign out.
+  - **Test:** Manual/E2E: log in → sidebar with nav + profile menu. Toggle theme, sign out.
   - **Files:** `app/(dashboard)/layout.tsx`, `components/dashboard/repository-switcher.tsx`, `components/dashboard/dashboard-nav.tsx`, `components/dashboard/user-profile-menu.tsx`, `components/dashboard/dashboard-account-provider.tsx`, `components/providers/account-context.tsx`
   - Notes: Implemented 2026-02-17. Updated 2026-02-18: RepositorySwitcher (top-left) + UserProfileMenu (bottom-left). Decoupled identity from resource context. Auto-provisioned org on signup removes welcome screen.
 
@@ -813,7 +818,7 @@ Seam 5: ArangoDB
 - [x] **Empty state component** — S
   - `components/dashboard/empty-state-repos.tsx`: icon (Lucide), "No repositories connected", "Connect GitHub" CTA links to `/api/github/install?orgId=xxx`
   - **Test:** Manual; button links to install route with active org ID.
-  - Notes: Implemented 2026-02-17. Updated 2026-02-20: uses `useAccountContext()` to get `activeOrgId` and build install href dynamically; button disabled when no org is active.
+  - Notes: Implemented 2026-02-17. Updated 2026-02-20: uses `useAccountContext()` to get `activeOrgId` and build install href dynamically; `activeOrgId` is always a string (no null state), button is always enabled.
 
 - [x] **`app/(dashboard)/repos/page.tsx` — Repository management page** — S
   - List repos for active org; same empty state as dashboard home
@@ -828,11 +833,11 @@ Seam 5: ArangoDB
 ### Onboarding / Organization Auto-Provisioning
 
 - [x] **Auto-create personal organization on signup** — M
-  - Every new user gets a personal organization (`"{name}'s workspace"`) immediately on signup via Better Auth `databaseHooks.user.create.after` in `lib/auth/auth.ts`.
+  - Every new user gets a personal organization (`"{name}'s organization"`) immediately on signup via Better Auth `databaseHooks.user.create.after` in `lib/auth/auth.ts`.
   - The hook inserts directly into `organization` + `member` tables (pg Pool) using Better Auth's `generateId()`. Role: `owner`.
   - No welcome screen, no manual org creation step. Users land directly on the dashboard with their auto-provisioned org.
   - `app/onboarding/page.tsx` exists as a legacy fallback — redirects to `/` if user already has an org.
-  - **Removed files:** `components/dashboard/empty-state-no-org.tsx`, `components/dashboard/create-workspace-first-banner.tsx`, `app/actions/create-workspace.ts` (all obsolete).
+  - **Removed files:** `components/dashboard/empty-state-no-org.tsx`, `components/dashboard/create-workspace-first-banner.tsx` (org-related), `app/actions/create-workspace.ts` (org creation action) — all obsolete.
   - **Files:** `lib/auth/auth.ts` (databaseHooks), `app/(dashboard)/page.tsx` (simplified — no EmptyStateNoOrg)
   - **Test:** E2E: new user → signup → dashboard (org auto-provisioned, empty-state-repos shown).
   - Notes: Implemented 2026-02-17 (welcome screen). Refactored 2026-02-18: auto-provisioned org on signup, welcome screen removed.
@@ -891,7 +896,7 @@ Seam 5: ArangoDB
 ### E2E Tests (Playwright)
 
 - [~] **Full signup → dashboard flow** — L
-  - Register → verify email → dashboard (org auto-provisioned) → Connect GitHub → repos imported.
+  - Register → verify email → dashboard (org auto-provisioned) → Connect GitHub → Add Repository → select repos.
   - **Test:** `pnpm e2e:headless`
   - Notes: Partial. `e2e/auth-flows.spec.ts` covers unauthenticated redirect, login/register page rendering, protected route guards. Full authenticated flow (signup → verify → dashboard) requires test auth helper — skipped in CI.
 
@@ -981,5 +986,7 @@ Testing & Verification ──────────────────┘
 | 2026-02-17 | — | **Schema approach documented everywhere.** Updated README, CLAUDE.md, .cursorrules, RULESETS.md, VERTICAL_SLICING_PLAN (§ mandatory "from now on" schema convention). All new kap10 tables MUST use schema `kap10`. Removed docs/architecture/README.md; convention lives in VERTICAL_SLICING_PLAN § Storage & Infrastructure Split and Phase 0 doc references it. |
 | 2026-02-17 | — | **Testing plan & frameworks verification.** Confirmed §2.6 is the Phase 0 testing plan. Vitest and Playwright are installed and configured (vitest.config.ts, playwright.config.ts, scripts, vitest.setup.ts, e2e/example.spec.ts). Marked "E2E Test Framework Setup" [x] with implementation notes. Added "Testing frameworks installed & configured" table and summary under §2.6. Updated completeness verification to state testing plan and frameworks are in place; only port/DI/domain unit tests, ArangoDB/Temporal integration tests, and E2E flow specs remain deferred to Phase 1. |
 | 2026-02-18 | — | **UserProfileMenu & AccountContext.** Replaced static user info in sidebar footer with Claude-style `UserProfileMenu` (Radix DropdownMenu). Sections: email header, Personal/Org account switcher (with check marks), Settings/Help, Upgrade Plan (electric-cyan), dark/light theme toggle, Sign Out. Added `AccountProvider` (global Personal-vs-Org context, persisted to `localStorage`). Added `ThemeProvider` (next-themes, `defaultTheme="dark"`). Wired into root `<Providers>` tree. Updated Flow 2 (onboarding wizard → welcome screen), Flow 3 (returning user — UserProfileMenu in sidebar). Updated §2.5 dashboard shell tracker item and onboarding section. |
-| 2026-02-18 | — | **Auto-provisioned org on signup + RepositorySwitcher + strict GitHub callback.** (1) Added `databaseHooks.user.create.after` to Better Auth config — auto-creates personal org + member on signup via raw SQL (pg Pool + `generateId()`). (2) Added `RepositorySwitcher` (top-left sidebar) — Command-based repo search/switch, decoupled from identity (UserProfileMenu bottom-left). Active repo is URL-driven. (3) GitHub callback refactored: no org creation, strictly requires `orgId` in state, calls `setActiveOrganization`. (4) Removed welcome screen: `EmptyStateNoOrg`, `CreateWorkspaceFirstBanner`, `create-workspace.ts` deleted. Dashboard shows `EmptyStateRepos` directly. (5) Added `setActiveOrganization()` server helper to `lib/auth`. (6) `DashboardNav` Repos link highlights on `/repos/*` subpages. |
+| 2026-02-18 | — | **Auto-provisioned org on signup + RepositorySwitcher + strict GitHub callback.** (1) Added `databaseHooks.user.create.after` to Better Auth config — auto-creates personal org (`"{name}'s organization"`) + member on signup via raw SQL (pg Pool + `generateId()`). (2) Added `RepositorySwitcher` (top-left sidebar) — Command-based repo search/switch, decoupled from identity (UserProfileMenu bottom-left). Active repo is URL-driven. (3) GitHub callback refactored: no org creation, strictly requires `orgId` in state, calls `setActiveOrganization`. (4) Removed welcome screen: `EmptyStateNoOrg`, `CreateWorkspaceFirstBanner`, `create-workspace.ts` deleted. Dashboard shows `EmptyStateRepos` directly. (5) Added `setActiveOrganization()` server helper to `lib/auth`. (6) `DashboardNav` Repos link highlights on `/repos/*` subpages. |
 | 2026-02-20 | — | **Phase 1 enhancements backported to Phase 0 tracker.** (1) `IGitHost` port: added `listBranches()` method for branch selection during repo import (P1-ADAPT-14). (2) `empty-state-repos.tsx`: uses `useAccountContext()` to get `activeOrgId`, builds install href dynamically with `orgId` query param; button disabled when no org active. (3) `prisma.config.ts`: loads `.env.local` first (Next.js convention), appends `search_path=kap10,public` to DB URL (Prisma 7 workaround). (4) Install route (`/api/github/install`): requires explicit `orgId` param, validates org membership, stores state as `{ orgId }` object with 10-min TTL. (5) Callback route (`/api/github/callback`): `parseStatePayload` handles both object and string state defensively. (6) Branch selection: two-step repo picker modal (select repos → choose branch per repo), `GET /api/repos/available/branches` endpoint, `POST /api/repos` accepts per-repo branch overrides. See PHASE_1 doc for full details. |
+| 2026-02-20 | — | **Remove "personal" context + user-driven repo selection.** (1) Removed `contextType: "personal" \| "organization"` from `AccountProvider`; `activeOrgId` is now `string` (never null). Self-healing: auto-activates first org if none active. (2) Removed "Personal Account" item from `UserProfileMenu`; renamed "Context" label to "Organization". (3) `getActiveOrgId()` now returns `Promise<string>` and throws if no org found. (4) Server pages throw errors instead of silently redirecting when org is missing. (5) `databaseHooks.user.create.after` retries with randomized slug on conflict. (6) **Repos no longer auto-added on GitHub installation.** Callback (`/api/github/callback`) only creates the installation record — repos are added exclusively via user selection in the repo picker modal (`POST /api/repos`). (7) Webhook `installation_repositories` event handler removed — repos are only added when user explicitly requests them. Files: `lib/auth/auth.ts`, `components/providers/account-context.tsx`, `components/dashboard/user-profile-menu.tsx`, `components/dashboard/repository-switcher.tsx`, `components/dashboard/empty-state-repos.tsx`, `lib/api/get-active-org.ts`, `app/(dashboard)/page.tsx`, `app/(dashboard)/settings/page.tsx`, `app/(dashboard)/settings/connections/page.tsx`, `app/(dashboard)/repos/[repoId]/page.tsx`, `app/api/github/callback/route.ts`, `app/api/webhooks/github/route.ts`. |
+| 2026-02-20 | — | **Remove RepositorySwitcher from sidebar + Docker DNS fix.** (1) Removed `RepositorySwitcher` from `app/(dashboard)/layout.tsx` sidebar — repos are managed from the dashboard page, not the sidebar. Will be replaced by a workspace selector in a future phase. (2) Added `dns: [8.8.8.8, 8.8.4.4]` to both `temporal-worker-heavy` and `temporal-worker-light` services in `docker-compose.yml` to fix "Can't reach database server" errors when light worker activities (`writeToArango`, `updateRepoError`) attempt to connect to cloud Supabase from inside Docker containers. The root cause was Docker's default DNS resolver failing to resolve external hostnames like `db.*.supabase.co`. Files: `app/(dashboard)/layout.tsx`, `docker-compose.yml`. |

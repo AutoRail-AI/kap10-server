@@ -151,7 +151,7 @@ export function GitHubConnectionsList({
             </AlertDialogTitle>
             <AlertDialogDescription className="text-muted-foreground">
               This will disconnect <strong>@{deleteTarget?.accountLogin}</strong>{" "}
-              from this workspace. Existing repos from this connection will
+              from this organization. Existing repos from this connection will
               remain but won&apos;t receive updates until reconnected.
             </AlertDialogDescription>
           </AlertDialogHeader>

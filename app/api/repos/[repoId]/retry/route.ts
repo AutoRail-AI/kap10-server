@@ -24,8 +24,8 @@ export const POST = withAuth(async (req: NextRequest) => {
   if (!repo) {
     return errorResponse("Repo not found", 404)
   }
-  if (repo.status !== "error") {
-    return errorResponse("Only repos in error state can be retried", 400)
+  if (repo.status !== "error" && repo.status !== "ready") {
+    return errorResponse("Only repos in error or ready state can be restarted", 400)
   }
 
   const rlKey = `${RETRY_RATE_LIMIT_KEY}${orgId}:${repoId}`

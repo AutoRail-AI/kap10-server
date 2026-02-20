@@ -13,9 +13,7 @@ export function EmptyStateRepos({
 
   // Build the install href with orgId — prefer explicit prop, fall back to context
   const href = installHref
-    ?? (activeOrgId
-      ? `/api/github/install?orgId=${encodeURIComponent(activeOrgId)}`
-      : null)
+    ?? `/api/github/install?orgId=${encodeURIComponent(activeOrgId)}`
 
   return (
     <div className="flex flex-col items-center justify-center rounded-lg border border-border glass-card p-12 text-center">
@@ -31,11 +29,10 @@ export function EmptyStateRepos({
         size="lg"
         className="bg-rail-fade hover:opacity-90 mt-6"
         aria-label="Connect GitHub"
-        disabled={!href}
-        asChild={!!href}
+        asChild
       >
         {/* Plain <a> so 302 redirect is a full page load, not a fetch (avoids CORS) */}
-        {href ? <a href={href}>Connect GitHub</a> : <>Connect GitHub</>}
+        <a href={href}>Connect GitHub</a>
       </Button>
     </div>
   )

@@ -9,7 +9,6 @@ import {
   Moon,
   Settings,
   Sun,
-  User,
   Zap,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
@@ -52,7 +51,6 @@ export function UserProfileMenu({ serverUser }: UserProfileMenuProps) {
   const router = useRouter()
   const { theme, setTheme } = useTheme()
   const {
-    contextType,
     currentContextName,
     activeOrgId,
     organizations,
@@ -63,10 +61,7 @@ export function UserProfileMenu({ serverUser }: UserProfileMenuProps) {
   const user = serverUser
   const initials = getInitials(user?.name, user?.email)
 
-  const contextLabel =
-    contextType === "personal"
-      ? `${user?.name?.split(" ")[0] ?? "Personal"}'s Personal`
-      : currentContextName
+  const contextLabel = currentContextName
 
   const handleSignOut = async () => {
     await signOut({ fetchOptions: { onSuccess: () => router.push("/login") } })
@@ -122,46 +117,12 @@ export function UserProfileMenu({ serverUser }: UserProfileMenuProps) {
         {/* Context switcher */}
         <DropdownMenuGroup>
           <DropdownMenuLabel className="px-3 py-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-            Context
+            Organization
           </DropdownMenuLabel>
-
-          {/* Personal account */}
-          <DropdownMenuItem
-            className="cursor-pointer gap-2 px-3"
-            onSelect={() => void switchContext(null)}
-            disabled={isLoading}
-          >
-            <div
-              className={`flex h-5 w-5 items-center justify-center rounded border ${
-                contextType === "personal"
-                  ? "border-electric-cyan/50 bg-electric-cyan/10"
-                  : "border-border bg-muted/30"
-              }`}
-            >
-              <User
-                className={`h-3 w-3 ${
-                  contextType === "personal"
-                    ? "text-electric-cyan"
-                    : "text-muted-foreground"
-                }`}
-              />
-            </div>
-            <span
-              className={`flex-1 truncate text-sm ${
-                contextType === "personal" ? "text-electric-cyan" : ""
-              }`}
-            >
-              Personal Account
-            </span>
-            {contextType === "personal" && (
-              <Check className="h-3.5 w-3.5 text-electric-cyan" />
-            )}
-          </DropdownMenuItem>
 
           {/* Org accounts */}
           {organizations.map((org) => {
-            const isActive =
-              contextType === "organization" && activeOrgId === org.id
+            const isActive = activeOrgId === org.id
             return (
               <DropdownMenuItem
                 key={org.id}

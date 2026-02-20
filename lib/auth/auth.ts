@@ -281,14 +281,14 @@ function buildAuthConfig(
       max: 10, // 10 requests per window
     },
 
-    // Auto-provision a personal workspace on signup so every user has an org immediately
+    // Auto-provision a personal organization on signup so every user has an org immediately
     databaseHooks: {
       user: {
         create: {
           after: async (user: { id: string; email: string; name?: string | null }) => {
             const displayName = user.name || user.email.split("@")[0] || "My"
-            const orgName = `${displayName}'s workspace`
-            const orgSlug = slugify(displayName) || "workspace"
+            const orgName = `${displayName}'s organization`
+            const orgSlug = slugify(displayName) || "org"
             const orgId = generateId()
             const memberId = generateId()
             const now = new Date()
@@ -304,8 +304,25 @@ function buildAuthConfig(
               )
             } catch (err: unknown) {
               const message = err instanceof Error ? err.message : String(err)
-              // Slug conflict (user signed up twice, race condition) — log but don't block signup
-              console.error("[databaseHooks] Auto-create org failed:", message)
+              console.warn("[databaseHooks] Auto-create org failed (attempt 1):", message)
+              // Retry with randomized slug (likely slug conflict)
+              try {
+                const suffix = Math.random().toString(36).slice(2, 8)
+                const retrySlug = `${orgSlug}-${suffix}`
+                const retryOrgId = generateId()
+                const retryMemberId = generateId()
+                await pool.query(
+                  `INSERT INTO "organization" ("id", "name", "slug", "createdAt") VALUES ($1, $2, $3, $4)`,
+                  [retryOrgId, orgName, retrySlug, now]
+                )
+                await pool.query(
+                  `INSERT INTO "member" ("id", "organizationId", "userId", "role", "createdAt") VALUES ($1, $2, $3, $4, $5)`,
+                  [retryMemberId, retryOrgId, user.id, "owner", now]
+                )
+              } catch (retryErr: unknown) {
+                const retryMessage = retryErr instanceof Error ? retryErr.message : String(retryErr)
+                console.error("[databaseHooks] CRITICAL: Auto-create org failed after retry:", retryMessage)
+              }
             }
           },
         },
@@ -408,7 +425,7 @@ export async function listOrganizations(headers: Headers): Promise<OrgListItem[]
 
 /**
  * Create an organization server-side for the currently authenticated user.
- * Used when auto-provisioning a workspace (e.g. during GitHub App callback).
+ * Used when auto-provisioning an organization (e.g. during GitHub App callback).
  */
 export async function createOrganizationForUser(
   reqHeaders: Headers,
@@ -429,7 +446,7 @@ export async function createOrganizationForUser(
 
 /**
  * Set the active organization for the current session (server-side).
- * Pass null to clear. Used after auto-provisioning a workspace so the
+ * Pass null to clear. Used after auto-provisioning an organization so the
  * session cookie reflects the new org immediately.
  */
 export async function setActiveOrganization(

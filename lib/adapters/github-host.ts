@@ -27,8 +27,11 @@ export class GitHubHost implements IGitHost {
     const simpleGit = getSimpleGit()
     const git = simpleGit()
     if (fs.existsSync(destination)) {
-      await git.cwd(destination).pull()
-      if (options?.ref) await git.checkout(options.ref)
+      const repoGit = git.cwd(destination)
+      // Update remote URL with a fresh token (the original token has expired)
+      await repoGit.remote(["set-url", "origin", cloneUrl])
+      await repoGit.pull()
+      if (options?.ref) await repoGit.checkout(options.ref)
       return
     }
     await git.clone(cloneUrl, destination)

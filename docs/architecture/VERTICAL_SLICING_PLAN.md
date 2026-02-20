@@ -965,7 +965,7 @@ model DeletionLog {
 - Personal organization **auto-provisioned on signup** via Better Auth `databaseHooks` (no welcome screen). Users land directly on the dashboard. GitHub callback strictly requires `orgId` in state — never auto-creates organizations.
 - **Multiple GitHub connections per organization:** An organization can connect to multiple GitHub accounts and organizations. Each connection is a separate `github_installations` row. Available repos are aggregated across all connections.
 - **GitHub connections management:** `/settings/connections` page for viewing, adding, and removing GitHub connections. API: `GET /api/github/connections`, `DELETE /api/github/connections`.
-- Dashboard shell with sidebar: `RepositorySwitcher` (top — repo/scope navigation), `DashboardNav` (Repos, Search, Settings), `UserProfileMenu` (bottom — identity/account switching, theme toggle, sign out). Identity decoupled from resource context.
+- Dashboard shell with sidebar: `DashboardNav` (Repos, Search, Settings), `UserProfileMenu` (bottom — organization switching, theme toggle, sign out). `RepositorySwitcher` removed — repos are managed from the dashboard page. Will be replaced by a workspace selector in a future phase.
 - `AccountProvider`: dashboard-only context for organization context switching (only loads on authenticated dashboard routes)
 - `ThemeProvider` (next-themes): dark/light mode toggle (default: dark)
 - **Ports & Adapters foundation:** All 11 port interfaces defined (`lib/ports/`), production adapters wired (`lib/adapters/`), DI container factory (`lib/di/container.ts`) with `createProductionContainer()` + `createTestContainer()`
@@ -1132,7 +1132,7 @@ components/
 - `pnpm test` — `createProductionContainer()` returns all 11 adapters with correct interface compliance
 - `pnpm test` — `createTestContainer()` returns all in-memory fakes; overrides replace individual adapters
 - `pnpm test` — Domain functions (entity hashing, rule resolution) work with zero external dependencies
-- `e2e` — Sign up → dashboard (org auto-provisioned) → connect GitHub → repos imported → repo list
+- `e2e` — Sign up → dashboard (org auto-provisioned) → connect GitHub → select repos via picker → repo list
 
 ---
 

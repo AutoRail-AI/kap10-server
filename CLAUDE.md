@@ -98,6 +98,14 @@ const { data: session } = authClient.useSession()
 
 Email verification is enforced at the proxy level for email/password signups only. OAuth users (Google/GitHub) skip verification. Unverified users redirect to `/verify-email`.
 
+### Organization vs GitHub Disambiguation
+
+**"Organization" in kap10 ≠ "organization" on GitHub.** They are independent entities:
+- **Kap10 org**: Better Auth tenant, created at signup from user's name (`"{name}'s organization"`). Lives in `public.organization` table.
+- **GitHub account/org**: Stored as `accountLogin` on `kap10.github_installations` table. Never used as kap10 org name.
+- **GitHub installation**: Links a GitHub account/org to an existing kap10 org. One kap10 org can have multiple GitHub connections.
+- **"Workspace"**: Repo-level technical context only (clone dirs, SCIP indexing, monorepo roots). Never means organization.
+
 ### Component Conventions
 
 - Components in folders: `ComponentName.tsx`, `ComponentName.test.tsx`, `ComponentName.stories.tsx`

@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true })
   }
 
-  let payload: { action?: string; installation?: { id: number }; repositories_added?: { id: number }[]; repositories_removed?: { id: number }[] }
+  let payload: { action?: string; installation?: { id: number } }
   try {
     payload = JSON.parse(raw) as typeof payload
   } catch {
@@ -43,33 +43,8 @@ export async function POST(req: NextRequest) {
       await container.relationalStore.deleteInstallationById(inst.id)
     }
   }
-  if (event === "installation_repositories" && payload.repositories_added?.length && payload.installation?.id) {
-    const inst = await container.relationalStore.getInstallationByInstallationId(payload.installation.id)
-    if (inst) {
-      const octokit = (await import("@/lib/github/client")).getInstallationOctokit(payload.installation.id)
-      const { data } = await octokit.rest.apps.listReposAccessibleToInstallation({ per_page: 100 })
-      const list = "repositories" in data ? data.repositories : []
-      for (const r of list) {
-        if (payload.repositories_added?.some((a) => a.id === r.id)) {
-          const fullName = r.full_name ?? ""
-          const name = fullName.split("/").pop() ?? fullName
-          const existing = await container.relationalStore.getRepoByGithubId(inst.organizationId, r.id)
-          if (!existing) {
-            await container.relationalStore.createRepo({
-              organizationId: inst.organizationId,
-              name,
-              fullName,
-              provider: "github",
-              providerId: String(r.id),
-              status: "pending",
-              githubRepoId: r.id,
-              githubFullName: fullName,
-            })
-          }
-        }
-      }
-    }
-  }
+  // installation_repositories events are ignored — repos are only added
+  // when the user explicitly selects them via the repo picker (POST /api/repos).
 
   return NextResponse.json({ ok: true })
 }

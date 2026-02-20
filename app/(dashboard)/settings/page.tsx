@@ -1,6 +1,5 @@
 import { headers } from "next/headers"
 import Link from "next/link"
-import { redirect } from "next/navigation"
 import { GitBranch } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { auth, listOrganizations } from "@/lib/auth"
@@ -18,15 +17,12 @@ export default async function SettingsPage() {
   }
 
   const activeOrg = organizations[0]
-
-  if (organizations.length === 0) {
-    redirect("/")
+  if (!activeOrg) {
+    throw new Error("No active organization found. Every user should have an auto-provisioned organization.")
   }
 
   const container = getContainer()
-  const installations = activeOrg
-    ? await container.relationalStore.getInstallations(activeOrg.id)
-    : []
+  const installations = await container.relationalStore.getInstallations(activeOrg.id)
 
   return (
     <div className="space-y-6 py-6 animate-fade-in">

@@ -2,7 +2,6 @@ import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 import { DashboardAccountProvider } from "@/components/dashboard/dashboard-account-provider"
 import { DashboardNav } from "@/components/dashboard/dashboard-nav"
-import { RepositorySwitcher } from "@/components/dashboard/repository-switcher"
 import { UserProfileMenu } from "@/components/dashboard/user-profile-menu"
 import { auth } from "@/lib/auth"
 
@@ -20,9 +19,6 @@ export default async function DashboardLayout({
     <DashboardAccountProvider>
       <div className="flex min-h-screen bg-background">
         <aside className="glass-panel border-border flex w-56 flex-col border-r">
-          <div className="border-b border-border p-2">
-            <RepositorySwitcher />
-          </div>
           <DashboardNav />
           <div className="border-t border-border p-2">
             <UserProfileMenu serverUser={session.user} />

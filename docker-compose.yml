@@ -136,24 +136,24 @@ services:
     restart: unless-stopped
 
   # Temporal heavy-compute worker (Phase 1: prepareWorkspace, runSCIP, parseRest)
+  # network_mode: host — shares host network so workers can reach cloud Supabase/ArangoDB directly.
+  # TEMPORAL_ADDRESS uses localhost since Docker DNS (service names) is unavailable in host mode.
   temporal-worker-heavy:
     profiles: ["app", "worker"]
     build:
       context: .
       dockerfile: Dockerfile.heavy-worker
     container_name: kap10-temporal-worker-heavy
+    network_mode: host
     command: pnpm temporal:worker:heavy
     environment:
       - NODE_ENV=development
-      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_ADDRESS=localhost:7233
       - TASK_QUEUE=heavy-compute-queue
     env_file:
       - .env.local
     volumes:
       - workspaces:/data/workspaces
-    depends_on:
-      temporal:
-        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
@@ -165,16 +165,14 @@ services:
     profiles: ["app", "worker"]
     build: .
     container_name: kap10-temporal-worker-light
+    network_mode: host
     command: pnpm temporal:worker:light
     environment:
       - NODE_ENV=development
-      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_ADDRESS=localhost:7233
       - TASK_QUEUE=light-llm-queue
     env_file:
       - .env.local
-    depends_on:
-      temporal:
-        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
