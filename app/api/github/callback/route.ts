@@ -7,13 +7,25 @@ import { errorResponse } from "@/lib/utils/api-response"
 
 const BASE_URL = process.env.BETTER_AUTH_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
 
-function parseStatePayload(stored: string): { orgId: string | null } {
-  try {
-    const parsed = JSON.parse(stored) as { orgId?: string }
-    return { orgId: parsed?.orgId ?? null }
-  } catch {
-    return { orgId: null }
+/**
+ * Extract orgId from the state payload retrieved from cache.
+ * The cache store deserializes JSON automatically, so `stored` is already
+ * an object — but we handle the string case defensively.
+ */
+function parseStatePayload(stored: unknown): { orgId: string | null } {
+  if (stored && typeof stored === "object" && "orgId" in stored) {
+    const obj = stored as { orgId?: string }
+    return { orgId: typeof obj.orgId === "string" ? obj.orgId : null }
   }
+  if (typeof stored === "string") {
+    try {
+      const parsed = JSON.parse(stored) as { orgId?: string }
+      return { orgId: parsed?.orgId ?? null }
+    } catch {
+      return { orgId: null }
+    }
+  }
+  return { orgId: null }
 }
 
 export async function GET(req: NextRequest) {
@@ -32,7 +44,7 @@ export async function GET(req: NextRequest) {
     return errorResponse("Missing state parameter", 400)
   }
   const container = getContainer()
-  const stored = await container.cacheStore.get<string>(`github:install:state:${state}`)
+  const stored = await container.cacheStore.get<{ orgId: string }>(`github:install:state:${state}`)
   if (!stored) {
     return errorResponse("Invalid or expired state", 403)
   }

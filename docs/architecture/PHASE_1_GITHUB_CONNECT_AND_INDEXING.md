@@ -141,8 +141,14 @@ sequenceDiagram
     GitHub-->>NextAPI: List of accessible repos
     NextAPI-->>Dashboard: Available repos (filtered: exclude already-connected)
     Dashboard-->>User: Repo picker modal
-    User->>Dashboard: Select repos → Submit
-    Dashboard->>NextAPI: POST /api/repos { githubRepoIds: [456, 789] }
+    User->>Dashboard: Select repos → Click "Next"
+    Dashboard-->>User: Branch selection step (per-repo dropdown)
+    Dashboard->>NextAPI: GET /api/repos/available/branches?owner=...&repo=...&installationId=...
+    NextAPI->>GitHub: GET /repos/{owner}/{repo}/branches
+    GitHub-->>NextAPI: Branch list
+    NextAPI-->>Dashboard: { branches, defaultBranch }
+    User->>Dashboard: Choose branch per repo → Click "Connect & Index"
+    Dashboard->>NextAPI: POST /api/repos { repos: [{ githubRepoId: 456, branch: "develop" }, ...] }
     NextAPI->>Supabase: INSERT INTO kap10.repos (status=pending) for each
     loop For each selected repo
         NextAPI->>Temporal: startWorkflow("indexRepoWorkflow", { orgId, repoId, ... })
@@ -862,6 +868,14 @@ Seam 5: Repo status → readiness for Q&A
   - **Acceptance:** Returns repos accessible to the installation. Handles pagination (> 30 repos).
   - Notes: Done. Implemented with pagination (per_page: 100) in `lib/adapters/github-host.ts`.
 
+- [x] **P1-ADAPT-14: Add `listBranches()` to `IGitHost` and implement** — S
+  - New method on `IGitHost`: `listBranches(owner: string, repo: string, installationId: number): Promise<string[]>`
+  - Uses `octokit.rest.repos.listBranches` with pagination (per_page: 100)
+  - Used by `GET /api/repos/available/branches` to populate branch dropdowns in repo picker modal
+  - **Files:** `lib/ports/git-host.ts`, `lib/adapters/github-host.ts`, `lib/di/fakes.ts`
+  - **Acceptance:** Returns branch names for a repo. Handles pagination. Fake returns `["main", "develop"]`.
+  - Notes: Done. Implemented with pagination in `lib/adapters/github-host.ts`.
+
 - [x] **P1-ADAPT-05: Add `getInstallationToken()` to `IGitHost` and implement** — S
   - New method: `getInstallationToken(installationId: number): Promise<string>`
   - Wraps `@octokit/auth-app` token generation
@@ -971,29 +985,30 @@ Seam 5: Repo status → readiness for Q&A
 ### GitHub Integration API Routes
 
 - [x] **P1-API-01: `GET /api/github/install` — GitHub App installation redirect** — S
-  - Generates state token (random, stored in Redis with 10-min TTL for CSRF protection)
+  - Requires explicit `orgId` query param — validates user belongs to the org (403 if not)
+  - Generates state token (random, stored in Redis as `{ orgId }` object with 10-min TTL for CSRF protection)
   - Redirects to `https://github.com/apps/{APP_SLUG}/installations/new?state={token}`
   - Session required — must be logged in
-  - **Test:** Authenticated request → 302 redirect to GitHub. Unauthenticated → 401.
+  - **Test:** Authenticated request with valid orgId → 302 redirect to GitHub. Missing orgId → 400. Wrong org → 403. Unauthenticated → 401.
   - **Depends on:** P1-INFRA-01, P1-INFRA-02
   - **Files:** `app/api/github/install/route.ts`
-  - **Acceptance:** Redirect URL includes correct app slug and state parameter.
-  - Notes: Done.
+  - **Acceptance:** Redirect URL includes correct app slug and state parameter. orgId validated against user's orgs.
+  - Notes: Done. Updated 2026-02-20: requires explicit `orgId` param (no longer auto-selects first org). Stores state as object `{ orgId }` instead of JSON string.
 
 - [x] **P1-API-02: `GET /api/github/callback` — GitHub App installation callback** — M
   - Receives `installation_id`, `setup_action`, `state` from GitHub
   - Validates `state` param against Redis (CSRF protection)
-  - **Resolves org strictly from state:** decodes `{ orgId }` from state payload, validates against user's orgs. Redirects to `/?error=no_org_context` if no matching org (never auto-creates orgs).
+  - **Resolves org strictly from state:** `parseStatePayload()` handles both object and string state payloads defensively (cache store may deserialize JSON automatically). Validates orgId against user's orgs. Redirects to `/?error=no_org_context` if no matching org (never auto-creates orgs).
   - Calls `setActiveOrganization(reqHeaders, orgId)` to update session
   - Fetches installation details from GitHub API
-  - Creates `GitHubInstallation` record in Supabase
+  - If installation already exists for this `installationId`, replaces it (delete + re-create)
   - Creates `Repo` records for each selected repository (status: `pending`)
   - Redirects to `/?connected=true`
   - **Test:** Valid callback with known state + orgId → installation created, repos created, redirect to /. No orgId in state → redirect with error.
   - **Depends on:** P1-API-01, P1-DB-01, P1-DB-02, P1-ADAPT-12
   - **Files:** `app/api/github/callback/route.ts`
   - **Acceptance:** Installation and repos persisted. Invalid state → 403. Missing installation_id → 400. Missing orgId → redirect to `/?error=no_org_context`.
-  - Notes: Done.
+  - Notes: Done. Updated 2026-02-20: `parseStatePayload` now handles both object and string state (cache store deserialization). State typed as `{ orgId: string }` instead of raw string.
 
 - [x] **P1-API-03: `GET /api/repos/available` — List installable repos** — S
   - Fetches repos accessible to the org's GitHub installation
@@ -1006,16 +1021,27 @@ Seam 5: Repo status → readiness for Q&A
   - Notes: Done.
 
 - [x] **P1-API-04: `POST /api/repos` — Connect repos and trigger indexing** — M
-  - Body: `{ githubRepoIds: number[] }`
+  - Body (new format): `{ repos: [{ githubRepoId: number, branch?: string }] }` — per-repo branch override
+  - Body (legacy format): `{ githubRepoIds: number[] }` — still supported for backward compatibility
+  - When `branch` is provided, it overrides GitHub's `default_branch` for the repo's `defaultBranch` field
   - Validates: org has GitHub installation, repos are in installation scope, not already connected
   - Enforces limits: max 50 repos per org, max 3 concurrent indexing workflows
-  - Creates `Repo` records (status: `pending`)
-  - Starts `indexRepoWorkflow` for each repo
-  - Updates repo status to `indexing` with workflow ID
+  - Creates `Repo` records (status: `pending`) with chosen branch
+  - Starts `indexRepoWorkflow` for each repo with the chosen branch
   - **Test:** Connect 2 repos → both created with status `indexing`. Connect same repo again → 409.
   - **Depends on:** P1-ADAPT-10, P1-ADAPT-12, P1-DB-02
   - **Files:** `app/api/repos/route.ts` (extend existing GET, add POST)
-  - **Acceptance:** Repos created, workflows started, idempotent on duplicate.
+  - **Acceptance:** Repos created, workflows started, idempotent on duplicate. Branch override respected.
+  - Notes: Done. Updated to support per-repo branch selection from repo picker modal.
+
+- [x] **P1-API-04b: `GET /api/repos/available/branches` — List branches for a repo** — S
+  - Query params: `owner`, `repo`, `installationId`, `defaultBranch`
+  - Validates: installationId belongs to the user's active org
+  - Returns `{ branches: string[], defaultBranch: string }`
+  - Used by repo picker modal step 2 to populate branch dropdowns
+  - **Depends on:** P1-ADAPT-14
+  - **Files:** `app/api/repos/available/branches/route.ts`
+  - **Acceptance:** Returns branch list. Rejects if installation doesn't belong to org (403).
   - Notes: Done.
 
 - [x] **P1-API-05: `GET /api/repos/[repoId]/status` — Repo indexing status** — S
@@ -1177,24 +1203,25 @@ Seam 5: Repo status → readiness for Q&A
 
 - [x] **P1-UI-01: "Connect GitHub" button on empty state + repos page** — M
   - Dashboard (org auto-provisioned): No installation → `EmptyStateRepos` with "Connect GitHub" → `GET /api/github/install?orgId=xxx`. After install → "Add Repository" button.
+  - `EmptyStateRepos` uses `useAccountContext()` to build the install href dynamically with the active org's ID. Button disabled when no org is active.
   - `RepositorySwitcher` (sidebar top-left): "Add missing repository" link → GitHub App install.
-  - **Test:** No installation → "Connect GitHub" visible. Click → redirected to GitHub. After install → "Add Repository" shown.
+  - **Test:** No installation → "Connect GitHub" visible. Click → redirected to GitHub with orgId. After install → "Add Repository" shown.
   - **Depends on:** P1-API-01
   - **Files:** `components/dashboard/empty-state-repos.tsx`, `components/dashboard/repository-switcher.tsx`, `app/(dashboard)/page.tsx`, `app/(dashboard)/repos/page.tsx`
-  - **Acceptance:** Empty state and button states match installation status. Design system compliant.
-  - Notes: Done.
+  - **Acceptance:** Empty state and button states match installation status. Design system compliant. orgId passed via query param.
+  - Notes: Done. Updated 2026-02-20: `EmptyStateRepos` uses `useAccountContext()` to get `activeOrgId` and builds install href with `?orgId=` param. Button disabled if no active org.
 
-- [x] **P1-UI-02: Repository picker modal** — M
+- [x] **P1-UI-02: Repository picker modal with branch selection** — M
   - Triggered by "Add Repository" button
-  - Fetches available repos from `GET /api/repos/available`
-  - Displays checkboxes for each repo with name, language badge, private/public badge
-  - "Connect Selected" button → `POST /api/repos` with selected IDs
-  - Loading state while fetching repos, disabled state while connecting
-  - **Test:** Open modal → repos listed. Select 2 → connect → modal closes, repos appear in list.
-  - **Depends on:** P1-API-03, P1-API-04
-  - **Files:** `components/dashboard/repo-picker-modal.tsx`
-  - **Acceptance:** Modal follows glass-card design. Handles empty state (no repos available). Max 50 repos selectable.
-  - Notes: Done.
+  - **Step 1:** Fetches available repos from `GET /api/repos/available`. Displays checkboxes for each repo with name, language badge. "Next" button advances to step 2.
+  - **Step 2:** For each selected repo, fetches branches from `GET /api/repos/available/branches`. Displays per-repo branch `<Select>` dropdown defaulting to GitHub's `default_branch`. Info banner explains importance of branch selection. "Back" returns to step 1. "Connect & Index" submits.
+  - Submits `POST /api/repos { repos: [{ githubRepoId, branch }] }` with per-repo branch overrides
+  - Loading state while fetching repos/branches, disabled state while connecting
+  - **Test:** Open modal → repos listed. Select 2 → Next → branch dropdowns appear. Override one branch → Connect & Index → modal closes, repos appear with chosen branches.
+  - **Depends on:** P1-API-03, P1-API-04, P1-API-04b
+  - **Files:** `components/dashboard/repo-picker-modal.tsx`, `components/dashboard/repos-list.tsx`
+  - **Acceptance:** Two-step modal follows glass-card design. Branch dropdowns load async. Handles empty state. Max 50 repos selectable.
+  - Notes: Done. Updated from single-step to two-step flow with branch selection.
 
 ### Repo Dashboard
 
@@ -1475,7 +1502,8 @@ app/
       github/route.ts                      ← POST — GitHub webhook handler
     repos/
       available/route.ts                   ← GET — list repos from GitHub installation
-      route.ts                             ← (extend) POST — connect repos
+      available/branches/route.ts          ← GET — list branches for a repo (branch picker)
+      route.ts                             ← (extend) POST — connect repos (with per-repo branch)
       [repoId]/
         status/route.ts                    ← GET — indexing status + progress
         retry/route.ts                     ← POST — retry failed indexing
@@ -1505,7 +1533,7 @@ Dockerfile.heavy-worker                    ← Multi-stage build for heavy worke
 ### Modified Files
 
 ```
-lib/ports/git-host.ts                      ← Add getInstallationRepos, getInstallationToken
+lib/ports/git-host.ts                      ← Add getInstallationRepos, getInstallationToken, listBranches
 lib/ports/relational-store.ts              ← Add Phase 1 methods
 lib/adapters/github-host.ts                ← Full implementation (replace stubs)
 lib/adapters/arango-graph-store.ts         ← Bulk operations + getEntitiesByFile
@@ -1540,4 +1568,5 @@ app/api/repos/route.ts                     ← Add POST handler
 | 2026-02-17 | — | **Phase 1 verification.** Codebase checked against tracker: P1-INFRA-01..06 ✓ (env.mjs, .env.example, docker-compose 8G/512M, workspaces volume, Dockerfile.heavy-worker). P1-DB-01..03 ✓ (Prisma GitHubInstallation, Repo Phase 1 fields, migration `20260217120000_phase1_github_installation_and_repo_indexing.sql`, ArangoDB `idx_*_org_repo_file` in bootstrapGraphSchema). P1-ADAPT-01..08, 10..13 ✓ (github-host, arango-graph-store bulk/getEntitiesByFile/getFilePaths/deleteRepoData, temporal-workflow-engine startWorkflow/getWorkflowStatus, prisma-relational-store Phase 1 methods, redis setIfNotExists; fakes extended). P1-ADAPT-09 [~] SCIP stub. P1-API-01..12, 15..17 ✓ (all routes present; get-active-org used; runSCIP/parseRest stubs). P1-API-13, 14 [~]. P1-UI-01..07 ✓ (empty-state-repos, repo-picker-modal, repo-card, repos-list, use-repo-status, repos/[repoId] page + repo-detail-client with file tree and entity detail/callers/callees, file-tree-builder, retry route). P1-TEST-01..12 remain [ ]. Conclusion: Phase 1 implemented as specified; stub-only items and tests documented. |
 | 2026-02-17 | — | **Post-cleanup verification.** Removed 41 boilerplate files (old AppealGen/10XR template code) + 30 empty directories. Fixed `scripts/seed.ts` (referenced deleted `lib/templates/manager`). Fixed all ESLint errors: added `no-require-imports` override for lazy-init files, `caughtErrorsIgnorePattern` for catch blocks, import ordering, unused vars. Fixed Prisma 7 bug (prisma/prisma#28611) — `@prisma/adapter-pg` ignores `@@schema()` directives; workaround: set `search_path=kap10,public` on connection string. Regenerated Prisma client. Verified: `pnpm build` ✓ (21 routes), `pnpm test` ✓ (5 files, 29 tests including `file-tree-builder.test.ts`), `pnpm lint` ✓ (0 errors, 0 warnings). All tracker notes fields filled in. **Final tally: 42 [x], 3 [~] (SCIP/parseRest stubs), 12 [ ] (tests).** |
 | 2026-02-17 | — | **Post-signup flow: add repo first, optional workspace.** Removed requirement to create an org before connecting repos. New users see a **welcome screen** with two paths: (1) **Connect GitHub** — callback auto-creates workspace (e.g. `{accountLogin}'s workspace`) when user has no org, bootstraps ArangoDB, creates installation + repos, redirects to `/`; (2) **Start without GitHub** — server action `createDefaultWorkspace()` creates empty workspace, redirects to `/`. `/settings` and `/repos` redirect to `/` when user has no org. Added § Post-signup & workspace provisioning, updated Flow 1 (precondition, diagram note, redirect to `/?connected=true`), P1-API-02 (auto-workspace in callback), P1-UI-01 (welcome screen, empty-state-no-org, create-workspace action). Phase 0 doc updated to match (Flow 2 = welcome screen, two scenarios). |
+| 2026-02-20 | — | **Branch selection + install/callback hardening.** (1) **Branch selection during repo import:** Added `listBranches()` to `IGitHost` port (P1-ADAPT-14) and `GitHubHost` adapter (paginated `octokit.rest.repos.listBranches`). New `GET /api/repos/available/branches` endpoint (P1-API-04b). Updated `POST /api/repos` (P1-API-04) to accept `{ repos: [{ githubRepoId, branch? }] }` with backward-compatible legacy format. Repo picker modal (P1-UI-02) now has two-step flow: step 1 selects repos, step 2 shows per-repo branch dropdowns with info banner. (2) **Install route hardening (P1-API-01):** Now requires explicit `orgId` query param, validates user belongs to the org (403 if not), stores state as object instead of JSON string. (3) **Callback robustness (P1-API-02):** `parseStatePayload()` handles both object and string state defensively (cache store may auto-deserialize JSON). State typed as `{ orgId: string }`. (4) **Empty state context (P1-UI-01):** `EmptyStateRepos` uses `useAccountContext()` to build install href dynamically with `activeOrgId`. Button disabled when no org active. (5) **Prisma config:** `prisma.config.ts` loads `.env.local` first, adds `search_path=kap10,public` to DB URL. Files: `lib/ports/git-host.ts`, `lib/adapters/github-host.ts`, `lib/di/fakes.ts`, `app/api/repos/available/branches/route.ts` (new), `app/api/repos/route.ts`, `app/api/github/install/route.ts`, `app/api/github/callback/route.ts`, `components/dashboard/repo-picker-modal.tsx`, `components/dashboard/repos-list.tsx`, `components/dashboard/empty-state-repos.tsx`, `app/(dashboard)/page.tsx`, `prisma.config.ts`. Verified: `pnpm build` ✓ (28 routes), `pnpm test` ✓ (7 files, 38 tests), `pnpm lint` ✓ (no new errors). |
 | 2026-02-18 | — | **UserProfileMenu & AccountContext (Claude-style sidebar).** Added Claude-style `UserProfileMenu` component to dashboard sidebar footer — replaces static user info. DropdownMenu with: email header, Personal/Org account switcher (check marks on active), Settings, Help & Support (disabled), Upgrade Plan (electric-cyan, disabled), Invite Friends (disabled), dark/light mode toggle (next-themes), Sign Out. Added `AccountProvider` (Personal vs Org context, persisted to `localStorage`, auto-resets if org removed). Added `ThemeProvider` (next-themes, defaultTheme dark) to root Providers. Dashboard layout passes `serverOrgs` to `UserProfileMenu` which hydrates `AccountProvider`. Files: `components/dashboard/user-profile-menu.tsx`, `components/providers/account-context.tsx`, `components/providers/index.tsx`, `app/(dashboard)/layout.tsx`. Phase 0 doc updated (Flows 2–3, §2.5 tracker, revision log). VERTICAL_SLICING_PLAN updated (Phase 0 "What ships", file tree). |

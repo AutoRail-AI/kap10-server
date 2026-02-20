@@ -16,21 +16,24 @@ export async function GET(req: Request) {
     return errorResponse("Unauthorized", 401)
   }
 
-  const orgs = await listOrganizations(reqHeaders)
-  if (orgs.length === 0) {
-    return NextResponse.redirect(`${BASE_URL}/?error=create_workspace_first`)
+  const { searchParams } = new URL(req.url)
+  const orgId = searchParams.get("orgId")
+
+  if (!orgId) {
+    return errorResponse("Missing orgId. An active organization is required.", 400)
   }
 
-  const { searchParams } = new URL(req.url)
-  const orgIdParam = searchParams.get("orgId")
-  const activeOrgId =
-    orgIdParam && orgs.some((o) => o.id === orgIdParam) ? orgIdParam : orgs[0]?.id ?? ""
+  // Verify the user actually belongs to this org
+  const orgs = await listOrganizations(reqHeaders)
+  if (!orgs.some((o) => o.id === orgId)) {
+    return errorResponse("Organization not found or access denied.", 403)
+  }
 
   const state = randomBytes(24).toString("hex")
   const container = getContainer()
   await container.cacheStore.set(
     `github:install:state:${state}`,
-    JSON.stringify({ orgId: activeOrgId }),
+    { orgId },
     STATE_TTL_SECONDS
   )
 

@@ -44,4 +44,6 @@ export interface IGitHost {
   getInstallationRepos(installationId: number): Promise<GitHubRepo[]>
   /** Phase 1: Get installation-scoped token (1hr TTL, not stored) */
   getInstallationToken(installationId: number): Promise<string>
+  /** List branch names for a repository via installation token */
+  listBranches(owner: string, repo: string, installationId: number): Promise<string[]>
 }

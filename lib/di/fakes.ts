@@ -235,6 +235,9 @@ export class FakeGitHost implements IGitHost {
   async getInstallationToken(): Promise<string> {
     return "fake-token"
   }
+  async listBranches(): Promise<string[]> {
+    return ["main", "develop"]
+  }
 }
 
 export class InMemoryVectorSearch implements IVectorSearch {

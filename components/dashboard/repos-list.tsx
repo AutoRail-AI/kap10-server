@@ -21,11 +21,11 @@ export function ReposList({
 }) {
   const [modalOpen, setModalOpen] = useState(false)
 
-  const handleConnect = async (githubRepoIds: number[]) => {
+  const handleConnect = async (repos: Array<{ githubRepoId: number; branch: string }>) => {
     await fetch("/api/repos", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ githubRepoIds }),
+      body: JSON.stringify({ repos }),
     })
     window.location.reload()
   }
@@ -46,7 +46,7 @@ export function ReposList({
         </div>
       )}
       {repos.length === 0 && !hasInstallation ? (
-        <EmptyStateRepos />
+        <EmptyStateRepos installHref={installHref} />
       ) : repos.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-lg border border-border glass-card p-12 text-center">
           <p className="font-grotesk text-lg font-semibold text-foreground">No repositories yet</p>

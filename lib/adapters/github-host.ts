@@ -103,4 +103,20 @@ export class GitHubHost implements IGitHost {
   async getInstallationToken(installationId: number): Promise<string> {
     return getToken(installationId)
   }
+
+  async listBranches(owner: string, repo: string, installationId: number): Promise<string[]> {
+    const octokit = getInstallationOctokit(installationId)
+    const branches: string[] = []
+    let page = 1
+    const perPage = 100
+    while (true) {
+      const { data } = await octokit.rest.repos.listBranches({ owner, repo, per_page: perPage, page })
+      for (const b of data) {
+        branches.push(b.name)
+      }
+      if (data.length < perPage) break
+      page++
+    }
+    return branches
+  }
 }

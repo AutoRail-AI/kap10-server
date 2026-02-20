@@ -2,12 +2,21 @@
 
 import { FolderGit2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { useAccountContext } from "@/components/providers/account-context"
 
 export function EmptyStateRepos({
-  installHref = "/api/github/install",
+  installHref,
 }: {
   installHref?: string
 }) {
+  const { activeOrgId } = useAccountContext()
+
+  // Build the install href with orgId — prefer explicit prop, fall back to context
+  const href = installHref
+    ?? (activeOrgId
+      ? `/api/github/install?orgId=${encodeURIComponent(activeOrgId)}`
+      : null)
+
   return (
     <div className="flex flex-col items-center justify-center rounded-lg border border-border glass-card p-12 text-center">
       <FolderGit2 className="text-muted-foreground mb-4 h-12 w-12" />
@@ -22,10 +31,11 @@ export function EmptyStateRepos({
         size="lg"
         className="bg-rail-fade hover:opacity-90 mt-6"
         aria-label="Connect GitHub"
-        asChild
+        disabled={!href}
+        asChild={!!href}
       >
         {/* Plain <a> so 302 redirect is a full page load, not a fetch (avoids CORS) */}
-        <a href={installHref}>Connect GitHub</a>
+        {href ? <a href={href}>Connect GitHub</a> : <>Connect GitHub</>}
       </Button>
     </div>
   )

@@ -23,11 +23,27 @@ export const POST = withAuth(async (req: NextRequest) => {
     return errorResponse("No organization", 400)
   }
 
-  const body = (await req.json()) as { githubRepoIds?: number[] }
-  const githubRepoIds = body.githubRepoIds
-  if (!Array.isArray(githubRepoIds) || githubRepoIds.length === 0) {
-    return errorResponse("githubRepoIds array is required", 400)
+  const body = (await req.json()) as {
+    githubRepoIds?: number[]
+    repos?: Array<{ githubRepoId: number; branch?: string }>
   }
+
+  // Support both new format { repos: [...] } and legacy { githubRepoIds: [...] }
+  const repoInputs: Array<{ githubRepoId: number; branch?: string }> =
+    Array.isArray(body.repos) && body.repos.length > 0
+      ? body.repos
+      : Array.isArray(body.githubRepoIds) && body.githubRepoIds.length > 0
+        ? body.githubRepoIds.map((id) => ({ githubRepoId: id }))
+        : []
+
+  if (repoInputs.length === 0) {
+    return errorResponse("repos array or githubRepoIds array is required", 400)
+  }
+
+  const githubRepoIds = repoInputs.map((r) => r.githubRepoId)
+  const branchOverrides = new Map(
+    repoInputs.filter((r) => r.branch).map((r) => [r.githubRepoId, r.branch as string])
+  )
 
   const container = getContainer()
   const installations = await container.relationalStore.getInstallations(orgId)
@@ -66,6 +82,7 @@ export const POST = withAuth(async (req: NextRequest) => {
     const fullName = meta?.fullName ?? `repo-${ghRepoId}`
     const name = fullName.split("/").pop() ?? fullName
     const providerId = String(ghRepoId)
+    const chosenBranch = branchOverrides.get(ghRepoId) ?? meta?.defaultBranch ?? "main"
     const repo = await container.relationalStore.createRepo({
       organizationId: orgId,
       name,
@@ -73,7 +90,7 @@ export const POST = withAuth(async (req: NextRequest) => {
       provider: "github",
       providerId,
       status: "pending",
-      defaultBranch: meta?.defaultBranch ?? "main",
+      defaultBranch: chosenBranch,
       githubRepoId: ghRepoId,
       githubFullName: fullName,
     })

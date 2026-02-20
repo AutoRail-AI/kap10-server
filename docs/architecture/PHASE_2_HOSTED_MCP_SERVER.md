@@ -1482,6 +1482,64 @@ components/dashboard/repo-card.tsx         ← Add Auto-PR badge
 
 ---
 
+## Enhancement: Hybrid Repo/Workspace UI Hierarchy
+
+> **Full specification:** See [VERTICAL_SLICING_PLAN.md — Phase 2 Enhancement: Hybrid Repo/Workspace UI Hierarchy](./VERTICAL_SLICING_PLAN.md#phase-2-enhancement-hybrid-repoworkspace-ui-hierarchy)
+
+This enhancement adds workspace visibility to the dashboard — showing which workspaces are active on each repo, providing a detail view per workspace, and enabling per-workspace error tracking.
+
+### Implementation Tracker
+
+#### P2-ENH-01: Repo Card Workspace Pills
+
+| Field | Value |
+|-------|-------|
+| **Layer** | UI |
+| **What** | Add workspace pills to repo cards showing active MCP sessions |
+| **Data source** | Scan Redis keys matching `mcp:session:*`, cross-reference with `Workspace` model |
+| **UI** | Green pill = active MCP session; red pill = stale (session expired, workspace persists) |
+| **Acceptance criteria** | Repo card shows 0-N workspace pills; pill count matches Redis session count; stale sessions show red indicator after TTL expiry |
+
+#### P2-ENH-02: Workspace Detail Page
+
+| Field | Value |
+|-------|-------|
+| **Layer** | UI + Data |
+| **Route** | `/dashboard/repos/[repoId]/workspaces/[workspaceId]` |
+| **Components** | `ledger-trace.tsx` (Phase 5.5 ledger timeline), `session-errors.tsx` (workspace-scoped errors), `live-diff.tsx` (overlay vs base commit) |
+| **Data sources** | ArangoDB `ledger` collection (filtered by branch), Prisma `Error` model (filtered by `workspaceId`), graph store workspace overlay |
+| **Acceptance criteria** | Page renders ledger timeline with all tool calls for workspace branch; errors filtered to workspace context only; diff view shows current overlay changes; page loads in < 2s |
+
+#### P2-ENH-03: Error Model Extension
+
+| Field | Value |
+|-------|-------|
+| **Layer** | Database |
+| **What** | Add nullable `workspaceId` field to Prisma `Error` model |
+| **Format** | Composite string: `userId:repoId:branch` (matches `Workspace` unique constraint) |
+| **Migration** | Add column `workspace_id TEXT NULL` to error table |
+| **Acceptance criteria** | Existing errors unaffected (field is nullable); new errors from MCP tool calls populate `workspaceId`; session-errors component filters correctly |
+
+#### P2-ENH-04: Activity Tracker Utility
+
+| Field | Value |
+|-------|-------|
+| **Layer** | Use Case |
+| **What** | Utility function that scans Redis MCP session keys to determine active workspaces per repo |
+| **Implementation** | `lib/use-cases/activity-tracker.ts` — uses `cacheStore.scanKeys()` pattern |
+| **Output** | `{ workspaceId, userId, branch, lastActiveAt, isLive }[]` |
+| **Acceptance criteria** | Returns all active workspaces for a given repo; correctly identifies live vs stale sessions; handles zero sessions gracefully |
+
+### Testing Plan
+
+| Level | What to test |
+|-------|-------------|
+| **Unit** (`pnpm test`) | Activity tracker returns correct workspace list from mock Redis keys; error model accepts nullable `workspaceId`; workspace resolver maps composite ID to metadata |
+| **E2E** (`pnpm e2e:headless`) | Dashboard repo card shows workspace pills; clicking pill navigates to workspace detail page; ledger trace renders timeline entries; session errors filter by workspace |
+| **Manual** | Connect two IDE sessions to same repo on different branches → verify both workspace pills appear; disconnect one → verify pill turns red/stale |
+
+---
+
 ## Revision Log
 
 | Date | Author | Change |

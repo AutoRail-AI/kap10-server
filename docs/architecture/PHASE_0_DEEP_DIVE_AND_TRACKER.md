@@ -93,7 +93,7 @@ Step  Actor Action                System Action                                 
 
 | Scenario | Path | Outcome |
 |----------|------|---------|
-| **User has GitHub repos** | Dashboard → Connect GitHub → install App → callback | GitHub installation attached to auto-provisioned organization; repos imported. |
+| **User has GitHub repos** | Dashboard → Connect GitHub → install App → callback → Add Repository → select repos → choose branch per repo → Connect & Index | GitHub installation attached to auto-provisioned organization; repos imported with user-chosen branches. |
 | **Local-only / code not on GitHub yet** | Dashboard | User sees empty-state-repos with "Connect GitHub" CTA for later. |
 
 **Key nuance — ArangoDB org bootstrap:**
@@ -544,7 +544,7 @@ Seam 5: ArangoDB
   - `pnpm add -D prisma && pnpm add @prisma/client`
   - `prisma/schema.prisma` with `provider = "postgresql"`; URL in `prisma.config.ts` via `SUPABASE_DB_URL`
   - **Test:** `pnpm prisma generate` succeeds.
-  - Notes: Implemented 2026-02-17. Prisma 7 uses prisma.config.ts for datasource URL.
+  - Notes: Implemented 2026-02-17. Prisma 7 uses prisma.config.ts for datasource URL. Updated 2026-02-20: `prisma.config.ts` loads `.env.local` first (Next.js convention), then `.env`; appends `search_path=kap10,public` to DB URL (Prisma 7 bug workaround — Prisma ignores `schemas` config during queries without explicit search_path).
 
 - [x] **Define `repos` table in Prisma schema** — S
   - Fields as specified in §1.2 (id, organization_id, name, full_name, provider, provider_id, status, default_branch, last_indexed_at, timestamps)
@@ -614,9 +614,9 @@ Seam 5: ArangoDB
   - Notes: Implemented 2026-02-17. Temporal TypeScript SDK (not Python); same concepts (determinism, retry).
 
 - [x] **`lib/ports/git-host.ts`** — `IGitHost` interface — S
-  - `cloneRepo()`, `getPullRequest()`, `createPullRequest()`, `getDiff()`, `listFiles()`, `createWebhook()`
+  - `cloneRepo()`, `getPullRequest()`, `createPullRequest()`, `getDiff()`, `listFiles()`, `createWebhook()`, `listBranches()`
   - **Test:** Type-check only.
-  - Notes: Implemented 2026-02-17. Stub in Phase 0; Octokit in Phase 1+.
+  - Notes: Implemented 2026-02-17. Stub in Phase 0; Octokit in Phase 1+. `listBranches()` added 2026-02-20 for branch selection during repo import (see PHASE_1 § P1-ADAPT-14).
 
 - [x] **`lib/ports/vector-search.ts`** — `IVectorSearch` interface — S
   - `embed()`, `search()`, `upsert()`
@@ -811,9 +811,9 @@ Seam 5: ArangoDB
   - Notes: Implemented 2026-02-17.
 
 - [x] **Empty state component** — S
-  - `components/dashboard/empty-state-repos.tsx`: icon (Lucide), "No repositories connected", CTA disabled with Tooltip "GitHub integration coming soon"
-  - **Test:** Manual; tooltip on hover, button not clickable.
-  - Notes: Implemented 2026-02-17.
+  - `components/dashboard/empty-state-repos.tsx`: icon (Lucide), "No repositories connected", "Connect GitHub" CTA links to `/api/github/install?orgId=xxx`
+  - **Test:** Manual; button links to install route with active org ID.
+  - Notes: Implemented 2026-02-17. Updated 2026-02-20: uses `useAccountContext()` to get `activeOrgId` and build install href dynamically; button disabled when no org is active.
 
 - [x] **`app/(dashboard)/repos/page.tsx` — Repository management page** — S
   - List repos for active org; same empty state as dashboard home
@@ -982,3 +982,4 @@ Testing & Verification ──────────────────┘
 | 2026-02-17 | — | **Testing plan & frameworks verification.** Confirmed §2.6 is the Phase 0 testing plan. Vitest and Playwright are installed and configured (vitest.config.ts, playwright.config.ts, scripts, vitest.setup.ts, e2e/example.spec.ts). Marked "E2E Test Framework Setup" [x] with implementation notes. Added "Testing frameworks installed & configured" table and summary under §2.6. Updated completeness verification to state testing plan and frameworks are in place; only port/DI/domain unit tests, ArangoDB/Temporal integration tests, and E2E flow specs remain deferred to Phase 1. |
 | 2026-02-18 | — | **UserProfileMenu & AccountContext.** Replaced static user info in sidebar footer with Claude-style `UserProfileMenu` (Radix DropdownMenu). Sections: email header, Personal/Org account switcher (with check marks), Settings/Help, Upgrade Plan (electric-cyan), dark/light theme toggle, Sign Out. Added `AccountProvider` (global Personal-vs-Org context, persisted to `localStorage`). Added `ThemeProvider` (next-themes, `defaultTheme="dark"`). Wired into root `<Providers>` tree. Updated Flow 2 (onboarding wizard → welcome screen), Flow 3 (returning user — UserProfileMenu in sidebar). Updated §2.5 dashboard shell tracker item and onboarding section. |
 | 2026-02-18 | — | **Auto-provisioned org on signup + RepositorySwitcher + strict GitHub callback.** (1) Added `databaseHooks.user.create.after` to Better Auth config — auto-creates personal org + member on signup via raw SQL (pg Pool + `generateId()`). (2) Added `RepositorySwitcher` (top-left sidebar) — Command-based repo search/switch, decoupled from identity (UserProfileMenu bottom-left). Active repo is URL-driven. (3) GitHub callback refactored: no org creation, strictly requires `orgId` in state, calls `setActiveOrganization`. (4) Removed welcome screen: `EmptyStateNoOrg`, `CreateWorkspaceFirstBanner`, `create-workspace.ts` deleted. Dashboard shows `EmptyStateRepos` directly. (5) Added `setActiveOrganization()` server helper to `lib/auth`. (6) `DashboardNav` Repos link highlights on `/repos/*` subpages. |
+| 2026-02-20 | — | **Phase 1 enhancements backported to Phase 0 tracker.** (1) `IGitHost` port: added `listBranches()` method for branch selection during repo import (P1-ADAPT-14). (2) `empty-state-repos.tsx`: uses `useAccountContext()` to get `activeOrgId`, builds install href dynamically with `orgId` query param; button disabled when no org active. (3) `prisma.config.ts`: loads `.env.local` first (Next.js convention), appends `search_path=kap10,public` to DB URL (Prisma 7 workaround). (4) Install route (`/api/github/install`): requires explicit `orgId` param, validates org membership, stores state as `{ orgId }` object with 10-min TTL. (5) Callback route (`/api/github/callback`): `parseStatePayload` handles both object and string state defensively. (6) Branch selection: two-step repo picker modal (select repos → choose branch per repo), `GET /api/repos/available/branches` endpoint, `POST /api/repos` accepts per-repo branch overrides. See PHASE_1 doc for full details. |

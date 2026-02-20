@@ -80,8 +80,8 @@ export default async function DashboardPage({
           className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-foreground"
         >
           <p>
-            Could not link GitHub to an organization. Please select a workspace first,
-            then try connecting GitHub again.
+            Could not link GitHub. Please ensure you have an active organization
+            selected, then try connecting GitHub again.
           </p>
         </div>
       )}

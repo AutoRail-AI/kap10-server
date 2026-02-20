@@ -1712,6 +1712,104 @@ model Workspace {
 
 ---
 
+## Phase 2 Enhancement: Hybrid Repo/Workspace UI Hierarchy
+
+> **Status:** Planned (post-Phase 2 core). Builds on existing Phase 2 Shadow Workspace + Phase 5.5 Prompt Ledger.
+
+### What already exists vs. what this adds
+
+| Already shipped (Phase 1-2) | This enhancement adds |
+|------------------------------|----------------------|
+| Two-step repo picker modal with branch selection | Workspace pills on repo cards showing active sessions |
+| Shadow Workspace isolation per user/repo/branch | Workspace Detail View with ledger audit trace |
+| Phase 5.5 `ledger` collection (append-only timeline) | Per-workspace error tracking (`Error.workspaceId`) |
+| Redis MCP session state (`mcp:session:{sessionId}`) | Active workspace tracking via Redis key scanning |
+
+### Enhanced Dashboard: Repo Card with Workspace Pills
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  📦 my-org/backend-api                        ⚙️  ⋯        │
+│  main · Last indexed 2h ago · 1,247 entities               │
+│                                                             │
+│  Active Workspaces:                                         │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐        │
+│  │ 🟢 main      │ │ 🟢 feat/auth │ │ 🔴 fix/login │        │
+│  │ Alice · 3m   │ │ Bob · 12m    │ │ stale · 2h   │        │
+│  └──────────────┘ └──────────────┘ └──────────────┘        │
+│                                                             │
+│  [Connect IDE]  [View Workspaces]  [Re-index]               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Workspace pills are populated by scanning Redis keys matching `mcp:session:*` and cross-referencing with the `Workspace` model. A green indicator means an active MCP session exists; red/stale means the session expired but the workspace record persists.
+
+### Active Workspace Tracking
+
+Active workspace detection reuses existing Redis MCP session keys:
+
+```typescript
+// lib/use-cases/workspace-activity.ts
+async function getActiveWorkspaces(repoId: string, container: Container) {
+  const keys = await container.cacheStore.scanKeys(`mcp:session:*`);
+  // Filter sessions belonging to this repo, extract workspace metadata
+  // Returns: { workspaceId, userId, branch, lastActiveAt, isLive }[]
+}
+```
+
+### New Route: Workspace Detail View
+
+**Route:** `/dashboard/repos/[repoId]/workspaces/[workspaceId]`
+
+This page provides deep visibility into a single workspace (user + repo + branch combination):
+
+#### Ledger Audit Trace
+Reuses Phase 5.5 `ledger` collection. Renders the append-only timeline filtered to this workspace's branch, showing every AI tool call, prompt, and resulting change.
+
+#### Session-Specific Errors
+Errors tagged with `workspaceId` allow filtering to workspace-scoped issues (e.g., failed `sync_local_diff`, broken SCIP indexing on a feature branch).
+
+#### Live Diff View
+Shows the workspace overlay (uncommitted AI changes) vs. the base commit. Reuses the Shadow Workspace diff mechanism from Phase 2 core.
+
+### Error Model Extension
+
+Add nullable `workspaceId` field to the error tracking model:
+
+```prisma
+model Error {
+  // ... existing fields ...
+  workspaceId String? @map("workspace_id")
+  // Composite format: "userId:repoId:branch" — matches Workspace unique constraint
+}
+```
+
+This enables filtering errors by workspace context without breaking existing error flows (field is nullable).
+
+### New Files
+
+```
+app/dashboard/repos/[repoId]/
+  workspaces/
+    [workspaceId]/
+      page.tsx              # Workspace Detail View (server component)
+components/dashboard/
+  ledger-trace.tsx          # Ledger Audit Trace component (queries Phase 5.5 ledger)
+  session-errors.tsx        # Session-scoped error list component
+  live-diff.tsx             # Workspace overlay diff viewer
+lib/use-cases/
+  activity-tracker.ts       # Redis key scanning for active workspace detection
+  workspace-resolver.ts     # Resolve workspaceId → workspace metadata + ledger data
+```
+
+### Integration Points
+
+- **Phase 2 (Shadow Workspace):** Workspace Detail View renders the same overlay data that MCP tools consume. The `live-diff.tsx` component calls `getWorkspaceOverlay()` from the existing graph store.
+- **Phase 5.5 (Prompt Ledger):** `ledger-trace.tsx` queries the `ledger` ArangoDB collection filtered by `branch` field matching the workspace's branch. Reuses existing `get_timeline` MCP tool logic.
+- **Redis (MCP Sessions):** Activity tracker scans `mcp:session:*` keys to determine which workspaces have live IDE connections.
+
+---
+
 ## Phase 3 — Semantic Search (LlamaIndex + Hybrid)
 
 **Feature:** _"I can search my codebase by meaning, not just keywords. 'functions that handle authentication' returns auth middleware, login handlers, session validators."_
@@ -3674,6 +3772,108 @@ model PrReviewComment {
 
 ---
 
+## Phase 7 Enhancement: Ledger Trace Merging on PR Merge
+
+> **Status:** Planned (post-Phase 7 core). Requires Phase 5.5 Prompt Ledger and Phase 7 PR Review.
+
+### The Problem
+
+When a feature branch is merged and deleted, the AI context for that branch — every prompt, tool call, decision, and working-state snapshot — becomes orphaned. Six months later, when someone asks "why was this implemented this way?", the institutional memory is gone. The ledger entries still exist in ArangoDB, but they reference a branch that no longer exists and are disconnected from the merge target's history.
+
+### Solution: `mergeLedgerWorkflow`
+
+A new Temporal workflow triggered automatically when a PR is merged. It reparents ledger entries from the source branch to the target branch and synthesizes a narrative summary of the AI session.
+
+#### Workflow Activities
+
+| # | Activity | Queue | What it does |
+|---|----------|-------|--------------|
+| 1 | `fetchLedgerEntries` | `light-llm-queue` | Query ArangoDB `ledger` collection for all entries where `branch == sourceBranch` and `repoId == repoId`. Returns ordered timeline. |
+| 2 | `reparentLedgerEntries` | `light-llm-queue` | Bulk update: set `branch = targetBranch` and `mergedFrom = sourceBranch` on all fetched entries. Preserves original timestamps and ordering. |
+| 3 | `createMergeNode` | `light-llm-queue` | Insert a special ledger entry with `type: "merge"` that links the two branch histories. Contains: `sourceBranch`, `targetBranch`, `prNumber`, `mergedAt`, `mergedBy`, `entryCount`. |
+| 4 | `synthesizeLedgerSummary` | `light-llm-queue` | LLM generates a narrative summary of the AI session on this branch. Input: all ledger entries (prompts, tool calls, changes). Output: 2-3 paragraph narrative covering what was built, key decisions, and gotchas. Uses `generateObject()` with Zod schema. |
+| 5 | `storeLedgerSummary` | `light-llm-queue` | Persist the narrative summary to `ledger_summaries` collection with `type: "merge_summary"`, linked to the merge node. |
+
+#### Trigger
+
+```typescript
+// Webhook handler: pull_request event
+if (action === "closed" && payload.pull_request.merged === true) {
+  await workflowEngine.startWorkflow("mergeLedgerWorkflow", {
+    repoId,
+    sourceBranch: payload.pull_request.head.ref,
+    targetBranch: payload.pull_request.base.ref,
+    prNumber: payload.pull_request.number,
+    mergedBy: payload.pull_request.merged_by.login,
+  });
+}
+```
+
+#### ArangoDB Additions
+
+**Merge node in `ledger` collection:**
+```json
+{
+  "_key": "merge_feat-auth_main_1708300000",
+  "type": "merge",
+  "repoId": "repo_123",
+  "sourceBranch": "feat/auth",
+  "targetBranch": "main",
+  "prNumber": 42,
+  "mergedBy": "alice",
+  "mergedAt": "2026-02-18T12:00:00Z",
+  "entryCount": 127,
+  "org_id": "org_abc"
+}
+```
+
+**Enhanced `ledger_summaries` collection:**
+```json
+{
+  "_key": "summary_merge_feat-auth_main",
+  "type": "merge_summary",
+  "repoId": "repo_123",
+  "sourceBranch": "feat/auth",
+  "targetBranch": "main",
+  "mergeNodeKey": "merge_feat-auth_main_1708300000",
+  "narrative": "Over 3 days, the AI assistant helped implement JWT-based authentication...",
+  "entryCount": 127,
+  "promptCount": 43,
+  "toolCallCount": 84,
+  "generatedAt": "2026-02-18T12:00:05Z",
+  "org_id": "org_abc"
+}
+```
+
+### New Files
+
+```
+lib/temporal/workflows/
+  merge-ledger.ts             # mergeLedgerWorkflow definition
+lib/temporal/activities/
+  ledger-merge.ts             # fetchLedgerEntries, reparentLedgerEntries, createMergeNode
+  ledger-summary.ts           # storeLedgerSummary activity
+lib/use-cases/
+  summarizer.ts               # LLM-based ledger narrative synthesis (used by synthesizeLedgerSummary)
+app/dashboard/repos/[repoId]/
+  history/
+    page.tsx                  # Branch merge history view with narrative summaries
+```
+
+### Why This Matters
+
+**Code archaeology 6 months post-merge:** When a developer encounters a complex piece of code and asks "why was this done this way?", the merge summary provides immediate context. The narrative links back to specific prompts and decisions. Without this, the ledger entries exist but are disconnected fragments referencing a deleted branch — practically invisible.
+
+**Compliance and audit:** For regulated industries, the merge summary provides a complete chain of custody: who prompted what, when, and what the AI produced. The merge node links pre-merge and post-merge history into a single queryable timeline.
+
+### Integration Points
+
+- **Phase 7 (PR Review):** `mergeLedgerWorkflow` is triggered *after* `reviewPrWorkflow` completes — specifically on the `pull_request.closed` webhook with `merged: true`. Both workflows operate on the same repo but are independent (no shared state).
+- **Phase 5.5 (Prompt Ledger):** Consumes the `ledger` collection populated by Phase 5.5's append-only timeline. The `fetchLedgerEntries` activity uses the same query patterns as the existing `get_timeline` MCP tool.
+- **Phase 2 Enhancement (Workspace UI):** The merge history page (`history/page.tsx`) links to workspace detail views for branches that were active before merging.
+
+---
+
 ## Phase 8 — Usage-Based Billing & Limits (Langfuse-Powered)
 
 **Feature:** _"I can see my kap10 usage, manage my subscription, and buy more usage when I hit my monthly limit. Langfuse tracks every LLM call — that's what I pay for. Teams can add members and share a usage pool."_
@@ -4234,6 +4434,612 @@ app/dashboard/snippets/
 
 ---
 
+## Post-Launch Roadmap (Phases 10-12)
+
+> **Status:** None of these phases block the Phase 8 launch gate. They represent the long-term product vision and can be prioritized independently after launch. Phase ∞ is a cross-cutting infrastructure improvement that benefits all phases.
+
+---
+
+### Phase 10 — Local-First Intelligence Proxy
+
+**Feature:** _"90% of my queries resolve instantly from a local graph — no network round-trip. The cloud only handles LLM operations and semantic search. My IDE feels native-fast."_
+
+#### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  IDE (VS Code / JetBrains / Cursor)                             │
+│    └─► MCP Client                                               │
+└────────┬────────────────────────────────────────────────────────┘
+         │ stdio / SSE
+         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  kap10 CLI (Local MCP Proxy)                                    │
+│  ┌──────────────────┐  ┌──────────────────────────────────┐     │
+│  │ CozoDB Embedded  │  │ Hybrid Query Router              │     │
+│  │ (local graph)    │  │  ├─ get_function    → LOCAL      │     │
+│  │                  │  │  ├─ get_callers     → LOCAL      │     │
+│  │ 90% of queries   │  │  ├─ semantic_search → CLOUD      │     │
+│  │ resolve here     │  │  ├─ get_rules       → LOCAL      │     │
+│  │                  │  │  └─ justify_entity  → CLOUD      │     │
+│  └──────────────────┘  └──────────────────────────────────┘     │
+│           │                          │                           │
+│           │ cache miss               │ LLM / semantic ops       │
+│           ▼                          ▼                           │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              Cloud Fallback (kap10 API)                 │    │
+│  │  ArangoDB · pgvector · Vercel AI SDK · Langfuse         │    │
+│  └─────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### What Ships
+
+- **CLI as MCP server:** `kap10` CLI binary acts as a local MCP server (stdio transport). IDEs connect to the local CLI instead of the cloud endpoint.
+- **Embedded CozoDB graph:** A local, embedded graph database that stores a compacted copy of the repo's knowledge graph. Handles structural queries (functions, callers, callees, imports, rules) with zero network latency.
+- **Cloud → local sync:** Nightly Temporal workflow (`syncLocalGraphWorkflow`) pushes a compacted graph snapshot from ArangoDB to the local CozoDB instance via the CLI's `kap10 pull` command.
+- **Hybrid query routing:** Each MCP tool is annotated as `local` or `cloud`. The router dispatches accordingly:
+  - **Local tools:** `get_function`, `get_callers`, `get_callees`, `get_imports`, `get_rules`, `get_file_entities`, `check_rules`
+  - **Cloud tools:** `semantic_search`, `find_similar`, `justify_entity`, `generate_health_report`
+- **Predictive context pre-fetching:** LSP cursor tracking sends the user's active file/symbol to the cloud. The cloud pre-fetches likely queries (callers, callees, related entities) and pushes results to Redis pre-cache. When the agent eventually asks, the response is already warm.
+
+#### CozoDB vs Alternatives
+
+| Criteria | CozoDB | DuckDB | Local ArangoDB |
+|----------|--------|--------|----------------|
+| **Embedded (no server)** | Yes (single file) | Yes | No (requires server process) |
+| **Graph queries (N-hop traversal)** | Native Datalog | Requires recursive CTEs | Native AQL |
+| **Binary size** | ~8 MB | ~30 MB | ~200 MB |
+| **Memory footprint** | ~20 MB idle | ~50 MB idle | ~200 MB idle |
+| **Schema flexibility** | Schemaless relations | Strict SQL schema | Schemaless JSON |
+| **Rust interop** | Native Rust | C FFI | HTTP only |
+| **Node.js binding** | `cozo-node` (NAPI) | `duckdb-async` | `arangojs` (HTTP) |
+
+CozoDB wins because: (1) native graph traversal in Datalog — no recursive CTEs; (2) smallest footprint for an embedded graph store; (3) Rust-native with first-class Node.js bindings via NAPI.
+
+#### `syncLocalGraphWorkflow`
+
+```
+Nightly Temporal workflow (light-llm-queue):
+  1. queryCompactGraph     — Export entities + edges for repo (exclude raw content, keep signatures + relationships)
+  2. serializeToMsgpack    — Compact binary format (~10x smaller than JSON)
+  3. uploadToStorage       — Push to Supabase Storage (pre-signed URL, 24h expiry)
+  4. notifyClient          — Post event to Redis pub/sub channel for connected CLIs
+```
+
+#### `kap10 pull` CLI Command
+
+```bash
+kap10 pull                    # Pull latest graph snapshot for all configured repos
+kap10 pull --repo org/repo    # Pull specific repo
+kap10 pull --force            # Force full re-sync (ignore local version)
+```
+
+Downloads the msgpack snapshot from Supabase Storage, deserializes, and loads into local CozoDB.
+
+#### Predictive Context Pre-Fetching
+
+```
+IDE (LSP)                     kap10 CLI                    Cloud
+   │                              │                          │
+   │ textDocument/didOpen         │                          │
+   │ cursor: auth.ts:42           │                          │
+   │──────────────────────────────►                          │
+   │                              │  POST /api/prefetch      │
+   │                              │  { file: "auth.ts",      │
+   │                              │    symbol: "validateJWT", │
+   │                              │    repoId: "..." }       │
+   │                              │─────────────────────────►│
+   │                              │                          │
+   │                              │     Pre-fetch callers,   │
+   │                              │     callees, related     │
+   │                              │     entities → Redis     │
+   │                              │◄─────────────────────────│
+   │                              │                          │
+   │ (later) get_callers          │                          │
+   │──────────────────────────────►                          │
+   │                              │ CozoDB hit (local) ✓     │
+   │◄──────────────────────────────                          │
+   │  < 5ms response                                        │
+```
+
+#### New Files
+
+```
+packages/cli/src/
+  mcp-proxy.ts                # Local MCP server (stdio transport, hybrid router)
+  local-graph.ts              # CozoDB embedded graph client (NAPI binding)
+  sync.ts                     # kap10 pull implementation (download + deserialize + load)
+  prefetch.ts                 # LSP cursor tracking → cloud prefetch requests
+  query-router.ts             # Routes MCP tool calls to local CozoDB or cloud API
+  cozo-schema.ts              # CozoDB relation definitions (mirrors ArangoDB collections)
+lib/temporal/workflows/
+  sync-local-graph.ts         # syncLocalGraphWorkflow (nightly compaction + upload)
+lib/temporal/activities/
+  graph-export.ts             # queryCompactGraph, serializeToMsgpack
+  graph-upload.ts             # uploadToStorage, notifyClient
+app/api/prefetch/route.ts     # Prefetch endpoint (receives cursor context, pre-warms Redis)
+lib/use-cases/
+  prefetch-context.ts         # Predictive pre-fetching logic (N-hop expansion from cursor)
+  graph-compactor.ts          # Compact graph for local sync (strip content, keep structure)
+```
+
+#### Tech Stack Additions
+
+| Package | Purpose |
+|---------|---------|
+| `cozo-node` | CozoDB embedded graph database (NAPI binding for Node.js) |
+| `@vscode/languageserver-protocol` | LSP types for cursor tracking events |
+| `msgpackr` | Fast MessagePack serialization for compact graph snapshots |
+
+---
+
+### Phase 11 — Native IDE Integrations
+
+**Feature:** _"I can see my codebase's architecture, impact graphs, and AI session timelines directly in my IDE — not just in a browser dashboard."_
+
+#### Architecture
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│  VS Code Extension                                            │
+│  ┌─────────────────────────────────────────────────┐          │
+│  │ WebView Panel (React)                           │          │
+│  │  ├─ @kap10/ui components (Blueprint, Impact,    │          │
+│  │  │   Timeline, Diff)                            │          │
+│  │  └─ @vscode/webview-ui-toolkit for native look  │          │
+│  └─────────────────────────────────────────────────┘          │
+│           │ postMessage API                                   │
+│           ▼                                                   │
+│  ┌─────────────────────────────────────────────────┐          │
+│  │ Extension Host                                  │          │
+│  │  ├─ kap10 API client (auth, data fetching)      │          │
+│  │  ├─ MCP tool invocation (show_blueprint, etc.)  │          │
+│  │  └─ Collision warning decoration provider       │          │
+│  └─────────────────────────────────────────────────┘          │
+└───────────────────────────────────────────────────────────────┘
+
+┌───────────────────────────────────────────────────────────────┐
+│  JetBrains Plugin (Kotlin)                                    │
+│  ┌─────────────────────────────────────────────────┐          │
+│  │ JCEF Browser Panel                              │          │
+│  │  ├─ Same @kap10/ui React components             │          │
+│  │  └─ Rendered via Chromium Embedded Framework     │          │
+│  └─────────────────────────────────────────────────┘          │
+│           │ CefMessageRouter (JS ↔ Kotlin bridge)             │
+│           ▼                                                   │
+│  ┌─────────────────────────────────────────────────┐          │
+│  │ Plugin Services (Kotlin)                        │          │
+│  │  ├─ kap10 API client                            │          │
+│  │  ├─ Tool window registration                    │          │
+│  │  └─ Editor gutter collision markers             │          │
+│  └─────────────────────────────────────────────────┘          │
+└───────────────────────────────────────────────────────────────┘
+```
+
+#### What Ships
+
+- **VS Code extension:** Native extension with WebView panels rendering React components. Blueprint Dashboard, Impact Graph, AI Timeline, and Live Diff — all inside VS Code.
+- **JetBrains plugin:** Kotlin plugin using JCEF (Chromium Embedded Framework) to render the same React components. Tool windows for IntelliJ IDEA, WebStorm, PyCharm, GoLand.
+- **`@kap10/ui` shared component package:** Dashboard visualization components extracted into a standalone React package with no Next.js dependencies. Consumed by the web dashboard, VS Code extension, and JetBrains plugin.
+- **New MCP tools for IDE rendering:**
+  - `show_blueprint` — Returns Blueprint Dashboard data for the current repo/feature
+  - `show_impact_graph` — Returns N-hop dependency graph for a given entity
+  - `show_timeline` — Returns Prompt Ledger timeline for a workspace
+  - `show_diff` — Returns workspace overlay diff
+
+#### VS Code Extension Architecture
+
+```typescript
+// packages/vscode-extension/src/extension.ts
+import * as vscode from 'vscode';
+
+export function activate(context: vscode.ExtensionContext) {
+  // Register WebView panel provider
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      'kap10.blueprintView',
+      new BlueprintViewProvider(context.extensionUri)
+    )
+  );
+
+  // Register MCP tool-triggered commands
+  context.subscriptions.push(
+    vscode.commands.registerCommand('kap10.showBlueprint', (data) => {
+      BlueprintPanel.createOrShow(context.extensionUri, data);
+    })
+  );
+}
+```
+
+#### JetBrains JCEF Integration
+
+```kotlin
+// packages/jetbrains-plugin/src/main/kotlin/com/kap10/plugin/BlueprintToolWindow.kt
+class BlueprintToolWindow : ToolWindowFactory {
+    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
+        val browser = JBCefBrowser()
+        browser.loadHTML(getReactAppHtml()) // @kap10/ui bundle
+
+        // Bridge: Kotlin → JS
+        val query = CefMessageRouter.create()
+        query.addHandler(Kap10DataHandler(project), true)
+        browser.jbCefClient.addMessageRouter(query)
+
+        toolWindow.component.add(browser.component)
+    }
+}
+```
+
+#### `@kap10/ui` Package
+
+Extract existing dashboard visualization components into a standalone package:
+
+```
+packages/ui/
+  src/
+    BlueprintDashboard.tsx    # Swimlane visualization (React Flow)
+    ImpactGraph.tsx           # Force-directed dependency graph (Cytoscape)
+    LedgerTimeline.tsx        # Prompt Ledger timeline view
+    DiffViewer.tsx            # Workspace overlay diff
+    index.ts                  # Public API
+  package.json                # No Next.js deps, peer deps on React 19
+  vite.config.ts              # Build as ES module library
+```
+
+#### New Files
+
+```
+packages/vscode-extension/
+  src/
+    extension.ts              # VS Code extension entry point
+    blueprint-panel.ts        # Blueprint Dashboard WebView panel
+    impact-panel.ts           # Impact Graph WebView panel
+    timeline-panel.ts         # AI Timeline WebView panel
+    diff-panel.ts             # Live Diff WebView panel
+    api-client.ts             # kap10 API client for extension host
+    collision-decorator.ts    # Editor decoration for collision warnings
+  package.json                # VS Code extension manifest
+packages/jetbrains-plugin/
+  src/main/kotlin/com/kap10/plugin/
+    BlueprintToolWindow.kt    # JCEF Blueprint Dashboard panel
+    ImpactToolWindow.kt       # JCEF Impact Graph panel
+    TimelineToolWindow.kt     # JCEF AI Timeline panel
+    CollisionAnnotator.kt     # Editor gutter collision markers
+    Kap10DataHandler.kt       # CefMessageRouter data handler
+  build.gradle.kts            # IntelliJ Platform plugin config
+packages/ui/
+  src/
+    BlueprintDashboard.tsx    # Extracted Blueprint component
+    ImpactGraph.tsx           # Extracted Impact Graph component
+    LedgerTimeline.tsx        # Extracted Timeline component
+    DiffViewer.tsx            # Extracted Diff component
+    index.ts                  # Package exports
+  vite.config.ts              # Library build config
+  package.json                # Standalone React package
+lib/mcp/tools/
+  show-blueprint.ts           # MCP tool: show_blueprint
+  show-impact-graph.ts        # MCP tool: show_impact_graph
+  show-timeline.ts            # MCP tool: show_timeline
+  show-diff.ts                # MCP tool: show_diff
+```
+
+#### Tech Stack Additions
+
+| Package | Purpose |
+|---------|---------|
+| `@vscode/webview-ui-toolkit` | VS Code-native UI components for WebView panels |
+| `vite` | Build `@kap10/ui` as ES module library (no Next.js bundler dependency) |
+
+---
+
+### Phase 12 — Multiplayer Collaboration & Collision Detection
+
+**Feature:** _"When two agents (or developers) are editing the same function, I get a real-time warning before conflicts happen — not after a merge conflict."_
+
+#### Architecture
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│  Agent A (Alice's Cursor)      Agent B (Bob's VS Code)        │
+│  MCP session: sess_A           MCP session: sess_B            │
+│       │                              │                        │
+│       │ edit_function("validateJWT") │                        │
+│       │──────────────────────────────┼───────────────────────►│
+│       │                              │                        │
+│       │                              │  get_function("auth")  │
+│       │◄─────────────────────────────┼────────────────────────│
+│       │                              │                        │
+└───────┼──────────────────────────────┼────────────────────────┘
+        │                              │
+        ▼                              ▼
+┌───────────────────────────────────────────────────────────────┐
+│  kap10 Cloud                                                  │
+│  ┌──────────────────────────────────────────────┐             │
+│  │ Entity Activity Tracker                      │             │
+│  │  ├─ entity_activity collection (ArangoDB)    │             │
+│  │  │   TTL: 30 min                             │             │
+│  │  ├─ On tool call: record entity + session    │             │
+│  │  └─ On tool response: check for collisions   │             │
+│  └──────────────────────────────────────────────┘             │
+│           │ collision detected                                │
+│           ▼                                                   │
+│  ┌──────────────────────────────────────────────┐             │
+│  │ Real-Time Broadcast                          │             │
+│  │  ├─ WebSocket server (ws)                    │             │
+│  │  ├─ OR LiveKit Data Channels                 │             │
+│  │  └─ Push collision warnings to both sessions │             │
+│  └──────────────────────────────────────────────┘             │
+└───────────────────────────────────────────────────────────────┘
+```
+
+#### What Ships
+
+- **Real-time sync layer:** WebSocket or LiveKit-based broadcast of workspace activity across connected sessions.
+- **Entity-level collision detection:** When two sessions touch the same entity (function, class, file) within a TTL window, both receive collision warnings.
+- **IDE notifications:** VS Code and JetBrains extensions show collision warnings as editor decorations and notifications.
+- **Dashboard presence indicators:** ActiveSessions panel on repo cards showing who's working on what.
+
+#### LiveKit vs Raw WebSockets
+
+| Criteria | LiveKit Data Channels | Raw WebSockets (`ws`) |
+|----------|----------------------|----------------------|
+| **Setup complexity** | Moderate (LiveKit server + client SDK) | Low (single `ws` server) |
+| **Scaling** | Built-in room-based routing, horizontal scaling | Manual pub/sub (Redis) for multi-instance |
+| **Auth** | JWT-based room tokens | Custom auth middleware |
+| **Reconnection** | Automatic with state recovery | Manual implementation |
+| **Future use** | Voice/video pair programming (Phase 13+) | WebSocket only |
+| **Cost** | LiveKit Cloud or self-hosted | Free (self-hosted only) |
+
+**Recommendation:** Start with raw WebSockets (`ws`) for simplicity. Migrate to LiveKit when voice/video collaboration is on the roadmap.
+
+#### `entity_activity` ArangoDB Collection
+
+```json
+{
+  "_key": "activity_sess_A_fn_validateJWT",
+  "sessionId": "sess_A",
+  "userId": "user_alice",
+  "entityKey": "fn_validateJWT",
+  "entityType": "function",
+  "entityName": "validateJWT",
+  "filePath": "lib/auth/jwt.ts",
+  "action": "edit",
+  "repoId": "repo_123",
+  "branch": "feat/auth",
+  "timestamp": "2026-02-18T12:05:00Z",
+  "org_id": "org_abc",
+  "ttl": 1800
+}
+```
+
+TTL index on `timestamp` ensures automatic cleanup after 30 minutes of inactivity.
+
+#### Collision Metadata in MCP Tool Responses
+
+When the collision detector finds overlapping activity, the MCP tool response includes collision metadata in the `_meta` field:
+
+```json
+{
+  "content": [{ "type": "text", "text": "function validateJWT(...) { ... }" }],
+  "_meta": {
+    "collision": {
+      "detected": true,
+      "entities": [
+        {
+          "entityKey": "fn_validateJWT",
+          "entityName": "validateJWT",
+          "otherSessions": [
+            {
+              "userId": "user_bob",
+              "userName": "Bob",
+              "branch": "fix/jwt-expiry",
+              "lastAction": "edit",
+              "lastActiveAt": "2026-02-18T12:03:00Z"
+            }
+          ]
+        }
+      ],
+      "warning": "⚠️ Bob is also editing validateJWT on branch fix/jwt-expiry (last active 2 min ago). Coordinate to avoid conflicts."
+    }
+  }
+}
+```
+
+#### IDE Extension Collision Warnings
+
+**VS Code:**
+```typescript
+// Editor decoration on collision-affected lines
+const collisionDecorationType = vscode.window.createTextEditorDecorationType({
+  gutterIconPath: collisionIconPath,
+  gutterIconSize: '80%',
+  overviewRulerColor: '#E34234',
+  after: {
+    contentText: ' ⚠️ Bob is editing this function',
+    color: '#E34234',
+    fontStyle: 'italic',
+  },
+});
+```
+
+**JetBrains:**
+```kotlin
+// Gutter icon + tooltip on collision-affected lines
+class CollisionAnnotator : ExternalAnnotator<CollisionData, CollisionResult>() {
+    override fun doAnnotate(data: CollisionData): CollisionResult {
+        return checkCollisions(data.entityKeys)
+    }
+    override fun apply(file: PsiFile, result: CollisionResult, holder: AnnotationHolder) {
+        result.collisions.forEach { collision ->
+            holder.newAnnotation(HighlightSeverity.WARNING, collision.warning)
+                .gutterIconRenderer(CollisionGutterIcon(collision))
+                .create()
+        }
+    }
+}
+```
+
+#### Dashboard Presence Component
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Active Sessions — my-org/backend-api                       │
+│                                                             │
+│  ┌─────────┐  ┌─────────┐                                  │
+│  │ 🟢 Alice │  │ 🟢 Bob  │                                  │
+│  │ main     │  │ fix/jwt │                                  │
+│  │ Cursor   │  │ VS Code │                                  │
+│  │ 3m ago   │  │ 1m ago  │                                  │
+│  └─────────┘  └─────────┘                                  │
+│                                                             │
+│  ⚠️ Collision: Alice & Bob both touching validateJWT        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### New Files
+
+```
+lib/use-cases/
+  collision-detector.ts       # Entity-level collision detection logic
+  activity-recorder.ts        # Record entity access in entity_activity collection
+lib/adapters/
+  websocket-server.ts         # WebSocket broadcast server for real-time collision warnings
+lib/mcp/middleware/
+  collision-middleware.ts      # MCP middleware: check collisions before tool response
+app/api/ws/route.ts           # WebSocket upgrade endpoint
+components/dashboard/
+  active-sessions.tsx          # Dashboard presence panel component
+  collision-badge.tsx          # Collision warning badge for repo cards
+packages/vscode-extension/src/
+  collision-decorator.ts       # (also listed in Phase 11 — extended with real-time updates)
+packages/jetbrains-plugin/src/main/kotlin/com/kap10/plugin/
+  CollisionAnnotator.kt       # (also listed in Phase 11 — extended with real-time updates)
+```
+
+#### Tech Stack Additions
+
+| Package | Purpose |
+|---------|---------|
+| `livekit-server-sdk` | LiveKit server SDK for real-time data channels (future migration target) |
+| `ws` | WebSocket server for real-time collision broadcast (initial implementation) |
+
+---
+
+### Phase ∞ — Heavy Worker Performance Rewrite (Cross-Cutting)
+
+> **Cross-cutting infrastructure improvement.** Not a feature phase — this rewrites performance-critical Temporal activities from TypeScript to Rust. Can be done incrementally alongside any phase after launch.
+
+#### Current Bottleneck Analysis
+
+The `heavy-compute-queue` Temporal worker runs CPU-bound operations in Node.js:
+
+| Operation | Current impl | Problem |
+|-----------|-------------|---------|
+| `prepareWorkspace` | `simple-git` (Node.js) → `npm install` → `scip-typescript` | Node.js GC pauses during large clones; `simple-git` spawns `git` subprocesses; peak memory ~2 GB for large monorepos |
+| Bulk entity insert | `arangojs` HTTP client, sequential batches | Node.js event loop blocked during JSON serialization of 50,000+ entities; GC pressure from large object graphs |
+| SCIP index parsing | `protobufjs` in Node.js | 100 MB SCIP index files cause V8 heap exhaustion (OOM) on repos with 10,000+ files |
+
+**Symptoms:** Worker OOM kills on repos > 5,000 files; 45-second GC pauses during bulk insert; Temporal activity timeouts on monorepos.
+
+#### Rust vs Go
+
+| Criteria | Rust | Go |
+|----------|------|-----|
+| **Memory safety** | Compile-time (no GC) | GC (but better than Node.js) |
+| **Git library** | `libgit2` via `git2` crate (zero-copy) | `go-git` (pure Go, copies) |
+| **Protobuf (SCIP)** | `prost` (zero-copy decode) | `protobuf` (standard) |
+| **HTTP/2 client** | `reqwest` + `hyper` (async) | `net/http` (built-in) |
+| **Binary size** | ~5 MB (static) | ~8 MB (static) |
+| **Peak memory (10K files)** | ~200 MB | ~800 MB |
+| **Deployment** | Single static binary | Single static binary |
+
+**Decision:** Rust. The zero-copy protobuf decoding and libgit2 integration eliminate the two biggest bottlenecks (SCIP parsing OOM and Git subprocess spawns).
+
+#### What Gets Rewritten
+
+| Component | Current (TypeScript) | Rewritten (Rust) | Speedup |
+|-----------|---------------------|-------------------|---------|
+| `prepareWorkspace` | `simple-git` → subprocess → `npm install` | `libgit2` (in-process) → direct clone | ~3.75x (no subprocess spawn, zero-copy) |
+| Bulk entity insert | `arangojs` sequential HTTP/1.1 batches | `reqwest` HTTP/2 multiplexed, parallel streams | ~5x (no GC, HTTP/2 mux) |
+| SCIP index parsing | `protobufjs` (V8 heap) | `prost` (zero-copy mmap) | ~8x (no GC, mmap) |
+
+#### What Stays in TypeScript
+
+| Component | Why it stays |
+|-----------|-------------|
+| Temporal workflow definitions | Deterministic replay requires JS SDK; workflows are lightweight orchestration |
+| LLM calls (Vercel AI SDK) | Network-bound, not CPU-bound; AI SDK has best-in-class streaming |
+| Dashboard (Next.js) | Frontend framework; no performance concern |
+| MCP server | Network-bound; Node.js is fine for request/response |
+| Light worker activities | LLM, email, webhooks — all network-bound |
+
+#### TypeScript Wrapper Pattern
+
+The Rust binaries are invoked from Temporal activities via `execFileAsync`:
+
+```typescript
+// lib/temporal/activities/prepare-workspace.ts
+import { execFileAsync } from 'node:child_process';
+
+export async function prepareWorkspace(input: PrepareWorkspaceInput): Promise<PrepareWorkspaceOutput> {
+  const { stdout } = await execFileAsync(
+    '/usr/local/bin/kap10-prepare-workspace',
+    [
+      '--repo-url', input.repoUrl,
+      '--branch', input.branch,
+      '--workspace-dir', input.workspaceDir,
+      '--output-format', 'json',
+    ],
+    { timeout: 300_000 } // 5 minutes
+  );
+  return JSON.parse(stdout) as PrepareWorkspaceOutput;
+}
+```
+
+This pattern means:
+- Zero changes to Temporal workflow definitions
+- Rust binary handles all CPU/memory-intensive work
+- TypeScript wrapper handles Temporal SDK integration, error mapping, and logging
+- Gradual migration: swap one activity at a time, deploy, measure
+
+#### Performance Estimates
+
+| Metric | Current (Node.js) | After (Rust) | Improvement |
+|--------|-------------------|--------------|-------------|
+| Clone + install (10K files) | ~120s | ~32s | 3.75x |
+| SCIP parse (100 MB index) | OOM crash | ~12s, 200 MB peak | ∞ → works |
+| Bulk insert (50K entities) | ~45s (with GC pauses) | ~9s | 5x |
+| Peak memory (large monorepo) | ~2 GB (OOM risk) | ~200 MB | 10x reduction |
+| Worker instance cost | r6g.xlarge ($0.201/hr) | r6g.medium ($0.050/hr) | 4x cost reduction (~80%) |
+
+#### New Files
+
+```
+workers/heavy-compute-rust/
+  src/
+    main.rs                   # CLI entry point (kap10-prepare-workspace, kap10-bulk-insert)
+    git.rs                    # libgit2 clone/pull with auth
+    scip.rs                   # Zero-copy SCIP index parser (prost + mmap)
+    arango.rs                 # HTTP/2 bulk insert client (reqwest)
+    workspace.rs              # Workspace preparation orchestration
+  Cargo.toml                  # Rust dependencies
+  Dockerfile                  # Multi-stage build (rust:alpine → scratch)
+```
+
+#### Rust Crate Dependencies
+
+| Crate | Purpose |
+|-------|---------|
+| `git2` | libgit2 bindings — in-process Git operations (clone, pull, diff) |
+| `tokio` | Async runtime for parallel I/O (HTTP/2 bulk insert, concurrent file ops) |
+| `serde` + `serde_json` | JSON serialization for ArangoDB documents and CLI output |
+| `reqwest` | HTTP/2 client for ArangoDB bulk import API |
+| `prost` | Zero-copy protobuf decoding for SCIP index files |
+| `memmap2` | Memory-mapped file I/O for large SCIP indexes (no heap allocation) |
+
+---
+
 ## Phase Summary & Dependencies
 
 ```
@@ -4252,6 +5058,9 @@ Phase 2: MCP Server    Phase 3: Semantic Search (LlamaIndex.TS)
  + Secret Scrubbing    │
  + Rate Limiter        │
  + Truncation)         │
+ + ENHANCEMENT:        │
+   Hybrid Repo/        │
+   Workspace UI        │
     │                  │
     └────────┬─────────┘
              ▼
@@ -4274,8 +5083,9 @@ Phase 5.5: Prompt Ledger + Rewind + Branching
     ▼                  ▼
 Phase 6: Patterns +    Phase 7: PR Review
 Rules Engine           (Semgrep CLI on diff)
-(ast-grep + Semgrep    │
- + hierarchical rules) │
+(ast-grep + Semgrep    + ENHANCEMENT:
+ + hierarchical rules)   Ledger Merging
+    │                    on PR Merge
     │                  │
     └────────┬─────────┘
              ▼
@@ -4286,6 +5096,19 @@ Phase 8: Billing & Limits (Langfuse → Stripe)
              ▼
 Phase 9: Code Snippet Library (post-launch)
 (community + team + auto-extracted snippets)
+             │
+             ├────────────────────┬────────────────────┐
+             ▼                    ▼                    ▼
+Phase 10: Local-First    Phase 11: Native IDE   Phase 12: Multiplayer
+Intelligence Proxy       Integrations           Collaboration &
+(CozoDB embedded,        (VS Code, JetBrains,   Collision Detection
+ hybrid query router,     @kap10/ui package,     (entity_activity,
+ predictive prefetch)     4 new MCP tools)        real-time broadcast)
+
+      ·    ·    ·    ·    ·    ·    ·    ·    ·    ·    ·    ·
+      Phase ∞: Heavy Worker Performance Rewrite (cross-cutting)
+      (Rust binaries: libgit2 + prost + reqwest — replaces
+       Node.js CPU-bound Temporal activities incrementally)
 ```
 
 **Cross-Cutting (all phases):** Structured output mandate (§6), 24-hour deletion SLA (§7), pool-based multi-tenancy
@@ -4305,6 +5128,12 @@ Phase 9: Code Snippet Library (post-launch)
 | 7 | ~12 | ~3 | 2 Prisma | 0 | 1 (`reviewPr`) |
 | 8 | ~12 | ~6 | 3 Prisma | 0 | 1 (`syncBilling`) |
 | 9 *(post-launch)* | ~14 | ~4 | 1 ArangoDB (`snippets`) + pgvector embeddings | 3 (`get_snippets`, `search_snippets`, `pin_snippet`) | 1 (`extractSnippets`) |
+| 2 *(enhancement)* | ~6 | ~2 | 1 Prisma (`Error.workspaceId`) | 0 | 0 |
+| 7 *(enhancement)* | ~6 | ~1 | 1 ArangoDB (merge node type in `ledger`) | 0 | 1 (`mergeLedger`) |
+| 10 *(post-launch)* | ~12 | ~2 | CozoDB embedded (local) | 0 | 1 (`syncLocalGraph`) |
+| 11 *(post-launch)* | ~18 (3 packages) | ~3 | 0 | 4 (`show_blueprint`, `show_impact_graph`, `show_timeline`, `show_diff`) | 0 |
+| 12 *(post-launch)* | ~10 | ~2 | 2 ArangoDB (`entity_activity` + enhanced `ledger`) | 0 | 0 |
+| ∞ *(infra)* | ~6 Rust + ~2 TS wrappers | ~2 | 0 | 0 | 0 |
 | — | ~6 | ~2 | — | — | 2 (`deleteRepo`, `deletionAudit`) |
 
 ---
@@ -4373,6 +5202,29 @@ Phase 9: Code Snippet Library (post-launch)
 | Package | Purpose | Phase |
 |---------|---------|-------|
 | `llamaindex` (reuse from Phase 3) | Snippet embedding + semantic search via pgvector | 9 |
+
+### Local-First & Collaboration (Post-Launch)
+
+| Package | Purpose | Phase |
+|---------|---------|-------|
+| `cozo-node` | CozoDB embedded graph database (NAPI binding) — local-first structural queries | 10 |
+| `@vscode/languageserver-protocol` | LSP types for cursor tracking events (predictive pre-fetching) | 10 |
+| `msgpackr` | Fast MessagePack serialization for compact graph snapshots (cloud → local sync) | 10 |
+| `@vscode/webview-ui-toolkit` | VS Code-native UI components for WebView panels | 11 |
+| `vite` | Build `@kap10/ui` as standalone ES module library (no Next.js bundler dependency) | 11 |
+| `livekit-server-sdk` | LiveKit server SDK for real-time data channels (future migration target for multiplayer) | 12 |
+| `ws` | WebSocket server for real-time collision broadcast (initial multiplayer implementation) | 12 |
+
+### Performance (Infrastructure Rewrite)
+
+| Crate (Rust) | Purpose | Phase |
+|--------------|---------|-------|
+| `git2` | libgit2 bindings — in-process Git operations replacing `simple-git` subprocess spawns | ∞ |
+| `tokio` | Async runtime for parallel I/O (HTTP/2 bulk insert, concurrent file ops) | ∞ |
+| `serde` + `serde_json` | JSON serialization for ArangoDB documents and CLI output | ∞ |
+| `reqwest` | HTTP/2 client for ArangoDB bulk import API (replaces `arangojs` sequential batches) | ∞ |
+| `prost` | Zero-copy protobuf decoding for SCIP index files (eliminates V8 OOM) | ∞ |
+| `memmap2` | Memory-mapped file I/O for large SCIP indexes (no heap allocation) | ∞ |
 
 ---
 
