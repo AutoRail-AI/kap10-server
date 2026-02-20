@@ -1454,15 +1454,27 @@ export async function POST(req: Request) {
 
 ### Core engine integration
 
-Port these modules from code-synapse (`/Users/jaswanth/IdeaProjects/code-synapse/src/core/`):
-- `indexer/scanner.ts` → `lib/indexer/scanner.ts` (file discovery + gitignore — still useful for pre-SCIP filtering)
-- `parser/` → `lib/indexer/parser.ts` (tree-sitter WASM — supplementary parsing for non-SCIP languages)
+**Implemented as modular language plugin architecture in `lib/indexer/`:**
 
-**New (not from code-synapse):**
-- `lib/indexer/prepare-workspace.ts` — full clone + dependency install before SCIP
-- `lib/indexer/scip-runner.ts` — executes SCIP indexers and parses protobuf output
-- `lib/indexer/scip-to-arango.ts` — transforms SCIP graph into ArangoDB collections
-- `lib/indexer/entity-hash.ts` — deterministic entity identity hashing
+```
+lib/indexer/
+  types.ts                    — Shared types (ParsedEntity, ParsedEdge, LanguagePlugin)
+  entity-hash.ts              — SHA-256 stable identity hashing (16-char hex _key)
+  scanner.ts                  — File discovery via git ls-files + .gitignore filtering
+  monorepo.ts                 — Workspace root detection (pnpm, yarn, npm, nx, lerna)
+  languages/
+    types.ts                  — LanguagePlugin interface (runSCIP + parseWithTreeSitter)
+    registry.ts               — Extension → plugin mapping, lazy initialization
+    typescript/               — TypeScript/JavaScript plugin (.ts/.tsx/.js/.jsx)
+      index.ts                — Plugin entry point
+      scip.ts                 — scip-typescript runner + protobuf decoder
+      tree-sitter.ts          — Regex-based fallback parser
+    python/                   — Python plugin (.py/.pyi)
+    go/                       — Go plugin (.go)
+    generic/                  — Fallback: file-level entities only
+```
+
+Each language is isolated in its own folder. New languages are added by creating a plugin folder and registering in `registry.ts`.
 
 **Adaptation required:**
 - Replace CozoDB writes with ArangoDB batch inserts (single `kap10_db` database, pool-based tenancy)
@@ -4444,6 +4456,17 @@ app/dashboard/snippets/
 
 **Feature:** _"90% of my queries resolve instantly from a local graph — no network round-trip. The cloud only handles LLM operations and semantic search. My IDE feels native-fast."_
 
+> **Delivery:** Phase 10 ships in two increments. **10a (MVP)** can start immediately after Phase 2 — it routes only the 9 Phase 2 MCP tools. **10b (Full)** lands after Phase 6, adding rules and justification routing. This lets users benefit from local-speed graph queries months before launch.
+
+#### Two-Increment Delivery
+
+| Increment | Depends on | Local tools | Cloud tools | What it adds |
+|-----------|-----------|-------------|-------------|--------------|
+| **10a (MVP)** | Phase 2 | `get_function`, `get_callers`, `get_callees`, `get_imports`, `get_file_entities`, `search_code`, `get_class` | `sync_local_diff`, `get_project_stats` | CLI as MCP proxy, CozoDB embedded graph, `kap10 pull`, `syncLocalGraphWorkflow`, hybrid query router (structural tools only) |
+| **10b (Full)** | Phase 6 | All 10a tools + `get_rules`, `check_rules` | All 10a cloud tools + `semantic_search`, `find_similar`, `justify_entity`, `generate_health_report` | Rules/patterns synced to local CozoDB, predictive context pre-fetching, full tool routing table |
+
+**Why ship MVP early:** The 7 structural tools (`get_function`, `get_callers`, `get_callees`, `get_imports`, `get_file_entities`, `search_code`, `get_class`) account for ~70% of agent tool calls in typical coding sessions. Moving these to local CozoDB eliminates network round-trips for the majority of queries immediately after Phase 2, without waiting for rules (Phase 6) or justification (Phase 4).
+
 #### Architecture
 
 ```
@@ -4457,11 +4480,26 @@ app/dashboard/snippets/
 │  kap10 CLI (Local MCP Proxy)                                    │
 │  ┌──────────────────┐  ┌──────────────────────────────────┐     │
 │  │ CozoDB Embedded  │  │ Hybrid Query Router              │     │
-│  │ (local graph)    │  │  ├─ get_function    → LOCAL      │     │
-│  │                  │  │  ├─ get_callers     → LOCAL      │     │
-│  │ 90% of queries   │  │  ├─ semantic_search → CLOUD      │     │
-│  │ resolve here     │  │  ├─ get_rules       → LOCAL      │     │
-│  │                  │  │  └─ justify_entity  → CLOUD      │     │
+│  │ (local graph)    │  │                                  │     │
+│  │                  │  │  10a (MVP — after Phase 2):      │     │
+│  │ 70-90% of       │  │  ├─ get_function    → LOCAL      │     │
+│  │ queries resolve  │  │  ├─ get_callers     → LOCAL      │     │
+│  │ here             │  │  ├─ get_callees     → LOCAL      │     │
+│  │                  │  │  ├─ get_imports     → LOCAL      │     │
+│  │                  │  │  ├─ get_file_entities→ LOCAL     │     │
+│  │                  │  │  ├─ search_code     → LOCAL      │     │
+│  │                  │  │  ├─ get_class       → LOCAL      │     │
+│  │                  │  │  ├─ sync_local_diff → CLOUD      │     │
+│  │                  │  │  └─ get_project_stats→ CLOUD     │     │
+│  │                  │  │                                  │     │
+│  │                  │  │  10b (Full — after Phase 6):     │     │
+│  │                  │  │  ├─ get_rules       → LOCAL      │     │
+│  │                  │  │  ├─ check_rules     → LOCAL      │     │
+│  │                  │  │  ├─ semantic_search → CLOUD      │     │
+│  │                  │  │  ├─ find_similar    → CLOUD      │     │
+│  │                  │  │  ├─ justify_entity  → CLOUD      │     │
+│  │                  │  │  └─ generate_health_report→CLOUD │     │
+│  │                  │  │                                  │     │
 │  └──────────────────┘  └──────────────────────────────────┘     │
 │           │                          │                           │
 │           │ cache miss               │ LLM / semantic ops       │
@@ -4475,13 +4513,12 @@ app/dashboard/snippets/
 
 #### What Ships
 
-- **CLI as MCP server:** `kap10` CLI binary acts as a local MCP server (stdio transport). IDEs connect to the local CLI instead of the cloud endpoint.
-- **Embedded CozoDB graph:** A local, embedded graph database that stores a compacted copy of the repo's knowledge graph. Handles structural queries (functions, callers, callees, imports, rules) with zero network latency.
-- **Cloud → local sync:** Nightly Temporal workflow (`syncLocalGraphWorkflow`) pushes a compacted graph snapshot from ArangoDB to the local CozoDB instance via the CLI's `kap10 pull` command.
-- **Hybrid query routing:** Each MCP tool is annotated as `local` or `cloud`. The router dispatches accordingly:
-  - **Local tools:** `get_function`, `get_callers`, `get_callees`, `get_imports`, `get_rules`, `get_file_entities`, `check_rules`
-  - **Cloud tools:** `semantic_search`, `find_similar`, `justify_entity`, `generate_health_report`
-- **Predictive context pre-fetching:** LSP cursor tracking sends the user's active file/symbol to the cloud. The cloud pre-fetches likely queries (callers, callees, related entities) and pushes results to Redis pre-cache. When the agent eventually asks, the response is already warm.
+- **CLI as MCP server:** `kap10` CLI binary acts as a local MCP server (stdio transport). IDEs connect to the local CLI instead of the cloud endpoint. *(10a)*
+- **Embedded CozoDB graph:** A local, embedded graph database that stores a compacted copy of the repo's knowledge graph. Handles structural queries (functions, callers, callees, imports) with zero network latency. *(10a)*
+- **Cloud → local sync:** Nightly Temporal workflow (`syncLocalGraphWorkflow`) pushes a compacted graph snapshot from ArangoDB to the local CozoDB instance via the CLI's `kap10 pull` command. *(10a)*
+- **Hybrid query routing:** Each MCP tool is annotated as `local` or `cloud`. The router dispatches accordingly. 10a routes 7 structural tools locally; 10b adds rules + patterns. *(10a scaffold, 10b completes)*
+- **Rules & patterns in local graph:** `syncLocalGraphWorkflow` extended to include `rules` and `patterns` ArangoDB collections in the CozoDB snapshot. *(10b)*
+- **Predictive context pre-fetching:** LSP cursor tracking sends the user's active file/symbol to the cloud. The cloud pre-fetches likely queries and pushes results to Redis pre-cache. *(10b)*
 
 #### CozoDB vs Alternatives
 
@@ -5062,30 +5099,39 @@ Phase 2: MCP Server    Phase 3: Semantic Search (LlamaIndex.TS)
    Hybrid Repo/        │
    Workspace UI        │
     │                  │
-    └────────┬─────────┘
-             ▼
-Phase 4: Business Justification + Taxonomy (Vercel AI SDK)
-(+ VERTICAL/HORIZONTAL/UTILITY classification
- + Features collection + Blueprint Dashboard
- + Architecture Health Report)
-    │
-    ▼
-Phase 5: Incremental Indexing (entity hash diff + cascade re-justify)
-    │
-    ▼
-Phase 5.5: Prompt Ledger + Rewind + Branching
-(+ append-only timeline + working-state snapshots
- + anti-pattern rule synthesis + kap10 CLI
- + commit roll-up
- + CLI-first local ingestion via IStorageProvider)
-    │
-    ├──────────────────┐
-    ▼                  ▼
-Phase 6: Patterns +    Phase 7: PR Review
-Rules Engine           (Semgrep CLI on diff)
-(ast-grep + Semgrep    + ENHANCEMENT:
- + hierarchical rules)   Ledger Merging
-    │                    on PR Merge
+    ├─── Phase 10a ────┘─────────────────────────────────────┐
+    │    (MVP: Local-First Proxy — 7 structural tools        │
+    │     CozoDB, kap10 pull, syncLocalGraph, query router)  │
+    │                                                        │
+    └────────┬───────────────────────────────────────────     │
+             ▼                                               │
+Phase 4: Business Justification + Taxonomy (Vercel AI SDK)   │
+(+ VERTICAL/HORIZONTAL/UTILITY classification                │
+ + Features collection + Blueprint Dashboard                 │
+ + Architecture Health Report)                               │
+    │                                                        │
+    ▼                                                        │
+Phase 5: Incremental Indexing (entity hash diff + cascade)   │
+    │                                                        │
+    ▼                                                        │
+Phase 5.5: Prompt Ledger + Rewind + Branching                │
+(+ append-only timeline + working-state snapshots            │
+ + anti-pattern rule synthesis + kap10 CLI                   │
+ + commit roll-up                                            │
+ + CLI-first local ingestion via IStorageProvider)           │
+    │                                                        │
+    ├──────────────────┐                                     │
+    ▼                  ▼                                     │
+Phase 6: Patterns +    Phase 7: PR Review                    │
+Rules Engine           (Semgrep CLI on diff)                 │
+(ast-grep + Semgrep    + ENHANCEMENT:                        │
+ + hierarchical rules)   Ledger Merging                      │
+    │                    on PR Merge                         │
+    │                  │                                     │
+    ├─── Phase 10b ────┘─────────────────────────────────────┘
+    │    (Full: + get_rules, check_rules → LOCAL
+    │     + rules/patterns in CozoDB sync
+    │     + predictive context pre-fetching)
     │                  │
     └────────┬─────────┘
              ▼
@@ -5097,13 +5143,13 @@ Phase 8: Billing & Limits (Langfuse → Stripe)
 Phase 9: Code Snippet Library (post-launch)
 (community + team + auto-extracted snippets)
              │
-             ├────────────────────┬────────────────────┐
-             ▼                    ▼                    ▼
-Phase 10: Local-First    Phase 11: Native IDE   Phase 12: Multiplayer
-Intelligence Proxy       Integrations           Collaboration &
-(CozoDB embedded,        (VS Code, JetBrains,   Collision Detection
- hybrid query router,     @kap10/ui package,     (entity_activity,
- predictive prefetch)     4 new MCP tools)        real-time broadcast)
+             ├─────────────────────────────────────────┐
+             ▼                                         ▼
+Phase 11: Native IDE Integrations        Phase 12: Multiplayer
+(VS Code, JetBrains, @kap10/ui,         Collaboration &
+ 4 new MCP tools — leverages             Collision Detection
+ Phase 10 local proxy as transport)      (entity_activity,
+                                          real-time broadcast)
 
       ·    ·    ·    ·    ·    ·    ·    ·    ·    ·    ·    ·
       Phase ∞: Heavy Worker Performance Rewrite (cross-cutting)
@@ -5120,21 +5166,23 @@ Intelligence Proxy       Integrations           Collaboration &
 | 0 | ~30 | ~4 | ArangoDB schema (single DB, pool tenancy) + Prisma init + DeletionLog | 0 | 0 |
 | 1 | ~18 | ~3 | 1 Prisma + 11 ArangoDB + monorepo detection | 0 | 1 (`indexRepo`) |
 | 2 | ~16 | ~2 | 1 Prisma (Workspace) | 9 | 0 |
+| 2 *(enhancement)* | ~6 | ~2 | 1 Prisma (`Error.workspaceId`) | 0 | 0 |
 | 3 | ~8 | ~3 | 1 Prisma | 2 | 1 (`embedRepo`) |
 | 4 | ~16 | ~3 | 4 ArangoDB + 2 edge | 4 | 3 (`justifyRepo`, `justifyEntity`, `healthReport`) |
 | 5 | ~8 | ~4 | 0 | 1 | 1 (`incrementalIndex`) |
 | 5.5 | ~26 | ~6 | 3 ArangoDB (`ledger`, `snapshots`, `ledger_summaries`) + 1 Prisma (`LedgerSnapshot`) + 1 Supabase Storage bucket (`cli_uploads`) | 3 (`revert_to_working_state`, `get_timeline`, `mark_working`) | 0 |
 | 6 | ~18 | ~4 | 2 ArangoDB (`patterns` + `rules`) | 5 (+`get_rules`, `check_rules`) | 1 (`detectPatterns`) |
 | 7 | ~12 | ~3 | 2 Prisma | 0 | 1 (`reviewPr`) |
-| 8 | ~12 | ~6 | 3 Prisma | 0 | 1 (`syncBilling`) |
-| 9 *(post-launch)* | ~14 | ~4 | 1 ArangoDB (`snippets`) + pgvector embeddings | 3 (`get_snippets`, `search_snippets`, `pin_snippet`) | 1 (`extractSnippets`) |
-| 2 *(enhancement)* | ~6 | ~2 | 1 Prisma (`Error.workspaceId`) | 0 | 0 |
 | 7 *(enhancement)* | ~6 | ~1 | 1 ArangoDB (merge node type in `ledger`) | 0 | 1 (`mergeLedger`) |
-| 10 *(post-launch)* | ~12 | ~2 | CozoDB embedded (local) | 0 | 1 (`syncLocalGraph`) |
+| 8 | ~12 | ~6 | 3 Prisma | 0 | 1 (`syncBilling`) |
+| | | | **═══ LAUNCH ═══** | | |
+| 9 *(post-launch)* | ~14 | ~4 | 1 ArangoDB (`snippets`) + pgvector embeddings | 3 (`get_snippets`, `search_snippets`, `pin_snippet`) | 1 (`extractSnippets`) |
+| 10a *(after Phase 2)* | ~8 | ~2 | CozoDB embedded (local) | 0 | 1 (`syncLocalGraph`) |
+| 10b *(after Phase 6)* | ~4 | ~3 | CozoDB rules/patterns sync | 0 | 0 (extends `syncLocalGraph`) |
 | 11 *(post-launch)* | ~18 (3 packages) | ~3 | 0 | 4 (`show_blueprint`, `show_impact_graph`, `show_timeline`, `show_diff`) | 0 |
 | 12 *(post-launch)* | ~10 | ~2 | 2 ArangoDB (`entity_activity` + enhanced `ledger`) | 0 | 0 |
 | ∞ *(infra)* | ~6 Rust + ~2 TS wrappers | ~2 | 0 | 0 | 0 |
-| — | ~6 | ~2 | — | — | 2 (`deleteRepo`, `deletionAudit`) |
+| — *(cross-cutting)* | ~6 | ~2 | — | — | 2 (`deleteRepo`, `deletionAudit`) |
 
 ---
 

@@ -1,11 +1,10 @@
 import { headers } from "next/headers"
-import Link from "next/link"
-import { GitBranch } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 import { auth, listOrganizations } from "@/lib/auth"
-import { getContainer } from "@/lib/di/container"
 
-export default async function SettingsPage() {
+export default async function SettingsGeneralPage() {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session) return null
 
@@ -21,84 +20,73 @@ export default async function SettingsPage() {
     throw new Error("No active organization found. Every user should have an auto-provisioned organization.")
   }
 
-  const container = getContainer()
-  const installations = await container.relationalStore.getInstallations(activeOrg.id)
-
   return (
-    <div className="space-y-6 py-6 animate-fade-in">
-      <div className="space-y-1">
-        <h1 className="font-grotesk text-lg font-semibold text-foreground">
-          Organization settings
-        </h1>
-        <p className="text-sm text-foreground mt-0.5">
-          Manage your organization (account context), GitHub connections, and members.
-        </p>
-      </div>
-
+    <div className="space-y-6">
+      {/* Organization Name */}
       <Card className="glass-card border-border">
         <CardContent className="pt-6">
-          <div className="space-y-4">
+          <div className="space-y-3">
             <div className="space-y-1">
               <h3 className="font-grotesk text-sm font-semibold text-foreground">
-                Organization name
+                Organization Name
               </h3>
-              <p className="text-muted-foreground text-sm">
-                {activeOrg?.name ?? "—"}
+              <p className="text-xs text-muted-foreground">
+                This is your organization&apos;s display name.
               </p>
             </div>
-            <div className="space-y-1">
-              <h3 className="font-grotesk text-sm font-semibold text-foreground">
-                Members
-              </h3>
-              <p className="text-muted-foreground text-sm">
-                You (owner): {session.user.email}
-              </p>
+            <div className="flex items-center gap-3">
+              <Input
+                className="h-9 max-w-sm"
+                defaultValue={activeOrg.name}
+                disabled
+              />
+              <Button size="sm" className="bg-rail-fade hover:opacity-90" disabled>
+                Save
+              </Button>
             </div>
           </div>
         </CardContent>
       </Card>
 
-      <Link
-        href="/settings/connections"
-        className="block"
-      >
-        <Card className="glass-card border-border hover:shadow-glow-purple transition">
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-muted/30">
-                  <GitBranch className="h-4 w-4 text-foreground" />
-                </div>
-                <div className="space-y-0.5">
-                  <h3 className="font-grotesk text-sm font-semibold text-foreground">
-                    GitHub Connections
-                  </h3>
-                  <p className="text-xs text-muted-foreground">
-                    {installations.length === 0
-                      ? "No GitHub accounts connected"
-                      : `${installations.length} GitHub ${installations.length === 1 ? "account" : "accounts"} connected`}
-                  </p>
-                </div>
-              </div>
-              <span className="text-xs text-electric-cyan">Manage &rarr;</span>
+      {/* Organization Slug */}
+      <Card className="glass-card border-border">
+        <CardContent className="pt-6">
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <h3 className="font-grotesk text-sm font-semibold text-foreground">
+                Organization Slug
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Used in URLs and API references.
+              </p>
             </div>
-          </CardContent>
-        </Card>
-      </Link>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">kap10.dev/</span>
+              <Input
+                className="h-9 max-w-xs"
+                defaultValue={activeOrg.slug}
+                disabled
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
+      {/* Danger Zone */}
       <Card className="glass-card border-destructive/30">
         <CardContent className="pt-6">
-          <div className="space-y-1">
-            <h3 className="font-grotesk text-sm font-semibold text-destructive">
-              Danger zone
-            </h3>
-            <p className="text-muted-foreground text-sm">
-              Delete organization and all associated data. This cannot be undone.
-            </p>
-            <p className="text-muted-foreground mt-2 text-xs">
-              Delete organization is available via Better Auth; Phase 0 does not
-              implement the button.
-            </p>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <h3 className="font-grotesk text-sm font-semibold text-destructive">
+                Danger Zone
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Permanently delete this organization and all of its data. This action cannot be undone.
+              </p>
+            </div>
+            <Button size="sm" variant="destructive" disabled>
+              Delete Organization
+            </Button>
           </div>
         </CardContent>
       </Card>

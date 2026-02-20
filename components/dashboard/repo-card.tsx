@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { FolderGit2, RotateCw, Square } from "lucide-react"
+import { ArrowRight, FolderGit2, RotateCw, Square } from "lucide-react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
@@ -49,9 +49,8 @@ export function RepoCard({ repo }: { repo: RepoRecord }) {
     }
   }
 
-  return (
-    <Link href={status === "ready" ? `/repos/${repo.id}` : "#"}>
-      <div className="glass-card border-border flex flex-col gap-2 rounded-lg border p-4 hover:shadow-glow-purple">
+  const card = (
+    <div className={`glass-card border-border flex flex-col gap-2 rounded-lg border p-4 ${status === "ready" ? "hover:shadow-glow-purple" : ""}`}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <FolderGit2 className="text-muted-foreground h-4 w-4" />
@@ -89,20 +88,32 @@ export function RepoCard({ repo }: { repo: RepoRecord }) {
         )}
 
         {status === "ready" && (
-          <div className="flex items-center justify-between">
+          <div className="space-y-2">
             <p className="text-muted-foreground text-xs">
               {repo.fileCount ?? 0} files · {(repo.functionCount ?? 0) + (repo.classCount ?? 0)} entities
             </p>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={handleRestart}
-              disabled={loading}
-              className="h-7 gap-1.5 px-2 text-xs"
-            >
-              <RotateCw className="h-3 w-3" />
-              Re-index
-            </Button>
+            <div className="flex items-center gap-2">
+              <div className="flex-1">
+                <Button
+                  size="sm"
+                  className="w-full bg-rail-fade hover:opacity-90 gap-1.5 h-7 text-xs"
+                  tabIndex={-1}
+                >
+                  <ArrowRight className="h-3 w-3" />
+                  View Details
+                </Button>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleRestart}
+                disabled={loading}
+                className="h-7 gap-1.5 px-2 text-xs"
+              >
+                <RotateCw className="h-3 w-3" />
+                Re-index
+              </Button>
+            </div>
           </div>
         )}
 
@@ -121,11 +132,15 @@ export function RepoCard({ repo }: { repo: RepoRecord }) {
               className="h-7 gap-1.5 text-xs"
             >
               <RotateCw className="h-3.5 w-3.5" />
-              Restart Indexing
+              Re-index
             </Button>
           </>
         )}
       </div>
-    </Link>
   )
+
+  if (status === "ready") {
+    return <Link href={`/repos/${repo.id}`}>{card}</Link>
+  }
+  return card
 }

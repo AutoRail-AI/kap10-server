@@ -1,6 +1,7 @@
 "use client"
 
 import { Plus } from "lucide-react"
+import { useRouter } from "next/navigation"
 import { useState } from "react"
 import { EmptyStateRepos } from "@/components/dashboard/empty-state-repos"
 import { RepoCard } from "@/components/dashboard/repo-card"
@@ -19,6 +20,7 @@ export function ReposList({
   githubAccountLogin?: string | null
   installHref?: string
 }) {
+  const router = useRouter()
   const [modalOpen, setModalOpen] = useState(false)
 
   const handleConnect = async (repos: Array<{ githubRepoId: number; branch: string }>) => {
@@ -27,7 +29,7 @@ export function ReposList({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repos }),
     })
-    window.location.reload()
+    router.refresh()
   }
 
   return (

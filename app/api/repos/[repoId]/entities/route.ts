@@ -30,7 +30,7 @@ export const GET = withAuth(async (req: NextRequest) => {
       id: e.id,
       name: e.name,
       kind: e.kind,
-      line: e.line,
+      line: (e as { start_line?: number }).start_line ?? 0,
       signature: (e as { signature?: string }).signature,
     })),
   })

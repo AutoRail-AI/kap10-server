@@ -1,4 +1,5 @@
 import { headers } from "next/headers"
+import Image from "next/image"
 import { redirect } from "next/navigation"
 import { DashboardAccountProvider } from "@/components/dashboard/dashboard-account-provider"
 import { DashboardNav } from "@/components/dashboard/dashboard-nav"
@@ -19,6 +20,11 @@ export default async function DashboardLayout({
     <DashboardAccountProvider>
       <div className="flex min-h-screen bg-background">
         <aside className="glass-panel border-border flex w-56 flex-col border-r">
+          <div className="flex items-center gap-2.5 px-4 py-4">
+            <Image src="/autorail.svg" alt="autorail" width={32} height={32} className="h-7 w-7" />
+            <span className="font-grotesk text-sm font-semibold tracking-tight text-foreground">kap10</span>
+          </div>
+          <div className="mx-3 border-t border-border" />
           <DashboardNav />
           <div className="border-t border-border p-2">
             <UserProfileMenu serverUser={session.user} />

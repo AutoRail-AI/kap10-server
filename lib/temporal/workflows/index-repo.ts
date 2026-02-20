@@ -37,6 +37,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
   setHandler(getProgressQuery, () => progress)
 
   try {
+    // Step 1: Clone repo, detect languages, detect monorepo roots
     const workspace = await heavyActivities.prepareWorkspace({
       orgId: input.orgId,
       repoId: input.repoId,
@@ -46,20 +47,26 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     })
     progress = 25
 
+    // Step 2: Run SCIP indexers for each detected language
     const scip = await heavyActivities.runSCIP({
       workspacePath: workspace.workspacePath,
       orgId: input.orgId,
       repoId: input.repoId,
+      languages: workspace.languages,
+      workspaceRoots: workspace.workspaceRoots,
     })
     progress = 50
 
+    // Step 3: Parse remaining files with tree-sitter/regex fallback
     const parse = await heavyActivities.parseRest({
       workspacePath: workspace.workspacePath,
       orgId: input.orgId,
       repoId: input.repoId,
+      coveredFiles: scip.coveredFiles,
     })
     progress = 75
 
+    // Merge entities and edges from both activities
     const allEntities = [...scip.entities, ...parse.extraEntities].map((e) => ({
       ...e,
       org_id: e.org_id ?? input.orgId,
@@ -74,6 +81,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     const functionCount = allEntities.filter((e) => e.kind === "function").length
     const classCount = allEntities.filter((e) => e.kind === "class").length
 
+    // Step 4: Write to ArangoDB and update status
     const result = await lightActivities.writeToArango({
       orgId: input.orgId,
       repoId: input.repoId,

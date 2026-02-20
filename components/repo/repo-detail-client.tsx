@@ -1,8 +1,9 @@
 "use client"
 
 import { ChevronRight, FileCode, FolderOpen } from "lucide-react"
-import Link from "next/link"
-import { useState } from "react"
+import { useMemo, useState } from "react"
+import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 
 interface TreeNode {
@@ -14,7 +15,7 @@ interface TreeNode {
 
 export function RepoDetailClient({
   repoId,
-  repoName,
+  repoName: _repoName,
   initialTree,
   orgId: _orgId,
 }: {
@@ -33,6 +34,28 @@ export function RepoDetailClient({
   } | null>(null)
   const [loadingEntities, setLoadingEntities] = useState(false)
   const [loadingDetail, setLoadingDetail] = useState(false)
+  const [fileFilter, setFileFilter] = useState("")
+
+  const filteredTree = useMemo(() => {
+    if (!fileFilter.trim()) return initialTree
+    const lower = fileFilter.toLowerCase()
+    function filterNodes(nodes: TreeNode[]): TreeNode[] {
+      return nodes.reduce<TreeNode[]>((acc, node) => {
+        if (node.type === "file") {
+          if (node.name.toLowerCase().includes(lower) || node.path.toLowerCase().includes(lower)) {
+            acc.push(node)
+          }
+        } else if (node.children) {
+          const filtered = filterNodes(node.children)
+          if (filtered.length > 0) {
+            acc.push({ ...node, children: filtered })
+          }
+        }
+        return acc
+      }, [])
+    }
+    return filterNodes(initialTree)
+  }, [initialTree, fileFilter])
 
   const onSelectFile = async (path: string) => {
     setSelectedFile(path)
@@ -42,7 +65,13 @@ export function RepoDetailClient({
     try {
       const res = await fetch(`/api/repos/${repoId}/entities?file=${encodeURIComponent(path)}`)
       const body = (await res.json()) as { data?: { entities?: { id: string; name: string; kind: string; line: number; signature?: string }[] } }
-      setEntities(body?.data?.entities ?? [])
+      const raw = body?.data?.entities ?? []
+      const seen = new Set<string>()
+      setEntities(raw.filter((e) => {
+        if (seen.has(e.id)) return false
+        seen.add(e.id)
+        return true
+      }))
     } finally {
       setLoadingEntities(false)
     }
@@ -61,76 +90,108 @@ export function RepoDetailClient({
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Link href="/" className="text-electric-cyan hover:underline">Repositories</Link>
-        <span>/</span>
-        <span className="text-foreground">{repoName}</span>
-      </div>
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="glass-panel border-border rounded-lg border p-4">
-          <h3 className="font-grotesk text-sm font-semibold text-foreground mb-2">Files</h3>
-          <FileTree nodes={initialTree} selectedPath={selectedFile} onSelect={onSelectFile} />
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      {/* Files panel */}
+      <div className="glass-panel border-border rounded-lg border overflow-hidden">
+        <div className="border-b border-border px-4 py-2.5">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Files</h3>
         </div>
-        <div className="glass-panel border-border rounded-lg border p-4">
-          <h3 className="font-grotesk text-sm font-semibold text-foreground mb-2">
+        <div className="p-3">
+          <Input
+            className="h-7 text-xs mb-2"
+            placeholder="Filter files..."
+            value={fileFilter}
+            onChange={(e) => setFileFilter(e.target.value)}
+          />
+          <div className="max-h-[60vh] overflow-y-auto">
+            <FileTree nodes={filteredTree} selectedPath={selectedFile} onSelect={onSelectFile} />
+          </div>
+        </div>
+      </div>
+
+      {/* Entities panel */}
+      <div className="glass-panel border-border rounded-lg border overflow-hidden">
+        <div className="border-b border-border px-4 py-2.5">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             {selectedFile ? "Entities" : "Select a file"}
           </h3>
+        </div>
+        <div className="p-3">
           {selectedFile && (
             loadingEntities ? (
               <Skeleton className="h-32 w-full" />
             ) : (
-              <ul className="space-y-1">
+              <ul className="space-y-1 max-h-[60vh] overflow-y-auto">
                 {entities.map((e) => (
                   <li key={e.id}>
                     <button
                       type="button"
                       onClick={() => onSelectEntity(e.id)}
-                      className={`w-full text-left rounded px-2 py-1 text-sm font-mono ${
+                      className={`w-full text-left rounded px-2 py-1.5 text-xs flex items-center gap-2 ${
                         selectedEntityId === e.id ? "bg-primary/20 text-foreground" : "text-muted-foreground hover:bg-muted"
                       }`}
                     >
-                      {e.name} ({e.kind}) L{e.line}
+                      <Badge variant="outline" className="h-4 px-1 text-[9px] font-normal flex-shrink-0">
+                        {e.kind}
+                      </Badge>
+                      <span className="font-mono text-xs truncate flex-1">{e.name}</span>
+                      <span className="text-[10px] text-muted-foreground flex-shrink-0">L{e.line}</span>
                     </button>
                   </li>
                 ))}
                 {entities.length === 0 && !loadingEntities && (
-                  <p className="text-muted-foreground text-xs">No entities in this file.</p>
+                  <p className="text-muted-foreground text-xs py-2">No entities in this file.</p>
                 )}
               </ul>
             )
           )}
         </div>
-        <div className="glass-panel border-border rounded-lg border p-4">
-          <h3 className="font-grotesk text-sm font-semibold text-foreground mb-2">Detail</h3>
+      </div>
+
+      {/* Detail panel */}
+      <div className="glass-panel border-border rounded-lg border overflow-hidden">
+        <div className="border-b border-border px-4 py-2.5">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Detail</h3>
+        </div>
+        <div className="p-3">
           {entityDetail ? (
             loadingDetail ? (
               <Skeleton className="h-32 w-full" />
             ) : (
-              <div className="space-y-3 text-sm">
+              <div className="space-y-4 text-sm">
                 <div>
-                  <p className="font-mono text-foreground font-medium">{entityDetail.entity.name}</p>
-                  <p className="text-muted-foreground text-xs">{entityDetail.entity.kind} · {entityDetail.entity.file_path}:{entityDetail.entity.line}</p>
+                  <p className="font-mono text-xs text-foreground font-medium">{entityDetail.entity.name}</p>
+                  <p className="text-muted-foreground text-[10px] mt-0.5">
+                    {entityDetail.entity.kind} · {entityDetail.entity.file_path}:{entityDetail.entity.line}
+                  </p>
                   {entityDetail.entity.signature && (
-                    <pre className="font-mono text-xs mt-1 break-all text-muted-foreground">{entityDetail.entity.signature}</pre>
+                    <div className="bg-muted/20 rounded-md p-2 font-mono text-xs mt-2 break-all text-muted-foreground">
+                      {entityDetail.entity.signature}
+                    </div>
                   )}
                 </div>
                 {entityDetail.callers.length > 0 && (
                   <div>
-                    <p className="text-muted-foreground text-xs font-medium">Callers</p>
-                    <ul className="mt-0.5 space-y-0.5">
+                    <p className="text-muted-foreground text-[10px] font-medium uppercase tracking-wider mb-1">Callers</p>
+                    <ul className="space-y-1">
                       {entityDetail.callers.slice(0, 5).map((c) => (
-                        <li key={c.id} className="font-mono text-xs text-foreground">{c.name} ({c.file_path})</li>
+                        <li key={c.id} className="flex items-center gap-2">
+                          <span className="font-mono text-xs text-foreground">{c.name}</span>
+                          <span className="font-mono text-[10px] text-muted-foreground truncate">{c.file_path}</span>
+                        </li>
                       ))}
                     </ul>
                   </div>
                 )}
                 {entityDetail.callees.length > 0 && (
                   <div>
-                    <p className="text-muted-foreground text-xs font-medium">Callees</p>
-                    <ul className="mt-0.5 space-y-0.5">
+                    <p className="text-muted-foreground text-[10px] font-medium uppercase tracking-wider mb-1">Callees</p>
+                    <ul className="space-y-1">
                       {entityDetail.callees.slice(0, 5).map((c) => (
-                        <li key={c.id} className="font-mono text-xs text-foreground">{c.name} ({c.file_path})</li>
+                        <li key={c.id} className="flex items-center gap-2">
+                          <span className="font-mono text-xs text-foreground">{c.name}</span>
+                          <span className="font-mono text-[10px] text-muted-foreground truncate">{c.file_path}</span>
+                        </li>
                       ))}
                     </ul>
                   </div>
@@ -138,7 +199,7 @@ export function RepoDetailClient({
               </div>
             )
           ) : (
-            <p className="text-muted-foreground text-xs">Select an entity.</p>
+            <p className="text-muted-foreground text-xs py-2">Select an entity to see details.</p>
           )}
         </div>
       </div>

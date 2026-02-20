@@ -47,19 +47,8 @@ async function ConnectionsContent() {
 
 export default function ConnectionsPage() {
   return (
-    <div className="space-y-6 py-6 animate-fade-in">
-      <div className="space-y-1">
-        <h1 className="font-grotesk text-lg font-semibold text-foreground">
-          GitHub Connections
-        </h1>
-        <p className="text-sm text-foreground mt-0.5">
-          Manage GitHub accounts and orgs connected to this organization (your
-          account context). Repo context is the set of repos you onboard here.
-        </p>
-      </div>
-      <Suspense fallback={<Skeleton className="h-[300px] w-full" />}>
-        <ConnectionsContent />
-      </Suspense>
-    </div>
+    <Suspense fallback={<Skeleton className="h-[300px] w-full" />}>
+      <ConnectionsContent />
+    </Suspense>
   )
 }

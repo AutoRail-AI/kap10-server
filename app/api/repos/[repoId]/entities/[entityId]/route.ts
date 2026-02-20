@@ -35,7 +35,7 @@ export const GET = withAuth(async (req: NextRequest) => {
       name: entity.name,
       kind: entity.kind,
       file_path: entity.file_path,
-      line: entity.line,
+      line: (entity as { start_line?: number }).start_line ?? 0,
       signature: (entity as { signature?: string }).signature,
     },
     callers: callers.map((c) => ({ id: c.id, name: c.name, file_path: c.file_path, kind: c.kind })),

@@ -1,12 +1,14 @@
 import { headers } from "next/headers"
+import Link from "next/link"
 import { Suspense } from "react"
-import { EmptyStateRepos } from "@/components/dashboard/empty-state-repos"
-import { ReposList } from "@/components/dashboard/repos-list"
+import { ArrowRight, FileCode, FolderGit2, GitBranch, Layers, Plus, Settings } from "lucide-react"
+import { QuickActionCard, RepoRowCompact, StatCard } from "@/components/dashboard/overview-stats"
+import { Card, CardContent } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { auth, listOrganizations } from "@/lib/auth"
 import { getContainer } from "@/lib/di/container"
 
-async function DashboardContent() {
+async function OverviewContent() {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session) return null
 
@@ -14,8 +16,7 @@ async function DashboardContent() {
   try {
     organizations = await listOrganizations(await headers())
   } catch {
-    // Edge case: org listing failed — show empty repos state
-    return <EmptyStateRepos />
+    organizations = []
   }
 
   const activeOrgId = organizations[0]?.id
@@ -29,62 +30,104 @@ async function DashboardContent() {
     container.relationalStore.getInstallations(activeOrgId),
   ])
 
-  if (repos.length === 0 && installations.length === 0) {
-    return (
-      <EmptyStateRepos installHref={`/api/github/install?orgId=${encodeURIComponent(activeOrgId)}`} />
-    )
-  }
-
-  const githubAccounts = installations.map((i) => `@${i.accountLogin}`).join(", ")
+  const totalFiles = repos.reduce((sum: number, r) => sum + (r.fileCount ?? 0), 0)
+  const totalEntities = repos.reduce((sum: number, r) => sum + (r.functionCount ?? 0) + (r.classCount ?? 0), 0)
+  const totalConnections = installations.length
+  const recentRepos = repos.slice(0, 5)
 
   return (
     <>
-      <div className="flex items-center justify-between">
-        <div className="space-y-1">
-          <h1 className="font-grotesk text-lg font-semibold text-foreground">
-            Repositories
-          </h1>
-          <p className="text-sm text-foreground mt-0.5">
-            Connect and manage your repositories for code intelligence.
-            {githubAccounts && (
-              <span className="ml-1.5 text-muted-foreground">
-                (GitHub: {githubAccounts})
-              </span>
+      {/* Stats grid */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard
+          label="Repositories"
+          value={repos.length}
+          detail={`${repos.filter((r) => r.status === "ready").length} indexed`}
+          icon={FolderGit2}
+        />
+        <StatCard
+          label="Files Indexed"
+          value={totalFiles.toLocaleString()}
+          detail="Across all repos"
+          icon={FileCode}
+        />
+        <StatCard
+          label="Entities"
+          value={totalEntities.toLocaleString()}
+          detail="Functions & classes"
+          icon={Layers}
+        />
+        <StatCard
+          label="Connections"
+          value={totalConnections}
+          detail={`GitHub ${totalConnections === 1 ? "account" : "accounts"}`}
+          icon={GitBranch}
+        />
+      </div>
+
+      {/* Two-column layout */}
+      <div className="grid gap-6 lg:grid-cols-3">
+        {/* Recent Repositories */}
+        <Card className="glass-card border-border lg:col-span-2">
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-grotesk text-sm font-semibold text-foreground">Recent Repositories</h2>
+              <Link href="/repos" className="text-xs text-electric-cyan hover:underline flex items-center gap-1">
+                View all <ArrowRight className="h-3 w-3" />
+              </Link>
+            </div>
+            {recentRepos.length > 0 ? (
+              <div className="-mx-3 divide-y divide-border">
+                {recentRepos.map((repo) => (
+                  <RepoRowCompact key={repo.id} repo={repo} />
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground py-4 text-center">
+                No repositories yet. Connect GitHub to get started.
+              </p>
             )}
-          </p>
+          </CardContent>
+        </Card>
+
+        {/* Quick Actions */}
+        <div className="space-y-3">
+          <h2 className="font-grotesk text-sm font-semibold text-foreground">Quick Actions</h2>
+          <QuickActionCard
+            icon={Plus}
+            title="Add Repository"
+            description="Connect repos from GitHub"
+            href="/repos"
+          />
+          <QuickActionCard
+            icon={GitBranch}
+            title="Manage Connections"
+            description="GitHub accounts & orgs"
+            href="/settings/connections"
+          />
+          <QuickActionCard
+            icon={Settings}
+            title="Org Settings"
+            description="Members & configuration"
+            href="/settings"
+          />
         </div>
       </div>
-      <ReposList
-        repos={repos}
-        hasInstallation={installations.length > 0}
-        githubAccountLogin={installations[0]?.accountLogin ?? null}
-        installHref={`/api/github/install?orgId=${encodeURIComponent(activeOrgId)}`}
-      />
     </>
   )
 }
 
-export default async function DashboardPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ error?: string }>
-}) {
-  const params = await searchParams
+export default async function OverviewPage() {
   return (
     <div className="space-y-6 py-6 animate-fade-in">
-      {params.error === "no_org_context" && (
-        <div
-          role="alert"
-          className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-foreground"
-        >
-          <p>
-            Could not link GitHub. Please ensure you have an active organization
-            selected, then try connecting GitHub again.
-          </p>
-        </div>
-      )}
-      <Suspense fallback={<Skeleton className="h-[200px] w-full" />}>
-        <DashboardContent />
+      <div className="space-y-1">
+        <h1 className="font-grotesk text-lg font-semibold text-foreground">Overview</h1>
+        <p className="text-sm text-foreground mt-0.5">
+          Your code intelligence platform at a glance.
+        </p>
+      </div>
+      <Suspense fallback={<Skeleton className="h-[400px] w-full" />}>
+        <OverviewContent />
       </Suspense>
     </div>
   )

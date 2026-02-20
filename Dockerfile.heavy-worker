@@ -23,6 +23,9 @@ COPY package.json pnpm-lock.yaml ./
 COPY patches ./patches
 RUN pnpm install
 
+# Pre-install scip-typescript globally so it doesn't npx-download each run
+RUN npx scip-typescript --version || true
+
 COPY . .
 
 # Generate Prisma client for the container's platform
@@ -31,6 +34,5 @@ RUN pnpm prisma generate
 # Workspace directory for cloned repos (mounted as volume in docker-compose)
 RUN mkdir -p /data/workspaces
 
-# SCIP: use npx at runtime (e.g. npx scip-typescript) or install CLI here when needed
 # CMD runs temporal worker
 CMD ["pnpm", "temporal:worker:heavy"]

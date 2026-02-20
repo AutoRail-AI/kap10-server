@@ -45,6 +45,40 @@ const FILE_PATH_INDEX_FIELDS = ["org_id", "repo_id", "file_path"]
 const ENTITY_COLLECTIONS_FOR_FILE = ["functions", "classes", "interfaces", "variables"] as const
 const BATCH_SIZE = 1000
 
+/** Map singular entity kind (from indexer) → plural ArangoDB collection name. */
+const KIND_TO_COLLECTION: Record<string, string> = {
+  file: "files",
+  function: "functions",
+  method: "functions",
+  class: "classes",
+  interface: "interfaces",
+  variable: "variables",
+  type: "variables",
+  enum: "variables",
+  struct: "classes",
+  module: "files",
+  namespace: "files",
+  decorator: "functions",
+  directory: "files",
+  // Plural forms (in case they're used directly)
+  files: "files",
+  functions: "functions",
+  classes: "classes",
+  interfaces: "interfaces",
+  variables: "variables",
+}
+
+/**
+ * Ensure a vertex handle has the `collection/key` format required by ArangoDB edges.
+ * If the handle is already qualified (contains `/`), return as-is.
+ * Otherwise, look up the entity's kind to determine the collection, or default to `functions/`.
+ */
+function qualifyVertexHandle(handle: string): string {
+  if (handle.includes("/")) return handle
+  // Bare key — default to functions (most common entity type)
+  return `functions/${handle}`
+}
+
 function getConfig() {
   const url = process.env.ARANGODB_URL ?? "http://localhost:8529"
   const password = process.env.ARANGO_ROOT_PASSWORD ?? "changeme"
@@ -142,7 +176,8 @@ export class ArangoGraphStore implements IGraphStore {
   }
   async getEntity(orgId: string, entityId: string): Promise<EntityDoc | null> {
     const db = await getDbAsync()
-    for (const collName of ENTITY_COLLECTIONS_FOR_FILE) {
+    const allEntityCollections = ["files", ...ENTITY_COLLECTIONS_FOR_FILE] as const
+    for (const collName of allEntityCollections) {
       const col = db.collection(collName)
       try {
         const doc = await col.document(entityId)
@@ -208,7 +243,7 @@ export class ArangoGraphStore implements IGraphStore {
         `
         FOR doc IN @@coll
           FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.file_path == @filePath
-          SORT doc.line ASC
+          SORT doc.start_line ASC
           RETURN doc
         `,
         { ...bindVars, "@coll": collName }
@@ -219,8 +254,15 @@ export class ArangoGraphStore implements IGraphStore {
         results.push({ id: _key, ...rest } as EntityDoc)
       }
     }
-    results.sort((a, b) => (Number(a.line) ?? 0) - (Number(b.line) ?? 0))
-    return results
+    // Deduplicate by id (same entity may appear in multiple collections due to kind mapping)
+    const seen = new Set<string>()
+    const deduped = results.filter((e) => {
+      if (seen.has(e.id)) return false
+      seen.add(e.id)
+      return true
+    })
+    deduped.sort((a, b) => (Number(a.start_line) || 0) - (Number(b.start_line) || 0))
+    return deduped
   }
   async upsertRule(_orgId: string, _rule: RuleDoc): Promise<void> {
     return Promise.resolve()
@@ -251,8 +293,8 @@ export class ArangoGraphStore implements IGraphStore {
     const db = await getDbAsync()
     const byKind = new Map<string, EntityDoc[]>()
     for (const e of entities) {
-      const kind = (e.kind as string) ?? "functions"
-      const coll = ["files", "functions", "classes", "interfaces", "variables"].includes(kind) ? kind : "functions"
+      const kind = (e.kind as string) ?? "function"
+      const coll = KIND_TO_COLLECTION[kind] ?? "functions"
       if (!byKind.has(coll)) byKind.set(coll, [])
       const key = (e.id ?? (e as { _key?: string })._key) as string
       byKind.get(coll)!.push({ ...e, _key: key, org_id: e.org_id ?? orgId } as EntityDoc & { _key: string })
@@ -283,8 +325,8 @@ export class ArangoGraphStore implements IGraphStore {
       const col = db.collection(collName)
       for (let i = 0; i < list.length; i += BATCH_SIZE) {
         const batch = list.slice(i, i + BATCH_SIZE).map((e) => ({
-          _from: e._from,
-          _to: e._to,
+          _from: qualifyVertexHandle(e._from),
+          _to: qualifyVertexHandle(e._to),
           org_id: e.org_id,
           repo_id: e.repo_id,
           kind: e.kind,
