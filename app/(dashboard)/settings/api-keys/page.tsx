@@ -1,19 +1,51 @@
+import { headers } from "next/headers"
+import { redirect } from "next/navigation"
 import { Key } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { auth } from "@/lib/auth"
+import { getActiveOrgId } from "@/lib/api/get-active-org"
+import { getContainer } from "@/lib/di/container"
+import { ApiKeysSettings } from "./api-keys-settings"
 
-export default function ApiKeysPage() {
+export default async function ApiKeysPage() {
+  const session = await auth.api.getSession({ headers: await headers() })
+  if (!session) redirect("/login")
+
+  let orgId: string
+  try {
+    orgId = await getActiveOrgId()
+  } catch {
+    redirect("/")
+  }
+
+  const container = getContainer()
+  const allKeys = await container.relationalStore.listApiKeys(orgId)
+  const repos = await container.relationalStore.getRepos(orgId)
+
+  const repoMap = new Map(repos.map((r) => [r.id, r]))
+
+  const keys = allKeys.map((k) => ({
+    id: k.id,
+    keyPrefix: k.keyPrefix,
+    name: k.name,
+    repoId: k.repoId,
+    repoName: repoMap.get(k.repoId)?.fullName ?? k.repoId,
+    scopes: k.scopes,
+    lastUsedAt: k.lastUsedAt?.toISOString() ?? null,
+    revokedAt: k.revokedAt?.toISOString() ?? null,
+    createdAt: k.createdAt.toISOString(),
+  }))
+
   return (
-    <div className="flex flex-col items-center justify-center py-16 text-center">
-      <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-muted/30 mb-4">
-        <Key className="h-5 w-5 text-muted-foreground" />
+    <div className="space-y-6 py-6 animate-fade-in">
+      <div className="space-y-1">
+        <h1 className="font-grotesk text-lg font-semibold text-foreground">API Keys</h1>
+        <p className="text-sm text-muted-foreground">
+          Manage API keys across all repositories in your organization.
+        </p>
       </div>
-      <h2 className="font-grotesk text-base font-semibold text-foreground">API Keys</h2>
-      <p className="text-sm text-muted-foreground mt-1 max-w-sm">
-        Generate API keys to integrate kap10 with your tools, CI/CD pipelines, and MCP clients.
-      </p>
-      <Badge variant="outline" className="mt-4 text-xs">
-        Coming Soon
-      </Badge>
+
+      <ApiKeysSettings initialKeys={keys} />
     </div>
   )
 }

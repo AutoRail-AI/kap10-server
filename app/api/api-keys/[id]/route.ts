@@ -5,6 +5,7 @@
 import { headers } from "next/headers"
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
+import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 
 export async function DELETE(
@@ -16,8 +17,10 @@ export async function DELETE(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const orgId = (session.user as { organizationId?: string }).organizationId
-  if (!orgId) {
+  let orgId: string
+  try {
+    orgId = await getActiveOrgId()
+  } catch {
     return NextResponse.json({ error: "No organization context" }, { status: 400 })
   }
 

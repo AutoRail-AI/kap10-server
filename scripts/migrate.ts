@@ -37,17 +37,32 @@ async function getAppliedMigrations(client: Pool): Promise<Set<string>> {
 }
 
 async function runMigration(client: Pool, name: string, sql: string): Promise<void> {
-  await client.query("BEGIN")
-  try {
+  // ALTER TYPE ... ADD VALUE cannot run inside a transaction in PostgreSQL < 16.
+  // Also, CREATE EXTENSION may need to commit before the type is visible.
+  // Detect these cases and run without a wrapping transaction.
+  const needsNoTx =
+    /ALTER\s+TYPE\s+.*\bADD\s+VALUE\b/i.test(sql) ||
+    /CREATE\s+EXTENSION\b/i.test(sql)
+
+  if (needsNoTx) {
     await client.query(sql)
     await client.query(
       `INSERT INTO public.${MIGRATION_TABLE} (name) VALUES ($1)`,
       [name]
     )
-    await client.query("COMMIT")
-  } catch (err) {
-    await client.query("ROLLBACK")
-    throw err
+  } else {
+    await client.query("BEGIN")
+    try {
+      await client.query(sql)
+      await client.query(
+        `INSERT INTO public.${MIGRATION_TABLE} (name) VALUES ($1)`,
+        [name]
+      )
+      await client.query("COMMIT")
+    } catch (err) {
+      await client.query("ROLLBACK")
+      throw err
+    }
   }
 }
 

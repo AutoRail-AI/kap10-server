@@ -5,11 +5,14 @@
 CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions;
 
 -- Add new RepoStatus enum values for embedding pipeline
+-- NOTE: ALTER TYPE ... ADD VALUE cannot run inside a transaction in PG < 16.
+-- The migration runner must handle this by running outside BEGIN/COMMIT.
 ALTER TYPE kap10."RepoStatus" ADD VALUE IF NOT EXISTS 'embedding' AFTER 'indexing';
 ALTER TYPE kap10."RepoStatus" ADD VALUE IF NOT EXISTS 'embed_failed' AFTER 'error';
 
 -- Create entity_embeddings table in kap10 schema
 -- model_version enables zero-downtime blue/green re-embedding on model upgrades
+-- Use fully-qualified extensions.vector to avoid search_path issues
 CREATE TABLE IF NOT EXISTS kap10.entity_embeddings (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id          TEXT NOT NULL,
@@ -20,7 +23,7 @@ CREATE TABLE IF NOT EXISTS kap10.entity_embeddings (
   file_path       TEXT NOT NULL,
   text_content    TEXT NOT NULL,
   model_version   TEXT NOT NULL DEFAULT 'nomic-v1.5-768',
-  embedding       vector(768) NOT NULL,
+  embedding       extensions.vector(768) NOT NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -36,7 +39,7 @@ CREATE TABLE IF NOT EXISTS kap10.entity_embeddings (
 -- HNSW index for cosine distance (approximate nearest-neighbor search)
 CREATE INDEX IF NOT EXISTS idx_entity_embeddings_hnsw
   ON kap10.entity_embeddings
-  USING hnsw (embedding vector_cosine_ops)
+  USING hnsw (embedding extensions.vector_cosine_ops)
   WITH (m = 16, ef_construction = 64);
 
 -- Composite index for tenant-scoped queries

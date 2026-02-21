@@ -5,6 +5,7 @@ import { notFound, redirect } from "next/navigation"
 import { ConnectIde } from "@/components/repo/connect-ide"
 import { LocalSetupInstructions } from "@/components/repo/local-setup-instructions"
 import { auth } from "@/lib/auth"
+import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 
 export default async function ConnectIdePage({
@@ -16,9 +17,12 @@ export default async function ConnectIdePage({
   if (!session) redirect("/login")
 
   const { repoId } = await params
-  const user = session.user as { id: string; organizationId?: string }
-  const orgId = user.organizationId
-  if (!orgId) redirect("/")
+  let orgId: string
+  try {
+    orgId = await getActiveOrgId()
+  } catch {
+    redirect("/")
+  }
 
   const container = getContainer()
   const repo = await container.relationalStore.getRepo(orgId, repoId)

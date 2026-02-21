@@ -6,6 +6,7 @@
 import { headers } from "next/headers"
 import { NextResponse } from "next/server"
 import { auth } from "@/lib/auth"
+import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 import { generateApiKey } from "@/lib/mcp/auth"
 
@@ -15,8 +16,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const orgId = (session.user as { organizationId?: string }).organizationId
-  if (!orgId) {
+  let orgId: string
+  try {
+    orgId = await getActiveOrgId()
+  } catch {
     return NextResponse.json({ error: "No organization context" }, { status: 400 })
   }
 
@@ -75,8 +78,10 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
-  const orgId = (session.user as { organizationId?: string }).organizationId
-  if (!orgId) {
+  let orgId: string
+  try {
+    orgId = await getActiveOrgId()
+  } catch {
     return NextResponse.json({ error: "No organization context" }, { status: 400 })
   }
 
