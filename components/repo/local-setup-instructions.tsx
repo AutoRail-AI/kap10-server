@@ -104,7 +104,7 @@ export function LocalSetupInstructions({ repoId, repoName, serverUrl }: LocalSet
         <div className="space-y-3">
           <div className="space-y-1.5">
             <p className="text-xs font-medium text-foreground">1. Install CLI</p>
-            <CodeBlock code="npm install -g @kap10/cli" />
+            <CodeBlock code="npm install -g @autorail/kap10" />
           </div>
 
           <div className="space-y-1.5">

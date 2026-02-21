@@ -23,30 +23,32 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "No organization context" }, { status: 400 })
   }
 
-  const body = (await request.json()) as { repoId: string; name: string; scopes?: string[] }
-  if (!body.repoId || !body.name) {
-    return NextResponse.json({ error: "repoId and name are required" }, { status: 400 })
+  const body = (await request.json()) as { repoId?: string; name: string; scopes?: string[] }
+  if (!body.name) {
+    return NextResponse.json({ error: "name is required" }, { status: 400 })
   }
 
   const container = getContainer()
 
-  // Verify repo exists and belongs to org
-  const repo = await container.relationalStore.getRepo(orgId, body.repoId)
-  if (!repo) {
-    return NextResponse.json({ error: "Repository not found" }, { status: 404 })
-  }
-  if (repo.status !== "ready") {
-    return NextResponse.json({ error: "Repository must be fully indexed before creating API keys" }, { status: 400 })
-  }
+  // If repo-scoped, verify repo exists and belongs to org
+  if (body.repoId) {
+    const repo = await container.relationalStore.getRepo(orgId, body.repoId)
+    if (!repo) {
+      return NextResponse.json({ error: "Repository not found" }, { status: 404 })
+    }
+    if (repo.status !== "ready") {
+      return NextResponse.json({ error: "Repository must be fully indexed before creating API keys" }, { status: 400 })
+    }
 
-  // Check API key limit (10 per repo)
-  const existingKeys = await container.relationalStore.listApiKeys(orgId, body.repoId)
-  const activeKeys = existingKeys.filter((k) => !k.revokedAt)
-  if (activeKeys.length >= 10) {
-    return NextResponse.json(
-      { error: "API key limit reached (10 active keys per repository)" },
-      { status: 400 }
-    )
+    // Check API key limit (10 per repo)
+    const existingKeys = await container.relationalStore.listApiKeys(orgId, body.repoId)
+    const activeKeys = existingKeys.filter((k) => !k.revokedAt)
+    if (activeKeys.length >= 10) {
+      return NextResponse.json(
+        { error: "API key limit reached (10 active keys per repository)" },
+        { status: 400 }
+      )
+    }
   }
 
   // Generate and store API key
@@ -55,7 +57,7 @@ export async function POST(request: Request) {
 
   const apiKey = await container.relationalStore.createApiKey({
     organizationId: orgId,
-    repoId: body.repoId,
+    repoId: body.repoId ?? null,
     name: body.name,
     keyPrefix: prefix,
     keyHash: hash,

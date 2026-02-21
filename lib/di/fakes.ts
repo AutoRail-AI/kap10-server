@@ -331,15 +331,22 @@ export class InMemoryRelationalStore implements IRelationalStore {
   // Phase 2: API key methods
   async createApiKey(data: {
     organizationId: string
-    repoId: string
+    repoId?: string | null
     name: string
     keyPrefix: string
     keyHash: string
     scopes: string[]
+    isDefault?: boolean
   }): Promise<ApiKeyRecord> {
     const rec: ApiKeyRecord = {
       id: `key-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      ...data,
+      organizationId: data.organizationId,
+      repoId: data.repoId ?? null,
+      name: data.name,
+      keyPrefix: data.keyPrefix,
+      keyHash: data.keyHash,
+      scopes: data.scopes,
+      isDefault: data.isDefault ?? false,
       lastUsedAt: null,
       revokedAt: null,
       createdAt: new Date(),
@@ -350,6 +357,9 @@ export class InMemoryRelationalStore implements IRelationalStore {
   }
   async getApiKeyByHash(keyHash: string): Promise<ApiKeyRecord | null> {
     return this.apiKeys.find((k) => k.keyHash === keyHash && !k.revokedAt) ?? null
+  }
+  async getDefaultApiKey(orgId: string): Promise<ApiKeyRecord | null> {
+    return this.apiKeys.find((k) => k.organizationId === orgId && k.isDefault && !k.revokedAt) ?? null
   }
   async revokeApiKey(id: string): Promise<void> {
     const k = this.apiKeys.find((x) => x.id === id)

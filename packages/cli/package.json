@@ -1,5 +1,5 @@
 {
-  "name": "@kap10/cli",
+  "name": "@autorail/kap10",
   "version": "0.1.0",
   "description": "Local-first code intelligence CLI for kap10",
   "type": "module",

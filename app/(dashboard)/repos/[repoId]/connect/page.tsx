@@ -44,7 +44,13 @@ export default async function ConnectIdePage({
     createdAt: k.createdAt.toISOString(),
   }))
 
-  const mcpServerUrl = process.env.MCP_SERVER_URL ?? "https://mcp.kap10.dev"
+  const isDev = process.env.NODE_ENV === "development"
+  const mcpPort = process.env.MCP_SERVER_PORT ?? "8787"
+  const mcpServerUrl = process.env.MCP_SERVER_URL
+    ?? (isDev ? `http://localhost:${mcpPort}` : "https://mcp.kap10.dev")
+  const mcpEnvironment = !process.env.MCP_SERVER_URL
+    ? (isDev ? "local" : "production")
+    : "custom"
 
   return (
     <div className="space-y-6 py-6 animate-fade-in">
@@ -76,6 +82,7 @@ export default async function ConnectIdePage({
         repoId={repoId}
         repoName={repo.fullName}
         mcpServerUrl={mcpServerUrl}
+        mcpEnvironment={mcpEnvironment}
         apiKeys={apiKeys}
       />
 

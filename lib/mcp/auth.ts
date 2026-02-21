@@ -176,7 +176,7 @@ async function authenticateApiKey(
   const cached = await cacheStore.get<{
     id: string
     orgId: string
-    repoId: string
+    repoId: string | null
     scopes: string[]
   }>(cacheKey)
 
@@ -187,7 +187,7 @@ async function authenticateApiKey(
       authMode: "api_key",
       userId: "", // API keys don't have a user context
       orgId: cached.orgId,
-      repoId: cached.repoId,
+      repoId: cached.repoId ?? undefined,
       scopes: cached.scopes,
       apiKeyId: cached.id,
     }
@@ -221,7 +221,7 @@ async function authenticateApiKey(
     authMode: "api_key",
     userId: "",
     orgId: apiKey.organizationId,
-    repoId: apiKey.repoId,
+    repoId: apiKey.repoId ?? undefined,
     scopes: apiKey.scopes,
     apiKeyId: apiKey.id,
   }

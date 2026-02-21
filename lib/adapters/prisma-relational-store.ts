@@ -295,20 +295,22 @@ export class PrismaRelationalStore implements IRelationalStore {
 
   async createApiKey(data: {
     organizationId: string
-    repoId: string
+    repoId?: string | null
     name: string
     keyPrefix: string
     keyHash: string
     scopes: string[]
+    isDefault?: boolean
   }): Promise<ApiKeyRecord> {
     const row = await this.prisma.apiKey.create({
       data: {
         organizationId: data.organizationId,
-        repoId: data.repoId,
+        repoId: data.repoId ?? null,
         name: data.name,
         keyPrefix: data.keyPrefix,
         keyHash: data.keyHash,
         scopes: data.scopes,
+        isDefault: data.isDefault ?? false,
       },
     })
     return {
@@ -319,6 +321,7 @@ export class PrismaRelationalStore implements IRelationalStore {
       keyPrefix: row.keyPrefix,
       keyHash: row.keyHash,
       scopes: row.scopes,
+      isDefault: row.isDefault,
       lastUsedAt: row.lastUsedAt,
       revokedAt: row.revokedAt,
       createdAt: row.createdAt,
@@ -339,6 +342,28 @@ export class PrismaRelationalStore implements IRelationalStore {
       keyPrefix: row.keyPrefix,
       keyHash: row.keyHash,
       scopes: row.scopes,
+      isDefault: row.isDefault,
+      lastUsedAt: row.lastUsedAt,
+      revokedAt: row.revokedAt,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }
+  }
+
+  async getDefaultApiKey(orgId: string): Promise<ApiKeyRecord | null> {
+    const row = await this.prisma.apiKey.findFirst({
+      where: { organizationId: orgId, isDefault: true, revokedAt: null },
+    })
+    if (!row) return null
+    return {
+      id: row.id,
+      organizationId: row.organizationId,
+      repoId: row.repoId,
+      name: row.name,
+      keyPrefix: row.keyPrefix,
+      keyHash: row.keyHash,
+      scopes: row.scopes,
+      isDefault: row.isDefault,
       lastUsedAt: row.lastUsedAt,
       revokedAt: row.revokedAt,
       createdAt: row.createdAt,
@@ -369,6 +394,7 @@ export class PrismaRelationalStore implements IRelationalStore {
       keyPrefix: row.keyPrefix,
       keyHash: row.keyHash,
       scopes: row.scopes,
+      isDefault: row.isDefault,
       lastUsedAt: row.lastUsedAt,
       revokedAt: row.revokedAt,
       createdAt: row.createdAt,

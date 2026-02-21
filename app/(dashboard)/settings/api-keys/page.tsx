@@ -29,7 +29,7 @@ export default async function ApiKeysPage() {
     keyPrefix: k.keyPrefix,
     name: k.name,
     repoId: k.repoId,
-    repoName: repoMap.get(k.repoId)?.fullName ?? k.repoId,
+    repoName: k.repoId ? (repoMap.get(k.repoId)?.fullName ?? k.repoId) : "All repositories",
     scopes: k.scopes,
     lastUsedAt: k.lastUsedAt?.toISOString() ?? null,
     revokedAt: k.revokedAt?.toISOString() ?? null,

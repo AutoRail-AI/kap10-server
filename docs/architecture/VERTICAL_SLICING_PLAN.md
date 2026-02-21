@@ -2916,7 +2916,7 @@ A lightweight CLI tool for real-time ledger streaming between the user's local m
 
 ```bash
 # Install
-npm install -g @kap10/cli
+npm install -g @autorail/kap10
 
 # Authenticate
 kap10 auth login
@@ -3181,7 +3181,7 @@ lib/
     rewind.ts              ← revert_to_working_state MCP tool
     timeline.ts            ← get_timeline, mark_working MCP tools
 packages/
-  cli/                     ← @kap10/cli npm package (separate package in monorepo)
+  cli/                     ← @autorail/kap10 npm package (separate package in monorepo)
     src/
       index.ts             ← CLI entry point (commander.js)
       commands/
@@ -5149,6 +5149,12 @@ Phase 5.5: Prompt Ledger + Rewind + Branching                │
  + commit roll-up                                            │
  + CLI-first local ingestion via IStorageProvider)           │
     │                                                        │
+    ▼                                                        │
+Phase 5.6: CLI-First Zero-Friction Onboarding                │
+(+ RFC 8628 device auth + org-level API keys                 │
+ + kap10 connect command + auto IDE config                   │
+ + default key auto-provisioning)                            │
+    │                                                        │
     ├──────────────────┐                                     │
     ▼                  ▼                                     │
 Phase 6: Patterns +    Phase 7: PR Review                    │
@@ -5259,7 +5265,7 @@ Phase 11: Native IDE Integrations        Phase 12: Multiplayer
 
 | Package | Purpose | Phase |
 |---------|---------|-------|
-| `commander` | CLI framework for `@kap10/cli` | 5.5 |
+| `commander` | CLI framework for `@autorail/kap10` | 5.5 |
 | `chokidar` | File watcher for CLI watch mode (ledger streaming) | 5.5 |
 | `archiver` | ZIP creation for `kap10 push` (`.gitignore`-aware codebase packaging) | 5.5 |
 | `ignore` | `.gitignore`-aware file filtering for `kap10 push` (excludes `node_modules`, build artifacts, etc.) | 5.5 |
@@ -5383,7 +5389,7 @@ expect(result.fileCount).toBeGreaterThan(0);
 | Single-root SCIP indexing | **Monorepo detection + per-package SCIP + `scip combine`** | Enterprise monorepos (Nx, Turborepo, pnpm workspaces) index correctly; cross-package type references resolve |
 | No tool call rate limiting | **Token bucket rate limiter** (Redis sliding window, 60 calls/min) | Prevents runaway agents from draining DB connections and inflating LLM costs; 429 response tells agent to stop looping |
 | No change tracking | **Prompt Ledger** (append-only timeline + working-state snapshots + branching) | Every AI change linked to its prompt; rewind to any working state; anti-pattern rules auto-generated from failures; commit roll-up shows AI contribution |
-| No local workspace sync for ledger | **kap10 CLI** (`@kap10/cli` — watch, rewind, timeline, mark-working) | Users can rewind from terminal; file changes streamed to cloud in real-time; works alongside agent-based sync |
+| No local workspace sync for ledger | **kap10 CLI** (`@autorail/kap10` — watch, rewind, timeline, mark-working) | Users can rewind from terminal; file changes streamed to cloud in real-time; works alongside agent-based sync |
 | No data deletion mechanism | **24-hour deletion SLA** (`deleteRepoWorkflow` + `deletionAuditWorkflow`) | Enterprise compliance; all repo data (graph, embeddings, metadata) purged within 24h of disconnect; audit trail for compliance |
 | No initial value demonstration | **Architecture Health Report** (auto-generated after first indexing) | Dead code, architecture drift, testing gaps, circular deps, complexity hotspots, LLM risk assessment — proves kap10 works before user writes a single prompt |
 | `execAsync('git clone/pull/diff')` | **`simple-git`** + **`parse-diff`** | Promise-based Git with auth/queuing/concurrency safety; structured diff parsing into typed JSON — no brittle shell commands |

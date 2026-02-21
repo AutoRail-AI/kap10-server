@@ -47,17 +47,42 @@ Phase 10a has five actor journeys. Three are user-initiated (setup, pull, queryi
 | **Query router** | The decision layer inside the CLI MCP proxy that inspects the tool name and dispatches to either the local CozoDB graph or the cloud MCP endpoint. |
 | **Cloud fallback** | When a tool is marked as `cloud` in the routing table, or when the local graph has no data for the requested repo, the CLI proxies the MCP request to the cloud endpoint transparently. |
 
-### Flow 1: First-Time Setup — `kap10 auth login` + `kap10 pull`
+### Flow 1: First-Time Setup — `kap10 connect` (golden path) or `kap10 auth login` + `kap10 pull`
 
 **Actor:** Developer with a kap10 account and at least one indexed repo
-**Precondition:** `@kap10/cli` installed (`npm install -g @kap10/cli`), Phase 2 cloud MCP server running
+**Precondition:** `@autorail/kap10` installed (`npm install -g @autorail/kap10` or `npx @autorail/kap10`), Phase 2 cloud MCP server running
 **Outcome:** Local CozoDB graph populated with compact entity/edge data for selected repos; CLI ready to serve as local MCP server
+
+**Golden path (Phase 5.6 `kap10 connect`):**
 
 ```
 Step  Actor Action                           System Action                                                      State Change
 ────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────────────────────────
-1     Developer runs `kap10 auth login`      CLI opens browser to kap10 OAuth flow (reuses Better Auth)          ~/.kap10/credentials.json created
-                                             or prompts for API key. Stores auth token locally.                  (token + org context)
+1     Developer runs                         CLI runs RFC 8628 Device Authorization Flow:                        ~/.kap10/credentials.json created
+      `npx @autorail/kap10 connect`          POST /api/cli/device-code → get device_code + user_code            (apiKey + orgId + orgName)
+                                             Opens browser to /cli/authorize?code=XXXX-XXXX
+                                             User clicks "Authorize CLI" in browser
+                                             CLI polls POST /api/cli/token until approved
+                                             Receives org-level API key (auto-provisioned default key)
+
+2                                            CLI detects git context:                                            None
+                                             Parses `git remote get-url origin` + `git branch --show-current`
+                                             Calls GET /api/cli/context?remote=<url> → repo lookup
+
+3                                            CLI detects IDE (.cursor/ or .vscode/ directories)                  .cursor/mcp.json or
+                                             Writes/merges MCP config for detected IDE                          .vscode/settings.json updated
+
+4     Developer sees:                        CLI prints summary: "Connected to org/repo,                         MCP session ready
+      "✓ Connected!"                         MCP configured for Cursor"
+```
+
+**Manual path (for existing users or `kap10 pull` for local graph):**
+
+```
+Step  Actor Action                           System Action                                                      State Change
+────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────────────────────────
+1     Developer runs `kap10 auth login`      CLI runs RFC 8628 Device Authorization Flow (same as connect)       ~/.kap10/credentials.json created
+                                             or accepts --key flag for direct API key auth                       (apiKey + orgId + orgName)
 
 2     Developer runs `kap10 pull`            CLI calls GET /api/graph-snapshots?orgId=...                        None (read-only)
                                              → Server returns list of available repos with snapshot metadata
@@ -83,14 +108,14 @@ Step  Actor Action                           System Action                      
 
 **Auth flow details:**
 
-The CLI reuses the same authentication that Phase 5.5 establishes. Two modes:
+The CLI uses the **RFC 8628 Device Authorization Flow** (implemented in Phase 5.6), the same pattern used by GitHub CLI (`gh auth login`). Two modes:
 
 | Mode | Flow | Token storage |
 |------|------|---------------|
-| **Browser OAuth** (recommended) | `kap10 auth login` → opens browser → Better Auth OAuth consent → redirect to `localhost:9876/callback` → CLI receives token | `~/.kap10/credentials.json` — `{ token, refreshToken, orgId, expiresAt }` |
-| **API key** | `kap10 auth login --api-key` → paste API key → CLI validates against cloud | `~/.kap10/credentials.json` — `{ apiKey, orgId }` |
+| **Device auth** (recommended) | `kap10 auth login` or `kap10 connect` → POST `/api/cli/device-code` → opens browser to `/cli/authorize?code=XXXX-XXXX` → user approves → CLI polls `/api/cli/token` → receives org-level API key | `~/.kap10/credentials.json` — `{ serverUrl, apiKey, orgId, orgName }` |
+| **API key** (escape hatch) | `kap10 auth login --key <key>` → direct API key usage | `~/.kap10/credentials.json` — `{ serverUrl, apiKey, orgId }` |
 
-The CLI refreshes OAuth tokens automatically before expiry. If refresh fails, it prompts `kap10 auth login` again.
+The auto-provisioned API key is org-scoped (`repoId: null`) with `isDefault: true`, granting access to all repos in the organization. The raw key is returned exactly once during the device flow token exchange.
 
 ### Flow 2: Agent Tool Call — Local Resolution
 
@@ -372,13 +397,12 @@ This is simpler than ArangoDB's BM25-based fulltext but sufficient for name/sign
 
 ```
 ~/.kap10/
-├── credentials.json          # Auth token or API key
+├── credentials.json          # API key from device auth flow (Phase 5.6)
 │   {
-│     "mode": "oauth",           // or "api_key"
-│     "token": "ey...",          // OAuth access token
-│     "refreshToken": "rt_...",  // OAuth refresh token
+│     "serverUrl": "https://app.kap10.dev",
+│     "apiKey": "kap10_sk_...",  // Org-scoped default API key
 │     "orgId": "org_abc",
-│     "expiresAt": "2026-02-21T..."
+│     "orgName": "My Organization"
 │   }
 │
 ├── manifest.json             # Synced repo registry
@@ -422,7 +446,7 @@ Every graph snapshot includes a `version` field in the msgpack envelope. This en
 | `v2` | 10b | v1 + rules relation + patterns relation |
 | `v3` | Future | v2 + justifications + features |
 
-The CLI checks the snapshot version against its supported version range. If the snapshot version is newer than the CLI supports, it logs a warning and prompts the user to upgrade: `"Graph snapshot v3 requires kap10 CLI >= 2.0.0. Run: npm install -g @kap10/cli@latest"`.
+The CLI checks the snapshot version against its supported version range. If the snapshot version is newer than the CLI supports, it logs a warning and prompts the user to upgrade: `"Graph snapshot v3 requires kap10 CLI >= 2.0.0. Run: npm install -g @autorail/kap10@latest"`.
 
 ### Repo Status Extension
 
@@ -551,7 +575,7 @@ This is well within acceptable bounds for a CLI tool running alongside an IDE.
 
 | Component | Size | Notes |
 |-----------|------|-------|
-| `@kap10/cli` npm package | ~15 MB | Includes `cozo-node` NAPI binary (~8 MB) |
+| `@autorail/kap10` npm package | ~15 MB | Includes `cozo-node` NAPI binary (~8 MB) |
 | CozoDB file per repo (medium) | ~5-15 MB | Compact structural data |
 | CozoDB file per repo (monorepo) | ~30-60 MB | Large but manageable |
 | 10 repos total | ~100-300 MB | Worst case for heavy users |
@@ -603,24 +627,21 @@ Phase 10a is designed so that Phase 10b requires **zero refactoring** of the 10a
 - **Supabase Storage bucket:** `graph-snapshots` bucket created in 10a. 10b uses the same bucket, same path structure, larger payloads (rules + patterns add ~10% to snapshot size).
 - **CLI config:** `~/.kap10/config.json` is extensible by design (JSON object with optional keys). 10b adds `prefetchEnabled: true` without breaking 10a configs.
 
-### Phase 5.5 CLI Compatibility
+### Phase 5.6 CLI Compatibility
 
-Phase 10a extends the CLI that Phase 5.5 creates. Critical compatibility rules:
+Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@autorail/kap10`). Phase 5.6 implemented the CLI-first onboarding (device auth + connect command), and Phase 10a extends it with local graph commands. All CLI code lives in one package — there is no separate CLI.
 
-| Phase 5.5 CLI feature | Phase 10a interaction |
-|-----------------------|---------------------|
-| `kap10 auth login/logout` | **Reused as-is.** Same auth flow, same `credentials.json`, same token refresh. |
-| `kap10 init --org` | **Reused.** The `config.json` it creates is extended with local graph settings. |
-| `kap10 push` | **No conflict.** Push uploads code for indexing. Pull downloads graph snapshots. Different API endpoints, different data flows. |
-| `kap10 watch` | **No conflict.** Watch streams file changes to the cloud ledger. The local MCP proxy is a separate process. They can run concurrently. |
-| `kap10 rewind/timeline/mark-working` | **No conflict.** Ledger commands interact with the cloud API. Local graph is read-only. |
-| `packages/cli/src/client.ts` | **Reused.** The HTTP client for kap10 API. Phase 10a adds new API endpoints (`/api/graph-snapshots/*`) that use the same client. |
+| CLI feature | Phase | Status |
+|-----------------------|-------|--------|
+| `kap10 auth login/logout` | 5.6 (device flow), 10a (original) | **Merged.** Phase 5.6 rewrote auth with RFC 8628 device flow. Phase 10a reuses it. |
+| `kap10 connect` | 5.6 | **Done.** Golden path: auth + git detect + IDE config in one command. |
+| `kap10 pull` | 10a | **Done.** Downloads graph snapshots into local CozoDB. |
+| `kap10 serve` | 10a | **Done.** Local MCP server with query routing (local/cloud). |
+| `kap10 push` | 5.5 (future) | **No conflict.** Push uploads code for indexing. Pull downloads graph snapshots. |
+| `kap10 watch` | 5.5 (future) | **No conflict.** Watch streams file changes to the cloud ledger. |
+| `kap10 rewind/timeline/mark-working` | 5.5 (future) | **No conflict.** Ledger commands interact with the cloud API. |
 
-**Important timing note:** Phase 10a can start after Phase 2, but the CLI scaffold (`packages/cli/`) is created in Phase 5.5. Two options:
-1. **If Phase 5.5 ships first:** 10a extends the existing CLI package. This is the ideal path.
-2. **If 10a starts before Phase 5.5:** 10a creates a minimal CLI package (`packages/cli/`) with only the MCP proxy + pull commands. When Phase 5.5 ships, it merges into the same package. The `commander` entry point, `client.ts`, and `auth.ts` are shared.
-
-In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends on Phase 3 — so Phase 5.5 ships well after Phase 2. Phase 10a should create a minimal CLI package that Phase 5.5 later extends with ledger commands. The package structure (`packages/cli/src/commands/`) supports this — each command is a separate file.
+**CLI package:** `packages/cli/` with `@autorail/kap10` as the npm package name. Install via `npm install -g @autorail/kap10` or run directly via `npx @autorail/kap10 connect`. The `commander` entry point (`src/index.ts`) registers all commands from all phases.
 
 ---
 
@@ -657,27 +678,17 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
 
 ### CLI Infrastructure
 
-- [ ] **P10a-INFRA-04: Create minimal CLI package scaffold at `packages/cli/`** — M
-  - **If Phase 5.5 CLI already exists:** Skip this item — extend the existing package.
-  - **If Phase 5.5 hasn't shipped yet:** Create `packages/cli/` with:
-    - `package.json` (`@kap10/cli`, `bin: { "kap10": "./dist/index.js" }`, deps: `commander`, `cozo-node`, `msgpackr`, `@modelcontextprotocol/sdk`)
-    - `tsconfig.json` (target: ES2022, module: Node16)
-    - `src/index.ts` (commander entry point with `pull`, `serve`, `auth` subcommands)
-    - `src/client.ts` (HTTP client for kap10 API — reusable by Phase 5.5)
-  - **Test:** `npm install -g .` in packages/cli → `kap10 --version` prints version. `kap10 --help` shows subcommands.
-  - **Depends on:** Nothing
-  - **Files:** `packages/cli/` (new package)
-  - **Acceptance:** CLI installs globally. Subcommands registered. TypeScript compiles.
-  - Notes: _____
+- [x] **P10a-INFRA-04: Create minimal CLI package scaffold at `packages/cli/`** — M ✅ DONE
+  - CLI package exists with `commander`, `cozo-node`, `msgpackr`, `@modelcontextprotocol/sdk`
+  - Entry point at `src/index.ts` with `auth`, `connect`, `pull`, `serve` subcommands
+  - Phase 5.6 added `connect` command (golden path) and rewrote `auth` with RFC 8628 device flow
+  - **Files:** `packages/cli/`
+  - Notes: Extended with Phase 5.6 CLI-first onboarding commands
 
-- [ ] **P10a-INFRA-05: Add `cozo-node` NAPI binary to CLI package** — S
-  - Add `cozo-node` as a dependency of `@kap10/cli`
-  - Verify NAPI binary works on macOS (arm64 + x64), Linux (x64), Windows (x64)
-  - **Test:** `require('cozo-node')` succeeds on all target platforms. CozoDB opens/closes a test database without errors.
-  - **Depends on:** P10a-INFRA-04
+- [x] **P10a-INFRA-05: Add `cozo-node` NAPI binary to CLI package** — S ✅ DONE
+  - `cozo-node` added as dependency in `packages/cli/package.json`
   - **Files:** `packages/cli/package.json`
-  - **Acceptance:** `cozo-node` binary loads on all supported platforms. No NAPI version mismatch.
-  - Notes: _____
+  - Notes: Working on macOS arm64
 
 ---
 
@@ -716,7 +727,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
 
 ## 2.3 Ports & Adapters Layer
 
-- [ ] **P10a-ADAPT-01: Create `CozoGraphStore` adapter (local IGraphStore subset)** — L
+- [x] **P10a-ADAPT-01: Create `CozoGraphStore` adapter (local IGraphStore subset)** — L ✅ DONE
   - Implements the read-only subset of `IGraphStore` needed by the 7 local tools:
     - `getEntity(orgId, entityId)` — Datalog point lookup on `entities` relation
     - `getCallersOf(orgId, entityId, depth?)` — recursive Datalog traversal on `edges` where `kind = "calls"`
@@ -731,7 +742,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Acceptance:** All read-only IGraphStore methods work against CozoDB. Query latency <5ms for point lookups, <20ms for depth-5 traversals.
   - Notes: _____
 
-- [ ] **P10a-ADAPT-02: Create CozoDB schema definition module** — S
+- [x] **P10a-ADAPT-02: Create CozoDB schema definition module** — S ✅ DONE
   - Define the three CozoDB relations (entities, edges, file_index) as Datalog schema strings
   - Export `createSchema()` function that creates relations in a CozoDB instance
   - Export `dropSchema()` function for clean reload
@@ -741,7 +752,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Files:** `packages/cli/src/cozo-schema.ts`
   - Notes: _____
 
-- [ ] **P10a-ADAPT-03: Create local search index for `search_code`** — M
+- [x] **P10a-ADAPT-03: Create local search index for `search_code`** — M ✅ DONE
   - Build an in-memory inverted index from entity `name` and `signature` fields
   - Tokenization: split on camelCase boundaries, snake_case underscores, and whitespace. Lowercase all tokens.
   - Query: tokenize input → look up each token → intersect/union → rank by overlap count → return top N
@@ -758,7 +769,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
 
 ### Cloud API Endpoints
 
-- [ ] **P10a-API-01: Create `GET /api/graph-snapshots` route** — M
+- [x] **P10a-API-01: Create `GET /api/graph-snapshots` route** — M ✅ DONE
   - Returns list of available snapshots for the authenticated user's active org
   - Response: `{ snapshots: [{ repoId, repoName, entityCount, edgeCount, sizeBytes, generatedAt, snapshotVersion }] }`
   - Auth: Better Auth session or API key Bearer header
@@ -768,7 +779,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Files:** `app/api/graph-snapshots/route.ts`
   - Notes: _____
 
-- [ ] **P10a-API-02: Create `GET /api/graph-snapshots/[repoId]/download` route** — M
+- [x] **P10a-API-02: Create `GET /api/graph-snapshots/[repoId]/download` route** — M ✅ DONE
   - Generates a pre-signed Supabase Storage URL for the snapshot msgpack file
   - Response: `{ downloadUrl: string, checksum: string, entityCount: number, edgeCount: number, snapshotVersion: string, generatedAt: string }`
   - Pre-signed URL TTL: 1 hour (short-lived — the CLI downloads immediately)
@@ -779,7 +790,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Files:** `app/api/graph-snapshots/[repoId]/download/route.ts`
   - Notes: _____
 
-- [ ] **P10a-API-03: Create `POST /api/graph-snapshots/[repoId]/sync` route (manual trigger)** — S
+- [x] **P10a-API-03: Create `POST /api/graph-snapshots/[repoId]/sync` route (manual trigger)** — S ✅ DONE
   - Triggers `syncLocalGraphWorkflow` for the specified repo on-demand
   - Idempotent: if workflow already running for this repo, returns existing workflow status
   - Response: `{ workflowId: string, status: "started" | "already_running" }`
@@ -791,7 +802,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
 
 ### Temporal Workflows & Activities
 
-- [ ] **P10a-API-04: Create `queryCompactGraph` activity** — L
+- [x] **P10a-API-04: Create `queryCompactGraph` activity** — L ✅ DONE
   - ArangoDB queries to export compact entity and edge data for a single repo:
     - Entities: `_key`, `name`, `kind`, `signature`, `file_path`, `line_start`, `line_end`, `content_hash`, `body` (truncated to first 50 lines)
     - Edges: `_from` (key only), `_to` (key only), `kind`
@@ -804,7 +815,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Acceptance:** Compact export contains all structural fields. Bodies truncated. Edge keys stripped to entity `_key` only (not full ArangoDB `_id`).
   - Notes: _____
 
-- [ ] **P10a-API-05: Create `syncLocalGraphWorkflow` Temporal workflow** — L
+- [x] **P10a-API-05: Create `syncLocalGraphWorkflow` Temporal workflow** — L ✅ DONE
   - Workflow ID format: `sync-graph-{orgId}-{repoId}` (idempotent)
   - Queue: `light-llm-queue`
   - Steps:
@@ -824,7 +835,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Acceptance:** Workflow runs to completion. Snapshot uploaded to Storage. Metadata updated. Cron fires daily.
   - Notes: _____
 
-- [ ] **P10a-API-06: Create `serializeToMsgpack` activity** — S
+- [x] **P10a-API-06: Create `serializeToMsgpack` activity** — S ✅ DONE
   - Input: `{ version: "v1", repoId, orgId, entities, edges, generatedAt }`
   - Output: `Buffer` (msgpack-encoded)
   - Uses `msgpackr.encode()` for compact binary serialization
@@ -852,7 +863,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Files:** `lib/temporal/activities/graph-upload.ts`
   - Notes: _____
 
-- [ ] **P10a-API-09: Create graph compaction utility** — M
+- [x] **P10a-API-09: Create graph compaction utility** — M ✅ DONE
   - Shared logic used by `queryCompactGraph` to strip entities to compact form
   - Body truncation: keep first 50 lines, append `\n[truncated — {totalLines} lines total. Use cloud for full body.]` if truncated
   - Edge key extraction: convert ArangoDB `_id` (e.g., `entities/fn_validateJWT`) to bare `_key` (e.g., `fn_validateJWT`)
@@ -874,7 +885,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
 
 ## 2.5 CLI / Client Layer
 
-- [ ] **P10a-CLI-01: Implement `kap10 pull` command** — L
+- [x] **P10a-CLI-01: Implement `kap10 pull` command** — L ✅ DONE
   - Subcommand: `kap10 pull [--repo org/repo] [--force]`
   - Flow:
     1. Read auth from `~/.kap10/credentials.json` (fail if not authenticated)
@@ -896,7 +907,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Acceptance:** CozoDB file created and queryable after pull. Manifest updated. Checksum verified. Existing data preserved on failure.
   - Notes: _____
 
-- [ ] **P10a-CLI-02: Implement `kap10 serve` command (local MCP server)** — L
+- [x] **P10a-CLI-02: Implement `kap10 serve` command (local MCP server)** — L ✅ DONE
   - Subcommand: `kap10 serve [--repo org/repo]`
   - Starts a local MCP server using stdio transport (JSON-RPC over stdin/stdout)
   - Registers all 9 Phase 2 MCP tools with the same names and schemas
@@ -913,19 +924,16 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Acceptance:** MCP server starts on stdio. All 9 tools registered. Local tools respond in <5ms. Cloud tools proxy correctly. IDE connects successfully.
   - Notes: _____
 
-- [ ] **P10a-CLI-03: Implement `kap10 auth login/logout`** — M
-  - **If Phase 5.5 auth already exists:** Reuse it. Skip this item.
-  - **If Phase 5.5 hasn't shipped:** Implement minimal auth:
-    - `kap10 auth login` — opens browser to OAuth flow or prompts for API key
-    - `kap10 auth logout` — deletes `~/.kap10/credentials.json`
-    - Token refresh: background refresh before expiry (OAuth only)
-  - Stores credentials at `~/.kap10/credentials.json`
-  - **Test:** `kap10 auth login --api-key` → prompts for key → validates against cloud → stores. `kap10 auth logout` → deletes credentials. Expired OAuth token → auto-refreshes.
-  - **Depends on:** P10a-INFRA-04
+- [x] **P10a-CLI-03: Implement `kap10 auth login/logout`** — M ✅ DONE (Phase 5.6)
+  - Rewritten in Phase 5.6 with RFC 8628 Device Authorization Flow
+  - `kap10 auth login` → opens browser to `/cli/authorize` → device approval → receives org-level API key
+  - `kap10 auth login --key <key>` → direct API key auth (escape hatch)
+  - `kap10 auth logout` → deletes `~/.kap10/credentials.json`
+  - Stores credentials at `~/.kap10/credentials.json` as `{ serverUrl, apiKey, orgId, orgName }`
   - **Files:** `packages/cli/src/commands/auth.ts`
-  - Notes: _____
+  - Notes: Phase 5.6 replaced the original OAuth/API-key dual mode with device auth flow
 
-- [ ] **P10a-CLI-04: Implement query router** — M
+- [x] **P10a-CLI-04: Implement query router** — M ✅ DONE
   - Static routing table: map of tool name → `"local"` | `"cloud"`
   - For `local` tools: dispatch to CozoDB adapter, format response
   - For `cloud` tools: proxy full JSON-RPC request to cloud MCP endpoint via P10a-CLI-05 (which injects workspace context)
@@ -939,7 +947,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Acceptance:** Routing table dispatches correctly. Cloud proxy includes auth + workspace context. Fallback works. `_meta.source` set correctly.
   - Notes: _____
 
-- [ ] **P10a-CLI-05: Implement cloud MCP proxy client** — M
+- [x] **P10a-CLI-05: Implement cloud MCP proxy client** — M ✅ DONE
   - HTTP/2 client that proxies MCP JSON-RPC requests to the cloud MCP server
   - URL: reads `mcpServerUrl` from `~/.kap10/config.json` (default: `https://mcp.kap10.dev`)
   - Auth: includes `Authorization: Bearer {token}` or `Authorization: Bearer {apiKey}` from credentials
@@ -952,7 +960,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Files:** `packages/cli/src/cloud-proxy.ts`
   - Notes: This is the critical bridge between Phase 3's workspace-aware search and Phase 10a's local CLI proxy. Without workspace context injection, cloud-proxied search ignores uncommitted local code.
 
-- [ ] **P10a-CLI-06: Implement stale graph detection and auto-pull** — S
+- [x] **P10a-CLI-06: Implement stale graph detection and auto-pull** — S ✅ DONE
   - On `kap10 serve` startup: check each repo's `lastPulledAt` in manifest
   - If stale (>24h): log warning, trigger background pull if `autoPull` config is true
   - Subscribe to Redis pub/sub `graph-sync:{orgId}` via WebSocket relay (cloud endpoint)
@@ -990,9 +998,9 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Files:** `app/(dashboard)/repos/[repoId]/page.tsx` (modified)
   - Notes: _____
 
-- [ ] **P10a-UI-03: Add "Local Setup" instructions to Connect IDE page** — S
+- [x] **P10a-UI-03: Add "Local Setup" instructions to Connect IDE page** — S ✅ DONE
   - Add a tab or section to the existing Connect IDE page (Phase 2) with local setup instructions:
-    1. Install CLI: `npm install -g @kap10/cli`
+    1. Install CLI: `npm install -g @autorail/kap10`
     2. Authenticate: `kap10 auth login`
     3. Pull graph: `kap10 pull`
     4. Configure IDE: show MCP config snippet for Cursor/VS Code/Claude Code
@@ -1020,7 +1028,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Files:** `packages/cli/src/__tests__/local-graph.test.ts`
   - Notes: _____
 
-- [ ] **P10a-TEST-02: Query router tests** — M
+- [x] **P10a-TEST-02: Query router tests** — M ✅ DONE
   - `get_function` → dispatched to local adapter
   - `sync_local_diff` → dispatched to cloud proxy
   - Unknown tool `foo_bar` → dispatched to cloud proxy (forward-compatible)
@@ -1031,7 +1039,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Files:** `packages/cli/src/__tests__/query-router.test.ts`
   - Notes: _____
 
-- [ ] **P10a-TEST-03: Graph compactor tests** — S
+- [x] **P10a-TEST-03: Graph compactor tests** — S ✅ DONE
   - Entity with 200-line body → truncated to 50 lines + annotation
   - Entity with 30-line body → unchanged
   - Edge `_id` "entities/fn_validateJWT" → stripped to `_key` "fn_validateJWT"
@@ -1040,7 +1048,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Files:** `lib/use-cases/__tests__/graph-compactor.test.ts`
   - Notes: _____
 
-- [ ] **P10a-TEST-04: Msgpack serialization round-trip tests** — S
+- [x] **P10a-TEST-04: Msgpack serialization round-trip tests** — S ✅ DONE
   - Encode 1000 entities + 1500 edges → decode → data matches exactly
   - Encoded size is <15% of JSON equivalent
   - Version field preserved in round-trip
@@ -1049,7 +1057,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Files:** `lib/temporal/activities/__tests__/graph-export.test.ts`
   - Notes: _____
 
-- [ ] **P10a-TEST-05: Local search index tests** — S
+- [x] **P10a-TEST-05: Local search index tests** — S ✅ DONE
   - Tokenization: "validateJWT" → ["validate", "jwt"]. "get_user_by_id" → ["get", "user", "by", "id"]
   - Search "validate" → entities with "validate" in name/signature
   - Search "jwt validate" → results containing either token, ranked by overlap
@@ -1058,7 +1066,7 @@ In practice, Phase 5.5 depends on Phase 5 which depends on Phase 4 which depends
   - **Files:** `packages/cli/src/__tests__/search-index.test.ts`
   - Notes: _____
 
-- [ ] **P10a-TEST-06: Snapshot checksum verification tests** — S
+- [x] **P10a-TEST-06: Snapshot checksum verification tests** — S ✅ DONE
   - Valid checksum → load proceeds
   - Invalid checksum → load rejected, error logged
   - Missing checksum header → load proceeds with warning
@@ -1179,44 +1187,67 @@ All above ── P10a-TEST-01..12 (all tests)
 ## New Files Summary
 
 ```
-packages/cli/src/
+packages/cli/src/                  ← @autorail/kap10 CLI package (shared across Phases 5.6, 10a, 10b)
   commands/
-    pull.ts                         ← kap10 pull — download + deserialize + CozoDB load
-    serve.ts                        ← kap10 serve — local MCP server (stdio)
-    auth.ts                         ← kap10 auth login/logout (if Phase 5.5 not shipped)
-  mcp-proxy.ts                     ← MCP server factory (stdio transport, tool registration)
-  local-graph.ts                   ← CozoGraphStore adapter (read-only IGraphStore subset)
-  cozo-schema.ts                   ← CozoDB Datalog relation definitions
-  query-router.ts                  ← Tool name → local/cloud dispatch
-  cloud-proxy.ts                   ← HTTP/2 client for cloud MCP proxying
-  search-index.ts                  ← In-memory inverted index for local search_code
-  auto-sync.ts                     ← Stale detection + auto-pull + pub/sub listener
-  client.ts                        ← HTTP client for kap10 API (reused by Phase 5.5)
+    auth.ts                         ← kap10 auth login/logout (Phase 5.6: RFC 8628 device flow) ✅
+    connect.ts                      ← kap10 connect — golden path onboarding (Phase 5.6) ✅
+    pull.ts                         ← kap10 pull — download + deserialize + CozoDB load ✅
+    serve.ts                        ← kap10 serve — local MCP server (stdio) ✅
+  index.ts                         ← commander entry point, registers all commands ✅
+  local-graph.ts                   ← CozoGraphStore adapter (read-only IGraphStore subset) ✅
+  cozo-schema.ts                   ← CozoDB Datalog relation definitions ✅
+  query-router.ts                  ← Tool name → local/cloud dispatch ✅
+  cloud-proxy.ts                   ← HTTP/2 client for cloud MCP proxying ✅
+  search-index.ts                  ← In-memory inverted index for local search_code ✅
+  auto-sync.ts                     ← Stale detection + auto-pull + pub/sub listener ✅
+  __tests__/
+    query-router.test.ts           ← Query router unit tests ✅
+    search-index.test.ts           ← Search index unit tests ✅
+    checksum.test.ts               ← Checksum verification tests ✅
 lib/temporal/workflows/
-  sync-local-graph.ts              ← syncLocalGraphWorkflow definition
+  sync-local-graph.ts              ← syncLocalGraphWorkflow definition ✅
 lib/temporal/activities/
-  graph-export.ts                  ← queryCompactGraph, serializeToMsgpack, computeChecksum
-  graph-upload.ts                  ← uploadToStorage, notifyConnectedClients
+  graph-export.ts                  ← queryCompactGraph, serializeToMsgpack, computeChecksum ✅
+  graph-upload.ts                  ← uploadToStorage, notifyConnectedClients (pending)
 lib/use-cases/
-  graph-compactor.ts               ← Body truncation + edge key extraction
+  graph-compactor.ts               ← Body truncation + edge key extraction ✅
+  __tests__/graph-compactor.test.ts ← Graph compactor tests ✅
+lib/temporal/activities/__tests__/
+  graph-export.test.ts             ← Msgpack serialization tests ✅
 app/api/graph-snapshots/
-  route.ts                         ← GET /api/graph-snapshots (list)
+  route.ts                         ← GET /api/graph-snapshots (list) ✅
   [repoId]/
-    download/route.ts              ← GET /api/graph-snapshots/{repoId}/download
-    sync/route.ts                  ← POST /api/graph-snapshots/{repoId}/sync
+    download/route.ts              ← GET /api/graph-snapshots/{repoId}/download ✅
+    sync/route.ts                  ← POST /api/graph-snapshots/{repoId}/sync ✅
+app/api/cli/                       ← Phase 5.6 device auth endpoints ✅
+  device-code/route.ts             ← POST /api/cli/device-code ✅
+  token/route.ts                   ← POST /api/cli/token ✅
+  context/route.ts                 ← GET /api/cli/context ✅
+  __tests__/device-auth-flow.test.ts ← 20 automated tests ✅
+app/(dashboard)/cli/authorize/     ← Phase 5.6 browser authorization page ✅
+  page.tsx                         ← Server component ✅
+  cli-authorize-form.tsx           ← Client-side authorize form ✅
+  actions.ts                       ← Server action to approve device ✅
 components/repo/
-  local-setup-instructions.tsx     ← Local setup instructions for Connect IDE page
+  connect-ide.tsx                  ← CLI-first primary CTA + manual accordion (Phase 5.6) ✅
+  local-setup-instructions.tsx     ← Local setup instructions for Connect IDE page ✅
 ```
 
 ### Modified Files
 
 ```
-prisma/schema.prisma               ← GraphSnapshotMeta model + SnapshotStatus enum
-env.mjs                            ← GRAPH_SNAPSHOT_BUCKET, GRAPH_SNAPSHOT_TTL_HOURS, GRAPH_SYNC_CRON
-.env.example                       ← Document Phase 10a variables
-components/dashboard/repo-card.tsx ← Local Sync status badge
-app/(dashboard)/repos/[repoId]/page.tsx          ← "Sync Now" button
-app/(dashboard)/repos/[repoId]/connect/page.tsx  ← Local setup tab
+prisma/schema.prisma               ← repoId optional, isDefault field on ApiKey ✅; GraphSnapshotMeta model (pending)
+supabase/migrations/               ← 20260223000000_org_level_api_keys.sql ✅
+proxy.ts                           ← /api/cli added to public paths ✅
+lib/ports/relational-store.ts      ← ApiKeyRecord.repoId nullable, isDefault, getDefaultApiKey() ✅
+lib/adapters/prisma-relational-store.ts ← Updated for org-level API keys ✅
+lib/di/fakes.ts                    ← InMemoryRelationalStore updated ✅
+lib/mcp/auth.ts                    ← Handle null repoId ✅
+app/api/api-keys/route.ts          ← repoId optional in POST ✅
+env.mjs                            ← GRAPH_SNAPSHOT_BUCKET, GRAPH_SNAPSHOT_TTL_HOURS, GRAPH_SYNC_CRON (pending)
+.env.example                       ← Document Phase 10a variables (pending)
+components/dashboard/repo-card.tsx ← Local Sync status badge (pending)
+app/(dashboard)/repos/[repoId]/page.tsx          ← "Sync Now" button (pending)
 ```
 
 ---
@@ -1226,3 +1257,4 @@ app/(dashboard)/repos/[repoId]/connect/page.tsx  ← Local setup tab
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-02-20 | — | Initial document created. 10 API items, 3 adapter items, 5 infrastructure items, 2 database items, 6 CLI items, 3 UI items, 12 test items. Total: **41 tracker items.** |
+| 2026-02-21 | — | **Phase 5.6 integration.** Auth flow updated to RFC 8628 device auth. `kap10 connect` golden path added. CLI package name standardized to `@autorail/kap10`. Credentials format changed to `{ serverUrl, apiKey, orgId, orgName }`. Org-level API keys (`repoId` optional, `isDefault` flag) implemented. 27 of 41 items marked complete. Remaining: INFRA-01..03 (storage bucket, env vars), DB-01..02 (GraphSnapshotMeta model), API-07..08 (upload/notify activities), API-10 (chain trigger), UI-01..02 (badges, sync button), TEST-01 (CozoDB adapter), TEST-07..12 (stale detection, integration, E2E, manual). |

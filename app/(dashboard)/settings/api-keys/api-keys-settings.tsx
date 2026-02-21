@@ -10,7 +10,7 @@ interface ApiKeyItem {
   id: string
   keyPrefix: string
   name: string
-  repoId: string
+  repoId: string | null
   repoName: string
   scopes: string[]
   lastUsedAt: string | null

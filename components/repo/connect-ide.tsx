@@ -1,7 +1,16 @@
 "use client"
 
 import { useState } from "react"
-import { Check, Copy, ExternalLink, Terminal, Zap } from "lucide-react"
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Code2,
+  Copy,
+  MousePointerClick,
+  Settings2,
+  Terminal,
+} from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ApiKeyManager } from "./api-key-manager"
@@ -10,6 +19,7 @@ interface ConnectIdeProps {
   repoId: string
   repoName: string
   mcpServerUrl: string
+  mcpEnvironment: "local" | "production" | "custom"
   apiKeys: Array<{
     id: string
     keyPrefix: string
@@ -21,11 +31,62 @@ interface ConnectIdeProps {
   }>
 }
 
-type Tab = "oauth" | "apikey"
+type ClientId = "cursor" | "claude-code" | "vscode" | "ci"
 
-export function ConnectIde({ repoId, repoName, mcpServerUrl, apiKeys }: ConnectIdeProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("apikey")
+interface ClientOption {
+  id: ClientId
+  label: string
+  icon: React.ReactNode
+  auth: "api-key" | "oauth"
+  description: string
+}
+
+const clients: ClientOption[] = [
+  {
+    id: "cursor",
+    label: "Cursor",
+    icon: <MousePointerClick className="h-4 w-4" />,
+    auth: "api-key",
+    description: "Add to .cursor/mcp.json",
+  },
+  {
+    id: "claude-code",
+    label: "Claude Code",
+    icon: <Terminal className="h-4 w-4" />,
+    auth: "oauth",
+    description: "Run one CLI command",
+  },
+  {
+    id: "vscode",
+    label: "VS Code",
+    icon: <Code2 className="h-4 w-4" />,
+    auth: "oauth",
+    description: "Add to settings.json",
+  },
+  {
+    id: "ci",
+    label: "CI / Manual",
+    icon: <Settings2 className="h-4 w-4" />,
+    auth: "api-key",
+    description: "JSON config with env var",
+  },
+]
+
+export function ConnectIde({
+  repoId,
+  repoName,
+  mcpServerUrl,
+  mcpEnvironment,
+  apiKeys,
+}: ConnectIdeProps) {
   const [copied, setCopied] = useState<string | null>(null)
+  const [manualExpanded, setManualExpanded] = useState(false)
+  const [selectedClient, setSelectedClient] = useState<ClientId | null>(null)
+  const [keysExpanded, setKeysExpanded] = useState(false)
+
+  const mcpUrl = `${mcpServerUrl}/mcp`
+  const activeKeys = apiKeys.filter((k) => !k.revokedAt)
+  const needsApiKey = selectedClient === "cursor" || selectedClient === "ci"
 
   const handleCopy = async (text: string, label: string) => {
     await navigator.clipboard.writeText(text)
@@ -33,163 +94,260 @@ export function ConnectIde({ repoId, repoName, mcpServerUrl, apiKeys }: ConnectI
     setTimeout(() => setCopied(null), 2000)
   }
 
-  const mcpUrl = `${mcpServerUrl}/mcp`
+  const handleSelectClient = (id: ClientId) => {
+    setSelectedClient(id)
+    const clientNeedsKey = id === "cursor" || id === "ci"
+    if (clientNeedsKey && activeKeys.length === 0) {
+      setKeysExpanded(true)
+    }
+  }
+
+  const environmentLabel =
+    mcpEnvironment === "local"
+      ? "Local Dev"
+      : mcpEnvironment === "production"
+        ? "Production"
+        : "Custom"
+
+  const environmentColor =
+    mcpEnvironment === "local"
+      ? "text-amber-400 border-amber-400/30"
+      : mcpEnvironment === "production"
+        ? "text-electric-cyan border-electric-cyan/30"
+        : "text-rail-purple border-rail-purple/30"
+
+  const cliCommand = "npx @autorail/kap10 connect"
 
   return (
-    <div className="space-y-6">
-      {/* Tab bar */}
-      <div className="flex gap-1 rounded-lg border border-border bg-muted/10 p-1">
-        <button
-          onClick={() => setActiveTab("oauth")}
-          className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            activeTab === "oauth"
-              ? "bg-muted/30 text-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <div className="flex items-center justify-center gap-1.5">
-            <Zap className="h-3 w-3" />
-            OAuth
-            <Badge variant="outline" className="h-4 px-1 text-[9px] font-normal text-electric-cyan border-electric-cyan/30">
-              Recommended
-            </Badge>
-          </div>
-        </button>
-        <button
-          onClick={() => setActiveTab("apikey")}
-          className={`flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-            activeTab === "apikey"
-              ? "bg-muted/30 text-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          <div className="flex items-center justify-center gap-1.5">
-            <Terminal className="h-3 w-3" />
-            API Key
-          </div>
-        </button>
+    <div className="space-y-5">
+      {/* Environment badge */}
+      <div className="flex items-center gap-2">
+        <Badge variant="outline" className={`h-5 px-2 text-[10px] font-normal ${environmentColor}`}>
+          {environmentLabel}
+        </Badge>
+        <code className="text-xs text-muted-foreground font-mono">{mcpUrl}</code>
       </div>
 
-      {/* OAuth tab */}
-      {activeTab === "oauth" && (
-        <div className="space-y-4">
-          <div className="glass-card rounded-lg border border-border p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-foreground">
-              OAuth Authentication
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              For Claude Code and VS Code. Your IDE will open a browser for authentication — no API key needed.
-            </p>
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-muted-foreground">MCP Server URL</label>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 rounded-md border border-border bg-muted/20 px-3 py-2 font-mono text-xs text-foreground">
-                  {mcpUrl}
-                </code>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => handleCopy(mcpUrl, "oauth-url")}
-                  className="h-9 gap-1.5 px-3 text-xs"
+      {/* Primary CTA: CLI */}
+      <div className="glass-card rounded-lg border border-rail-purple/30 p-5 space-y-3">
+        <div className="flex items-center gap-2">
+          <Terminal className="h-4 w-4 text-rail-purple" />
+          <h3 className="text-sm font-semibold text-foreground">Quickstart</h3>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Run this in your project directory. It handles authentication, detects your IDE, and configures MCP automatically.
+        </p>
+        <CodeBlock
+          code={cliCommand}
+          label="cli-command"
+          onCopy={handleCopy}
+          copied={copied}
+        />
+      </div>
+
+      {/* Manual setup accordion */}
+      <div className="space-y-0">
+        <button
+          onClick={() => setManualExpanded((prev) => !prev)}
+          className="flex items-center gap-2 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+        >
+          {manualExpanded ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
+          Manual setup
+        </button>
+
+        {manualExpanded && (
+          <div className="space-y-4 animate-fade-in pt-1">
+            {/* Client picker */}
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {clients.map((client) => (
+                <button
+                  key={client.id}
+                  onClick={() => handleSelectClient(client.id)}
+                  className={`group flex flex-col items-center gap-2 rounded-lg border p-4 text-center transition-all ${
+                    selectedClient === client.id
+                      ? "border-rail-purple/60 bg-rail-purple/10"
+                      : "border-border bg-muted/5 hover:border-border/80 hover:bg-muted/10"
+                  }`}
                 >
-                  {copied === "oauth-url" ? (
-                    <Check className="h-3.5 w-3.5 text-electric-cyan" />
-                  ) : (
-                    <Copy className="h-3.5 w-3.5" />
-                  )}
-                  {copied === "oauth-url" ? "Copied" : "Copy"}
-                </Button>
-              </div>
+                  <span
+                    className={`${
+                      selectedClient === client.id
+                        ? "text-foreground"
+                        : "text-muted-foreground group-hover:text-foreground"
+                    } transition-colors`}
+                  >
+                    {client.icon}
+                  </span>
+                  <span className="text-xs font-medium text-foreground">{client.label}</span>
+                  <span className="text-[10px] text-muted-foreground">{client.description}</span>
+                </button>
+              ))}
             </div>
-            <p className="text-xs text-muted-foreground/70">
-              Paste this URL into your IDE's MCP server configuration. OAuth scope: <code className="text-xs">mcp:read mcp:sync</code> (full access).
-            </p>
-          </div>
 
-          <div className="glass-card rounded-lg border border-border p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-              <Terminal className="h-3.5 w-3.5" />
-              Claude Code CLI
-            </h3>
-            <CodeBlock
-              code={`claude mcp add kap10 --transport streamable-http --url ${mcpUrl}`}
-              label="claude-code"
-              onCopy={handleCopy}
-              copied={copied}
-            />
-          </div>
-        </div>
-      )}
+            {/* Instruction card */}
+            {!selectedClient && (
+              <p className="text-sm text-muted-foreground text-center py-4">
+                Select your IDE to get started
+              </p>
+            )}
 
-      {/* API Key tab */}
-      {activeTab === "apikey" && (
-        <div className="space-y-4">
-          <ApiKeyManager repoId={repoId} initialKeys={apiKeys} />
-
-          <div className="glass-card rounded-lg border border-border p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-foreground">
-              Cursor IDE Configuration
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Add this to your <code className="text-xs">.cursor/mcp.json</code>:
-            </p>
-            <CodeBlock
-              code={JSON.stringify({
-                mcpServers: {
-                  kap10: {
-                    url: mcpUrl,
-                    transport: "streamable-http",
-                    headers: {
-                      Authorization: "Bearer <your-api-key>",
+            {selectedClient === "cursor" && (
+              <InstructionCard title="Cursor Configuration" animate>
+                <p className="text-xs text-muted-foreground">
+                  Add to <code className="text-xs">.cursor/mcp.json</code> in your project root:
+                </p>
+                <CodeBlock
+                  code={JSON.stringify(
+                    {
+                      mcpServers: {
+                        kap10: {
+                          url: mcpUrl,
+                          transport: "streamable-http",
+                          headers: {
+                            Authorization: "Bearer <your-api-key>",
+                          },
+                        },
+                      },
                     },
-                  },
-                },
-              }, null, 2)}
-              label="cursor-config"
-              onCopy={handleCopy}
-              copied={copied}
-            />
-          </div>
+                    null,
+                    2
+                  )}
+                  label="cursor-config"
+                  onCopy={handleCopy}
+                  copied={copied}
+                />
+              </InstructionCard>
+            )}
 
-          <div className="glass-card rounded-lg border border-border p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-              <Terminal className="h-3.5 w-3.5" />
-              Claude Code CLI
-            </h3>
-            <CodeBlock
-              code={`claude mcp add kap10 --transport streamable-http --url ${mcpUrl} --header "Authorization: Bearer <your-api-key>"`}
-              label="claude-cli"
-              onCopy={handleCopy}
-              copied={copied}
-            />
-          </div>
+            {selectedClient === "claude-code" && (
+              <InstructionCard title="Claude Code" animate>
+                <p className="text-xs text-muted-foreground">
+                  Run this command in your terminal. OAuth will open a browser for authentication.
+                </p>
+                <CodeBlock
+                  code={`claude mcp add kap10 --transport streamable-http --url ${mcpUrl}`}
+                  label="claude-code"
+                  onCopy={handleCopy}
+                  copied={copied}
+                />
+              </InstructionCard>
+            )}
 
-          <div className="glass-card rounded-lg border border-border p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-foreground">
-              CI / Automation
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Use an environment variable for the API key:
-            </p>
-            <CodeBlock
-              code={JSON.stringify({
-                mcpServers: {
-                  kap10: {
-                    url: mcpUrl,
-                    transport: "streamable-http",
-                    headers: {
-                      Authorization: "Bearer ${KAP10_API_KEY}",
+            {selectedClient === "vscode" && (
+              <InstructionCard title="VS Code Configuration" animate>
+                <p className="text-xs text-muted-foreground">
+                  Add to your <code className="text-xs">.vscode/settings.json</code>. OAuth will open a browser for authentication.
+                </p>
+                <CodeBlock
+                  code={JSON.stringify(
+                    {
+                      "mcp.servers": {
+                        kap10: {
+                          url: mcpUrl,
+                          transport: "streamable-http",
+                        },
+                      },
                     },
-                  },
-                },
-              }, null, 2)}
-              label="ci-config"
-              onCopy={handleCopy}
-              copied={copied}
-            />
+                    null,
+                    2
+                  )}
+                  label="vscode-config"
+                  onCopy={handleCopy}
+                  copied={copied}
+                />
+              </InstructionCard>
+            )}
+
+            {selectedClient === "ci" && (
+              <InstructionCard title="CI / Manual Configuration" animate>
+                <p className="text-xs text-muted-foreground">
+                  Use an environment variable for the API key. Set <code className="text-xs">KAP10_API_KEY</code> in your CI secrets.
+                </p>
+                <CodeBlock
+                  code={JSON.stringify(
+                    {
+                      mcpServers: {
+                        kap10: {
+                          url: mcpUrl,
+                          transport: "streamable-http",
+                          headers: {
+                            Authorization: "Bearer ${KAP10_API_KEY}",
+                          },
+                        },
+                      },
+                    },
+                    null,
+                    2
+                  )}
+                  label="ci-config"
+                  onCopy={handleCopy}
+                  copied={copied}
+                />
+              </InstructionCard>
+            )}
+
+            {/* Collapsible API Keys section */}
+            {selectedClient && (
+              <div className="space-y-0">
+                <button
+                  onClick={() => setKeysExpanded((prev) => !prev)}
+                  className="flex items-center gap-2 py-2 text-sm font-medium text-foreground hover:text-foreground/80 transition-colors"
+                >
+                  {keysExpanded ? (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  )}
+                  API Keys
+                  {activeKeys.length > 0 && (
+                    <Badge variant="outline" className="h-4 px-1.5 text-[10px] font-normal">
+                      {activeKeys.length}
+                    </Badge>
+                  )}
+                  {needsApiKey && activeKeys.length === 0 && (
+                    <Badge
+                      variant="outline"
+                      className="h-4 px-1.5 text-[10px] font-normal text-amber-400 border-amber-400/30"
+                    >
+                      Required
+                    </Badge>
+                  )}
+                </button>
+                {keysExpanded && (
+                  <div className="animate-fade-in">
+                    <ApiKeyManager repoId={repoId} initialKeys={apiKeys} />
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </div>
+    </div>
+  )
+}
+
+function InstructionCard({
+  title,
+  animate,
+  children,
+}: {
+  title: string
+  animate?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <div
+      className={`glass-card rounded-lg border border-border p-4 space-y-3 ${
+        animate ? "animate-fade-in" : ""
+      }`}
+    >
+      <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+      {children}
     </div>
   )
 }
