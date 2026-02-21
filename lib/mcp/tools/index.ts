@@ -1,5 +1,5 @@
 /**
- * MCP Tool Registry — registers all 11 Phase 2 + Phase 3 tools.
+ * MCP Tool Registry — registers all Phase 2–5.6 tools.
  */
 
 import type { Container } from "@/lib/di/container"
@@ -12,6 +12,18 @@ import { SEARCH_CODE_SCHEMA, handleSearchCode } from "./search"
 import { SEMANTIC_SEARCH_SCHEMA, FIND_SIMILAR_SCHEMA, handleSemanticSearch, handleFindSimilar } from "./semantic"
 import { GET_PROJECT_STATS_SCHEMA, handleGetProjectStats } from "./stats"
 import { SYNC_LOCAL_DIFF_SCHEMA, handleSyncLocalDiff } from "./sync"
+import {
+  GET_BUSINESS_CONTEXT_SCHEMA, handleGetBusinessContext,
+  SEARCH_BY_PURPOSE_SCHEMA, handleSearchByPurpose,
+  ANALYZE_IMPACT_SCHEMA, handleAnalyzeImpact,
+  GET_BLUEPRINT_SCHEMA, handleGetBlueprint,
+} from "./business"
+import { GET_RECENT_CHANGES_SCHEMA, handleGetRecentChanges } from "./changes"
+// Phase 5.5: Prompt Ledger & Rewind
+import { GET_TIMELINE_SCHEMA, handleGetTimeline, MARK_WORKING_SCHEMA, handleMarkWorking } from "./timeline"
+import { REVERT_TO_WORKING_SCHEMA, handleRevertToWorking } from "./rewind"
+// Phase 5.6: Dirty state overlay
+import { SYNC_DIRTY_BUFFER_SCHEMA, handleSyncDirtyBuffer } from "./dirty-buffer"
 
 export interface ToolDefinition {
   name: string
@@ -32,6 +44,19 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   { ...GET_IMPORTS_SCHEMA, requiredScope: "mcp:read" },
   { ...GET_PROJECT_STATS_SCHEMA, requiredScope: "mcp:read" },
   { ...SYNC_LOCAL_DIFF_SCHEMA, requiredScope: "mcp:sync" },
+  // Phase 4: Business intelligence tools
+  { ...GET_BUSINESS_CONTEXT_SCHEMA, requiredScope: "mcp:read" },
+  { ...SEARCH_BY_PURPOSE_SCHEMA, requiredScope: "mcp:read" },
+  { ...ANALYZE_IMPACT_SCHEMA, requiredScope: "mcp:read" },
+  { ...GET_BLUEPRINT_SCHEMA, requiredScope: "mcp:read" },
+  // Phase 5: Incremental indexing tools
+  { ...GET_RECENT_CHANGES_SCHEMA, requiredScope: "mcp:read" },
+  // Phase 5.5: Prompt Ledger & Rewind
+  { ...GET_TIMELINE_SCHEMA, requiredScope: "mcp:read" },
+  { ...MARK_WORKING_SCHEMA, requiredScope: "mcp:sync" },
+  { ...REVERT_TO_WORKING_SCHEMA, requiredScope: "mcp:sync" },
+  // Phase 5.6: Dirty state overlay
+  { ...SYNC_DIRTY_BUFFER_SCHEMA, requiredScope: "mcp:sync" },
 ]
 
 type ToolHandler = (
@@ -52,6 +77,19 @@ const TOOL_HANDLERS: Record<string, { handler: ToolHandler; scope: string }> = {
   get_imports: { handler: handleGetImports as ToolHandler, scope: "mcp:read" },
   get_project_stats: { handler: handleGetProjectStats as ToolHandler, scope: "mcp:read" },
   sync_local_diff: { handler: handleSyncLocalDiff as ToolHandler, scope: "mcp:sync" },
+  // Phase 4: Business intelligence tools
+  get_business_context: { handler: handleGetBusinessContext as ToolHandler, scope: "mcp:read" },
+  search_by_purpose: { handler: handleSearchByPurpose as ToolHandler, scope: "mcp:read" },
+  analyze_impact: { handler: handleAnalyzeImpact as ToolHandler, scope: "mcp:read" },
+  get_blueprint: { handler: handleGetBlueprint as ToolHandler, scope: "mcp:read" },
+  // Phase 5: Incremental indexing tools
+  get_recent_changes: { handler: handleGetRecentChanges as ToolHandler, scope: "mcp:read" },
+  // Phase 5.5: Prompt Ledger & Rewind
+  get_timeline: { handler: handleGetTimeline as ToolHandler, scope: "mcp:read" },
+  mark_working: { handler: handleMarkWorking as ToolHandler, scope: "mcp:sync" },
+  revert_to_working_state: { handler: handleRevertToWorking as ToolHandler, scope: "mcp:sync" },
+  // Phase 5.6: Dirty state overlay
+  sync_dirty_buffer: { handler: handleSyncDirtyBuffer as ToolHandler, scope: "mcp:sync" },
 }
 
 /**

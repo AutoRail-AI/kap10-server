@@ -21,12 +21,16 @@ enum RepoStatus {
   error
   embed_failed
   deleting
+  // Phase 4: Justification pipeline
+  justifying
+  justify_failed
 
   @@schema("kap10")
 }
 
 enum RepoProvider {
   github
+  local_cli
 
   @@schema("kap10")
 }
@@ -74,10 +78,20 @@ model Repo {
   // Phase 2: Auto-PR onboarding fields
   onboardingPrUrl    String?  @map("onboarding_pr_url")
   onboardingPrNumber Int?     @map("onboarding_pr_number")
+  // Phase 5: Incremental indexing fields
+  webhookSecret       String?  @map("webhook_secret")
+  incrementalEnabled  Boolean  @default(true) @map("incremental_enabled")
+  // Phase 5.5: Local CLI fields
+  localCliUploadPath String?  @map("local_cli_upload_path")
+  // Phase 5.6: Ephemeral sandbox
+  ephemeral          Boolean  @default(false)
+  ephemeralExpiresAt DateTime? @map("ephemeral_expires_at")
   // Phase 2: Relations
   apiKeys           ApiKey[]
   // Phase 3: Embeddings relation
   entityEmbeddings  EntityEmbedding[]
+  // Phase 5.5: Ledger snapshots relation
+  ledgerSnapshots   LedgerSnapshot[]
 
   @@unique([organizationId, provider, providerId])
   @@index([organizationId])
@@ -202,5 +216,71 @@ model EntityEmbedding {
   @@index([orgId, repoId])
   @@index([modelVersion])
   @@map("entity_embeddings")
+  @@schema("kap10")
+}
+
+// Phase 4: Justification embeddings for semantic business-purpose search (pgvector)
+model JustificationEmbedding {
+  id              String    @id @default(uuid())
+  orgId           String    @map("org_id")
+  repoId          String    @map("repo_id")
+  entityId        String    @map("entity_id")
+  entityName      String    @map("entity_name")
+  taxonomy        String
+  featureTag      String    @map("feature_tag")
+  businessPurpose String    @map("business_purpose")
+  modelVersion    String    @default("nomic-v1.5-768") @map("model_version")
+  embedding       Unsupported("vector(768)")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@unique([repoId, entityId, modelVersion])
+  @@index([orgId, repoId])
+  @@index([taxonomy])
+  @@index([featureTag])
+  @@map("justification_embeddings")
+  @@schema("kap10")
+}
+
+// Phase 5.5: Ledger snapshots — stores working-state file snapshots in PostgreSQL
+model LedgerSnapshot {
+  id              String    @id @default(uuid())
+  orgId           String    @map("org_id")
+  repoId          String    @map("repo_id")
+  userId          String    @map("user_id")
+  branch          String
+  timelineBranch  Int       @map("timeline_branch")
+  ledgerEntryId   String    @map("ledger_entry_id")
+  reason          String
+  files           Json      @default("[]")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  repo            Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, repoId, branch])
+  @@index([ledgerEntryId])
+  @@map("ledger_snapshots")
+  @@schema("kap10")
+}
+
+// Phase 5.5: Rule embeddings for anti-pattern vectorization (pgvector)
+model RuleEmbedding {
+  id            String    @id @default(uuid())
+  orgId         String    @map("org_id")
+  repoId        String    @map("repo_id")
+  ruleId        String    @map("rule_id")
+  ruleName      String    @map("rule_name")
+  ruleType      String    @map("rule_type")
+  textContent   String    @map("text_content")
+  modelVersion  String    @default("nomic-v1.5-768") @map("model_version")
+  embedding     Unsupported("vector(768)")
+  matchedEntities String[] @map("matched_entities")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@unique([repoId, ruleId, modelVersion])
+  @@index([orgId, repoId])
+  @@index([ruleType])
+  @@map("rule_embeddings")
   @@schema("kap10")
 }

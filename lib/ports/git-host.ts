@@ -46,4 +46,14 @@ export interface IGitHost {
   getInstallationToken(installationId: number): Promise<string>
   /** List branch names for a repository via installation token */
   listBranches(owner: string, repo: string, installationId: number): Promise<string[]>
+
+  // Phase 5: Incremental indexing
+  /** Pull latest changes for an existing clone */
+  pullLatest(workspacePath: string, branch: string): Promise<void>
+  /** Get list of changed files between two SHAs */
+  diffFiles(workspacePath: string, fromSha: string, toSha: string): Promise<import("./types").ChangedFile[]>
+  /** Get the latest SHA for a branch via GitHub API */
+  getLatestSha(owner: string, repo: string, branch: string, installationId: number): Promise<string>
+  /** Git blame a specific line of a file */
+  blame(workspacePath: string, filePath: string, line: number): Promise<string | null>
 }

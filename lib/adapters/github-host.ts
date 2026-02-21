@@ -5,6 +5,7 @@
 
 import { getInstallationOctokit, getInstallationToken as getToken } from "@/lib/github/client"
 import type { FileEntry, GitHubRepo, IGitHost } from "@/lib/ports/git-host"
+import type { ChangedFile } from "@/lib/ports/types"
 import { NotImplementedError } from "./errors"
 
 function getSimpleGit(): typeof import("simple-git").default {
@@ -121,5 +122,76 @@ export class GitHubHost implements IGitHost {
       page++
     }
     return branches
+  }
+
+  // ── Phase 5: Incremental Indexing ──────────────────────────────
+
+  async pullLatest(workspacePath: string, branch: string): Promise<void> {
+    const simpleGit = getSimpleGit()
+    const git = simpleGit(workspacePath)
+    await git.fetch("origin", branch)
+    await git.checkout(branch)
+    await git.pull("origin", branch)
+  }
+
+  async diffFiles(workspacePath: string, fromSha: string, toSha: string): Promise<ChangedFile[]> {
+    const { execFile } = require("node:child_process") as typeof import("node:child_process")
+    const { promisify } = require("node:util") as typeof import("node:util")
+    const execFileAsync = promisify(execFile)
+
+    const { stdout } = await execFileAsync(
+      "git",
+      ["diff", "--name-status", fromSha, toSha],
+      { cwd: workspacePath, maxBuffer: 10 * 1024 * 1024 }
+    )
+
+    const changes: ChangedFile[] = []
+    for (const line of stdout.trim().split("\n")) {
+      if (!line) continue
+      const parts = line.split("\t")
+      const status = parts[0]
+      const filePath = parts[1]
+      if (!status || !filePath) continue
+
+      let changeType: ChangedFile["changeType"]
+      if (status.startsWith("A")) changeType = "added"
+      else if (status.startsWith("D")) changeType = "removed"
+      else changeType = "modified" // M, R, C, T, etc.
+
+      // For renames (R###), the new path is parts[2]
+      const path = status.startsWith("R") && parts[2] ? parts[2] : filePath
+      changes.push({ path, changeType })
+
+      // Also track the old path of renames as "removed"
+      if (status.startsWith("R") && parts[2]) {
+        changes.push({ path: filePath, changeType: "removed" })
+      }
+    }
+    return changes
+  }
+
+  async getLatestSha(owner: string, repo: string, branch: string, installationId: number): Promise<string> {
+    const octokit = getInstallationOctokit(installationId)
+    const { data } = await octokit.rest.repos.getBranch({ owner, repo, branch })
+    return data.commit.sha
+  }
+
+  async blame(workspacePath: string, filePath: string, line: number): Promise<string | null> {
+    const { execFile } = require("node:child_process") as typeof import("node:child_process")
+    const { promisify } = require("node:util") as typeof import("node:util")
+    const execFileAsync = promisify(execFile)
+
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["blame", "-L", `${line},${line}`, "--porcelain", filePath],
+        { cwd: workspacePath }
+      )
+      // Parse porcelain blame for author
+      const authorMatch = stdout.match(/^author (.+)$/m)
+      return authorMatch?.[1] ?? null
+    } catch {
+      return null
+    }
   }
 }

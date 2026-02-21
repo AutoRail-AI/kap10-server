@@ -43,6 +43,9 @@
 | **Local Repo** | `provider: "local_cli"` | `RepoProvider.local_cli` | A repository not hosted on GitHub, indexed via `kap10 push`. Has `githubRepoId = null` and `githubFullName = null` in Supabase. | ~~offline repo~~, ~~unhosted repo~~, ~~manual repo~~ |
 | **Storage Provider** | — | `IStorageProvider` | The 12th hexagonal port. Abstracts pre-signed upload URLs, file download, and file deletion for Supabase Storage. Used by CLI upload and workspace preparation. | ~~file store~~, ~~blob store~~, ~~upload service~~ |
 | **Drift Threshold** | — | `DRIFT_THRESHOLD` | The percentage of indexed files with local modifications (default: 20%) that triggers a CLI prompt to run `kap10 push`. | ~~stale threshold~~, ~~change threshold~~ |
+| **Shadow Rewind** | — | `SimulateRewindResult` | A dry-run rewind that calculates the exact file-level impact of reverting to a Working Snapshot without actually applying changes. Compares the snapshot's files against the current local state (via MCP) to detect manual changes that would be overwritten. Returns a "Blast Radius Warning" if conflicts exist. | ~~dry run~~, ~~preview rewind~~, ~~rewind simulation~~ |
+| **Anti-Pattern Vectorization** | — | `vectorizeAntiPattern` | After a rewind auto-generates a rule, the rule is embedded into the Phase 3 `pgvector` embedding pipeline and a background hybrid search scans the entire codebase for semantic matches to the newly discovered anti-pattern. Results are surfaced as proactive fix suggestions. | ~~pattern scan~~, ~~codebase audit~~, ~~retroactive scan~~ |
+| **Ledger Circuit Breaker** | — | `LedgerCircuitBreaker` | An automated safety mechanism that detects AI hallucination loops (>4 consecutive `broken` ledger entries on the same function within 10 minutes). Forcefully injects a `system_halt` response to the agent, halting the loop and surfacing a clear message to the developer. | ~~rate limiter~~, ~~loop detector~~, ~~spam filter~~ |
 
 ---
 
@@ -146,13 +149,13 @@ Step  Actor                           System Action                             
 
 **Actor:** User (via dashboard, CLI, or agent) or Agent (via MCP tool)
 **Precondition:** At least one Working Snapshot exists. Current state is broken (tests fail, lint errors, or user judges the code is wrong).
-**Outcome:** Files restored to the Working Snapshot. Timeline Branch incremented. Anti-Pattern Rule synthesized.
+**Outcome:** Files restored to the Working Snapshot. Timeline Branch incremented. Anti-Pattern Rule synthesized. Anti-pattern vectorized and codebase scanned for similar violations.
 
 ```
 Step  Actor                           System Action                                             Outcome
 ────  ──────────────────────────────  ──────────────────────────────────────────────────────    ─────────────────────────
 1     User/agent triggers rewind:     Receive rewind request:                                    —
-      a) Agent calls                   { snapshotId?, files?, reason }
+      a) Agent calls                   { snapshotId?, files?, reason, dryRun?: boolean }
          revert_to_working_state
       b) User clicks "Rewind" in
          dashboard timeline
@@ -171,13 +174,39 @@ Step  Actor                           System Action                             
                                        b) If omitted → all files in the snapshot
                                        c) Validate all requested files exist in snapshot
 
+3.5                                   SHADOW REWIND (Blast Radius Check):                        Conflict report
+                                       a) For each file in the revert set, query current
+                                          local state via MCP workspace overlay
+                                       b) Compute AST diff between snapshot version and
+                                          current local version
+                                       c) Classify each file:
+                                          - "clean_revert": file matches a known ledger
+                                            entry state → safe to revert
+                                          - "manual_conflict": file has changes NOT tracked
+                                            in any ledger entry → user made manual edits
+                                            on top of the AI's code
+                                          - "stale_snapshot": snapshot is outdated relative
+                                            to current branch HEAD
+                                       d) Build blast radius report:
+                                          { safeFiles: [...], conflictedFiles: [...],
+                                            manualChangesAtRisk: [{filePath, lineRanges}] }
+                                       e) If dryRun == true → return report immediately
+                                          WITHOUT applying rewind (simulation only)
+                                       f) If conflicts exist AND dryRun != true:
+                                          Return warning with report + confirmation prompt:
+                                          "⚠️ Rewinding will overwrite your manual changes
+                                           to auth.ts (lines 42-67) and utils.ts (lines 3-15).
+                                           Proceed? Pass { force: true } to confirm."
+                                       g) If no conflicts → proceed to step 4
+
 4                                     Create Rewind Ledger Entry:                                Rewind entry appended
                                        { prompt: "REWIND: {reason}",
                                          changes: [per-file {filePath, changeType: "modified",
                                                     diff: "[rewind to snapshot]"}],
                                          status: "working",
                                          rewind_target_id: snapshot.id,
-                                         parent_id: latest entry }
+                                         parent_id: latest entry,
+                                         blast_radius: { safeFiles, conflictedFiles } }
 
 5                                     Increment Timeline Branch:                                 New branch created
                                        a) Read current max timeline_branch for this
@@ -199,9 +228,29 @@ Step  Actor                           System Action                             
                                        d) When rule is ready, update rewind entry:
                                           rule_generated = rule.id
 
+7.5                                   ANTI-PATTERN VECTORIZATION (async):                        Proactive scan queued
+                                       (runs after rule synthesis completes — chained activity)
+                                       a) Embed the newly generated anti-pattern rule's
+                                          description + title into pgvector via Phase 3's
+                                          nomic-embed-text pipeline
+                                       b) Execute hybrid search (keyword + semantic) against
+                                          the ENTIRE codebase's entity embeddings
+                                       c) For each entity matching the anti-pattern
+                                          (cosine similarity > 0.75):
+                                          - Create a "proactive_fix" notification:
+                                            "You rewound the AI for: {rule.title}.
+                                             kap10 found {N} other places with this
+                                             same pattern. Review them?"
+                                          - Store matches in the rule document:
+                                            rule.codebase_matches = [{entityKey, filePath,
+                                              entityName, similarity, snippet}]
+                                       d) Dashboard surfaces these matches on the Rules page
+                                          and in the Activity Feed
+
 8                                     Return restored files:                                     Files delivered
                                        { restoredFiles: [{path, content}],
                                          newTimelineBranch: N,
+                                         blastRadius: { safeFiles, conflictedFiles },
                                          antiPatternRule: {id, title} | null,
                                          message: "Reverted N files..." }
 
@@ -214,6 +263,8 @@ Step  Actor                           System Action                             
 ```
 
 **Critical invariant:** A Rewind never deletes Ledger Entries. The entries are marked `reverted`, preserving the full audit trail. The Timeline Branch mechanism ensures the post-rewind timeline is separate and clean.
+
+**Shadow Rewind design rationale:** The Shadow Rewind (step 3.5) provides psychological safety. Developers will trust the "Rewind" button because kap10 warns them before destroying manual work. The `dryRun` mode allows agents and the CLI to simulate rewinds non-destructively, which is essential for AI agents that may want to evaluate whether a rewind is safe before committing to it.
 
 ### Flow 4: Roll-Up on Commit
 
@@ -614,6 +665,148 @@ The rule is stored in ArangoDB's `rules` collection (already bootstrapped by Pha
 
 **Cost control:** Anti-pattern synthesis uses `gpt-4o-mini` (not full `gpt-4o`) and is capped at 2K input + 400 output tokens. The LLM call is queued on `light-llm-queue` and runs asynchronously — the Rewind response returns immediately without waiting for rule generation.
 
+### 1.2.8a Anti-Pattern Vectorization (Proactive Healing)
+
+After anti-pattern rule synthesis completes, a chained activity embeds the rule and proactively scans the codebase for existing violations:
+
+```
+Anti-Pattern Vectorization Pipeline:
+
+Input: Newly synthesized AntiPatternRule { title, description, semgrepRule? }
+Config: SIMILARITY_THRESHOLD = 0.75, MAX_MATCHES = 20
+
+1. Embed the anti-pattern:
+   a) Combine title + description into a single text block
+   b) Call Phase 3's nomic-embed-text pipeline to generate embedding vector
+   c) Store in pgvector alongside entity embeddings:
+      INSERT INTO kap10.rule_embeddings (rule_id, embedding, created_at)
+
+2. Search for existing violations:
+   a) Execute Phase 3's hybrid search (keyword + semantic) against
+      the repo's entity_embeddings table:
+      - Keyword: key terms from the rule title (e.g., "eval", "SQL injection")
+      - Semantic: cosine similarity against the rule embedding
+   b) Filter results: similarity > SIMILARITY_THRESHOLD
+   c) Cap at MAX_MATCHES (20) — prioritize by similarity score
+   d) For each match, extract a code snippet (first 10 lines of entity body)
+
+3. Store matches on the rule document:
+   rule.codebase_matches = [
+     { entityKey, entityName, filePath, startLine, similarity, snippet }
+   ]
+   rule.scan_status = "complete"
+   rule.scan_completed_at = now()
+
+4. Create notification:
+   INSERT INTO public.notifications:
+     { type: "warning", title: "Anti-pattern found in codebase",
+       message: "You rewound the AI for '{rule.title}'. kap10 found
+                 {matchCount} other places with this same pattern.",
+       link: "/repos/{repoId}/rules/{ruleId}",
+       metadata: { ruleId, matchCount } }
+
+5. If semgrepRule is present (static pattern):
+   Queue background Semgrep scan on matched files for precise validation:
+   a) Run semgrep --config {tempYaml} on each matched file
+   b) Promote matches confirmed by Semgrep to "verified" status
+   c) Demote unconfirmed matches to "probable" status
+```
+
+**Why this matters:** kap10 doesn't just learn from mistakes — it actively hunts them down. The dashboard will show: _"You rewound the AI for a SQL injection vulnerability. kap10 found 3 other places the AI made this exact mistake last week. Would you like to fix them?"_ This transforms anti-pattern rules from passive guards into active codebase healers.
+
+### 1.2.8b Ledger Circuit Breaker (Hallucination Loop Detection)
+
+**Problem:** If an AI agent enters a "hallucination loop" — repeatedly trying to fix a bug, failing, generating a rule, trying again, failing — it can spam the ArangoDB ledger with hundreds of useless branches in minutes, burning the Langfuse/Stripe budget (Phase 8) with each cascade re-justification and anti-pattern synthesis.
+
+**Solution:** Implement an automated multi-agent circuit breaker in the Temporal workflow that manages the Ledger. When the system detects a rapid pattern of consecutive failures on the same function, it forcefully injects a `system_halt` command that the MCP server returns to the agent, breaking the loop.
+
+```
+Circuit Breaker Algorithm:
+
+Trigger Point: Inside sync_local_diff, after Ledger Entry creation
+
+Monitoring State (per-function, in Redis):
+  Key: kap10:circuit:{orgId}:{repoId}:{entityKey}
+  Value: { brokenCount: number, firstBrokenAt: ISO string }
+  TTL: 10 minutes (auto-resets)
+
+Detection Logic:
+  On each Ledger Entry with status == "broken":
+    1. Extract affected entity keys from the entry's changes
+    2. For each entity key:
+       a) Increment Redis counter: INCR kap10:circuit:{orgId}:{repoId}:{entityKey}
+       b) If counter == 1: SET firstBrokenAt = now(), EXPIRE 10min
+       c) Read current counter value
+
+    3. If counter >= CIRCUIT_BREAKER_THRESHOLD (default: 4):
+       → CIRCUIT BREAKER TRIPPED
+
+  On each Ledger Entry with status == "working" or "committed":
+    → Reset counters for all affected entity keys (DEL Redis keys)
+    → Agent found a working solution — loop broken naturally
+
+Trip Response:
+  When circuit breaker trips:
+    1. Return special MCP response to agent:
+       {
+         content: [{
+           type: "text",
+           text: "🛑 kap10 Circuit Breaker triggered: You are in an AI hallucination
+                  loop on function `{entityName}` ({brokenCount} consecutive failures
+                  in {elapsedMinutes} minutes).
+
+                  STOP automated attempts. Recommended actions:
+                  1. Read the function's source code manually (get_function tool)
+                  2. Write a failing test first before modifying
+                  3. Review the anti-pattern rules generated from your previous attempts
+                  4. Ask the human developer for guidance
+
+                  Circuit will auto-reset in {remainingMinutes} minutes."
+         }],
+         _meta: {
+           circuitBreaker: {
+             tripped: true,
+             entityKey: "...",
+             entityName: "...",
+             brokenCount: 4,
+             windowMinutes: 10,
+             resetsAt: "ISO timestamp"
+           }
+         }
+       }
+
+    2. Create dashboard notification:
+       { type: "error", title: "Circuit Breaker: AI loop on {entityName}",
+         message: "{brokenCount} failures in {minutes}min. Agent halted.",
+         link: "/repos/{repoId}/timeline" }
+
+    3. Log to Langfuse (Phase 8):
+       { event: "circuit_breaker_trip", entityKey, brokenCount, totalTokensWasted }
+
+    4. BLOCK further sync_local_diff calls that modify this entity:
+       For the next CIRCUIT_BREAKER_COOLDOWN (default: 5 min),
+       if sync_local_diff changes include this entity key,
+       return the halt message instead of processing the sync.
+
+  Cooldown Reset:
+    After CIRCUIT_BREAKER_COOLDOWN expires:
+      Redis key auto-expires (TTL) → circuit resets
+      Next sync_local_diff for this entity processes normally
+
+  Manual Override:
+    User can call: POST /api/repos/{repoId}/circuit-breaker/reset
+    Or CLI: kap10 circuit-reset [--entity <key>]
+    This manually DELs the Redis keys, immediately re-enabling the entity.
+```
+
+**Configuration:**
+- `CIRCUIT_BREAKER_THRESHOLD` env var (default: 4 — consecutive broken entries before trip)
+- `CIRCUIT_BREAKER_WINDOW_MINUTES` env var (default: 10 — sliding window for counting failures)
+- `CIRCUIT_BREAKER_COOLDOWN_MINUTES` env var (default: 5 — how long entity is blocked after trip)
+- `CIRCUIT_BREAKER_ENABLED` env var (default: true — can disable for testing)
+
+**Why Redis (not ArangoDB):** Circuit breaker state is ephemeral — it needs sub-millisecond reads on every `sync_local_diff` call and auto-expiry via TTL. ArangoDB transactions would add unacceptable latency to the sync hot path. Redis atomic `INCR` + `EXPIRE` is the perfect primitive for this.
+
 ### 1.2.8 sync_local_diff Extension
 
 The existing `sync_local_diff` MCP tool (`lib/mcp/tools/sync.ts`) gains new optional input fields:
@@ -761,7 +954,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-INFRA-01: Supabase Storage Bucket
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Create the `cli_uploads` bucket in Supabase Storage for CLI zip uploads. Configure:
   - Bucket type: Private (no public access)
   - Max file size: 500MB
@@ -775,7 +968,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-INFRA-02: CLI Package Scaffolding Verification
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** The `packages/cli/` directory already exists with auth, pull, and serve commands. Verify existing infrastructure works and extend `package.json` with new dependencies needed for Phase 5.5 commands (`archiver` for zipping, `ignore` for .gitignore parsing, `chokidar` for file watching, `cli-progress` for upload progress bar).
 - **Files:**
   - `packages/cli/package.json` (modify — add dependencies)
@@ -789,7 +982,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-DB-01: ArangoDB Ledger Collection Indexes
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** The `ledger` collection is already bootstrapped in `DOC_COLLECTIONS` in `arango-graph-store.ts`. Add required composite indexes for timeline queries, uncommitted entry lookup, and linked list traversal. Also bootstrap the `ledger_summaries` collection (add to `DOC_COLLECTIONS`).
 - **Files:**
   - `lib/adapters/arango-graph-store.ts` (modify — add `"ledger_summaries"` to `DOC_COLLECTIONS`, add indexes in `bootstrapGraphSchema()`)
@@ -798,7 +991,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-DB-02: Supabase Migration — Ledger Snapshots Table
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Create the `kap10.ledger_snapshots` table and add `local_cli` to the `RepoProvider` enum. Add Prisma model `LedgerSnapshot`.
 - **Files:**
   - `supabase/migrations/2026XXXX_phase55_ledger_snapshots.sql` (new)
@@ -808,7 +1001,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-DB-03: Domain Types — LedgerEntry, WorkingSnapshot, LedgerSummary
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Add TypeScript domain types to `lib/ports/types.ts` for the ledger data model. These are the canonical types used by ports and adapters.
 - **Shapes:**
   - `LedgerEntry`: `{ id, orgId, repoId, userId, branch, timelineBranch, prompt, agentModel?, agentTool?, mcpToolsCalled?, changes: LedgerChange[], status, parentId, rewindTargetId, commitSha, snapshotId, validatedAt, ruleGenerated, createdAt }`
@@ -827,7 +1020,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-ADAPT-01: IGraphStore — Ledger Methods
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Extend the `IGraphStore` port interface with ledger-specific methods. These are append-only operations — no delete methods.
 - **Methods to add:**
   - `appendLedgerEntry(orgId, entry): Promise<LedgerEntry>` — Insert a new Ledger Entry. Validates entry shape.
@@ -846,7 +1039,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-ADAPT-02: ArangoGraphStore — Ledger Implementation
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Implement the ledger methods in `ArangoGraphStore`. Key considerations:
   - `appendLedgerEntry`: Simple `collection.save()`. Generate UUID `_key`.
   - `updateLedgerEntryStatus`: Validate state transition against state machine before writing. Reject invalid transitions (e.g., `committed → pending`).
@@ -861,7 +1054,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-ADAPT-03: IStorageProvider Port + SupabaseStorageAdapter
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Create the 12th hexagonal port `IStorageProvider` and its production adapter.
 - **Port interface:**
   - `generateUploadUrl(bucket, path, expiresInSeconds?): Promise<string>`
@@ -882,7 +1075,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-ADAPT-04: InMemoryGraphStore — Ledger Fake
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Implement the ledger methods in `InMemoryGraphStore` (the test fake). Use in-memory arrays sorted by `createdAt`. State machine validation must be identical to the production adapter.
 - **Files:**
   - `lib/di/fakes.ts` (modify — implement ledger methods on `InMemoryGraphStore`)
@@ -896,7 +1089,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-API-01: sync_local_diff Extension — Prompt Tracking
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Extend the existing `sync_local_diff` MCP tool to accept prompt metadata and append Ledger Entries. This is the primary integration point — no separate "record prompt" tool.
 - **Changes:**
   - Add optional input fields: `prompt`, `agentModel`, `agentTool`, `mcpToolsCalled`, `validationResult`
@@ -910,30 +1103,37 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 - **Testing:** Existing sync tests still pass. New tests: prompt metadata appears in ledger entry. Missing prompt defaults to `[manual edit]`. Validation result triggers snapshot. baseSha change triggers roll-up. Ledger failure doesn't break sync.
 - **Blocked by:** P5.5-ADAPT-02, P5.5-DB-02
 
-### P5.5-API-02: revert_to_working_state MCP Tool
+### P5.5-API-02: revert_to_working_state MCP Tool (with Shadow Rewind)
 
-- [ ] **Status:** Not started
-- **Description:** New MCP tool for rewind functionality. Accessible to AI agents and CLI.
+- [x] **Status:** Complete
+- **Description:** New MCP tool for rewind functionality with integrated blast radius checking. Accessible to AI agents and CLI.
 - **Input schema:**
   - `snapshotId?: string` — Specific snapshot to revert to. If omitted, uses most recent working snapshot.
   - `files?: string[]` — Specific files to revert. If omitted, reverts all files changed since the snapshot.
   - `reason: string` — Why the rewind is needed (used for anti-pattern rule synthesis).
+  - `dryRun?: boolean` — If `true`, simulate the rewind and return a blast radius report without applying changes. Default: `false`.
+  - `force?: boolean` — If `true`, proceed with rewind even if manual change conflicts are detected. Default: `false`.
 - **Handler logic:**
   1. Resolve target snapshot (Supabase query)
   2. Determine files to revert (filter snapshot files)
-  3. ArangoDB transaction: Create rewind Ledger Entry + mark intermediate entries `reverted`
-  4. Queue anti-pattern synthesis on `light-llm-queue`
-  5. Return `{ restoredFiles, newTimelineBranch, antiPatternRule: null, message }`
+  3. **Shadow Rewind**: For each file, compare snapshot version against current local state (via workspace overlay). Classify as `clean_revert`, `manual_conflict`, or `stale_snapshot`.
+  4. If `dryRun == true` → return blast radius report immediately (no changes applied)
+  5. If conflicts exist AND `force != true` → return warning with blast radius report + confirmation prompt
+  6. If no conflicts OR `force == true`:
+     a. ArangoDB transaction: Create rewind Ledger Entry (with blast_radius metadata) + mark intermediate entries `reverted`
+     b. Queue anti-pattern synthesis on `light-llm-queue`
+     c. Return `{ restoredFiles, blastRadius, newTimelineBranch, antiPatternRule: null, message }`
 - **Scope:** `mcp:sync` (same as `sync_local_diff`)
 - **Files:**
   - `lib/mcp/tools/rewind.ts` (new)
+  - `lib/use-cases/shadow-rewind.ts` (new — blast radius calculator)
   - `lib/mcp/tools/index.ts` (modify — register tool)
-- **Testing:** Rewind with valid snapshot returns file contents. Rewind without snapshot uses most recent. Rewind with specific files filters correctly. No snapshot returns error. Timeline branch increments. Intermediate entries marked reverted.
+- **Testing:** Rewind with valid snapshot returns file contents. Rewind without snapshot uses most recent. Rewind with specific files filters correctly. No snapshot returns error. Timeline branch increments. Intermediate entries marked reverted. **NEW:** dryRun returns blast radius report only. Conflicted files trigger warning. force=true bypasses warning. Manual changes detected correctly.
 - **Blocked by:** P5.5-API-01
 
 ### P5.5-API-03: get_timeline MCP Tool
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** New MCP tool to query the prompt ledger timeline. Agents use this to understand what changes have been made and their status.
 - **Input schema:**
   - `branch?: string` — Git branch to query (default: current workspace branch)
@@ -950,7 +1150,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-API-04: mark_working MCP Tool
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** New MCP tool for explicitly marking the current state as a Working Snapshot. Used when the agent or user is confident the current state is good.
 - **Input schema:**
   - `reason?: string` — Why this state is being marked working (default: "user_marked")
@@ -967,7 +1167,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-API-05: Anti-Pattern Rule Synthesis Activity
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Temporal activity that runs on `light-llm-queue` after a rewind. Collects failed entries, builds LLM prompt, validates output via Zod, and stores the rule in ArangoDB's `rules` collection.
 - **Activity:** `synthesizeAntiPatternRule(orgId, repoId, rewindEntryId, failedEntryIds, reason)`
 - **LLM details:**
@@ -981,9 +1181,53 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 - **Testing:** Valid rewind → rule generated with correct shape. LLM failure → graceful degradation (no rule, no crash). Rule stored in `rules` collection with `createdBy: "system:rewind"`, `priority: 10`.
 - **Blocked by:** P5.5-ADAPT-02
 
+### P5.5-API-05a: Anti-Pattern Vectorization Activity
+
+- [x] **Status:** Complete
+- **Description:** Chained Temporal activity that runs after rule synthesis completes. Embeds the anti-pattern rule and proactively scans the codebase for existing violations.
+- **Activity:** `vectorizeAntiPattern(orgId, repoId, ruleId)`
+- **Pipeline:**
+  1. Fetch rule from ArangoDB `rules` collection
+  2. Combine `title + description` into embedding input text
+  3. Call Phase 3 nomic-embed-text to generate embedding vector
+  4. Store in `kap10.rule_embeddings` pgvector table (new table, same schema as `entity_embeddings`)
+  5. Execute hybrid search against repo's `entity_embeddings`: keyword extraction from title + cosine similarity against rule embedding
+  6. Filter: similarity > 0.75, cap at 20 matches
+  7. For each match: extract entity snippet (first 10 lines of body)
+  8. Update rule document: `codebase_matches = [{ entityKey, entityName, filePath, startLine, similarity, snippet }]`, `scan_status = "complete"`
+  9. Create notification in `public.notifications` with `type: "warning"` and link to rule detail page
+  10. If `semgrepRule` is present on the rule: queue background Semgrep verification on matched files (promote confirmed → "verified", demote unconfirmed → "probable")
+- **Files:**
+  - `lib/temporal/activities/anti-pattern.ts` (modify — add vectorization activity)
+  - `supabase/migrations/2026XXXX_phase55_rule_embeddings.sql` (new — `kap10.rule_embeddings` table)
+- **Testing:** Rule embedded successfully. Hybrid search returns matching entities. Matches stored on rule document. Notification created. Zero matches → scan_status still "complete" with empty array. LLM/embedding failure → graceful skip (scan_status = "failed"). Semgrep verification promotes/demotes correctly.
+- **Blocked by:** P5.5-API-05, Phase 3 embedding pipeline
+
+### P5.5-API-05b: Ledger Circuit Breaker
+
+- [x] **Status:** Complete
+- **Description:** Implement hallucination loop detection in `sync_local_diff`. Uses Redis atomic counters to track consecutive `broken` entries per entity within a sliding window.
+- **Behavior:**
+  1. On each `broken` ledger entry: increment Redis counter for affected entity keys
+  2. If counter >= `CIRCUIT_BREAKER_THRESHOLD` (default: 4) within `CIRCUIT_BREAKER_WINDOW_MINUTES` (default: 10): trip circuit breaker
+  3. Trip response: return `system_halt` MCP response with explanation and recommended actions
+  4. Block further sync_local_diff calls for affected entity during cooldown
+  5. Create dashboard notification and Langfuse event
+  6. Auto-reset via Redis TTL, or manual reset via API/CLI
+- **Redis keys:** `kap10:circuit:{orgId}:{repoId}:{entityKey}` with `{ brokenCount, firstBrokenAt }`, TTL = window minutes
+- **Manual override:** `POST /api/repos/{repoId}/circuit-breaker/reset`, `kap10 circuit-reset`
+- **Files:**
+  - `lib/mcp/tools/sync.ts` (modify — add circuit breaker check before and after ledger append)
+  - `lib/mcp/security/circuit-breaker.ts` (new — circuit breaker logic)
+  - `app/api/repos/[repoId]/circuit-breaker/reset/route.ts` (new — manual reset endpoint)
+  - `packages/cli/src/commands/circuit-reset.ts` (new — CLI reset command)
+- **Testing:** 4 consecutive broken entries on same entity → circuit trips. Working entry resets counter. Cooldown blocks sync for affected entity. Auto-reset after TTL. Manual reset via API. `CIRCUIT_BREAKER_ENABLED=false` → disabled. Non-affected entities not blocked.
+- **Blocked by:** P5.5-API-01
+- **Notes:** —
+
 ### P5.5-API-06: CLI `kap10 init` Command
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Register a local repo for kap10 indexing. Creates `.kap10/config.json` with `repoId`, `orgId`, and API key. Calls `POST /api/cli/init` to register the repo in Supabase with `provider: "local_cli"`.
 - **Behavior:**
   1. Read org from `--org` flag (or prompt user)
@@ -1002,7 +1246,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-API-07: CLI `kap10 push` Command
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Zip the current directory (.gitignore-aware), upload via pre-signed URL, and trigger indexing.
 - **Behavior:**
   1. Read `.kap10/config.json` for `repoId`, `orgId`, `apiKey`
@@ -1020,7 +1264,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-API-08: CLI `kap10 watch` Command
 
-- [ ] **Status:** Not started
+- [ ] **Status:** Partial — watch command exists but prompt-detector.ts not created
 - **Description:** File watcher that streams changes to the kap10 ledger in real-time. Enables rewind from the terminal.
 - **Behavior:**
   1. Start `chokidar` watcher on repo path (ignore node_modules, .git, dist)
@@ -1037,7 +1281,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-API-09: CLI Rewind + Timeline Commands
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Terminal commands for rewind and timeline viewing.
 - **Commands:**
   - `kap10 rewind` — Rewind to most recent working snapshot
@@ -1056,7 +1300,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-API-10: prepareWorkspace Extension for Local Repos
 
-- [ ] **Status:** Not started
+- [ ] **Status:** Partial — indexing-heavy.ts not updated for local_cli workspace prep
 - **Description:** Extend the `prepareWorkspace` activity in the indexing pipeline to handle `provider: "local_cli"` repos. Instead of `git clone`, download the zip from Supabase Storage and extract it.
 - **Behavior:**
   1. Check `provider` field on Repo record
@@ -1077,7 +1321,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-UI-01: Timeline Page
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Visual timeline at `/repos/[repoId]/timeline` showing prompts, changes, working/broken states, rewind points, and Timeline Branches as parallel lanes.
 - **Design:**
   - Main layout: Vertical timeline with status-colored nodes (green = working, red = broken, gray = pending, strikethrough = reverted)
@@ -1099,7 +1343,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-UI-02: Ledger Entry Detail Page
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Detail view at `/repos/[repoId]/timeline/[entryId]` showing full prompt, per-file diffs, affected entities, and generated anti-pattern rules.
 - **Design:**
   - Header: Full prompt text, agent model badge, agent tool badge, timestamp
@@ -1116,7 +1360,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-UI-03: Commits Page with AI Contribution Summaries
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Commit history at `/repos/[repoId]/commits` showing Ledger Summaries — the AI's contribution per commit.
 - **Design:**
   - Commit list: SHA, message, date, author
@@ -1136,7 +1380,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-01: Ledger Entry CRUD + State Machine
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Unit tests for ledger entry creation, state transitions, and append-only guarantees.
 - **Test cases:**
   - Append entry succeeds with valid data
@@ -1150,10 +1394,10 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
   - `lib/adapters/__tests__/ledger.test.ts` (new)
 - **Blocked by:** P5.5-ADAPT-02
 
-### P5.5-TEST-02: Rewind Atomicity + Branch Increment
+### P5.5-TEST-02: Rewind Atomicity + Branch Increment + Shadow Rewind
 
-- [ ] **Status:** Not started
-- **Description:** Unit tests for the rewind operation's atomicity and timeline branching.
+- [ ] **Status:** Partial — shadow-rewind.test.ts exists but rewind.test.ts missing
+- **Description:** Unit tests for the rewind operation's atomicity, timeline branching, and shadow rewind blast radius checking.
 - **Test cases:**
   - Rewind creates new entry + marks intermediate entries `reverted` atomically
   - Timeline branch increments by 1 after rewind
@@ -1162,13 +1406,21 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
   - Rewind without snapshot ID uses most recent working snapshot
   - No working snapshot returns clear error
   - Concurrent rewinds serialized via Redis lock
+  - **NEW:** `dryRun: true` → returns blast radius report without applying changes
+  - **NEW:** `dryRun: true` → no ledger entries created, no entries marked reverted
+  - **NEW:** Manual conflict detected → warning returned with conflicted file details (filePath, lineRanges)
+  - **NEW:** Manual conflict + `force: false` (default) → rewind blocked, report returned
+  - **NEW:** Manual conflict + `force: true` → rewind proceeds despite conflicts
+  - **NEW:** No conflicts → rewind proceeds immediately (no confirmation needed)
+  - **NEW:** Blast radius metadata stored on rewind ledger entry
 - **Files:**
   - `lib/mcp/tools/__tests__/rewind.test.ts` (new)
+  - `lib/use-cases/__tests__/shadow-rewind.test.ts` (new)
 - **Blocked by:** P5.5-API-02
 
 ### P5.5-TEST-03: Working Snapshot Creation
 
-- [ ] **Status:** Not started
+- [ ] **Status:** Not started — snapshot.test.ts not created
 - **Description:** Unit tests for snapshot creation at the four trigger points.
 - **Test cases:**
   - `tests_passed` trigger creates snapshot with correct files
@@ -1184,7 +1436,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-04: Commit Roll-Up
 
-- [ ] **Status:** Not started
+- [ ] **Status:** Not started — rollup.test.ts not created
 - **Description:** Unit tests for the commit detection and roll-up logic.
 - **Test cases:**
   - `baseSha` change triggers roll-up
@@ -1200,7 +1452,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-05: Anti-Pattern Rule Synthesis
 
-- [ ] **Status:** Not started
+- [ ] **Status:** Not started — anti-pattern.test.ts not created
 - **Description:** Unit tests for the LLM-powered rule synthesis activity.
 - **Test cases:**
   - Valid rewind → rule generated with Zod-valid shape
@@ -1213,9 +1465,48 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
   - `lib/temporal/activities/__tests__/anti-pattern.test.ts` (new)
 - **Blocked by:** P5.5-API-05
 
+### P5.5-TEST-05a: Anti-Pattern Vectorization
+
+- [ ] **Status:** Not started — anti-pattern-vectorization.test.ts not created
+- **Description:** Unit tests for the anti-pattern vectorization and proactive codebase scanning activity.
+- **Test cases:**
+  - Rule embedded successfully → embedding stored in `rule_embeddings` table
+  - Hybrid search finds matching entities → matches stored on rule document with correct shape
+  - Similarity threshold respected → entities below 0.75 excluded
+  - Max 20 matches → excess results truncated by similarity score
+  - Zero matches → `scan_status: "complete"`, `codebase_matches: []`
+  - Notification created with correct type ("warning") and link to rule page
+  - Embedding/search failure → `scan_status: "failed"`, no crash, rule synthesis unaffected
+  - Semgrep rule present → background verification queued, matches promoted/demoted
+  - Semgrep rule absent → skip verification step
+  - Multiple rewinds for same pattern → deduplicates rule embeddings (no duplicate vectors)
+- **Files:**
+  - `lib/temporal/activities/__tests__/anti-pattern-vectorization.test.ts` (new)
+- **Blocked by:** P5.5-API-05a
+
+### P5.5-TEST-05b: Ledger Circuit Breaker
+
+- [x] **Status:** Complete
+- **Description:** Unit tests for the hallucination loop detection and circuit breaker system.
+- **Test cases:**
+  - 3 consecutive broken entries on same entity → no trip (below threshold)
+  - 4 consecutive broken entries on same entity within 10 min → circuit trips, halt response returned
+  - `working` entry between broken entries → counter resets (no trip at 4th overall if working in between)
+  - Circuit tripped → subsequent sync_local_diff for affected entity returns halt message
+  - Circuit tripped → sync_local_diff for OTHER entities still works (not blocked)
+  - Cooldown expires → entity sync re-enabled (Redis TTL)
+  - Manual reset via API → immediate re-enable
+  - `CIRCUIT_BREAKER_ENABLED=false` → no detection, no trips
+  - Dashboard notification created on trip
+  - Multiple entities in single sync → only tripped entity blocked, others proceed
+  - Counter window: 4 broken entries spread over 20 min → no trip (outside 10 min window)
+- **Files:**
+  - `lib/mcp/security/__tests__/circuit-breaker.test.ts` (new)
+- **Blocked by:** P5.5-API-05b
+
 ### P5.5-TEST-06: IStorageProvider Port Compliance
 
-- [ ] **Status:** Not started
+- [ ] **Status:** Partial — port-compliance.test.ts not updated for 12th port (IStorageProvider)
 - **Description:** Port compliance test for the 12th port, following existing patterns in `lib/di/__tests__/port-compliance.test.ts`.
 - **Test cases:**
   - `InMemoryStorageProvider` implements all `IStorageProvider` methods
@@ -1230,7 +1521,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-07: CLI Init + Push Integration
 
-- [ ] **Status:** Not started
+- [ ] **Status:** Not started — init-push.test.ts not created
 - **Description:** Integration tests for the CLI local repo ingestion flow.
 - **Test cases:**
   - `kap10 init` creates `.kap10/config.json` with correct shape
@@ -1247,7 +1538,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-08: sync_local_diff Backward Compatibility
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Verify that the sync_local_diff extension is backward compatible — existing agents that don't send prompt metadata still work.
 - **Test cases:**
   - Sync without `prompt` field → ledger entry created with `[manual edit]` prompt
@@ -1262,7 +1553,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-09: Timeline API Pagination
 
-- [ ] **Status:** Not started
+- [ ] **Status:** Not started — ledger-pagination.test.ts not created
 - **Description:** Test cursor-based pagination for timeline queries.
 - **Test cases:**
   - First page returns `limit` entries + cursor token
@@ -1278,7 +1569,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-10: E2E — Full Rewind Cycle
 
-- [ ] **Status:** Not started
+- [ ] **Status:** Not started — rewind-e2e.test.ts not created
 - **Description:** End-to-end test for the complete rewind cycle: sync → validate → break → rewind → new branch.
 - **Scenario:**
   1. Sync change with prompt "Add feature X" → entry E1 (pending)
@@ -1307,19 +1598,29 @@ lib/
     __tests__/
       ledger.test.ts              ← Ledger CRUD + state machine tests
       ledger-pagination.test.ts   ← Timeline pagination tests
-  mcp/tools/
-    rewind.ts                     ← revert_to_working_state MCP tool
-    timeline.ts                   ← get_timeline, mark_working MCP tools
+  use-cases/
+    shadow-rewind.ts              ← Blast radius calculator for rewind conflict detection
     __tests__/
-      rewind.test.ts              ← Rewind atomicity + branch tests
+      shadow-rewind.test.ts       ← Shadow rewind unit tests
+  mcp/
+    tools/
+      rewind.ts                     ← revert_to_working_state MCP tool (with shadow rewind + force)
+      timeline.ts                   ← get_timeline, mark_working MCP tools
+    security/
+      circuit-breaker.ts            ← Ledger Circuit Breaker: hallucination loop detection + halt injection
+      __tests__/
+        circuit-breaker.test.ts     ← Circuit breaker tests
+    __tests__/
+      rewind.test.ts              ← Rewind atomicity + branch + shadow rewind tests
       snapshot.test.ts            ← Working snapshot tests
       rollup.test.ts              ← Commit roll-up tests
       sync-ledger.test.ts         ← sync_local_diff backward compat tests
       rewind-e2e.test.ts          ← Full rewind cycle E2E
   temporal/activities/
-    anti-pattern.ts               ← Anti-pattern rule synthesis activity
+    anti-pattern.ts               ← Anti-pattern rule synthesis + vectorization activities
     __tests__/
       anti-pattern.test.ts        ← Rule synthesis tests
+      anti-pattern-vectorization.test.ts ← Proactive codebase scan tests
 packages/cli/src/
   commands/
     init.ts                       ← kap10 init
@@ -1332,6 +1633,8 @@ packages/cli/src/
   prompt-detector.ts              ← Agent prompt extraction
   __tests__/
     init-push.test.ts             ← CLI integration tests
+  commands/
+    circuit-reset.ts              ← kap10 circuit-reset CLI command
 app/
   api/
     cli/
@@ -1342,6 +1645,7 @@ app/
       timeline/[entryId]/route.ts ← GET single entry
       timeline/mark-working/route.ts ← POST mark working
       commits/route.ts            ← GET commit summaries
+      circuit-breaker/reset/route.ts ← POST manual circuit breaker reset
   (dashboard)/repos/[repoId]/
     timeline/
       page.tsx                    ← Timeline page
@@ -1356,6 +1660,7 @@ components/repo/
 supabase/migrations/
   2026XXXX_phase55_cli_uploads_bucket.sql
   2026XXXX_phase55_ledger_snapshots.sql
+  2026XXXX_phase55_rule_embeddings.sql    ← kap10.rule_embeddings pgvector table for anti-pattern vectorization
 ```
 
 ## Modified Files Summary
@@ -1382,3 +1687,5 @@ packages/cli/src/index.ts             ← Register new commands
 | Date | Author | Changes |
 |---|---|---|
 | 2026-02-21 | Phase 5.5 Design | Initial document. 6 user flows, 8 system logic sections, 10 failure scenarios, 7 latency budgets, phase bridge to Phase 6, 37 tracker items across 6 layers. |
+| 2026-02-21 | — | Added Shadow Rewind (blast radius checking with dryRun/force modes) and Anti-Pattern Vectorization (proactive codebase scanning). New: P5.5-API-05a (vectorization activity), enhanced P5.5-API-02 (shadow rewind), P5.5-TEST-02 expanded, P5.5-TEST-05a added, `shadow-rewind.ts` use-case, `rule_embeddings` migration. Total: **40 tracker items.** |
+| 2026-02-21 | — | Added Ledger Circuit Breaker (hallucination loop detection). New: P5.5-API-05b (circuit breaker module), P5.5-TEST-05b (circuit breaker tests), `circuit-breaker.ts` security module, `circuit-reset` CLI command, manual reset API endpoint. Total: **42 tracker items.** |

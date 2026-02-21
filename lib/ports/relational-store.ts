@@ -28,6 +28,10 @@ export interface RepoRecord {
   // Phase 2
   onboardingPrUrl?: string | null
   onboardingPrNumber?: number | null
+  // Phase 5.5/5.6
+  localCliUploadPath?: string | null
+  ephemeral?: boolean
+  ephemeralExpiresAt?: Date | null
 }
 
 export interface GitHubInstallationRecord {

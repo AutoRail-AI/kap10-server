@@ -13,7 +13,9 @@ import type { ILLMProvider } from "@/lib/ports/llm-provider"
 import type { CostBreakdown, IObservability, ModelUsageEntry } from "@/lib/ports/observability"
 import type { IPatternEngine, PatternMatch } from "@/lib/ports/pattern-engine"
 import type { ApiKeyRecord, DeletionLogRecord, GitHubInstallationRecord, IRelationalStore, RepoRecord, WorkspaceRecord } from "@/lib/ports/relational-store"
-import type { BlueprintData, EntityDoc, FeatureDoc, ImpactResult, ImportChain, ProjectStats, SearchResult, SnippetDoc } from "@/lib/ports/types"
+import type { IStorageProvider } from "@/lib/ports/storage-provider"
+import type { ADRDoc, BlueprintData, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, PaginatedResult, ProjectStats, SearchResult, SnippetDoc, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "@/lib/ports/types"
+import { validateLedgerTransition } from "@/lib/ports/types"
 import type { IVectorSearch } from "@/lib/ports/vector-search"
 import type { IWorkflowEngine } from "@/lib/ports/workflow-engine"
 
@@ -21,6 +23,13 @@ export class InMemoryGraphStore implements IGraphStore {
   private entities = new Map<string, EntityDoc>()
   private edges: Array<{ _from: string; _to: string; kind: string; org_id: string; repo_id: string }> = []
   private workspaceEntities = new Map<string, EntityDoc>()
+  private justifications = new Map<string, JustificationDoc>()
+  private featureAggregations = new Map<string, FeatureAggregation>()
+  private healthReports = new Map<string, HealthReportDoc>()
+  private domainOntologies = new Map<string, DomainOntologyDoc>()
+  private driftScores = new Map<string, DriftScoreDoc>()
+  private adrs = new Map<string, ADRDoc>()
+  private tokenUsageLog = new Map<string, TokenUsageEntry>()
 
   async bootstrapGraphSchema(): Promise<void> {}
   async healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }> {
@@ -207,6 +216,289 @@ export class InMemoryGraphStore implements IGraphStore {
         this.workspaceEntities.delete(key)
       }
     })
+  }
+
+  // Phase 4 methods
+  async bulkUpsertJustifications(_orgId: string, justifications: JustificationDoc[]): Promise<void> {
+    for (const j of justifications) {
+      // Bi-temporal: close old justifications for same entity
+      for (const [key, existing] of Array.from(this.justifications.entries())) {
+        if (existing.entity_id === j.entity_id && existing.valid_to === null && existing.id !== j.id) {
+          this.justifications.set(key, { ...existing, valid_to: new Date().toISOString() })
+        }
+      }
+      this.justifications.set(j.id, j)
+    }
+  }
+  async getJustification(orgId: string, entityId: string): Promise<JustificationDoc | null> {
+    for (const j of Array.from(this.justifications.values())) {
+      if (j.org_id === orgId && j.entity_id === entityId && j.valid_to === null) return j
+    }
+    return null
+  }
+  async getJustifications(orgId: string, repoId: string): Promise<JustificationDoc[]> {
+    return Array.from(this.justifications.values())
+      .filter((j) => j.org_id === orgId && j.repo_id === repoId && j.valid_to === null)
+  }
+  async getJustificationHistory(orgId: string, entityId: string): Promise<JustificationDoc[]> {
+    return Array.from(this.justifications.values())
+      .filter((j) => j.org_id === orgId && j.entity_id === entityId)
+      .sort((a, b) => b.valid_from.localeCompare(a.valid_from))
+  }
+  async bulkUpsertFeatureAggregations(_orgId: string, features: FeatureAggregation[]): Promise<void> {
+    for (const f of features) this.featureAggregations.set(f.id, f)
+  }
+  async getFeatureAggregations(orgId: string, repoId: string): Promise<FeatureAggregation[]> {
+    return Array.from(this.featureAggregations.values())
+      .filter((f) => f.org_id === orgId && f.repo_id === repoId)
+  }
+  async upsertHealthReport(_orgId: string, report: HealthReportDoc): Promise<void> {
+    this.healthReports.set(report.id, report)
+  }
+  async getHealthReport(orgId: string, repoId: string): Promise<HealthReportDoc | null> {
+    const reports = Array.from(this.healthReports.values())
+      .filter((r) => r.org_id === orgId && r.repo_id === repoId)
+      .sort((a, b) => b.generated_at.localeCompare(a.generated_at))
+    return reports[0] ?? null
+  }
+  async upsertDomainOntology(_orgId: string, ontology: DomainOntologyDoc): Promise<void> {
+    this.domainOntologies.set(ontology.id, ontology)
+  }
+  async getDomainOntology(orgId: string, repoId: string): Promise<DomainOntologyDoc | null> {
+    const onts = Array.from(this.domainOntologies.values())
+      .filter((o) => o.org_id === orgId && o.repo_id === repoId)
+      .sort((a, b) => b.generated_at.localeCompare(a.generated_at))
+    return onts[0] ?? null
+  }
+  async bulkUpsertDriftScores(_orgId: string, scores: DriftScoreDoc[]): Promise<void> {
+    for (const s of scores) this.driftScores.set(s.id, s)
+  }
+  async getDriftScores(orgId: string, repoId: string): Promise<DriftScoreDoc[]> {
+    return Array.from(this.driftScores.values())
+      .filter((s) => s.org_id === orgId && s.repo_id === repoId)
+  }
+  async bulkUpsertADRs(_orgId: string, adrs: ADRDoc[]): Promise<void> {
+    for (const a of adrs) this.adrs.set(a.id, a)
+  }
+  async getADRs(orgId: string, repoId: string): Promise<ADRDoc[]> {
+    return Array.from(this.adrs.values())
+      .filter((a) => a.org_id === orgId && a.repo_id === repoId)
+  }
+  async getSubgraph(orgId: string, entityId: string, depth = 2, opts?: { crossRepo?: boolean }): Promise<SubgraphResult> {
+    const entity = this.entities.get(entityId)
+    if (!entity || entity.org_id !== orgId) return { entities: [], edges: [] }
+    const visited = new Set<string>([entityId])
+    const resultEntities: EntityDoc[] = [entity]
+    const resultEdges: Array<{ _from: string; _to: string; kind: string; org_id: string; repo_id: string }> = []
+    let frontier = [entityId]
+    for (let d = 0; d < depth; d++) {
+      const nextFrontier: string[] = []
+      for (const fId of frontier) {
+        for (const edge of this.edges) {
+          if (edge.org_id !== orgId) continue
+          if (!opts?.crossRepo && entity.repo_id && edge.repo_id !== entity.repo_id) continue
+          const fromId = edge._from.split("/").pop()!
+          const toId = edge._to.split("/").pop()!
+          let neighbor: string | null = null
+          if (fromId === fId) neighbor = toId
+          else if (toId === fId) neighbor = fromId
+          if (neighbor && !visited.has(neighbor)) {
+            visited.add(neighbor)
+            const ne = this.entities.get(neighbor)
+            if (ne && ne.org_id === orgId) {
+              resultEntities.push(ne)
+              nextFrontier.push(neighbor)
+            }
+            resultEdges.push(edge)
+          }
+        }
+      }
+      frontier = nextFrontier
+    }
+    return { entities: resultEntities, edges: resultEdges as unknown as import("@/lib/ports/types").EdgeDoc[] }
+  }
+  async getAllEntities(orgId: string, repoId: string): Promise<EntityDoc[]> {
+    return Array.from(this.entities.values())
+      .filter((e) => e.org_id === orgId && e.repo_id === repoId)
+  }
+  async getAllEdges(orgId: string, repoId: string): Promise<import("@/lib/ports/types").EdgeDoc[]> {
+    return this.edges
+      .filter((e) => e.org_id === orgId && e.repo_id === repoId) as unknown as import("@/lib/ports/types").EdgeDoc[]
+  }
+  async logTokenUsage(_orgId: string, entry: TokenUsageEntry): Promise<void> {
+    this.tokenUsageLog.set(entry.id, entry)
+  }
+  async getTokenUsage(orgId: string, repoId: string): Promise<TokenUsageEntry[]> {
+    return Array.from(this.tokenUsageLog.values())
+      .filter((e) => e.org_id === orgId && e.repo_id === repoId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+  }
+  async getTokenUsageSummary(orgId: string, repoId: string): Promise<TokenUsageSummary> {
+    const entries = await this.getTokenUsage(orgId, repoId)
+    const byModel: Record<string, { input_tokens: number; output_tokens: number; cost_usd: number }> = {}
+    let totalInput = 0, totalOutput = 0
+    for (const e of entries) {
+      totalInput += e.input_tokens
+      totalOutput += e.output_tokens
+      const m = byModel[e.model] ?? { input_tokens: 0, output_tokens: 0, cost_usd: 0 }
+      m.input_tokens += e.input_tokens
+      m.output_tokens += e.output_tokens
+      byModel[e.model] = m
+    }
+    return { total_input_tokens: totalInput, total_output_tokens: totalOutput, estimated_cost_usd: 0, by_model: byModel }
+  }
+
+  // Phase 5: Incremental Indexing
+  private indexEvents: IndexEventDoc[] = []
+
+  async getEdgesForEntities(orgId: string, entityKeys: string[]): Promise<EdgeDoc[]> {
+    const keySet = new Set(entityKeys)
+    return this.edges
+      .filter((e) => {
+        if (e.org_id !== orgId) return false
+        const fromKey = e._from.split("/").pop()!
+        const toKey = e._to.split("/").pop()!
+        return keySet.has(fromKey) || keySet.has(toKey)
+      }) as unknown as EdgeDoc[]
+  }
+
+  async batchDeleteEntities(orgId: string, entityKeys: string[]): Promise<void> {
+    for (const key of entityKeys) {
+      const entity = this.entities.get(key)
+      if (entity && entity.org_id === orgId) {
+        this.entities.delete(key)
+      }
+    }
+  }
+
+  async batchDeleteEdgesByEntity(orgId: string, entityKeys: string[]): Promise<void> {
+    const keySet = new Set(entityKeys)
+    this.edges = this.edges.filter((e) => {
+      if (e.org_id !== orgId) return true
+      const fromKey = e._from.split("/").pop()!
+      const toKey = e._to.split("/").pop()!
+      return !keySet.has(fromKey) && !keySet.has(toKey)
+    })
+  }
+
+  async findBrokenEdges(orgId: string, repoId: string, deletedKeys: string[]): Promise<EdgeDoc[]> {
+    const keySet = new Set(deletedKeys)
+    return this.edges
+      .filter((e) => {
+        if (e.org_id !== orgId || e.repo_id !== repoId) return false
+        const fromKey = e._from.split("/").pop()!
+        const toKey = e._to.split("/").pop()!
+        return keySet.has(fromKey) || keySet.has(toKey)
+      }) as unknown as EdgeDoc[]
+  }
+
+  async insertIndexEvent(_orgId: string, event: IndexEventDoc): Promise<void> {
+    this.indexEvents.push({ ...event, created_at: event.created_at || new Date().toISOString() })
+  }
+
+  async getIndexEvents(orgId: string, repoId: string, limit = 50): Promise<IndexEventDoc[]> {
+    return this.indexEvents
+      .filter((e) => e.org_id === orgId && e.repo_id === repoId)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+      .slice(0, limit)
+  }
+
+  async getLatestIndexEvent(orgId: string, repoId: string): Promise<IndexEventDoc | null> {
+    const events = await this.getIndexEvents(orgId, repoId, 1)
+    return events[0] ?? null
+  }
+
+  // Phase 5.5: Ledger methods
+  private ledgerEntries: LedgerEntry[] = []
+  private ledgerSummaries: LedgerSummary[] = []
+  private workingSnapshots: WorkingSnapshot[] = []
+
+  async appendLedgerEntry(_orgId: string, entry: LedgerEntry): Promise<void> {
+    this.ledgerEntries.push({ ...entry })
+  }
+
+  async updateLedgerEntryStatus(orgId: string, entryId: string, status: LedgerEntryStatus): Promise<void> {
+    const entry = this.ledgerEntries.find((e) => e.id === entryId && e.org_id === orgId)
+    if (!entry) throw new Error(`Ledger entry ${entryId} not found`)
+    if (!validateLedgerTransition(entry.status, status)) {
+      throw new Error(`Invalid ledger transition: ${entry.status} → ${status}`)
+    }
+    entry.status = status
+    if (status === "working") entry.validated_at = new Date().toISOString()
+  }
+
+  async queryLedgerTimeline(query: LedgerTimelineQuery): Promise<PaginatedResult<LedgerEntry>> {
+    let filtered = this.ledgerEntries.filter(
+      (e) => e.org_id === query.orgId && e.repo_id === query.repoId
+    )
+    if (query.branch) filtered = filtered.filter((e) => e.branch === query.branch)
+    if (query.timelineBranch !== undefined) filtered = filtered.filter((e) => e.timeline_branch === query.timelineBranch)
+    if (query.status) filtered = filtered.filter((e) => e.status === query.status)
+    if (query.userId) filtered = filtered.filter((e) => e.user_id === query.userId)
+
+    filtered.sort((a, b) => b.created_at.localeCompare(a.created_at))
+
+    const cursorIndex = query.cursor
+      ? filtered.findIndex((e) => e.id === query.cursor) + 1
+      : 0
+    const limit = query.limit ?? 50
+    const items = filtered.slice(cursorIndex, cursorIndex + limit)
+    const hasMore = cursorIndex + limit < filtered.length
+    const cursor = items.length > 0 ? items[items.length - 1]!.id : null
+
+    return { items, cursor, hasMore }
+  }
+
+  async getUncommittedEntries(orgId: string, repoId: string, branch: string): Promise<LedgerEntry[]> {
+    return this.ledgerEntries
+      .filter((e) => e.org_id === orgId && e.repo_id === repoId && e.branch === branch
+        && e.status !== "committed" && e.status !== "reverted")
+      .sort((a, b) => a.created_at.localeCompare(b.created_at))
+  }
+
+  async getMaxTimelineBranch(orgId: string, repoId: string, branch: string): Promise<number> {
+    const entries = this.ledgerEntries.filter(
+      (e) => e.org_id === orgId && e.repo_id === repoId && e.branch === branch
+    )
+    if (entries.length === 0) return 0
+    return Math.max(...entries.map((e) => e.timeline_branch))
+  }
+
+  async markEntriesReverted(orgId: string, entryIds: string[]): Promise<void> {
+    const idSet = new Set(entryIds)
+    for (const entry of this.ledgerEntries) {
+      if (entry.org_id === orgId && idSet.has(entry.id)) {
+        entry.status = "reverted"
+      }
+    }
+  }
+
+  async appendLedgerSummary(_orgId: string, summary: LedgerSummary): Promise<void> {
+    this.ledgerSummaries.push({ ...summary })
+  }
+
+  async queryLedgerSummaries(orgId: string, repoId: string, branch?: string, limit = 50): Promise<LedgerSummary[]> {
+    let filtered = this.ledgerSummaries.filter(
+      (s) => s.org_id === orgId && s.repo_id === repoId
+    )
+    if (branch) filtered = filtered.filter((s) => s.branch === branch)
+    filtered.sort((a, b) => b.created_at.localeCompare(a.created_at))
+    return filtered.slice(0, limit)
+  }
+
+  async getLedgerEntry(orgId: string, entryId: string): Promise<LedgerEntry | null> {
+    return this.ledgerEntries.find((e) => e.org_id === orgId && e.id === entryId) ?? null
+  }
+
+  async appendWorkingSnapshot(_orgId: string, snapshot: WorkingSnapshot): Promise<void> {
+    this.workingSnapshots.push({ ...snapshot })
+  }
+
+  async getLatestWorkingSnapshot(orgId: string, repoId: string, branch: string): Promise<WorkingSnapshot | null> {
+    const snapshots = this.workingSnapshots
+      .filter((s) => s.org_id === orgId && s.repo_id === repoId && s.branch === branch)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    return snapshots[0] ?? null
   }
 }
 
@@ -490,6 +782,25 @@ export class FakeGitHost implements IGitHost {
   async listBranches(): Promise<string[]> {
     return ["main", "develop"]
   }
+
+  // Phase 5: Incremental indexing
+  pullLatestResult: (() => Promise<void>) | null = null
+  diffFilesResult: import("@/lib/ports/types").ChangedFile[] = []
+  latestShaResult = "abc123"
+  blameResult: string | null = "test-author"
+
+  async pullLatest(): Promise<void> {
+    if (this.pullLatestResult) return this.pullLatestResult()
+  }
+  async diffFiles(): Promise<import("@/lib/ports/types").ChangedFile[]> {
+    return this.diffFilesResult
+  }
+  async getLatestSha(): Promise<string> {
+    return this.latestShaResult
+  }
+  async blame(): Promise<string | null> {
+    return this.blameResult
+  }
 }
 
 export class InMemoryVectorSearch implements IVectorSearch {
@@ -683,5 +994,36 @@ export class FakePatternEngine implements IPatternEngine {
   }
   async matchRule(): Promise<PatternMatch[]> {
     return []
+  }
+}
+
+export class InMemoryStorageProvider implements IStorageProvider {
+  private store = new Map<string, Buffer>()
+
+  async generateUploadUrl(bucket: string, path: string): Promise<{ url: string; token: string }> {
+    return {
+      url: `https://fake-storage.local/${bucket}/${path}`,
+      token: `fake-token-${Date.now()}`,
+    }
+  }
+
+  async downloadFile(bucket: string, path: string): Promise<Buffer> {
+    const key = `${bucket}/${path}`
+    const data = this.store.get(key)
+    if (!data) throw new Error(`File not found: ${key}`)
+    return data
+  }
+
+  async deleteFile(bucket: string, path: string): Promise<void> {
+    this.store.delete(`${bucket}/${path}`)
+  }
+
+  async healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }> {
+    return { status: "up", latencyMs: 0 }
+  }
+
+  /** Test helper: put a file directly into the in-memory store */
+  putFile(bucket: string, path: string, data: Buffer): void {
+    this.store.set(`${bucket}/${path}`, data)
   }
 }

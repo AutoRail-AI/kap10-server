@@ -223,3 +223,398 @@ ALTER TABLE kap10.api_keys ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT false;
 - **Default API key** is returned in the raw form exactly once (during device flow token exchange). After that, only the prefix is stored in the database.
 - **Credentials file** at `~/.kap10/credentials.json` is created with mode `0o600` (owner-only read/write).
 - **No secrets in proxy bypass** — the public paths (`/api/cli/*`) only expose the device flow endpoints. The authorize page (`/cli/authorize`) remains session-protected behind the proxy.
+
+---
+
+## 7. Advanced Architectural Enhancements
+
+### 7.1 Decentralized AST Extraction (Local MapReduce)
+
+**Problem:** For local repositories not on GitHub, the CLI currently zips the code and uploads it to Supabase for the heavy Temporal workers to parse (Phase 5.5's `kap10 push`). For a 2 GB enterprise monorepo, this upload takes forever and introduces major security concerns — proprietary source code leaves the developer's machine.
+
+**Solution:** Move the `heavy-compute-rust` binary (from Phase ∞) directly into the CLI package. When a user runs `kap10 connect`, the CLI parses the AST, extracts the entity graph, and hashes entities *locally on the developer's machine*. Only a lightweight JSON payload of the graph topology (entity metadata, edges, hashes — no source code text) is sent to the cloud.
+
+```
+Local MapReduce Pipeline:
+
+kap10 connect (or kap10 push --local-parse)
+  │
+  ▼
+CLI binary (kap10-parse-local, Rust or WASM):
+  1. Scan workspace (git ls-files or fs walk)
+  2. Detect languages (extension map)
+  3. For each file:
+     a) Parse AST via tree-sitter (bundled grammars)
+     b) Extract entities: functions, classes, methods, interfaces
+     c) Compute entityHash (SHA-256, NUL-joined)
+     d) Extract call/import edges
+  4. Build graph topology JSON:
+     { entities: [{ key, kind, name, filePath, startLine, endLine, signature }],
+       edges: [{ fromKey, toKey, kind }],
+       fileHashes: { path: sha256 } }
+     NOTE: No entity `body` field — source code text stays local
+  │
+  ▼
+CLI uploads JSON (typically 1-5 MB) to POST /api/cli/graph-upload
+  │
+  ▼
+Server writes entities + edges to ArangoDB (same as indexing pipeline)
+Server triggers embedding workflow for entities (server-side only,
+  uses entity names/signatures, NOT body text)
+```
+
+**What goes to the cloud vs what stays local:**
+
+| Data | Sent to cloud? | Why |
+|------|---------------|-----|
+| Entity metadata (name, kind, file path, line numbers, signature) | Yes | Needed for graph queries, MCP tools, search |
+| Entity body (source code text) | **No** | Privacy. Only sent if user explicitly opts in (`--include-bodies`) |
+| Edge relationships (calls, imports, extends) | Yes | Needed for graph traversal, impact analysis |
+| File hashes (content SHA) | Yes | Needed for incremental indexing (detect changes) |
+| `.scip` index file | **No** | Parsed locally, only extracted metadata sent |
+| Full file content | **No** | Never uploaded in local-parse mode |
+
+**Binary distribution:** The Rust parse binary is cross-compiled for macOS (x86_64 + aarch64), Linux (x86_64 + aarch64), and Windows (x86_64). Distributed as an npm optional dependency or downloaded on first run (like `esbuild` or `turbo`).
+
+**Fallback:** If the local Rust binary is unavailable (unsupported platform, download failure), the CLI falls back to the existing zip-upload path (Phase 5.5's `kap10 push`). The local-parse path is an optimization, never a gate.
+
+### 7.2 Ephemeral Sandbox Mode
+
+**Problem:** Developers want to test kap10 on a quick side-project, but doing so pollutes their org's permanent ArangoDB and pgvector databases with entities that will never be maintained.
+
+**Solution:** Add an `--ephemeral` flag to `kap10 connect`. This provisions a temporary, isolated namespace with a strict 4-hour TTL.
+
+```
+kap10 connect --ephemeral
+```
+
+**Architecture:**
+
+```
+Ephemeral Namespace:
+  ArangoDB: org_{orgId}_ephemeral_{uuid}/
+    └── All standard collections (entities, edges, files, etc.)
+    └── TTL: 4 hours from creation
+
+  pgvector: kap10.entity_embeddings WHERE namespace = 'ephemeral_{uuid}'
+    └── Filtered by namespace column (not separate table)
+    └── Cleanup: DELETE WHERE namespace = 'ephemeral_{uuid}'
+
+  Supabase: kap10.repos WHERE ephemeral = true AND ephemeral_expires_at < now()
+    └── Auto-cleaned by cleanupWorkspacesWorkflow cron
+
+  Redis: mcp:session:* WHERE namespace = 'ephemeral_{uuid}'
+    └── Auto-expires via existing TTL
+```
+
+**Lifecycle:**
+
+1. `kap10 connect --ephemeral` → Server creates repo with `ephemeral: true`, `ephemeral_expires_at: now() + 4h`
+2. CLI indexes locally (using local-parse if available) or uploads zip
+3. MCP connection established — all tools work normally within the ephemeral namespace
+4. After 4 hours (or when CLI process is killed):
+   a. Server triggers `deletionAuditWorkflow` (Temporal)
+   b. Workflow deletes: ArangoDB org database, pgvector rows, Supabase repo record, Redis sessions
+   c. Audit log entry written: `{ action: "ephemeral_cleanup", orgId, repoId, entityCount, timestamp }`
+5. If user wants to keep: `kap10 promote` converts ephemeral → permanent (removes TTL, keeps data)
+
+**Database changes:**
+- `kap10.repos`: Add `ephemeral Boolean @default(false)`, `ephemeral_expires_at DateTime?`
+- `cleanupWorkspacesWorkflow`: Extended to query `WHERE ephemeral = true AND ephemeral_expires_at < now()`
+
+### 7.3 Self-Healing MCP Configuration
+
+**Problem:** AI agents (Cursor, Claude Code) frequently overwrite, corrupt, or drop MCP config files (`.cursor/mcp.json`, `.vscode/settings.json`) during updates or user error, breaking the kap10 connection silently. Users experience "Why isn't the AI seeing my rules?" without realizing the config was damaged.
+
+**Solution:** When the CLI establishes a connection, install a lightweight integrity watchdog that verifies the IDE's MCP config file and silently repairs it if the kap10 server entry is missing or corrupted.
+
+**Implementation — Two complementary strategies:**
+
+**Strategy A: Git Hook (post-checkout, post-merge)**
+
+```
+kap10 connect installs:
+  .git/hooks/post-checkout  (or appends to existing)
+  .git/hooks/post-merge     (or appends to existing)
+
+Hook script (bash):
+  #!/bin/sh
+  # kap10 MCP config integrity check
+  kap10 config verify --silent 2>/dev/null || true
+```
+
+`kap10 config verify --silent`:
+1. Read `.cursor/mcp.json` (or `.vscode/settings.json` depending on detected IDE)
+2. Check if kap10 server entry exists with correct URL and API key
+3. If missing or corrupted:
+   a. Re-inject kap10 server config (merge, don't overwrite other entries)
+   b. Log: `"kap10: MCP config repaired (server entry was missing)"`
+4. If correct: exit silently (zero output)
+
+**Strategy B: Background Watchdog (optional, for `kap10 watch` mode)**
+
+When `kap10 watch` is running (Phase 5.5), add a periodic config check:
+1. Every 60 seconds, verify MCP config integrity
+2. If damaged, repair silently and log
+3. On repair, send a brief notification to the terminal: `"⚡ kap10: Repaired MCP config (was corrupted by IDE update)"`
+
+**Config repair logic (merge, not overwrite):**
+
+```
+Repair Algorithm:
+
+1. Read existing config file (e.g., .cursor/mcp.json)
+2. Parse as JSON (if parse fails → treat as empty {})
+3. Check for kap10 entry in mcpServers:
+   Expected: { "mcpServers": { "kap10": { "url": "...", "headers": { ... } } } }
+4. If kap10 entry missing OR url/headers incorrect:
+   a. Preserve ALL other mcpServers entries unchanged
+   b. Set/overwrite ONLY the "kap10" key with correct config
+   c. Write back to file
+5. If kap10 entry correct: do nothing
+```
+
+**Safety guarantees:**
+- Never overwrites non-kap10 MCP server entries
+- Never runs if `kap10 connect` was never run in this repo (checks `.kap10/config.json` exists)
+- Git hooks are append-safe (check if hook already contains kap10 line before adding)
+- Watchdog is opt-in (only active during `kap10 watch`)
+
+### 7.4 Ephemeral "Dirty State" Overlay (Real-Time Uncommitted Context)
+
+**Problem:** The local MCP server syncs via Git, but developers frequently ask the AI about code they are actively typing (unsaved or uncommitted files). If the agent queries the local proxy (Phase 10) or cloud ArangoDB, it gets the last committed state, leading to massive context collisions where the AI suggests changes to code that no longer exists.
+
+**Solution:** Create an **In-Memory Overlay Graph** for uncommitted changes. When the IDE sends the current dirty buffer to kap10, run a hyper-fast, localized `ast-grep` pass just on those dirty lines. Instead of writing this to the database, project these changes as an "Overlay Mask" over the query router. When the agent asks "What does this function do?", the router prioritizes the dirty in-memory mask over the persistent database.
+
+```
+Dirty State Overlay Architecture:
+
+Data Flow:
+  IDE → (on keystroke debounce, 2s) → MCP tool: sync_dirty_buffer
+    Input: { filePath, content, cursorLine?, language }
+
+  MCP handler:
+    1. Run lightweight ast-grep parse on the dirty content:
+       - Extract entity signatures (function names, class names, parameters)
+       - Extract import statements
+       - Do NOT extract full body text (too expensive for real-time)
+       - Timeout: 500ms per file (hard cap — never block agent)
+    2. Store in Redis ephemeral overlay:
+       Key: kap10:dirty:{sessionId}:{filePath}
+       Value: {
+         entities: [{ kind, name, signature, startLine, endLine }],
+         imports: [{ module, symbols }],
+         updatedAt: ISO timestamp
+       }
+       TTL: 30 seconds (auto-expires if IDE stops sending)
+    3. Return: { overlayActive: true, entitiesDetected: N }
+
+Query Resolution (Overlay-Aware):
+  When any MCP tool queries entities (get_function, search_code, etc.):
+    1. Query persistent store (ArangoDB) as normal → baseResults
+    2. Check Redis for dirty overlay entries for this session:
+       SCAN kap10:dirty:{sessionId}:*
+    3. For each overlay entry:
+       a) If overlay entity matches a baseResult by (kind + name + filePath):
+          → REPLACE the base entity with the overlay version
+          → Mark in response: _meta.source = "dirty_buffer"
+       b) If overlay entity is NEW (no match in base):
+          → ADD to results
+          → Mark: _meta.source = "dirty_buffer"
+       c) If base entity's file has a dirty overlay but entity is GONE:
+          → Mark as potentially deleted: _meta.source = "dirty_buffer_deleted"
+    4. Return merged results
+
+  Priority chain: dirty_buffer > workspace_overlay > ArangoDB > pgvector
+
+Storage:
+  Redis only — never touches ArangoDB or pgvector for dirty state.
+  Auto-cleanup via TTL (30s). If IDE disconnects, overlays expire silently.
+  No persistence needed — dirty state is inherently ephemeral.
+
+Edge Cases:
+  - Multiple files dirty simultaneously: Each file has its own Redis key. Overlay merge
+    handles multi-file queries correctly.
+  - Syntax errors in dirty buffer: ast-grep parse may fail. On failure, store the
+    file path as "dirty but unparseable" — MCP tools will warn the agent:
+    "This file has unsaved changes that couldn't be parsed. Results may be stale."
+  - Race condition (save → dirty → save): The 2s debounce + 30s TTL ensures
+    dirty state never outlives the actual edit session. Saving triggers
+    sync_local_diff (Phase 5.5) which updates the persistent store.
+  - kap10 watch integration: If kap10 watch is running (Phase 5.5), it detects
+    file saves and triggers sync_local_diff, which updates ArangoDB. The dirty
+    overlay then expires naturally. No conflict.
+```
+
+**Configuration:**
+- `DIRTY_OVERLAY_ENABLED` env var (default: `true`)
+- `DIRTY_OVERLAY_TTL` env var (default: `30` — seconds before dirty entry expires)
+- `DIRTY_OVERLAY_DEBOUNCE` env var (default: `2000` — ms debounce for IDE keystroke events)
+- `DIRTY_OVERLAY_PARSE_TIMEOUT` env var (default: `500` — ms timeout for ast-grep on dirty buffer)
+
+**Why Redis (not in-memory on the MCP server process):** The MCP server may be a stateless Vercel function or a multi-instance deployment behind a load balancer. Redis provides session-scoped ephemeral storage accessible by any server instance handling the agent's requests. The 30s TTL ensures zero long-term storage cost.
+
+---
+
+## 8. Implementation Tracker — Advanced Enhancements
+
+### P5.6-ADV-01: Local AST Extraction Binary
+
+- [ ] **Status:** Partial — `--local-parse` flag declared in push.ts but is a dead option; Rust binary and download script not created (blocked by Phase ∞ RUST-07)
+- **Description:** Package the Phase ∞ Rust `kap10-parse-rest` binary (or a subset) for distribution with the CLI. Cross-compile for macOS/Linux/Windows.
+- **Binary scope:** tree-sitter parsing + entity extraction + hash computation. Does NOT include SCIP (SCIP requires language-specific indexer binaries installed separately). Does NOT include ArangoDB write (output goes to stdout JSON).
+- **Files:**
+  - `workers/heavy-compute-rust/src/bin/kap10-parse-local.rs` (new — CLI-specific entry point)
+  - `packages/cli/scripts/download-binary.ts` (new — post-install binary download)
+  - `packages/cli/src/commands/push.ts` (modify — add `--local-parse` flag)
+- **Testing:** Binary produces correct entity graph JSON for TypeScript/Python/Go repos. Entity hashes match server-side computation. Binary runs on macOS ARM, macOS x86, Linux x86. Fallback to zip-upload works when binary unavailable.
+- **Blocked by:** Phase ∞ RUST-07 (kap10-parse-rest binary)
+- **Notes:** Can ship independently of Phase ∞ by extracting a minimal Rust crate that only does tree-sitter + hashing (no SCIP, no ArangoDB).
+
+### P5.6-ADV-02: Graph-Only Upload Endpoint
+
+- [x] **Status:** Complete
+- **Description:** New API endpoint `POST /api/cli/graph-upload` that accepts the lightweight graph topology JSON (entities + edges, no source code bodies) from local-parse mode.
+- **Input:** `{ repoId, entities: EntityDoc[], edges: EdgeDoc[], fileHashes: Record<string, string> }`
+- **Handler:** Validates entity shapes, writes to ArangoDB via `IGraphStore.bulkUpsertEntities/Edges`, triggers embedding workflow (using entity names/signatures only).
+- **Files:**
+  - `app/api/cli/graph-upload/route.ts` (new)
+- **Testing:** Upload succeeds. Entities written to ArangoDB. Embedding workflow triggered. Invalid shapes rejected with 400. Auth required (API key).
+- **Blocked by:** P5.6-ADV-01
+
+### P5.6-ADV-03: Ephemeral Sandbox Mode
+
+- [ ] **Status:** Partial — Prisma ephemeral fields exist, deletion-audit.ts has lifecycle functions, but: connect.ts missing --ephemeral flag, promote.ts not created, init/route.ts doesn't handle ephemeral, no separate ephemeral-cleanup.ts activity
+- **Description:** Add `--ephemeral` flag to `kap10 connect`. Provisions temporary isolated namespace with 4-hour TTL.
+- **Database changes:**
+  - Add `ephemeral Boolean @default(false)` and `ephemeral_expires_at DateTime?` to `kap10.repos` Prisma model
+  - Supabase migration for new columns
+- **Server changes:**
+  - `POST /api/cli/init`: Accept `ephemeral: true` → set TTL, create isolated ArangoDB namespace
+  - `cleanupWorkspacesWorkflow`: Extended to delete expired ephemeral repos + their ArangoDB data + pgvector rows
+  - `deletionAuditWorkflow`: New workflow that handles the full cleanup sequence with audit logging
+- **CLI changes:**
+  - `kap10 connect --ephemeral`: Sets ephemeral flag, shows TTL countdown in terminal
+  - `kap10 promote`: New command to convert ephemeral → permanent
+- **Files:**
+  - `prisma/schema.prisma` (modify — add ephemeral fields)
+  - `supabase/migrations/2026XXXX_ephemeral_repos.sql` (new)
+  - `packages/cli/src/commands/connect.ts` (modify — add `--ephemeral` flag)
+  - `packages/cli/src/commands/promote.ts` (new)
+  - `lib/temporal/workflows/deletion-audit.ts` (new)
+  - `lib/temporal/activities/ephemeral-cleanup.ts` (new)
+  - `app/api/cli/init/route.ts` (modify — ephemeral handling)
+- **Testing:** Ephemeral repo created with TTL. Cleanup runs after expiry. ArangoDB + pgvector + Supabase data deleted. Audit log written. `kap10 promote` removes ephemeral flag and TTL. Multiple ephemeral repos don't interfere.
+- **Blocked by:** Nothing
+
+### P5.6-ADV-04: Self-Healing MCP Configuration
+
+- [ ] **Status:** Partial — config-verify.ts exists with verify+repair+install-hooks subcommands, but: connect.ts doesn't auto-install git hooks, watch.ts missing 60s config check loop, config-healer.ts not extracted as standalone module
+- **Description:** Install git hooks and optional background watchdog to detect and repair corrupted MCP config files.
+- **Git hooks:**
+  - `post-checkout` and `post-merge` hooks that run `kap10 config verify --silent`
+  - Append-safe: check for existing kap10 line before adding
+  - Non-blocking: failures are silent (`|| true`)
+- **Config verify command:**
+  - `kap10 config verify [--silent]`: Check MCP config integrity, repair if needed
+  - Merge-safe: only modifies the `kap10` key in `mcpServers`, preserves all others
+  - `--silent`: No output on success, brief log on repair
+- **Watchdog integration:**
+  - `kap10 watch` gains a 60-second config integrity check loop
+  - On repair: terminal notification `"⚡ kap10: Repaired MCP config"`
+- **Files:**
+  - `packages/cli/src/commands/config.ts` (new — `kap10 config verify`)
+  - `packages/cli/src/config-healer.ts` (new — repair logic: read, parse, merge, write)
+  - `packages/cli/src/commands/connect.ts` (modify — install git hooks after MCP config write)
+  - `packages/cli/src/commands/watch.ts` (modify — add config check loop)
+- **Testing:** Missing kap10 entry → repaired. Corrupted JSON → repaired (other entries preserved). Correct config → no changes. Git hooks installed correctly. Hooks don't break existing hooks. Watchdog detects and repairs within 60s. Non-kap10 MCP servers never modified.
+- **Blocked by:** Nothing
+
+### P5.6-ADV-05: Dirty State Overlay (In-Memory Uncommitted Context)
+
+- [ ] **Status:** Partial — dirty-buffer.ts complete with sync_dirty_buffer tool + resolveEntityWithOverlay, registered in index.ts, env vars configured. Missing: lib/mcp/overlay/dirty-state.ts not extracted, search.ts/inspect.ts/graph.ts not wired with overlay-aware resolution
+- **Description:** Implement real-time in-memory overlay for uncommitted/unsaved file changes using Redis ephemeral storage.
+- **New MCP tool:** `sync_dirty_buffer` — accepts `{ filePath, content, cursorLine?, language }`, runs lightweight ast-grep parse (500ms timeout), stores entity signatures in Redis with 30s TTL.
+- **Query integration:** All entity-querying MCP tools gain overlay-aware resolution: check Redis for dirty entries → merge with ArangoDB base results → mark `_meta.source = "dirty_buffer"` on overlay entities.
+- **Priority chain:** dirty_buffer > workspace_overlay > ArangoDB > pgvector
+- **IDE integration:** Cursor/VS Code extensions debounce keystrokes (2s) and call `sync_dirty_buffer` with current buffer content.
+- **Files:**
+  - `lib/mcp/tools/dirty-buffer.ts` (new — sync_dirty_buffer MCP tool)
+  - `lib/mcp/overlay/dirty-state.ts` (new — Redis overlay read/write + merge logic)
+  - `lib/mcp/tools/search.ts` (modify — overlay-aware query resolution)
+  - `lib/mcp/tools/inspect.ts` (modify — overlay-aware entity lookup)
+  - `lib/mcp/tools/graph.ts` (modify — overlay-aware graph traversal)
+  - `lib/mcp/tools/index.ts` (modify — register sync_dirty_buffer)
+- **Testing:** Dirty buffer stored in Redis with TTL. Overlay entities merged into query results. Overlay expires after 30s. Parse failure → graceful fallback (warning, not error). Multiple dirty files → correct merge. Save triggers sync_local_diff → overlay expires naturally.
+- **Blocked by:** Phase 2 MCP tools, Phase 5.5 sync_local_diff
+
+### P5.6-TEST-ADV-01: Local Parse Integration
+
+- [ ] **Status:** Not started — local-parse.test.ts not created
+- **Test cases:**
+  - Local parse produces entity graph JSON matching server-side extraction
+  - Entity hashes are byte-identical between local Rust binary and server TypeScript
+  - Graph-upload endpoint writes correct data to ArangoDB
+  - Fallback to zip-upload when local binary unavailable
+  - Large repo (10K files) completes local parse in <30s
+- **Files:**
+  - `packages/cli/src/__tests__/local-parse.test.ts` (new)
+- **Blocked by:** P5.6-ADV-01, P5.6-ADV-02
+
+### P5.6-TEST-ADV-02: Ephemeral Sandbox Lifecycle
+
+- [ ] **Status:** Not started — ephemeral.test.ts and deletion-audit.test.ts not created
+- **Test cases:**
+  - `--ephemeral` creates repo with TTL
+  - MCP tools work within ephemeral namespace
+  - Cleanup deletes all data after TTL
+  - `kap10 promote` removes ephemeral flag
+  - Audit log written on cleanup
+  - Concurrent ephemeral repos don't interfere
+- **Files:**
+  - `packages/cli/src/__tests__/ephemeral.test.ts` (new)
+  - `lib/temporal/workflows/__tests__/deletion-audit.test.ts` (new)
+- **Blocked by:** P5.6-ADV-03
+
+### P5.6-TEST-ADV-03: Dirty State Overlay
+
+- [ ] **Status:** Partial — dirty-buffer.test.ts exists (3 tests), but dirty-state.test.ts not created
+- **Test cases:**
+  - Dirty buffer → entities extracted and stored in Redis with 30s TTL
+  - MCP `get_function` → returns dirty version instead of stale ArangoDB version
+  - MCP `search_code` → dirty entities appear in results with `_meta.source = "dirty_buffer"`
+  - TTL expiry → overlay removed, queries return to ArangoDB version
+  - Parse failure on dirty buffer → warning returned, base results unaffected
+  - Multiple dirty files → correct merge across all files
+  - New entity in dirty buffer (not in ArangoDB) → included in results
+  - Entity deleted in dirty buffer → marked `_meta.source = "dirty_buffer_deleted"`
+  - File save → sync_local_diff updates ArangoDB, dirty overlay expires naturally
+  - `DIRTY_OVERLAY_ENABLED=false` → sync_dirty_buffer returns no-op
+- **Files:**
+  - `lib/mcp/overlay/__tests__/dirty-state.test.ts` (new)
+  - `lib/mcp/tools/__tests__/dirty-buffer.test.ts` (new)
+- **Blocked by:** P5.6-ADV-05
+
+### P5.6-TEST-ADV-04: Self-Healing Config
+
+- [ ] **Status:** Partial — config-healer.test.ts exists (2 tests) but only tests filesystem ops, doesn't test actual repairIdeConfig function or verify command
+- **Test cases:**
+  - Missing kap10 entry → repaired correctly
+  - Corrupted MCP JSON → repaired, other servers preserved
+  - Correct config → no modification (file unchanged)
+  - Git hooks installed without breaking existing hooks
+  - Watchdog detects corruption within 60s
+  - Repair log emitted on fix
+- **Files:**
+  - `packages/cli/src/__tests__/config-healer.test.ts` (new)
+- **Blocked by:** P5.6-ADV-04
+
+---
+
+## Revision Log
+
+| Date | Author | Change |
+|------|--------|--------|
+| 2026-02-21 | — | Initial document created. CLI-First Zero-Friction Onboarding: Device Auth Flow, org-level API keys, `kap10 connect` golden path command, IDE auto-detection. |
+| 2026-02-21 | — | Added Section 7 "Advanced Architectural Enhancements": Decentralized AST Extraction (local MapReduce), Ephemeral Sandbox Mode, Self-Healing MCP Configuration. Section 8 tracker: 4 implementation items (P5.6-ADV-01..04), 3 test items (P5.6-TEST-ADV-01..03). |
+| 2026-02-21 | — | Added Dirty State Overlay (in-memory uncommitted context via Redis). New: P5.6-ADV-05 (dirty buffer MCP tool + overlay merge), P5.6-TEST-ADV-03 (dirty state tests), renumbered self-healing config test to P5.6-TEST-ADV-04. Total advanced tracker items: **10** (5 impl + 4 test + 1 renumbered). |

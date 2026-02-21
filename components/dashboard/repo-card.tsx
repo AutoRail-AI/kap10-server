@@ -24,9 +24,11 @@ export function RepoCard({ repo, snapshotStatus }: { repo: RepoRecord; snapshotS
         ? "text-primary"
         : status === "embedding"
           ? "text-amber-400"
-          : status === "error" || status === "embed_failed"
-            ? "text-destructive"
-            : "text-muted-foreground"
+          : status === "justifying"
+            ? "text-purple-400"
+            : status === "error" || status === "embed_failed" || status === "justify_failed"
+              ? "text-destructive"
+              : "text-muted-foreground"
 
   const handleStop = async (e: React.MouseEvent) => {
     e.preventDefault()
@@ -99,6 +101,35 @@ export function RepoCard({ repo, snapshotStatus }: { repo: RepoRecord; snapshotS
           </>
         )}
 
+        {status === "justifying" && (
+          <>
+            <Progress value={progress} className="h-1.5" />
+            <p className="text-muted-foreground text-xs">
+              Justifying… {progress}%
+            </p>
+          </>
+        )}
+
+        {status === "justify_failed" && (
+          <>
+            {repo.errorMessage && (
+              <p className="text-destructive text-xs truncate" title={repo.errorMessage}>
+                {repo.errorMessage}
+              </p>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleRestart}
+              disabled={loading}
+              className="h-7 gap-1.5 text-xs"
+            >
+              <RotateCw className="h-3.5 w-3.5" />
+              Retry Justification
+            </Button>
+          </>
+        )}
+
         {status === "embed_failed" && (
           <>
             {repo.errorMessage && (
@@ -126,6 +157,9 @@ export function RepoCard({ repo, snapshotStatus }: { repo: RepoRecord; snapshotS
                 <p className="text-muted-foreground text-xs">
                   {repo.fileCount ?? 0} files · {(repo.functionCount ?? 0) + (repo.classCount ?? 0)} entities
                 </p>
+                {repo.lastIndexedAt && (
+                  <FreshnessIndicator lastIndexedAt={repo.lastIndexedAt} />
+                )}
                 {snapshotStatus === "available" && (
                   <Badge variant="outline" className="h-5 gap-1 px-1.5 text-[10px] font-normal text-emerald-400 border-emerald-400/30">
                     <Download className="h-2.5 w-2.5" />
@@ -212,4 +246,31 @@ export function RepoCard({ repo, snapshotStatus }: { repo: RepoRecord; snapshotS
     return <Link href={`/repos/${repo.id}`}>{card}</Link>
   }
   return card
+}
+
+function FreshnessIndicator({ lastIndexedAt }: { lastIndexedAt: Date | string }) {
+  const lastIndexed = new Date(lastIndexedAt)
+  const hoursAgo = (Date.now() - lastIndexed.getTime()) / (1000 * 60 * 60)
+
+  let dotColor: string
+  let label: string
+
+  if (hoursAgo < 1) {
+    dotColor = "bg-emerald-400"
+    const mins = Math.floor(hoursAgo * 60)
+    label = mins < 1 ? "Just indexed" : `${mins}m ago`
+  } else if (hoursAgo < 24) {
+    dotColor = "bg-amber-400"
+    label = `${Math.floor(hoursAgo)}h ago`
+  } else {
+    dotColor = "bg-destructive"
+    label = `${Math.floor(hoursAgo / 24)}d ago`
+  }
+
+  return (
+    <span className="flex items-center gap-1 text-[10px] text-muted-foreground" title={`Last indexed: ${lastIndexed.toLocaleString()}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${dotColor}`} />
+      {label}
+    </span>
+  )
 }

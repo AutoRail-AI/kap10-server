@@ -443,19 +443,24 @@ describe("dispatchToolCall", () => {
 })
 
 describe("getToolSchemas", () => {
-  it("returns all 11 tool schemas", () => {
+  it("returns all 20 tool schemas", () => {
     const schemas = getToolSchemas()
-    expect(schemas).toHaveLength(11)
+    expect(schemas).toHaveLength(20)
     expect(schemas.map((s) => s.name)).toContain("search_code")
     expect(schemas.map((s) => s.name)).toContain("semantic_search")
     expect(schemas.map((s) => s.name)).toContain("find_similar")
     expect(schemas.map((s) => s.name)).toContain("sync_local_diff")
+    // Phase 4 tools
+    expect(schemas.map((s) => s.name)).toContain("get_business_context")
+    expect(schemas.map((s) => s.name)).toContain("search_by_purpose")
+    expect(schemas.map((s) => s.name)).toContain("analyze_impact")
+    expect(schemas.map((s) => s.name)).toContain("get_blueprint")
   })
 })
 
 describe("TOOL_DEFINITIONS", () => {
-  it("has 11 tools with required fields", () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(11)
+  it("has 20 tools with required fields", () => {
+    expect(TOOL_DEFINITIONS).toHaveLength(20)
     for (const def of TOOL_DEFINITIONS) {
       expect(def.name).toBeTruthy()
       expect(def.description).toBeTruthy()

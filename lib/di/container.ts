@@ -18,6 +18,7 @@ import {
   InMemoryGraphStore,
   InMemoryObservability,
   InMemoryRelationalStore,
+  InMemoryStorageProvider,
   InMemoryVectorSearch,
   MockLLMProvider,
   NoOpBillingProvider,
@@ -31,6 +32,7 @@ import type { ILLMProvider } from "@/lib/ports/llm-provider"
 import type { IObservability } from "@/lib/ports/observability"
 import type { IPatternEngine } from "@/lib/ports/pattern-engine"
 import type { IRelationalStore } from "@/lib/ports/relational-store"
+import type { IStorageProvider } from "@/lib/ports/storage-provider"
 import type { IVectorSearch } from "@/lib/ports/vector-search"
 import type { IWorkflowEngine } from "@/lib/ports/workflow-engine"
 
@@ -48,6 +50,7 @@ export interface Container {
   cacheStore: ICacheStore
   codeIntelligence: ICodeIntelligence
   patternEngine: IPatternEngine
+  storageProvider: IStorageProvider
 }
 
 let productionContainer: Container | null = null
@@ -136,6 +139,13 @@ function createLazyProductionContainer(): Container {
       }
       return cache.patternEngine
     },
+    get storageProvider(): IStorageProvider {
+      if (!cache.storageProvider) {
+        const { SupabaseStorageAdapter } = require("../adapters/supabase-storage") as typeof import("../adapters/supabase-storage")
+        cache.storageProvider = new SupabaseStorageAdapter()
+      }
+      return cache.storageProvider
+    },
   }
 }
 
@@ -159,6 +169,7 @@ export function createTestContainer(overrides?: Partial<Container>): Container {
     cacheStore: new InMemoryCacheStore(),
     codeIntelligence: new FakeCodeIntelligence(),
     patternEngine: new FakePatternEngine(),
+    storageProvider: new InMemoryStorageProvider(),
     ...overrides,
   }
 }

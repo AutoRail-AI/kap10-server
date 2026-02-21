@@ -15,8 +15,9 @@
  * On failure: set repo status to "embed_failed"
  */
 
-import { defineQuery, proxyActivities, setHandler } from "@temporalio/workflow"
+import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild } from "@temporalio/workflow"
 import type * as embeddingActivities from "../activities/embedding"
+import { discoverOntologyWorkflow } from "./discover-ontology"
 
 const activities = proxyActivities<typeof embeddingActivities>({
   taskQueue: "light-llm-queue",
@@ -75,6 +76,15 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
 
     // Step 6: Set status to "ready"
     await activities.setReadyStatus({ orgId: input.orgId, repoId: input.repoId })
+    progress = 98
+
+    // Step 7: Chain to ontology discovery + justification pipeline (Phase 4)
+    await startChild(discoverOntologyWorkflow, {
+      workflowId: `ontology-${input.orgId}-${input.repoId}`,
+      taskQueue: "light-llm-queue",
+      args: [{ orgId: input.orgId, repoId: input.repoId }],
+      parentClosePolicy: ParentClosePolicy.ABANDON,
+    })
     progress = 100
 
     return { embeddingsStored, orphansDeleted: deletedCount }

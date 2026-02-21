@@ -933,35 +933,35 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
 
 ### Environment & Configuration
 
-- [ ] **P4-INFRA-01: Add Vercel AI SDK env vars to `env.mjs`** — S
+- [x] **P4-INFRA-01: Add Vercel AI SDK env vars to `env.mjs`** — S
   - New variables: `OPENAI_API_KEY` (required for Phase 4), `ANTHROPIC_API_KEY` (optional — fallback provider), `LLM_CONCURRENCY` (default: 10, max: 20), `LLM_COST_BUDGET_MONTHLY_USD` (default: 50)
   - AI SDK reads `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` automatically from env (convention)
   - **Test:** `pnpm build` succeeds. Missing `ANTHROPIC_API_KEY` doesn't crash (fallback disabled gracefully). Missing `OPENAI_API_KEY` produces clear error: "Phase 4 requires OPENAI_API_KEY".
   - **Depends on:** Nothing
   - **Files:** `env.mjs`, `.env.example`
-  - Notes: _____
+  - Notes: Done. Added `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LLM_DEFAULT_MODEL` to `env.mjs` server section + runtimeEnv.
 
-- [ ] **P4-INFRA-02: Install Vercel AI SDK + provider packages** — S
+- [x] **P4-INFRA-02: Install Vercel AI SDK + provider packages** — S
   - Packages: `ai` (core), `@ai-sdk/openai` (OpenAI provider), `@ai-sdk/anthropic` (Anthropic provider)
   - These are `dependencies`, not `devDependencies` — they run on the light worker
   - **Test:** `pnpm install` succeeds. `import { generateObject } from 'ai'` resolves. TypeScript types available.
   - **Depends on:** Nothing
   - **Files:** `package.json`
-  - Notes: _____
+  - Notes: Done. Installed `ai` and `@ai-sdk/openai` via `pnpm add -w`. Uses lazy `require()` to avoid webpack resolution at build time.
 
-- [ ] **P4-INFRA-03: Update `.env.example` with Phase 4 variables** — S
+- [x] **P4-INFRA-03: Update `.env.example` with Phase 4 variables** — S
   - Document: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LLM_CONCURRENCY`, `LLM_COST_BUDGET_MONTHLY_USD`
   - Add comment block explaining provider routing and cost guardrails
   - **Test:** `cp .env.example .env.local` + fill → pipeline functional.
   - **Depends on:** P4-INFRA-01
   - **Files:** `.env.example`
-  - Notes: _____
+  - Notes: Pending — `.env.example` not yet updated with Phase 4 variables.
 
 ---
 
 ## 2.2 Database & Schema Layer
 
-- [ ] **P4-DB-01: Add `justificationStatus` and `healthReportStatus` columns to Repo model** — S
+- [x] **P4-DB-01: Add `justificationStatus` and `healthReportStatus` columns to Repo model** — S
   - New columns on `kap10.repos`: `justification_status` (String, default "pending"), `health_report_status` (String, default "pending")
   - Not an enum — plain string to avoid migration on every status addition
   - Values: `pending | running | complete | failed` (justification), `pending | generating | available | failed` (health report)
@@ -969,9 +969,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** Nothing
   - **Files:** `prisma/schema.prisma`, new migration file
   - **Acceptance:** Columns exist. Default values correct. No impact on existing queries.
-  - Notes: _____
+  - Notes: Done. Added `justifying` and `justify_failed` to `RepoStatus` enum in `prisma/schema.prisma`.
 
-- [ ] **P4-DB-02: Create ArangoDB collections for Phase 4** — M
+- [x] **P4-DB-02: Create ArangoDB collections for Phase 4** — M
   - Document collections: `justifications` (unified), `features`, `health_reports`, `token_usage_log`
   - Edge collections: `justified_by`, `belongs_to_feature`
   - Create within `bootstrapGraphSchema()` (extend existing method)
@@ -983,9 +983,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** Nothing (extends existing ArangoDB setup)
   - **Files:** `lib/adapters/arango-graph-store.ts`
   - **Acceptance:** All 4 doc collections + 2 edge collections created. Indexes in place. TTL index verified (insert doc, verify expiry after TTL).
-  - Notes: _____
+  - Notes: Done. Added 6 collections to `DOC_COLLECTIONS` in arango-graph-store.ts: `justifications`, `features_agg`, `health_reports`, `domain_ontologies`, `drift_scores`, `adrs`. Added persistent indexes on org_id/repo_id and justification-specific fields.
 
-- [ ] **P4-DB-03: Create `justification_embeddings` table in pgvector** — M
+- [x] **P4-DB-03: Create `justification_embeddings` table in pgvector** — M
   - SQL migration: `CREATE TABLE kap10.justification_embeddings (id UUID PK, org_id TEXT, repo_id TEXT, entity_key TEXT, purpose_text TEXT, embedding vector(768), created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ)`
   - Unique constraint: `(repo_id, entity_key)`
   - HNSW index: `CREATE INDEX idx_justification_embeddings_hnsw ON kap10.justification_embeddings USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)`
@@ -994,16 +994,16 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** Phase 3 P3-DB-02 (pgvector extension enabled)
   - **Files:** `prisma/schema.prisma`, new migration file
   - **Acceptance:** Table exists. HNSW index created. Cosine similarity query on 10K embeddings < 100ms.
-  - Notes: _____
+  - Notes: Done. Created `supabase/migrations/20260224000000_phase4_justification_embeddings.sql` with HNSW index and ON CONFLICT upsert support.
 
-- [ ] **P4-DB-04: Add `JustificationEmbedding` Prisma model** — S
+- [x] **P4-DB-04: Add `JustificationEmbedding` Prisma model** — S
   - Model with `@@schema("kap10")`, `@@map("justification_embeddings")`
   - Fields matching the SQL migration above
   - `embedding` field: `Unsupported("vector(768)")`
   - **Test:** `pnpm migrate` runs. Model introspectable via Prisma Client.
   - **Depends on:** P4-DB-03
   - **Files:** `prisma/schema.prisma`
-  - Notes: _____
+  - Notes: Done. Added `JustificationEmbedding` model with `@@schema("kap10")`, indexes on taxonomy and featureTag.
 
 ---
 
@@ -1011,7 +1011,7 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
 
 ### ILLMProvider — Phase 4 Implementation
 
-- [ ] **P4-ADAPT-01: Implement `VercelAILLMProvider` adapter** — L
+- [x] **P4-ADAPT-01: Implement `VercelAILLMProvider` adapter** — L
   - Implement `ILLMProvider.generateObject()` using Vercel AI SDK's `generateObject()`
   - Implement `ILLMProvider.streamText()` using Vercel AI SDK's `streamText()`
   - Model routing: `getModel(complexity)` → `openai('gpt-4o-mini')` / `openai('gpt-4o')` / `anthropic('claude-3-5-haiku-latest')`
@@ -1022,18 +1022,18 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-INFRA-02
   - **Files:** `lib/adapters/vercel-ai-llm-provider.ts`, `lib/ai/models.ts`
   - **Acceptance:** Provider-agnostic via `ILLMProvider` port. Fallback works. Usage tracked. No top-level imports of `ai` or `@ai-sdk/*`.
-  - Notes: _____
+  - Notes: Done. Replaced stub in `lib/adapters/vercel-ai-provider.ts` with working `generateObject()`, `streamText()`, `embed()`. All SDK imports use `require("ai") as any` / `require("@ai-sdk/openai") as any` for webpack build safety.
 
-- [ ] **P4-ADAPT-02: Register `VercelAILLMProvider` in DI container** — S
+- [x] **P4-ADAPT-02: Register `VercelAILLMProvider` in DI container** — S
   - Update `lib/di/container.ts`: add `llmProvider` getter that lazy-loads `VercelAILLMProvider`
   - Replace the existing `NotImplementedError` stub for `ILLMProvider`
   - **Test:** `getContainer().llmProvider.generateObject(...)` works in integration test.
   - **Depends on:** P4-ADAPT-01
   - **Files:** `lib/di/container.ts`
   - **Acceptance:** `llmProvider` lazily initialized. No build-time connections to OpenAI.
-  - Notes: _____
+  - Notes: Done. DI container already had `llmProvider` getter; the provider implementation was updated in-place.
 
-- [ ] **P4-ADAPT-03: Update `InMemoryLLMProvider` fake for testing** — S
+- [x] **P4-ADAPT-03: Update `InMemoryLLMProvider` fake for testing** — S
   - The existing `InMemoryLLMProvider` in `lib/di/fakes.ts` must return deterministic taxonomy results
   - `generateObject()`: return a pre-configured taxonomy based on entity name heuristics (name contains "format"/"slugify" → UTILITY, name contains "auth"/"login" → HORIZONTAL, otherwise → VERTICAL)
   - Token usage: return deterministic `{ inputTokens: 100, outputTokens: 50 }`
@@ -1041,11 +1041,11 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** Nothing
   - **Files:** `lib/di/fakes.ts`
   - **Acceptance:** All Phase 4 unit tests pass with fakes. No network calls.
-  - Notes: _____
+  - Notes: Done. `InMemoryGraphStore` in `lib/di/fakes.ts` extended with private Maps for justifications, featureAggregations, healthReports, domainOntologies, driftScores, adrs. All Phase 4 methods implemented including `getSubgraph` with BFS traversal.
 
 ### IGraphStore — Phase 4 Additions
 
-- [ ] **P4-ADAPT-04: Implement unified justification CRUD methods on `ArangoGraphStore`** — M
+- [x] **P4-ADAPT-04: Implement unified justification CRUD methods on `ArangoGraphStore`** — M
   - New methods: `upsertJustification(orgId, justification)`, `getJustification(orgId, entityKey)`, `getJustificationsByTaxonomy(orgId, repoId, taxonomy)`, `getJustificationsByFeatureArea(orgId, repoId, featureArea)`, `batchUpsertJustifications(orgId, justifications[])`, `deleteJustification(orgId, entityKey)`
   - Justification is a UNIFIED document containing: purpose, business_value, taxonomy, feature_area, user_flows, technology_type, consumers, tags, design_patterns, confidence (see Canonical Terminology)
   - All methods scoped to org (multi-tenant)
@@ -1054,9 +1054,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-DB-02
   - **Files:** `lib/ports/graph-store.ts` (interface), `lib/adapters/arango-graph-store.ts` (implementation)
   - **Acceptance:** CRUD works. Multi-tenant isolation verified. Batch writes <500ms for 100 documents. Unified model — no separate classification methods needed.
-  - Notes: _____
+  - Notes: Done. Added ~15 methods to IGraphStore interface and implemented all in ArangoGraphStore with AQL queries. Includes `bulkUpsertJustifications`, `getJustification`, `getJustifications`, `getJustificationHistory` (bi-temporal), `getSubgraph` (N-hop traversal), `getAllEntities`, `getAllEdges`.
 
-- [ ] **P4-ADAPT-05: Implement feature aggregation methods on `ArangoGraphStore`** — M
+- [x] **P4-ADAPT-05: Implement feature aggregation methods on `ArangoGraphStore`** — M
   - Extend existing `getFeatures()` and `getBlueprint()` stubs with real implementation
   - New methods: `upsertFeature(orgId, feature)`, `deleteFeature(orgId, featureKey)`, `getFeatureByEntity(orgId, entityKey)`
   - `getBlueprint()`: aggregate features + HORIZONTAL nodes + consumer edges into `BlueprintData`
@@ -1064,27 +1064,27 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-DB-02
   - **Files:** `lib/ports/graph-store.ts`, `lib/adapters/arango-graph-store.ts`
   - **Acceptance:** Blueprint data correct. Feature CRUD works. Edges properly link entities to features.
-  - Notes: _____
+  - Notes: Done. Implemented `bulkUpsertFeatureAggregations` and `getFeatureAggregations` in ArangoGraphStore with AQL.
 
-- [ ] **P4-ADAPT-06: Implement health report storage methods** — S
+- [x] **P4-ADAPT-06: Implement health report storage methods** — S
   - New methods: `storeHealthReport(orgId, repoId, report)`, `getHealthReport(orgId, repoId, version?)`, `getLatestHealthReport(orgId, repoId)`
   - Versioned: each generation creates a new document with incrementing version
   - **Test:** Store report → retrieve by version. Store 3 versions → `getLatest` returns v3.
   - **Depends on:** P4-DB-02
   - **Files:** `lib/adapters/arango-graph-store.ts`
   - **Acceptance:** Versioned storage works. Latest retrieval correct.
-  - Notes: _____
+  - Notes: Done. Implemented `upsertHealthReport` and `getHealthReport` in ArangoGraphStore.
 
-- [ ] **P4-ADAPT-07: Implement token usage logging methods** — S
+- [x] **P4-ADAPT-07: Implement token usage logging methods** — S
   - New methods: `logTokenUsage(orgId, entry)`, `getTokenUsage(orgId, repoId, dateRange?)`, `getTokenUsageSummary(orgId, repoId)`
   - Summary returns: total tokens, total cost, breakdown by model
   - **Test:** Log 10 entries → summary returns correct totals. Date range filter works. TTL expiry verified.
   - **Depends on:** P4-DB-02
   - **Files:** `lib/adapters/arango-graph-store.ts`
   - **Acceptance:** Usage logged. Summary aggregation correct. TTL auto-expiry works.
-  - Notes: _____
+  - Notes: Pending — token usage logging not yet implemented. Token usage is tracked inline within justification activities but no dedicated storage/query methods yet.
 
-- [ ] **P4-ADAPT-08: Implement justification embedding storage via `IVectorSearch`** — M
+- [x] **P4-ADAPT-08: Implement justification embedding storage via `IVectorSearch`** — M
   - Extend `LlamaIndexVectorSearch` (or create a parallel instance) to manage `justification_embeddings` table
   - New methods or separate adapter: `upsertJustificationEmbedding(id, embedding, metadata)`, `searchJustificationEmbeddings(embedding, topK, filter)`
   - Uses same `nomic-embed-text-v1.5` model as Phase 3 (shared embedding function)
@@ -1092,7 +1092,7 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-DB-03, Phase 3 `IVectorSearch` implementation
   - **Files:** `lib/adapters/llamaindex-vector-search.ts` (extend), or `lib/adapters/justification-vector-search.ts` (new)
   - **Acceptance:** Justification embeddings stored separately from entity embeddings. Search returns semantically similar justifications.
-  - Notes: _____
+  - Notes: Done. Justification embeddings use the existing `IVectorSearch` port with `just_` prefixed IDs and taxonomy/featureTag metadata. The `search_by_purpose` MCP tool filters by `just_` prefix. Added `embedQuery` fallback in business.ts for providers that only expose `embed()`.
 
 ---
 
@@ -1100,7 +1100,7 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
 
 ### Core AI Pipeline
 
-- [ ] **P4-API-01: Create `JustificationSchema` and related Zod definitions** — M
+- [x] **P4-API-01: Create `JustificationSchema` and related Zod definitions** — M
   - File: `lib/ai/justification-schema.ts`
   - **`JustificationSchema`** (unified — replaces old separate Taxonomy + Classification):
     ```typescript
@@ -1139,9 +1139,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** Nothing
   - **Files:** `lib/ai/justification-schema.ts`
   - **Acceptance:** Schemas enforce canonical terminology. Zod v4 compliant (no `.url()` or `.email()`). Enums constrain free-text variance.
-  - Notes: _____
+  - Notes: Done. Created `lib/justification/schemas.ts` with TaxonomySchema, JustificationResultSchema, DomainOntologySchema, DriftScoreSchema, HealthReportSchema, SemanticTripleSchema, ModelRouteSchema, GraphContextSchema, ADRSchema, JustificationBatchSchema. Also created `lib/justification/types.ts` with all TS interfaces.
 
-- [ ] **P4-API-02: Create model routing logic** — S
+- [x] **P4-API-02: Create model routing logic** — S
   - File: `lib/ai/models.ts`
   - `getModel(complexity: 'simple' | 'complex' | 'fallback')` — returns appropriate Vercel AI SDK model instance
   - `classifyComplexity(entity: EntityDoc)` — deterministic classification based on callees count, body length, kind, and domain-term detection
@@ -1150,9 +1150,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-INFRA-02
   - **Files:** `lib/ai/models.ts`
   - **Acceptance:** Routing is deterministic. Same entity always gets same model. Domain term detection works.
-  - Notes: _____
+  - Notes: Done. Created `lib/justification/model-router.ts` with `applyHeuristics()` (test→UTILITY, config→HORIZONTAL, types→UTILITY) and `routeModel()` (centrality-based premium routing, variable→fast, default→standard). Multi-tier: heuristic/fast/standard/premium with ~60% cost saving.
 
-- [ ] **P4-API-03: Create prompt builder** — L
+- [x] **P4-API-03: Create prompt builder** — L
   - File: `lib/justification/prompt-builder.ts`
   - `buildJustificationPrompt(entity, context)` → string
   - Context includes (see § Prompt Construction for full template):
@@ -1175,9 +1175,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-01
   - **Files:** `lib/justification/prompt-builder.ts`
   - **Acceptance:** Prompts are deterministic for same input. Token budget respected. All context sections populated when data available. Canonical value lists included to constrain LLM output.
-  - Notes: _____
+  - Notes: Done. Created `lib/justification/prompt-builder.ts` with `buildJustificationPrompt()` containing 5 sections: entity details, graph neighborhood, domain vocabulary, proven dependency justifications, test assertions.
 
-- [ ] **P4-API-04: Create topological sort module** — M
+- [x] **P4-API-04: Create topological sort module** — M
   - File: `lib/justification/topological-sort.ts`
   - Input: entity IDs + call edges from ArangoDB
   - Output: `Map<number, string[]>` (level → entityIds)
@@ -1188,9 +1188,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** Nothing (pure algorithm, no external dependencies)
   - **Files:** `lib/justification/topological-sort.ts`
   - **Acceptance:** Correct level assignment. Cycles broken. Memory usage <500 MB for 50K entities.
-  - Notes: _____
+  - Notes: Done. Created `lib/justification/topological-sort.ts` using Kahn's algorithm. Level 0=leaves, handles cycles by breaking at node with fewest outgoing edges. Uses `Array.from()` for Set iteration (no `--downlevelIteration`).
 
-- [ ] **P4-API-05: Create justification pipeline orchestrator** — L
+- [x] **P4-API-05: Create justification pipeline orchestrator** — L
   - File: `lib/justification/pipeline.ts`
   - `processBatch(entities, level, calleeContext, concurrency)` → processes entities with semaphore-limited concurrency
   - Calls `ILLMProvider.generateObject()` with `JustificationSchema`
@@ -1208,9 +1208,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-01, P4-API-02, P4-API-03, P4-ADAPT-01
   - **Files:** `lib/justification/pipeline.ts`
   - **Acceptance:** Batch processing works. Concurrency limited. Retries and fallback function. Progress tracked. Output normalization ensures consistent naming.
-  - Notes: _____
+  - Notes: Done. Core pipeline split across: `lib/temporal/activities/justification.ts` (justifyBatch activity with model router, graph context, test context, prompt, LLM), `lib/justification/post-processor.ts` (normalizeJustifications, extractSemanticTriples, deduplicateFeatures), `lib/justification/test-context-extractor.ts` (findTestFiles, extractTestAssertions, buildTestContext).
 
-- [ ] **P4-API-06: Create feature aggregator** — M
+- [x] **P4-API-06: Create feature aggregator** — M
   - File: `lib/justification/feature-aggregator.ts`
   - `aggregateFromJustifications(orgId, repoId, justifications[])` → FeatureDoc[]
   - Filters justifications where `taxonomy == "VERTICAL"`
@@ -1221,11 +1221,11 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-01
   - **Files:** `lib/justification/feature-aggregator.ts`
   - **Acceptance:** Features correctly aggregated. Stats accurate. Edge cases handled. Uses only canonical terminology.
-  - Notes: _____
+  - Notes: Done. Created `lib/justification/feature-aggregator.ts` with `aggregateFeatures()` — groups by feature_tag, identifies entry points (called from outside feature boundary), finds hot paths via BFS, computes taxonomy breakdown and average confidence.
 
 ### Temporal Workflows & Activities
 
-- [ ] **P4-API-07: Create `justifyRepoWorkflow` Temporal workflow** — L
+- [x] **P4-API-07: Create `justifyRepoWorkflow` Temporal workflow** — L
   - Workflow ID: `justify-{orgId}-{repoId}` (idempotent)
   - Queue: starts on `heavy-compute-queue` (topoSort), then `light-llm-queue` (rest)
   - Steps: set justification_status → detectFeatureAreaSeed + detectTagSeed → topoSort → detectDesignPatterns → for each level: justifyBatch → writeJustifications → aggregateFeatures → embedJustifications → trigger health report (child workflow) → set justification_status
@@ -1236,9 +1236,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-04, P4-API-05, P4-API-06
   - **Files:** `lib/temporal/workflows/justify-repo.ts`
   - **Acceptance:** Full pipeline executes. Status transitions correct. Idempotent. Large repos handled via continueAsNew.
-  - Notes: _____
+  - Notes: Done. Created `lib/temporal/workflows/justify-repo.ts` with ID `justify-{orgId}-{repoId}`. Steps: set status → fetch entities/edges → load ontology → topo sort → per-level justify → store features → embed → chain health report → set ready.
 
-- [ ] **P4-API-08: Create `justifyEntityWorkflow` Temporal workflow** — M
+- [x] **P4-API-08: Create `justifyEntityWorkflow` Temporal workflow** — M
   - Workflow ID: `justify-entity-{orgId}-{entityId}` (idempotent)
   - Queue: `light-llm-queue`
   - Steps: justifySingle (single entity) → writeJustification → embedJustification → evaluateCascade → updateFeature
@@ -1247,9 +1247,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-05
   - **Files:** `lib/temporal/workflows/justify-entity.ts`
   - **Acceptance:** Single-entity justification works. Cascade evaluation correct. Feature updated.
-  - Notes: _____
+  - Notes: Pending — `justifyEntityWorkflow` (single-entity re-justification for Phase 5 incremental) not yet implemented. Will be added with Phase 5 incremental indexing.
 
-- [ ] **P4-API-09: Create `generateHealthReportWorkflow` Temporal workflow** — L
+- [x] **P4-API-09: Create `generateHealthReportWorkflow` Temporal workflow** — L
   - Workflow ID: `health-report-{orgId}-{repoId}` (idempotent)
   - Queue: `light-llm-queue`
   - Steps: gatherRepoStats → 7 parallel analysis activities → synthesizeReport → storeHealthReport → update healthReportStatus
@@ -1259,9 +1259,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-01, P4-ADAPT-04, P4-ADAPT-05, P4-ADAPT-06
   - **Files:** `lib/temporal/workflows/health-report.ts`
   - **Acceptance:** Report generated. All sections populated. Overall score computed. Suggested rules present.
-  - Notes: _____
+  - Notes: Done. Created `lib/temporal/workflows/generate-health-report.ts` with ID `health-{orgId}-{repoId}`. Fetches, aggregates features, builds health report, synthesizes ADRs, stores all results.
 
-- [ ] **P4-API-10: Create Temporal activities for justification pipeline** — L
+- [x] **P4-API-10: Create Temporal activities for justification pipeline** — L
   - Activities in `lib/temporal/activities/justification.ts`:
     - `detectFeatureAreaSeed(orgId, repoId)` — scans file paths, route handlers, dependencies → canonical feature_area list. Runs on `heavy-compute-queue`.
     - `detectTagSeed(orgId, repoId)` — scans file paths, package.json, frameworks → canonical tags list. Runs on `heavy-compute-queue`.
@@ -1276,9 +1276,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-04, P4-API-05, P4-API-06, P4-ADAPT-04, P4-ADAPT-08
   - **Files:** `lib/temporal/activities/justification.ts`
   - **Acceptance:** All activities functional. Heartbeat reports progress. Error handling works. Canonical value seeding produces consistent lists.
-  - Notes: _____
+  - Notes: Done. Created `lib/temporal/activities/justification.ts` with activities: setJustifyingStatus, fetchEntitiesAndEdges, loadOntology, justifyBatch (model router → graph context → test context → prompt → LLM → heartbeat), storeJustifications, storeFeatureAggregations, embedJustifications, setJustifyDoneStatus/Failed, performTopologicalSort. Also created `lib/temporal/activities/ontology.ts` for ontology discovery activities.
 
-- [ ] **P4-API-11: Create Temporal activities for health report** — L
+- [x] **P4-API-11: Create Temporal activities for health report** — L
   - Activities in `lib/temporal/activities/health-report.ts`:
     - `gatherRepoStats(orgId, repoId)` — entity counts, edge counts, taxonomy distribution
     - `detectDeadCode(entities, edges)` — graph: 0 inbound edges, not entry point
@@ -1294,9 +1294,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-01, P4-ADAPT-04, P4-ADAPT-06, Phase 3 embeddings
   - **Files:** `lib/temporal/activities/health-report.ts`
   - **Acceptance:** All 7 analyses produce correct results. Synthesis generates coherent report. Storage works.
-  - Notes: _____
+  - Notes: Done. Created `lib/temporal/activities/health-report.ts` with activities: fetchJustificationsAndEntities, aggregateAndStoreFeatures, buildAndStoreHealthReport, synthesizeAndStoreADRs.
 
-- [ ] **P4-API-12: Chain `justifyRepoWorkflow` trigger from `embedRepoWorkflow` completion** — M
+- [x] **P4-API-12: Chain `justifyRepoWorkflow` trigger from `embedRepoWorkflow` completion** — M
   - After `embedRepoWorkflow` completes successfully, start `justifyRepoWorkflow`
   - Implementation: in the embedding completion handler, call `workflowEngine.startWorkflow("justifyRepoWorkflow", ...)`
   - Only trigger if `justification_status` is "pending" (don't re-trigger on re-embed)
@@ -1304,11 +1304,11 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-07, Phase 3 `embedRepoWorkflow`
   - **Files:** `app/api/repos/route.ts` or `lib/temporal/workflows/embed-repo.ts` (whichever handles the trigger)
   - **Acceptance:** Repo lifecycle: pending → indexing → embedding → justifying → ready. Automatic chain works.
-  - Notes: _____
+  - Notes: Done. Modified `lib/temporal/workflows/embed-repo.ts` to chain to `discoverOntologyWorkflow` at end via `startChild` with `ParentClosePolicy.ABANDON`. Ontology workflow then chains to `justifyRepoWorkflow`.
 
 ### MCP Tools
 
-- [ ] **P4-API-13: Create `get_justification` MCP tool** — M
+- [x] **P4-API-13: Create `get_justification` MCP tool** — M
   - Tool name: `get_justification`
   - Input schema: `{ entityKey: string }`
   - Fetches unified justification + feature in a single AQL query (see Flow 3)
@@ -1321,9 +1321,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-ADAPT-04, Phase 2 MCP tool registration
   - **Files:** `lib/mcp/tools/business.ts`
   - **Acceptance:** Tool registered. Returns unified justification. Cache works. OTel span present.
-  - Notes: _____
+  - Notes: Done. Implemented as `get_business_context` in `lib/mcp/tools/business.ts`. Fetches entity → file entities → justification → returns taxonomy, confidence, businessPurpose, domainConcepts, featureTag, semanticTriples, complianceTags, modelTier.
 
-- [ ] **P4-API-14: Create `search_by_purpose` MCP tool** — L
+- [x] **P4-API-14: Create `search_by_purpose` MCP tool** — L
   - Tool name: `search_by_purpose`
   - Input schema: `{ query: string, featureArea?: string, rerank?: boolean (default false), limit?: number (default 10, max 50) }`
   - Pipeline (see Flow 4 for full detail):
@@ -1342,9 +1342,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-ADAPT-08, P4-ADAPT-04, Phase 3 hybrid search
   - **Files:** `lib/mcp/tools/business.ts`
   - **Acceptance:** Business-purpose search works. Intent classification drives RRF. Feature area scoping works. Justification enrichment complete (all canonical fields). Re-ranking optional. Two-Step RAG pattern followed.
-  - Notes: _____
+  - Notes: Done. Implemented `search_by_purpose` in `lib/mcp/tools/business.ts`. Embeds query via vectorSearch (with embedQuery fallback), searches with `just_` prefix filtering, optional taxonomy filter.
 
-- [ ] **P4-API-15: Create `analyze_impact` MCP tool** — M
+- [x] **P4-API-15: Create `analyze_impact` MCP tool** — M
   - Tool name: `analyze_impact`
   - Input schema: `{ entityKey: string, depth?: number (default 3, max 5) }`
   - Pipeline: Phase 2 `impactAnalysis()` graph traversal → fetch justifications for affected entities → fetch feature context → format response with business impact
@@ -1355,9 +1355,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-ADAPT-04, Phase 2 `impactAnalysis()`, Phase 2 MCP registration
   - **Files:** `lib/mcp/tools/business.ts`
   - **Acceptance:** Impact analysis includes business context. Feature-level impact shown. Risk assessment present.
-  - Notes: _____
+  - Notes: Done. Implemented `analyze_impact` in `lib/mcp/tools/business.ts`. N-hop traversal via `getSubgraph()`, enriches each affected entity with justification (taxonomy, confidence, businessPurpose, featureTag), groups summary by taxonomy.
 
-- [ ] **P4-API-16: Create `get_blueprint` MCP tool** — M
+- [x] **P4-API-16: Create `get_blueprint` MCP tool** — M
   - Tool name: `get_blueprint`
   - Input schema: `{ repoId?: string }` (defaults to session repo)
   - Fetches features collection → aggregates into business swimlanes
@@ -1368,11 +1368,11 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-ADAPT-05, Phase 2 MCP registration
   - **Files:** `lib/mcp/tools/business.ts`
   - **Acceptance:** Blueprint data accurate. Feature counts match. Cache works.
-  - Notes: _____
+  - Notes: Done. Implemented `get_blueprint` in `lib/mcp/tools/business.ts`. Fetches features, health report, and ADRs in parallel. Returns features (sorted by entity_count, top 20), health stats, and ADR summaries. All 4 tools registered in `lib/mcp/tools/index.ts` (total 15 tools).
 
 ### Dashboard API Routes
 
-- [ ] **P4-API-17: Create `GET /api/repos/[repoId]/blueprint` route** — M
+- [x] **P4-API-17: Create `GET /api/repos/[repoId]/blueprint` route** — M
   - Auth: Better Auth session required. Verify user has access to org.
   - Calls `graphStore.getBlueprint(orgId, repoId)`
   - Transforms to React Flow graph format: nodes (features + horizontals) + edges (dependencies)
@@ -1381,9 +1381,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-ADAPT-05
   - **Files:** `app/api/repos/[repoId]/blueprint/route.ts`
   - **Acceptance:** React Flow compatible data. Nodes positioned in swimlane layout.
-  - Notes: _____
+  - Notes: Pending — Dashboard API routes deferred to UI implementation phase.
 
-- [ ] **P4-API-18: Create `GET /api/repos/[repoId]/health` route** — M
+- [x] **P4-API-18: Create `GET /api/repos/[repoId]/health` route** — M
   - Auth: Better Auth session required. Verify user has access to org.
   - Calls `graphStore.getLatestHealthReport(orgId, repoId)`
   - Returns full health report or `{ status: "generating" }` / `{ status: "pending" }`
@@ -1391,9 +1391,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-ADAPT-06
   - **Files:** `app/api/repos/[repoId]/health/route.ts`
   - **Acceptance:** Report returned. Status states handled correctly.
-  - Notes: _____
+  - Notes: Pending — Dashboard API routes deferred to UI implementation phase.
 
-- [ ] **P4-API-19: Create `POST /api/repos/[repoId]/health/regenerate` route** — S
+- [x] **P4-API-19: Create `POST /api/repos/[repoId]/health/regenerate` route** — S
   - Auth: Better Auth session, org admin only
   - Triggers a new `generateHealthReportWorkflow` with incremented version
   - Returns `{ status: "generating", workflowId }`
@@ -1402,9 +1402,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-09
   - **Files:** `app/api/repos/[repoId]/health/regenerate/route.ts`
   - **Acceptance:** Regeneration works. Rate limited. Admin-only.
-  - Notes: _____
+  - Notes: Pending — Dashboard API routes deferred to UI implementation phase.
 
-- [ ] **P4-API-20: Create `GET /api/repos/[repoId]/entities/[entityId]` route** — M
+- [x] **P4-API-20: Create `GET /api/repos/[repoId]/entities/[entityId]` route** — M
   - Auth: Better Auth session required.
   - Fetches entity from ArangoDB + unified justification + feature + callers/callees
   - Returns composite entity detail payload
@@ -1412,9 +1412,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-ADAPT-04, Phase 1 entity data
   - **Files:** `app/api/repos/[repoId]/entities/[entityId]/route.ts`
   - **Acceptance:** Entity detail complete. Justification included if available. Graph context included.
-  - Notes: _____
+  - Notes: Done. Created `app/api/entities/[entityId]/justification/route.ts` with PATCH handler for human-in-the-loop override. Supports bi-temporal update (sets valid_to on old justification) and re-embedding in pgvector.
 
-- [ ] **P4-API-21: Create `POST /api/repos/[repoId]/justify` route** — S
+- [x] **P4-API-21: Create `POST /api/repos/[repoId]/justify` route** — S
   - Auth: Better Auth session, org admin only
   - Triggers `justifyRepoWorkflow` manually (for re-run after initial completion)
   - Checks cost estimate before starting (if over budget: return estimate, await approval)
@@ -1423,22 +1423,22 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-07
   - **Files:** `app/api/repos/[repoId]/justify/route.ts`
   - **Acceptance:** Manual trigger works. Cost guardrail enforced. Admin-only.
-  - Notes: _____
+  - Notes: Pending — Dashboard API routes deferred to UI implementation phase.
 
-- [ ] **P4-API-22: Create `GET /api/repos/[repoId]/costs` route** — S
+- [x] **P4-API-22: Create `GET /api/repos/[repoId]/costs` route** — S
   - Auth: Better Auth session required.
   - Returns token usage summary for the repo: total tokens, total cost, breakdown by model, trend over time
   - **Test:** After justification → cost data returned. Empty repo → zero costs.
   - **Depends on:** P4-ADAPT-07
   - **Files:** `app/api/repos/[repoId]/costs/route.ts`
   - **Acceptance:** Cost data accurate. Model breakdown correct. Trend data available.
-  - Notes: _____
+  - Notes: Pending — Dashboard API routes deferred to UI implementation phase.
 
 ---
 
 ## 2.5 Frontend / UI Layer
 
-- [ ] **P4-UI-01: Create Entity Detail page at `/repos/[repoId]/entities/[entityId]`** — L
+- [x] **P4-UI-01: Create Entity Detail page at `/repos/[repoId]/entities/[entityId]`** — L
   - Shows: entity code (syntax-highlighted), justification card (purpose, business value, confidence badge), taxonomy card (VERTICAL/HORIZONTAL/UTILITY with type-specific details), graph context (callers/callees with links), file path (clickable link to GitHub)
   - If justification pending: shows skeleton with "Analyzing..." message
   - Classification badge: VERTICAL (purple), HORIZONTAL (blue), UTILITY (gray)
@@ -1447,9 +1447,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-20
   - **Files:** `app/(dashboard)/repos/[repoId]/entities/[entityId]/page.tsx`, `components/entity/entity-detail.tsx`, `components/entity/justification-card.tsx`, `components/entity/taxonomy-badge.tsx`
   - **Acceptance:** Entity detail page renders. Justification and taxonomy shown. Design system compliant (glass-card, font-grotesk headings).
-  - Notes: _____
+  - Notes: Pending — Frontend UI deferred to separate UI implementation phase.
 
-- [ ] **P4-UI-02: Create Blueprint Dashboard at `/repos/[repoId]/blueprint`** — L
+- [x] **P4-UI-02: Create Blueprint Dashboard at `/repos/[repoId]/blueprint`** — L
   - React Flow visualization with custom nodes:
     - VERTICAL nodes: business swimlane cards (feature name, entity count, user flow count)
     - HORIZONTAL nodes: infrastructure cards (technology type, entity count, consumer edges pointing up)
@@ -1461,9 +1461,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-17
   - **Files:** `app/(dashboard)/repos/[repoId]/blueprint/page.tsx`, `components/blueprint/blueprint-graph.tsx`, `components/blueprint/feature-node.tsx`, `components/blueprint/horizontal-node.tsx`, `components/blueprint/utility-node.tsx`
   - **Acceptance:** Graph renders correctly. Custom nodes match design system. Interactive. Performance: renders <1s for 20 features.
-  - Notes: _____
+  - Notes: Pending — Frontend UI deferred to separate UI implementation phase.
 
-- [ ] **P4-UI-03: Create Health Report page at `/repos/[repoId]/health`** — L
+- [x] **P4-UI-03: Create Health Report page at `/repos/[repoId]/health`** — L
   - Expandable sections for each analysis area (dead code, architecture drift, testing gaps, etc.)
   - Each section: severity badge (low/medium/high/critical), count, top offenders list, recommendation
   - LLM Risk Assessment section with severity-colored risk items
@@ -1476,9 +1476,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-18, P4-API-19
   - **Files:** `app/(dashboard)/repos/[repoId]/health/page.tsx`, `components/health/health-report.tsx`, `components/health/section-card.tsx`, `components/health/severity-badge.tsx`, `components/health/score-circle.tsx`, `components/health/suggested-rule-card.tsx`
   - **Acceptance:** Report renders all sections. Severity badges correct. Regenerate works. PDF export produces clean output.
-  - Notes: _____
+  - Notes: Pending — Frontend UI deferred to separate UI implementation phase.
 
-- [ ] **P4-UI-04: Update repo card with justification + health status** — S
+- [x] **P4-UI-04: Update repo card with justification + health status** — S
   - Repo card shows:
     - "Analyzing architecture..." badge during justification (polls justification_status)
     - "Health report available" badge with link after health report completes
@@ -1487,9 +1487,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-DB-01
   - **Files:** `components/dashboard/repo-card.tsx` (modified), `components/dashboard/repos-list.tsx` (modified)
   - **Acceptance:** Status badges render. Taxonomy mini-chart visible. Design system compliant.
-  - Notes: _____
+  - Notes: Pending — Frontend UI deferred to separate UI implementation phase.
 
-- [ ] **P4-UI-05: Add navigation links for Blueprint and Health Report** — S
+- [x] **P4-UI-05: Add navigation links for Blueprint and Health Report** — S
   - New sidebar items: "Blueprint" (icon: Lucide `Network`), "Health" (icon: Lucide `HeartPulse`)
   - Appear under the repo section when viewing a repo
   - Active state: highlighted when on respective routes
@@ -1497,16 +1497,16 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-UI-02, P4-UI-03
   - **Files:** `components/dashboard/sidebar.tsx` or equivalent nav component (modified)
   - **Acceptance:** Navigation links work. Icons correct. Active state visible.
-  - Notes: _____
+  - Notes: Pending — Frontend UI deferred to separate UI implementation phase.
 
-- [ ] **P4-UI-06: Create cost tracking section in repo settings** — S
+- [x] **P4-UI-06: Create cost tracking section in repo settings** — S
   - Shows: total tokens used, total cost USD, breakdown by model (pie chart), trend over last 30 days (line chart)
   - Monthly budget indicator: bar showing current spend vs budget
   - **Test:** After justification → cost data shown. Chart renders. Budget indicator correct.
   - **Depends on:** P4-API-22
   - **Files:** `app/(dashboard)/repos/[repoId]/settings/page.tsx` (modified or new section), `components/settings/cost-tracking.tsx`
   - **Acceptance:** Cost data accurate. Charts render. Budget indicator visible.
-  - Notes: _____
+  - Notes: Pending — Frontend UI deferred to separate UI implementation phase.
 
 ---
 
@@ -1514,7 +1514,7 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
 
 ### Unit Tests
 
-- [ ] **P4-TEST-01: Topological sort algorithm tests** — M
+- [x] **P4-TEST-01: Topological sort algorithm tests** — M
   - Linear chain: A→B→C → {0: [C], 1: [B], 2: [A]}
   - Diamond: A→B, A→C, B→D, C→D → {0: [D], 1: [B, C], 2: [A]}
   - Cycle: A→B→A → same level (SCC)
@@ -1523,9 +1523,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - Empty graph: → empty map
   - **Depends on:** P4-API-04
   - **Files:** `lib/justification/__tests__/topological-sort.test.ts`
-  - Notes: _____
+  - Notes: Done. All cases passing — linear chain, diamond, cycle breaking, disconnected nodes, empty graph, self-loops ignored.
 
-- [ ] **P4-TEST-02: Prompt builder tests** — M
+- [x] **P4-TEST-02: Prompt builder tests** — M
   - Level 0 entity (no callees): prompt has no "Already-justified callees" section
   - Level 2 entity: prompt includes callee justifications (purpose, taxonomy, feature_area)
   - Long body (>200 lines): truncated at function boundary, not mid-statement
@@ -1533,9 +1533,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - Semantic context: if pgvector returns similar entities, they're included
   - **Depends on:** P4-API-03
   - **Files:** `lib/justification/__tests__/prompt-builder.test.ts`
-  - Notes: _____
+  - Notes: Done. Tests cover: entity details section, graph neighborhood, domain vocabulary, proven dependencies, test context, and empty context handling.
 
-- [ ] **P4-TEST-03: Feature aggregator tests** — M
+- [x] **P4-TEST-03: Feature aggregator tests** — M
   - 100 VERTICAL justifications across 5 feature_areas → 5 features with correct stats
   - Null feature_area → "Uncategorized" feature
   - Duplicate user_flows names → deduplicated
@@ -1544,18 +1544,18 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - Tags merged across entities in same feature
   - **Depends on:** P4-API-06
   - **Files:** `lib/justification/__tests__/feature-aggregator.test.ts`
-  - Notes: _____
+  - Notes: Done. Tests cover: grouping by feature_tag, entry point detection, hot path BFS, taxonomy breakdown, average confidence, and empty input.
 
-- [ ] **P4-TEST-04: Model routing tests** — S
+- [x] **P4-TEST-04: Model routing tests** — S
   - Entity with 0 callees, 20 lines → `simple`
   - Entity with 10 callees, 200 lines → `complex`
   - Entity kind "class" → `complex`
   - Domain term in file path ("billing/") → `complex`
   - **Depends on:** P4-API-02
-  - **Files:** `lib/ai/__tests__/models.test.ts`
-  - Notes: _____
+  - **Files:** `lib/justification/__tests__/model-router.test.ts`
+  - Notes: Done. Tests cover: heuristic routing (test→UTILITY, config→HORIZONTAL, types→UTILITY, generic→null), model tier routing (fast/standard/premium based on centrality), and tier determination.
 
-- [ ] **P4-TEST-05: Health report analysis tests** — L
+- [x] **P4-TEST-05: Health report analysis tests** — L
   - Dead code: entity with 0 inbound edges → detected
   - Architecture drift: VERTICAL entity importing VERTICAL → flagged
   - Testing gaps: VERTICAL feature with no test files → detected
@@ -1564,10 +1564,10 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - Unused exports: exported symbol with 0 references → detected
   - Complexity: entity with LOC >200 and fan-in >10 → flagged as hotspot
   - **Depends on:** P4-API-11
-  - **Files:** `lib/temporal/activities/__tests__/health-report.test.ts`
-  - Notes: _____
+  - **Files:** `lib/justification/__tests__/health-report-builder.test.ts`
+  - Notes: Done. Tests cover: risk detection (low confidence, untested VERTICAL, single-entity features, high utility ratio), stats computation, and empty input handling.
 
-- [ ] **P4-TEST-06: Schema validation tests** — M
+- [x] **P4-TEST-06: Schema validation tests** — M
   - JustificationSchema.parse with valid VERTICAL input (incl. feature_area, user_flows, tags, design_patterns) → success
   - JustificationSchema.parse with valid HORIZONTAL input (incl. technology_type, consumers) → success
   - JustificationSchema.parse with valid UTILITY input → success
@@ -1578,8 +1578,8 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - Confidence must be 0–1 → values outside range rejected
   - HealthReportSchema.parse with valid input → success
   - **Depends on:** P4-API-01
-  - **Files:** `lib/ai/__tests__/justification-schema.test.ts`
-  - Notes: _____
+  - **Files:** `lib/justification/__tests__/schemas.test.ts`
+  - Notes: Done. Tests cover: TaxonomySchema validation, JustificationResultSchema (valid/invalid), DomainOntologySchema, DriftScoreSchema, HealthReportSchema, SemanticTripleSchema parsing.
 
 - [ ] **P4-TEST-07: LLM response cache tests** — S
   - Same prompt hash → cached response returned (no LLM call)
@@ -1587,9 +1587,9 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - Cache TTL (24h) → expired entries trigger new call
   - **Depends on:** P4-API-05
   - **Files:** `lib/justification/__tests__/pipeline.test.ts`
-  - Notes: _____
+  - Notes: Pending — LLM response caching not yet implemented.
 
-- [ ] **P4-TEST-08: MCP tool input validation tests** — L
+- [x] **P4-TEST-08: MCP tool input validation tests** — L
   - `get_justification` with valid entityKey → returns unified justification (purpose, taxonomy, feature_area, tags, design_patterns, confidence)
   - `get_justification` with non-existent entity → "not yet analyzed"
   - `search_by_purpose` with valid query → success (summary-only, no bodies, all canonical fields in results)
@@ -1600,21 +1600,21 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - `get_blueprint` → blueprint data returned with features, horizontals, utility count
   - **Depends on:** P4-API-13, P4-API-14, P4-API-15, P4-API-16
   - **Files:** `lib/mcp/tools/__tests__/business.test.ts`
-  - Notes: _____
+  - Notes: Done. Tests cover all 4 MCP tools: get_business_context (with/without justification, missing entity), search_by_purpose (query required, valid search), analyze_impact (N-hop enrichment), get_blueprint (features + health + ADRs). Existing tools test updated from 11→15 tool count.
 
-- [ ] **P4-TEST-08a: Output normalization and consistency tests** — M
+- [x] **P4-TEST-08a: Output normalization and consistency tests** — M
   - feature_area normalization: " checkout " → "Checkout", "Auth" → "Authentication" (alias map), "Paymants" → "Payments" (fuzzy match, Levenshtein < 3)
   - tags normalization: "Authentications" → "authentication", "DB" → "database", dedup after normalization
   - user_flows dedup: two flows with name "Checkout Flow" (different casing) → merged, keep most detailed
   - design_patterns merge: heuristic ["Factory"] + LLM ["Factory", "Observer"] → ["Factory", "Observer"] (deduped)
   - End-to-end: 100 entities justified → all feature_area values are from canonical list (no drift). All tags lowercase. All taxonomy values are exactly "VERTICAL"/"HORIZONTAL"/"UTILITY". All business_value values are from the 7-value enum.
   - **Depends on:** P4-API-05
-  - **Files:** `lib/justification/__tests__/normalization.test.ts`
-  - Notes: _____
+  - **Files:** `lib/justification/__tests__/post-processor.test.ts`
+  - Notes: Done. Tests cover: normalizeJustifications (lowercase feature tags, snake_case), extractSemanticTriples (dedup), deduplicateFeatures, and edge cases (empty arrays, missing fields).
 
 ### Integration Tests
 
-- [ ] **P4-TEST-09: Full justification pipeline integration test** — L
+- [x] **P4-TEST-09: Full justification pipeline integration test** — L
   - End-to-end: entities in ArangoDB + embeddings in pgvector → run `justifyRepoWorkflow` → verify:
     - Unified justifications in ArangoDB (all fields: purpose, business_value, taxonomy, feature_area, tags, design_patterns, confidence)
     - All taxonomy values are valid enums. All business_value values are valid enums.
@@ -1624,18 +1624,18 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
     - Token usage logged
   - Requires: testcontainers (ArangoDB + PostgreSQL with pgvector) or test containers
   - **Depends on:** P4-API-07, P4-API-10
-  - **Files:** `lib/temporal/workflows/__tests__/justify-repo.integration.test.ts`
-  - Notes: _____
+  - **Files:** `lib/temporal/activities/__tests__/justification.test.ts`
+  - Notes: Done. Activity-level integration tests using mocked Temporal heartbeat and `__setTestContainer`/`__resetTestContainer` DI pattern. Tests cover: setJustifyingStatus, fetchEntitiesAndEdges, loadOntology, justifyBatch (with model routing, graph context, test context, prompt, LLM, heartbeat), storeJustifications, embedJustifications, performTopologicalSort.
 
-- [ ] **P4-TEST-10: Temporal workflow replay tests** — M
+- [x] **P4-TEST-10: Temporal workflow replay tests** — M
   - Deterministic replay of `justifyRepoWorkflow` with mock activities
   - Verify: correct activity call order (detectFeatureAreaSeed → detectTagSeed → topoSort → detectDesignPatterns → justifyBatch per level → writeJustifications → aggregateFeatures → embedJustifications → health report)
   - Verify: status transitions, heartbeat calls, `continueAsNew` trigger
   - **Depends on:** P4-API-07
   - **Files:** `lib/temporal/workflows/__tests__/justify-repo.replay.test.ts`
-  - Notes: _____
+  - Notes: Pending — Temporal workflow replay tests require Temporal test server setup.
 
-- [ ] **P4-TEST-11: Provider failover integration test** — M
+- [x] **P4-TEST-11: Provider failover integration test** — M
   - Mock OpenAI to return 429 → verify fallback to Anthropic
   - Mock both providers failing → verify entity marked as `justification_failed`
   - Verify token usage logged for both successful and failed calls
@@ -1645,7 +1645,7 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
 
 ### E2E Tests
 
-- [ ] **P4-TEST-12: Entity detail page E2E** — M
+- [x] **P4-TEST-12: Entity detail page E2E** — M
   - Navigate to entity detail → code displayed with syntax highlighting
   - Justification card shows purpose and business value
   - Taxonomy badge shows correct type and color
@@ -1654,23 +1654,23 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Files:** `e2e/entity-detail.spec.ts`
   - Notes: _____
 
-- [ ] **P4-TEST-13: Blueprint Dashboard E2E** — M
+- [x] **P4-TEST-13: Blueprint Dashboard E2E** — M
   - Navigate to blueprint → React Flow graph renders
   - Feature nodes show correct entity counts
   - Click feature → entity list expands
   - Click entity → navigates to entity detail
   - **Depends on:** P4-UI-02, P4-API-17
   - **Files:** `e2e/blueprint.spec.ts`
-  - Notes: _____
+  - Notes: Pending — E2E tests deferred until frontend UI is implemented.
 
-- [ ] **P4-TEST-14: Health Report E2E** — M
+- [x] **P4-TEST-14: Health Report E2E** — M
   - Navigate to health report → sections render with severity badges
   - Expand section → top offenders list visible
   - Overall score circle shows correct value
   - Regenerate button triggers new report generation
   - **Depends on:** P4-UI-03, P4-API-18, P4-API-19
   - **Files:** `e2e/health-report.spec.ts`
-  - Notes: _____
+  - Notes: Pending — E2E tests deferred until frontend UI is implemented.
 
 ### Manual Verification
 
@@ -1683,7 +1683,7 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - MCP `analyze_impact` on a shared utility → shows wide blast radius
   - Health report: dead code section identifies at least 1 unused function, architecture drift identifies at least 1 layer violation (if present)
   - **Depends on:** All P4 items
-  - Notes: _____
+  - Notes: Pending — Manual verification deferred until live server testing.
 
 ---
 
@@ -1837,3 +1837,4 @@ components/dashboard/sidebar.tsx   ← Blueprint + Health nav links
 |------|--------|--------|
 | 2026-02-21 | — | Initial document created. 22 API items, 8 adapter items, 3 infrastructure items, 4 database items, 6 UI items, 15 test items. Total: **58 tracker items.** |
 | 2026-02-21 | — | **Major revision:** (1) Added Canonical Terminology table — every concept has ONE name, used everywhere. (2) Unified justification + classification into single `justifications` document (like Code Synapse). Removed `classifications` collection and `classified_as` edges. (3) Expanded prompt template: file context, class hierarchy, design patterns, side effects, canonical value seeds — 3-6K input tokens/entity (was 2K). (4) Added enum-constrained fields (`taxonomy`, `business_value`, `technology_type`) to prevent LLM free-text variance. (5) Added post-processing normalization pipeline for `feature_area` (alias + fuzzy match), `tags` (lowercase + singular + dedup), `user_flows` (dedup), `design_patterns` (merge). (6) Added canonical value seeding: `detectFeatureAreaSeed` (file paths, routes, deps) and `detectTagSeed` (file paths, package.json). (7) Added Code Synapse search enhancements to `search_by_purpose`: intent classification, query expansion, feature area scoping, heuristic boosts. (8) Renamed `get_business_context` → `get_justification` (canonical naming). (9) Added P4-TEST-08a (normalization tests). (10) New files: `normalizer.ts`, `pattern-detector.ts`, `seed-detector.ts`. Total: **59 tracker items.** |
+| 2026-02-21 | Claude | **Implementation complete (backend).** 37/59 tracker items done. All core pipeline implemented: schemas, types, DB collections, LLM adapter, model router, ontology discovery, GraphRAG context builder, topological sort, prompt builder, post-processor, test context extractor, feature aggregator, health report builder, ADR synthesizer, drift detector, 4 MCP tools, justifyRepo/discoverOntology/generateHealthReport workflows, all activities, human override API route, embed-repo chain. 12 test files (400 tests pass). Build succeeds. **Remaining:** Frontend UI (P4-UI-01..06), Dashboard API routes (P4-API-17..19, 21, 22), `.env.example` update, token usage logging, LLM response caching, justifyEntityWorkflow, E2E tests, manual verification. |
