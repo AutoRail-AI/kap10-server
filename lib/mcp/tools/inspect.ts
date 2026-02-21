@@ -5,6 +5,7 @@
 import type { Container } from "@/lib/di/container"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
+import { resolveEntityWithOverlay } from "./dirty-buffer"
 
 // ── get_function ────────────────────────────────────────────────
 
@@ -42,6 +43,43 @@ export async function handleGetFunction(
   }
 
   let entity = null
+
+  // P5.6-ADV-05: Check dirty buffer overlay first for name-based lookups
+  if (args.name) {
+    try {
+      const overlay = await resolveEntityWithOverlay(
+        container,
+        ctx.orgId,
+        repoId,
+        args.name
+      )
+      if (overlay?.source === "dirty_buffer") {
+        const dirtyEntity = overlay.entity as {
+          name: string
+          kind: string
+          start_line: number
+          end_line: number
+          signature?: string
+          file_path: string
+        }
+        return formatToolResponse({
+          function: {
+            name: dirtyEntity.name,
+            signature: dirtyEntity.signature ?? dirtyEntity.name,
+            file_path: dirtyEntity.file_path,
+            line: dirtyEntity.start_line,
+            end_line: dirtyEntity.end_line || undefined,
+            kind: dirtyEntity.kind,
+            _source: "dirty_buffer",
+          },
+          callers: [],
+          callees: [],
+        })
+      }
+    } catch {
+      // Overlay is best-effort, fall through to committed entities
+    }
+  }
 
   if (args.name) {
     // Search by name
@@ -149,6 +187,42 @@ export async function handleGetClass(
 
   if (!args.name) {
     return formatToolError("name parameter is required")
+  }
+
+  // P5.6-ADV-05: Check dirty buffer overlay first
+  try {
+    const overlay = await resolveEntityWithOverlay(
+      container,
+      ctx.orgId,
+      repoId,
+      args.name
+    )
+    if (overlay?.source === "dirty_buffer") {
+      const dirtyEntity = overlay.entity as {
+        name: string
+        kind: string
+        start_line: number
+        end_line: number
+        signature?: string
+        file_path: string
+      }
+      return formatToolResponse({
+        class: {
+          name: dirtyEntity.name,
+          file_path: dirtyEntity.file_path,
+          line: dirtyEntity.start_line,
+          end_line: dirtyEntity.end_line || undefined,
+          kind: dirtyEntity.kind,
+          signature: dirtyEntity.signature,
+          _source: "dirty_buffer",
+        },
+        methods: [],
+        extends: [],
+        implements: [],
+      })
+    }
+  } catch {
+    // Overlay is best-effort, fall through to committed entities
   }
 
   // Search for the class

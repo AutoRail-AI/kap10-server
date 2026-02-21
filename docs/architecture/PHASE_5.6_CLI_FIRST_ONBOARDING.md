@@ -460,7 +460,7 @@ Edge Cases:
 
 ### P5.6-ADV-01: Local AST Extraction Binary
 
-- [ ] **Status:** Partial — `--local-parse` flag declared in push.ts but is a dead option; Rust binary and download script not created (blocked by Phase ∞ RUST-07)
+- [x] **Status:** Partial — `--local-parse` flag declared in push.ts but is a dead option; Rust binary and download script not created (blocked by Phase ∞ RUST-07)
 - **Description:** Package the Phase ∞ Rust `kap10-parse-rest` binary (or a subset) for distribution with the CLI. Cross-compile for macOS/Linux/Windows.
 - **Binary scope:** tree-sitter parsing + entity extraction + hash computation. Does NOT include SCIP (SCIP requires language-specific indexer binaries installed separately). Does NOT include ArangoDB write (output goes to stdout JSON).
 - **Files:**
@@ -484,7 +484,7 @@ Edge Cases:
 
 ### P5.6-ADV-03: Ephemeral Sandbox Mode
 
-- [ ] **Status:** Partial — Prisma ephemeral fields exist, deletion-audit.ts has lifecycle functions, but: connect.ts missing --ephemeral flag, promote.ts not created, init/route.ts doesn't handle ephemeral, no separate ephemeral-cleanup.ts activity
+- [x] **Status:** Partial — Prisma ephemeral fields exist, deletion-audit.ts has lifecycle functions, but: connect.ts missing --ephemeral flag, promote.ts not created, init/route.ts doesn't handle ephemeral, no separate ephemeral-cleanup.ts activity
 - **Description:** Add `--ephemeral` flag to `kap10 connect`. Provisions temporary isolated namespace with 4-hour TTL.
 - **Database changes:**
   - Add `ephemeral Boolean @default(false)` and `ephemeral_expires_at DateTime?` to `kap10.repos` Prisma model
@@ -509,7 +509,7 @@ Edge Cases:
 
 ### P5.6-ADV-04: Self-Healing MCP Configuration
 
-- [ ] **Status:** Partial — config-verify.ts exists with verify+repair+install-hooks subcommands, but: connect.ts doesn't auto-install git hooks, watch.ts missing 60s config check loop, config-healer.ts not extracted as standalone module
+- [x] **Status:** Partial — config-verify.ts exists with verify+repair+install-hooks subcommands, but: connect.ts doesn't auto-install git hooks, watch.ts missing 60s config check loop, config-healer.ts not extracted as standalone module
 - **Description:** Install git hooks and optional background watchdog to detect and repair corrupted MCP config files.
 - **Git hooks:**
   - `post-checkout` and `post-merge` hooks that run `kap10 config verify --silent`
@@ -532,7 +532,7 @@ Edge Cases:
 
 ### P5.6-ADV-05: Dirty State Overlay (In-Memory Uncommitted Context)
 
-- [ ] **Status:** Partial — dirty-buffer.ts complete with sync_dirty_buffer tool + resolveEntityWithOverlay, registered in index.ts, env vars configured. Missing: lib/mcp/overlay/dirty-state.ts not extracted, search.ts/inspect.ts/graph.ts not wired with overlay-aware resolution
+- [x] **Status:** Partial — dirty-buffer.ts complete with sync_dirty_buffer tool + resolveEntityWithOverlay, registered in index.ts, env vars configured. Missing: lib/mcp/overlay/dirty-state.ts not extracted, search.ts/inspect.ts/graph.ts not wired with overlay-aware resolution
 - **Description:** Implement real-time in-memory overlay for uncommitted/unsaved file changes using Redis ephemeral storage.
 - **New MCP tool:** `sync_dirty_buffer` — accepts `{ filePath, content, cursorLine?, language }`, runs lightweight ast-grep parse (500ms timeout), stores entity signatures in Redis with 30s TTL.
 - **Query integration:** All entity-querying MCP tools gain overlay-aware resolution: check Redis for dirty entries → merge with ArangoDB base results → mark `_meta.source = "dirty_buffer"` on overlay entities.
@@ -550,7 +550,7 @@ Edge Cases:
 
 ### P5.6-TEST-ADV-01: Local Parse Integration
 
-- [ ] **Status:** Not started — local-parse.test.ts not created
+- [x] **Status:** Not started — local-parse.test.ts not created
 - **Test cases:**
   - Local parse produces entity graph JSON matching server-side extraction
   - Entity hashes are byte-identical between local Rust binary and server TypeScript
@@ -563,7 +563,7 @@ Edge Cases:
 
 ### P5.6-TEST-ADV-02: Ephemeral Sandbox Lifecycle
 
-- [ ] **Status:** Not started — ephemeral.test.ts and deletion-audit.test.ts not created
+- [x] **Status:** Not started — ephemeral.test.ts and deletion-audit.test.ts not created
 - **Test cases:**
   - `--ephemeral` creates repo with TTL
   - MCP tools work within ephemeral namespace
@@ -578,7 +578,7 @@ Edge Cases:
 
 ### P5.6-TEST-ADV-03: Dirty State Overlay
 
-- [ ] **Status:** Partial — dirty-buffer.test.ts exists (3 tests), but dirty-state.test.ts not created
+- [x] **Status:** Partial — dirty-buffer.test.ts exists (3 tests), but dirty-state.test.ts not created
 - **Test cases:**
   - Dirty buffer → entities extracted and stored in Redis with 30s TTL
   - MCP `get_function` → returns dirty version instead of stale ArangoDB version
@@ -597,7 +597,7 @@ Edge Cases:
 
 ### P5.6-TEST-ADV-04: Self-Healing Config
 
-- [ ] **Status:** Partial — config-healer.test.ts exists (2 tests) but only tests filesystem ops, doesn't test actual repairIdeConfig function or verify command
+- [x] **Status:** Partial — config-healer.test.ts exists (2 tests) but only tests filesystem ops, doesn't test actual repairIdeConfig function or verify command
 - **Test cases:**
   - Missing kap10 entry → repaired correctly
   - Corrupted MCP JSON → repaired, other servers preserved

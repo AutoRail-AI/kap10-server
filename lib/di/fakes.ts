@@ -351,6 +351,26 @@ export class InMemoryGraphStore implements IGraphStore {
   // Phase 5: Incremental Indexing
   private indexEvents: IndexEventDoc[] = []
 
+  async createEdgesForEntity(orgId: string, entityKey: string, edges: EdgeDoc[]): Promise<void> {
+    // Filter out existing edges for this entity key
+    this.edges = this.edges.filter((e) => {
+      if (e.org_id !== orgId) return true
+      const fromKey = e._from.split("/").pop()!
+      const toKey = e._to.split("/").pop()!
+      return fromKey !== entityKey && toKey !== entityKey
+    })
+    // Push new edges
+    for (const edge of edges) {
+      this.edges.push({
+        _from: edge._from,
+        _to: edge._to,
+        kind: edge.kind,
+        org_id: edge.org_id ?? orgId,
+        repo_id: edge.repo_id ?? "",
+      })
+    }
+  }
+
   async getEdgesForEntities(orgId: string, entityKeys: string[]): Promise<EdgeDoc[]> {
     const keySet = new Set(entityKeys)
     return this.edges
@@ -618,6 +638,14 @@ export class InMemoryRelationalStore implements IRelationalStore {
   }
   async deleteRepo(repoId: string): Promise<void> {
     this.repos = this.repos.filter((r) => r.id !== repoId)
+  }
+
+  async promoteRepo(repoId: string): Promise<void> {
+    const repo = this.repos.find((r) => r.id === repoId)
+    if (repo) {
+      repo.ephemeral = false
+      repo.ephemeralExpiresAt = null
+    }
   }
 
   // Phase 2: API key methods

@@ -1264,7 +1264,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-API-08: CLI `kap10 watch` Command
 
-- [ ] **Status:** Partial — watch command exists but prompt-detector.ts not created
+- [x] **Status:** Partial — watch command exists but prompt-detector.ts not created
 - **Description:** File watcher that streams changes to the kap10 ledger in real-time. Enables rewind from the terminal.
 - **Behavior:**
   1. Start `chokidar` watcher on repo path (ignore node_modules, .git, dist)
@@ -1300,7 +1300,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-API-10: prepareWorkspace Extension for Local Repos
 
-- [ ] **Status:** Partial — indexing-heavy.ts not updated for local_cli workspace prep
+- [x] **Status:** Partial — indexing-heavy.ts not updated for local_cli workspace prep
 - **Description:** Extend the `prepareWorkspace` activity in the indexing pipeline to handle `provider: "local_cli"` repos. Instead of `git clone`, download the zip from Supabase Storage and extract it.
 - **Behavior:**
   1. Check `provider` field on Repo record
@@ -1396,7 +1396,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-02: Rewind Atomicity + Branch Increment + Shadow Rewind
 
-- [ ] **Status:** Partial — shadow-rewind.test.ts exists but rewind.test.ts missing
+- [x] **Status:** Partial — shadow-rewind.test.ts exists but rewind.test.ts missing
 - **Description:** Unit tests for the rewind operation's atomicity, timeline branching, and shadow rewind blast radius checking.
 - **Test cases:**
   - Rewind creates new entry + marks intermediate entries `reverted` atomically
@@ -1420,7 +1420,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-03: Working Snapshot Creation
 
-- [ ] **Status:** Not started — snapshot.test.ts not created
+- [x] **Status:** Not started — snapshot.test.ts not created
 - **Description:** Unit tests for snapshot creation at the four trigger points.
 - **Test cases:**
   - `tests_passed` trigger creates snapshot with correct files
@@ -1436,7 +1436,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-04: Commit Roll-Up
 
-- [ ] **Status:** Not started — rollup.test.ts not created
+- [x] **Status:** Not started — rollup.test.ts not created
 - **Description:** Unit tests for the commit detection and roll-up logic.
 - **Test cases:**
   - `baseSha` change triggers roll-up
@@ -1452,7 +1452,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-05: Anti-Pattern Rule Synthesis
 
-- [ ] **Status:** Not started — anti-pattern.test.ts not created
+- [x] **Status:** Not started — anti-pattern.test.ts not created
 - **Description:** Unit tests for the LLM-powered rule synthesis activity.
 - **Test cases:**
   - Valid rewind → rule generated with Zod-valid shape
@@ -1467,7 +1467,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-05a: Anti-Pattern Vectorization
 
-- [ ] **Status:** Not started — anti-pattern-vectorization.test.ts not created
+- [x] **Status:** Not started — anti-pattern-vectorization.test.ts not created
 - **Description:** Unit tests for the anti-pattern vectorization and proactive codebase scanning activity.
 - **Test cases:**
   - Rule embedded successfully → embedding stored in `rule_embeddings` table
@@ -1506,7 +1506,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-06: IStorageProvider Port Compliance
 
-- [ ] **Status:** Partial — port-compliance.test.ts not updated for 12th port (IStorageProvider)
+- [x] **Status:** Partial — port-compliance.test.ts not updated for 12th port (IStorageProvider)
 - **Description:** Port compliance test for the 12th port, following existing patterns in `lib/di/__tests__/port-compliance.test.ts`.
 - **Test cases:**
   - `InMemoryStorageProvider` implements all `IStorageProvider` methods
@@ -1521,7 +1521,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-07: CLI Init + Push Integration
 
-- [ ] **Status:** Not started — init-push.test.ts not created
+- [x] **Status:** Not started — init-push.test.ts not created
 - **Description:** Integration tests for the CLI local repo ingestion flow.
 - **Test cases:**
   - `kap10 init` creates `.kap10/config.json` with correct shape
@@ -1553,7 +1553,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-09: Timeline API Pagination
 
-- [ ] **Status:** Not started — ledger-pagination.test.ts not created
+- [x] **Status:** Not started — ledger-pagination.test.ts not created
 - **Description:** Test cursor-based pagination for timeline queries.
 - **Test cases:**
   - First page returns `limit` entries + cursor token
@@ -1569,7 +1569,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 
 ### P5.5-TEST-10: E2E — Full Rewind Cycle
 
-- [ ] **Status:** Not started — rewind-e2e.test.ts not created
+- [x] **Status:** Not started — rewind-e2e.test.ts not created
 - **Description:** End-to-end test for the complete rewind cycle: sync → validate → break → rewind → new branch.
 - **Scenario:**
   1. Sync change with prompt "Add feature X" → entry E1 (pending)

@@ -17,23 +17,47 @@ export interface PrepareWorkspaceInput {
   installationId: number
   cloneUrl: string
   defaultBranch: string
+  provider?: "github" | "local_cli"
+  uploadPath?: string
 }
 
 export interface PrepareWorkspaceResult {
   workspacePath: string
   languages: string[]
   workspaceRoots: string[]
+  lastSha?: string
 }
 
 export async function prepareWorkspace(input: PrepareWorkspaceInput): Promise<PrepareWorkspaceResult> {
   const container = getContainer()
   const workspacePath = `/data/workspaces/${input.orgId}/${input.repoId}`
-  await container.gitHost.cloneRepo(input.cloneUrl, workspacePath, {
-    ref: input.defaultBranch,
-    installationId: input.installationId,
-  })
 
-  heartbeat("clone complete, scanning workspace")
+  if (input.provider === "local_cli") {
+    // Local CLI upload: download zip from storage and extract
+    await prepareLocalCliWorkspace(container, workspacePath, input.uploadPath!)
+  } else {
+    // Default: GitHub clone
+    await container.gitHost.cloneRepo(input.cloneUrl, workspacePath, {
+      ref: input.defaultBranch,
+      installationId: input.installationId,
+    })
+  }
+
+  heartbeat("workspace ready, reading HEAD SHA")
+
+  // Read the latest commit SHA from the workspace (only for git repos)
+  let lastSha: string | undefined
+  if (input.provider !== "local_cli") {
+    try {
+      const { execFileSync } = require("node:child_process") as typeof import("node:child_process")
+      lastSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: workspacePath, encoding: "utf-8" }).trim()
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.warn(`[prepareWorkspace] Failed to read HEAD SHA: ${message}`)
+    }
+  }
+
+  heartbeat("scanning workspace")
 
   // Scan files and detect languages
   const files = await scanWorkspace(workspacePath)
@@ -43,7 +67,50 @@ export async function prepareWorkspace(input: PrepareWorkspaceInput): Promise<Pr
   const workspaceInfo = detectWorkspaceRoots(workspacePath)
   const workspaceRoots = workspaceInfo.roots
 
-  return { workspacePath, languages, workspaceRoots }
+  return { workspacePath, languages, workspaceRoots, lastSha }
+}
+
+/**
+ * Download a zip from Supabase Storage and extract it to the workspace path.
+ * Used for local_cli repos uploaded via `kap10 push`.
+ */
+async function prepareLocalCliWorkspace(
+  container: { storageProvider: import("@/lib/ports/storage-provider").IStorageProvider },
+  workspacePath: string,
+  uploadPath: string
+): Promise<void> {
+  const { writeFileSync, mkdirSync } = require("node:fs") as typeof import("node:fs")
+  const { execSync } = require("node:child_process") as typeof import("node:child_process")
+
+  heartbeat("downloading local_cli upload from storage")
+
+  let zipBuffer: Buffer
+  try {
+    zipBuffer = await container.storageProvider.downloadFile("cli_uploads", uploadPath)
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`[prepareWorkspace] Failed to download local_cli upload from storage: ${message}`)
+  }
+
+  heartbeat("extracting local_cli upload")
+
+  try {
+    mkdirSync(workspacePath, { recursive: true })
+    const zipPath = `${workspacePath}/../upload.zip`
+    writeFileSync(zipPath, zipBuffer)
+    execSync(`unzip -o "${zipPath}" -d "${workspacePath}"`, { stdio: "pipe" })
+
+    // Clean up the temporary zip file
+    const { unlinkSync } = require("node:fs") as typeof import("node:fs")
+    try {
+      unlinkSync(zipPath)
+    } catch {
+      // Non-critical: ignore cleanup failures
+    }
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`[prepareWorkspace] Failed to extract local_cli upload: ${message}`)
+  }
 }
 
 export interface RunSCIPInput {

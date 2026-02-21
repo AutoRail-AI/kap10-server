@@ -23,6 +23,14 @@ function getDbUrl(): string | undefined {
   return process.env.SUPABASE_DB_URL ?? process.env.DATABASE_URL
 }
 
+function createPool(connectionString: string, dbUrl: string): Pool {
+  return new Pool({
+    connectionString,
+    ssl: dbUrl.includes("supabase.co") ? { rejectUnauthorized: false } : undefined,
+    connectionTimeoutMillis: 10000,
+  })
+}
+
 async function getAppliedMigrations(client: Pool): Promise<Set<string>> {
   await client.query(`
     CREATE TABLE IF NOT EXISTS public.${MIGRATION_TABLE} (
@@ -76,7 +84,7 @@ async function main(): Promise<void> {
   const connectionString =
     dbUrl +
     (dbUrl.includes("?") ? "&" : "?") +
-    "options=-c%20search_path%3Dpublic"
+    "options=-c%20search_path%3Dpublic,extensions"
 
   let migrationsDir: string[]
   try {
@@ -92,11 +100,7 @@ async function main(): Promise<void> {
     process.exit(0)
   }
 
-  const pool = new Pool({
-    connectionString,
-    ssl: dbUrl.includes("supabase.co") ? { rejectUnauthorized: false } : undefined,
-    connectionTimeoutMillis: 10000,
-  })
+  let pool = createPool(connectionString, dbUrl)
 
   try {
     const applied = await getAppliedMigrations(pool)
@@ -110,6 +114,12 @@ async function main(): Promise<void> {
       console.log("Applying migration:", name)
       await runMigration(pool, name, sql)
       appliedCount++
+
+      // After CREATE EXTENSION, reconnect so new types are visible to subsequent migrations
+      if (/CREATE\s+EXTENSION\b/i.test(sql)) {
+        await pool.end()
+        pool = createPool(connectionString, dbUrl)
+      }
     }
 
     if (appliedCount === 0) {

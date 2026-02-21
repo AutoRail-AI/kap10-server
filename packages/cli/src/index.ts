@@ -7,6 +7,7 @@
  *   kap10 auth logout     — Remove stored credentials
  *   kap10 connect         — Golden path: auth + git detect + IDE config
  *   kap10 init            — Register a local repo with kap10 server
+ *   kap10 promote         — Convert ephemeral sandbox to permanent repository
  *   kap10 push            — Upload local repository for indexing
  *   kap10 pull            — Download graph snapshot for a repo
  *   kap10 serve           — Start local MCP server with graph queries
@@ -28,6 +29,7 @@ import { registerConfigVerifyCommand } from "./commands/config-verify.js"
 import { registerConnectCommand } from "./commands/connect.js"
 import { registerInitCommand } from "./commands/init.js"
 import { registerMarkWorkingCommand } from "./commands/mark-working.js"
+import { registerPromoteCommand } from "./commands/promote.js"
 import { registerPushCommand } from "./commands/push.js"
 import { registerPullCommand } from "./commands/pull.js"
 import { registerRewindCommand } from "./commands/rewind.js"
@@ -49,6 +51,7 @@ registerConfigVerifyCommand(program)
 registerConnectCommand(program)
 registerInitCommand(program)
 registerMarkWorkingCommand(program)
+registerPromoteCommand(program)
 registerPushCommand(program)
 registerPullCommand(program)
 registerRewindCommand(program)

@@ -1185,6 +1185,54 @@ export class ArangoGraphStore implements IGraphStore {
 
   // ── Phase 5: Incremental Indexing ──────────────────────────────
 
+  async createEdgesForEntity(orgId: string, entityKey: string, edges: EdgeDoc[]): Promise<void> {
+    if (edges.length === 0) return
+    const db = await getDbAsync()
+
+    // Build all possible qualified IDs for this entity key
+    const possibleIds = ALL_ENTITY_COLLECTIONS.map((c) => `${c}/${entityKey}`)
+
+    // Step 1: Delete old edges where _from or _to references the entity key
+    for (const edgeName of EDGE_COLLECTIONS) {
+      try {
+        const cursor = await db.query(
+          `
+          FOR e IN @@coll
+            FILTER e.org_id == @orgId AND (e._from IN @possibleIds OR e._to IN @possibleIds)
+            REMOVE e IN @@coll
+          `,
+          { "@coll": edgeName, orgId, possibleIds }
+        )
+        await cursor.all()
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error)
+        console.warn(`[createEdgesForEntity] Failed to delete old edges from ${edgeName}: ${message}`)
+      }
+    }
+
+    // Step 2: Insert new edges (group by edge kind → collection)
+    const byKind = new Map<string, EdgeDoc[]>()
+    for (const e of edges) {
+      const kind = (e.kind as string) ?? "calls"
+      const coll = EDGE_COLLECTIONS.includes(kind as (typeof EDGE_COLLECTIONS)[number]) ? kind : "calls"
+      if (!byKind.has(coll)) byKind.set(coll, [])
+      byKind.get(coll)!.push({ ...e, org_id: e.org_id ?? orgId })
+    }
+    for (const [collName, list] of Array.from(byKind.entries())) {
+      const col = db.collection(collName)
+      for (let i = 0; i < list.length; i += BATCH_SIZE) {
+        const batch = list.slice(i, i + BATCH_SIZE).map((e) => ({
+          _from: qualifyVertexHandle(e._from),
+          _to: qualifyVertexHandle(e._to),
+          org_id: e.org_id,
+          repo_id: e.repo_id,
+          kind: e.kind,
+        }))
+        await col.import(batch, { onDuplicate: "update" })
+      }
+    }
+  }
+
   async getEdgesForEntities(orgId: string, entityKeys: string[]): Promise<EdgeDoc[]> {
     if (entityKeys.length === 0) return []
     const db = await getDbAsync()

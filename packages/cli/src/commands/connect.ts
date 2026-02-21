@@ -8,6 +8,7 @@
 import { Command } from "commander"
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
+import { execSync } from "node:child_process"
 import { getCredentials, saveCredentials, deviceAuthFlow } from "./auth.js"
 
 interface GitContext {
@@ -148,8 +149,9 @@ export function registerConnectCommand(program: Command): void {
     .option("--server <url>", "Server URL", "https://app.kap10.dev")
     .option("--key <apiKey>", "API key (skip browser login)")
     .option("--ide <type>", "IDE type: cursor, vscode, claude-code")
+    .option("--ephemeral", "Create an ephemeral sandbox (expires in 4 hours)")
     .action(
-      async (opts: { server: string; key?: string; ide?: string }) => {
+      async (opts: { server: string; key?: string; ide?: string; ephemeral?: boolean }) => {
         // Step 1: Ensure authenticated
         let creds = getCredentials()
         if (!creds || opts.key) {
@@ -196,50 +198,83 @@ export function registerConnectCommand(program: Command): void {
         console.log(`  Branch: ${git.branch}`)
         console.log("")
 
-        // Step 3: Check if repo exists on kap10
+        // Step 3: Check if repo exists on kap10 (or create ephemeral sandbox)
         console.log("Checking kap10...")
-        try {
-          const contextRes = await fetch(
-            `${serverUrl}/api/cli/context?remote=${encodeURIComponent(git.remote)}`,
-            {
+        if (opts.ephemeral) {
+          // Ephemeral sandbox mode: register repo as ephemeral
+          try {
+            const initRes = await fetch(`${serverUrl}/api/cli/init`, {
+              method: "POST",
               headers: {
+                "Content-Type": "application/json",
                 Authorization: `Bearer ${creds.apiKey}`,
               },
-            }
-          )
+              body: JSON.stringify({
+                name: git.repo,
+                fullName: git.fullName,
+                branch: git.branch,
+                ephemeral: true,
+              }),
+            })
 
-          if (contextRes.ok) {
-            const ctx = (await contextRes.json()) as {
-              repoId: string
-              repoName: string
-              status: string
-              indexed: boolean
-            }
-            console.log(`  Found: ${ctx.repoName} (${ctx.status})`)
-
-            if (!ctx.indexed) {
+            if (initRes.ok) {
               console.log(
-                "  Repo is still indexing. MCP will work once indexing completes."
+                "  Ephemeral sandbox created (expires in 4 hours). Use `kap10 promote` to make permanent."
+              )
+            } else {
+              const body = (await initRes.json()) as { error?: string }
+              console.error(`  Failed to create ephemeral sandbox: ${body.error ?? initRes.statusText}`)
+              process.exit(1)
+            }
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error)
+            console.error(`  Error creating ephemeral sandbox: ${message}`)
+            process.exit(1)
+          }
+        } else {
+          try {
+            const contextRes = await fetch(
+              `${serverUrl}/api/cli/context?remote=${encodeURIComponent(git.remote)}`,
+              {
+                headers: {
+                  Authorization: `Bearer ${creds.apiKey}`,
+                },
+              }
+            )
+
+            if (contextRes.ok) {
+              const ctx = (await contextRes.json()) as {
+                repoId: string
+                repoName: string
+                status: string
+                indexed: boolean
+              }
+              console.log(`  Found: ${ctx.repoName} (${ctx.status})`)
+
+              if (!ctx.indexed) {
+                console.log(
+                  "  Repo is still indexing. MCP will work once indexing completes."
+                )
+              }
+            } else if (contextRes.status === 404) {
+              console.log(
+                "  This repo isn't on kap10 yet."
+              )
+              console.log(
+                "  Add it via the dashboard or connect GitHub at:"
+              )
+              console.log(`  ${serverUrl}/settings/connections`)
+              console.log("")
+            } else {
+              console.log(
+                `  Warning: could not check repo status (${contextRes.status})`
               )
             }
-          } else if (contextRes.status === 404) {
+          } catch {
             console.log(
-              "  This repo isn't on kap10 yet."
-            )
-            console.log(
-              "  Add it via the dashboard or connect GitHub at:"
-            )
-            console.log(`  ${serverUrl}/settings/connections`)
-            console.log("")
-          } else {
-            console.log(
-              `  Warning: could not check repo status (${contextRes.status})`
+              "  Warning: could not reach server to check repo status."
             )
           }
-        } catch {
-          console.log(
-            "  Warning: could not reach server to check repo status."
-          )
         }
 
         // Step 4: Configure IDE
@@ -249,6 +284,29 @@ export function registerConnectCommand(program: Command): void {
           `Configuring MCP${ide !== "unknown" ? ` for ${ide}` : ""}...`
         )
         writeMcpConfig(ide, serverUrl, creds.apiKey, git.fullName)
+
+        // Step 5: Install git hooks for config verification (P5.6-ADV-04)
+        try {
+          const gitDir = execSync("git rev-parse --git-dir", {
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+          }).trim()
+          const hooksDir = join(gitDir, "hooks")
+          mkdirSync(hooksDir, { recursive: true })
+
+          const hookScript = `#!/bin/sh\nkap10 config verify --silent 2>/dev/null || true\n`
+
+          for (const hook of ["post-checkout", "post-merge"]) {
+            const hookPath = join(hooksDir, hook)
+            // Only create if not exists (don't overwrite user hooks)
+            if (!existsSync(hookPath)) {
+              writeFileSync(hookPath, hookScript, { mode: 0o755 })
+              console.log(`  Installed ${hook} hook for config verification.`)
+            }
+          }
+        } catch {
+          // Best effort — don't fail if git hooks can't be installed
+        }
       }
     )
 }

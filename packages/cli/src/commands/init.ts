@@ -20,7 +20,8 @@ export function registerInitCommand(program: Command): void {
     .description("Register this local repository with kap10 server")
     .option("--server <url>", "Server URL", process.env.KAP10_SERVER_URL ?? "http://localhost:3000")
     .option("--branch <branch>", "Default branch", "main")
-    .action(async (opts: { server: string; branch: string }) => {
+    .option("--ephemeral", "Create an ephemeral sandbox (expires in 4 hours)")
+    .action(async (opts: { server: string; branch: string; ephemeral?: boolean }) => {
       try {
         const creds = getCredentials()
         if (!creds?.apiKey) {
@@ -44,6 +45,7 @@ export function registerInitCommand(program: Command): void {
             name: repoName,
             fullName: repoName,
             branch: opts.branch,
+            ...(opts.ephemeral && { ephemeral: true }),
           }),
         })
 
@@ -85,6 +87,9 @@ export function registerInitCommand(program: Command): void {
 
         console.log(`Registered repo: ${repoName} (${result.repoId})`)
         console.log(`  Config: .kap10/config.json`)
+        if (opts.ephemeral) {
+          console.log(`  Ephemeral sandbox created (expires in 4 hours). Use \`kap10 promote\` to make permanent.`)
+        }
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)
         console.error(`Error: ${message}`)

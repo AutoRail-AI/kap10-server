@@ -101,7 +101,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     await startChild(embedRepoWorkflow, {
       workflowId: `embed-${input.orgId}-${input.repoId}`,
       taskQueue: "light-llm-queue",
-      args: [{ orgId: input.orgId, repoId: input.repoId }],
+      args: [{ orgId: input.orgId, repoId: input.repoId, lastIndexedSha: workspace.lastSha }],
       parentClosePolicy: ParentClosePolicy.ABANDON,
     })
 

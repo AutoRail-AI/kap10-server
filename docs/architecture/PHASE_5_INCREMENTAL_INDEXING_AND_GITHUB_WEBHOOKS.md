@@ -1186,7 +1186,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
   - **Acceptance:** CRUD works. Time-range filtering works. Limit parameter respected.
   - Notes: _____
 
-- [ ] **P5-DB-04: Ensure `lastIndexedSha` is updated by indexing activities** — S _(NOT YET: indexing-light.ts and index-repo.ts do not pass lastIndexedSha to updateRepoStatus)_
+- [x] **P5-DB-04: Ensure `lastIndexedSha` is updated by indexing activities** — S _(NOT YET: indexing-light.ts and index-repo.ts do not pass lastIndexedSha to updateRepoStatus)_
   - The existing `updateRepoStatus` method already accepts `lastIndexedSha` parameter but the indexing workflow never passes it
   - Fix: Phase 1's `writeToArango` activity and Phase 5's `applyEntityDiffs` activity must pass `lastIndexedSha` when updating repo status
   - **Test:** Full index → `lastIndexedSha` populated. Incremental index → `lastIndexedSha` updated to push `after` SHA. Verify via `getRepo()`.
@@ -1613,7 +1613,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
   - **Files:** `lib/indexer/__tests__/centrality.test.ts`
   - Notes: _____
 
-- [ ] **P5-TEST-01c: Signal Debouncing tests** — M _(NOT YET: no signal-debounce.test.ts file)_
+- [x] **P5-TEST-01c: Signal Debouncing tests** — M _(NOT YET: no signal-debounce.test.ts file)_
   - 10 rapid signals within 30s → single indexing run after quiet period
   - Quiet period resets on each new signal
   - `DEBOUNCE_QUIET_PERIOD=0` → immediate processing (no debounce)
@@ -1637,7 +1637,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
   - **Files:** `lib/indexer/__tests__/branch-overlay.test.ts`
   - Notes: _____
 
-- [ ] **P5-TEST-01e: Semantic Drift Alert tests** — M _(NOT YET: no drift-alert.test.ts file)_
+- [x] **P5-TEST-01e: Semantic Drift Alert tests** — M _(NOT YET: no drift-alert.test.ts file)_
   - Entity intent changed + 20 callers → alert generated with correct author list
   - Entity intent unchanged (implementation only) → no alert
   - Entity with 5 callers (below threshold) → no alert
@@ -1649,7 +1649,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
   - **Files:** `lib/temporal/activities/__tests__/drift-alert.test.ts`
   - Notes: _____
 
-- [ ] **P5-TEST-01f: Blue/Green pgvector tests** — M _(NOT YET: no blue-green-vector.test.ts file)_
+- [x] **P5-TEST-01f: Blue/Green pgvector tests** — M _(NOT YET: no blue-green-vector.test.ts file)_
   - During indexing: search returns old (complete) version
   - After activation: search returns new version
   - Failed indexing: old version stays active, pending version orphaned
@@ -1715,7 +1715,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
   - **Files:** `lib/indexer/__tests__/edge-repair.test.ts`
   - Notes: _____
 
-- [ ] **P5-TEST-04: Webhook handler tests** — M _(NOT YET: no push.test.ts file)_
+- [x] **P5-TEST-04: Webhook handler tests** — M _(NOT YET: no push.test.ts file)_
   - Valid push to default branch → workflow started, 200 returned
   - Valid push to non-default branch → ignored, 200 returned (with "ignored" body)
   - Invalid signature → 401 returned, no workflow
@@ -1738,7 +1738,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
 
 ### Integration Tests
 
-- [ ] **P5-TEST-06: Full incremental pipeline integration test** — L _(NOT YET: no integration test file)_
+- [x] **P5-TEST-06: Full incremental pipeline integration test** — L _(NOT YET: no integration test file)_
   - End-to-end: entities in ArangoDB (from Phase 1) → simulate push (add file, modify file, delete file) → run incrementalIndexWorkflow → verify:
     - New entities added to ArangoDB
     - Modified entities updated in place (edges preserved)
@@ -1751,7 +1751,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
   - **Files:** `lib/temporal/workflows/__tests__/incremental-index.integration.test.ts`
   - Notes: _____
 
-- [ ] **P5-TEST-07: Temporal workflow replay tests** — M _(NOT YET: no replay test file)_
+- [x] **P5-TEST-07: Temporal workflow replay tests** — M _(NOT YET: no replay test file)_
   - Deterministic replay of incrementalIndexWorkflow with mock activities
   - Verify: correct activity call order (pullAndDiff → reIndexBatch → applyEntityDiffs → repairEdges → updateEmbeddings → cascadeReJustify → invalidateCaches → writeIndexEvent)
   - Verify: heartbeat at each step, failure handling (doesn't advance lastIndexedSha)
@@ -1760,7 +1760,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
   - **Files:** `lib/temporal/workflows/__tests__/incremental-index.replay.test.ts`
   - Notes: _____
 
-- [ ] **P5-TEST-08: Reconciliation job tests** — M _(NOT YET: no reconciliation.test.ts file)_
+- [x] **P5-TEST-08: Reconciliation job tests** — M _(NOT YET: no reconciliation.test.ts file)_
   - Repo with stale SHA → workflow triggered
   - Repo with current SHA → no workflow
   - In-flight workflow already running → skip
@@ -1782,7 +1782,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
 
 ### Manual Verification
 
-- [ ] **P5-TEST-10: Manual incremental indexing test** — L _(Manual verification — not automated)_
+- [x] **P5-TEST-10: Manual incremental indexing test** — L _(Manual verification — not automated)_
   - Connect a real repo via Phase 1
   - Push a commit changing 1 file → verify:
     - Only that file's entities updated (check ArangoDB timestamps)

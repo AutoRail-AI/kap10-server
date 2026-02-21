@@ -47,12 +47,13 @@ export async function setEmbeddingStatus(input: EmbeddingInput): Promise<void> {
   })
 }
 
-export async function setReadyStatus(input: EmbeddingInput): Promise<void> {
+export async function setReadyStatus(input: EmbeddingInput & { lastIndexedSha?: string }): Promise<void> {
   const container = getContainer()
   await container.relationalStore.updateRepoStatus(input.repoId, {
     status: "ready",
     progress: 100,
     errorMessage: null,
+    lastIndexedSha: input.lastIndexedSha ?? null,
   })
 }
 

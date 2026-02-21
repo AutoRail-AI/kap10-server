@@ -13,7 +13,7 @@ ALTER TABLE kap10.repos ADD COLUMN IF NOT EXISTS ephemeral_expires_at TIMESTAMPT
 CREATE TABLE IF NOT EXISTS kap10.ledger_snapshots (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id          TEXT NOT NULL,
-  repo_id         UUID NOT NULL REFERENCES kap10.repos(id) ON DELETE CASCADE,
+  repo_id         TEXT NOT NULL REFERENCES kap10.repos(id) ON DELETE CASCADE,
   user_id         TEXT NOT NULL,
   branch          TEXT NOT NULL,
   timeline_branch INTEGER NOT NULL,
@@ -32,13 +32,13 @@ CREATE INDEX IF NOT EXISTS idx_ledger_snapshots_entry
 CREATE TABLE IF NOT EXISTS kap10.rule_embeddings (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id          TEXT NOT NULL,
-  repo_id         UUID NOT NULL,
+  repo_id         TEXT NOT NULL,
   rule_id         TEXT NOT NULL,
   rule_name       TEXT NOT NULL,
   rule_type       TEXT NOT NULL,
   text_content    TEXT NOT NULL,
   model_version   TEXT NOT NULL DEFAULT 'nomic-v1.5-768',
-  embedding       extensions.vector(768),
+  embedding       vector(768),
   matched_entities TEXT[] NOT NULL DEFAULT '{}',
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -51,22 +51,40 @@ CREATE INDEX IF NOT EXISTS idx_rule_embeddings_type
   ON kap10.rule_embeddings(rule_type);
 
 -- Create cli_uploads storage bucket (private, 500MB max)
-INSERT INTO storage.buckets (id, name, public, file_size_limit)
-VALUES ('cli_uploads', 'cli_uploads', false, 524288000)
-ON CONFLICT (id) DO NOTHING;
+-- Only runs if Supabase storage schema exists
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'storage' AND table_name = 'buckets') THEN
+    INSERT INTO storage.buckets (id, name, public, file_size_limit)
+    VALUES ('cli_uploads', 'cli_uploads', false, 524288000)
+    ON CONFLICT (id) DO NOTHING;
+  END IF;
+END $$;
 
--- Storage policy: authenticated users can upload to their org folder
-CREATE POLICY IF NOT EXISTS "cli_uploads_org_insert"
-  ON storage.objects FOR INSERT
-  TO authenticated
-  WITH CHECK (bucket_id = 'cli_uploads');
-
-CREATE POLICY IF NOT EXISTS "cli_uploads_org_select"
-  ON storage.objects FOR SELECT
-  TO authenticated
-  USING (bucket_id = 'cli_uploads');
-
-CREATE POLICY IF NOT EXISTS "cli_uploads_service_all"
-  ON storage.objects FOR ALL
-  TO service_role
-  USING (bucket_id = 'cli_uploads');
+-- Storage policies (only if storage schema exists)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'storage' AND table_name = 'objects') THEN
+    BEGIN
+      CREATE POLICY "cli_uploads_org_insert"
+        ON storage.objects FOR INSERT
+        TO authenticated
+        WITH CHECK (bucket_id = 'cli_uploads');
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END;
+    BEGIN
+      CREATE POLICY "cli_uploads_org_select"
+        ON storage.objects FOR SELECT
+        TO authenticated
+        USING (bucket_id = 'cli_uploads');
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END;
+    BEGIN
+      CREATE POLICY "cli_uploads_service_all"
+        ON storage.objects FOR ALL
+        TO service_role
+        USING (bucket_id = 'cli_uploads');
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END;
+  END IF;
+END $$;

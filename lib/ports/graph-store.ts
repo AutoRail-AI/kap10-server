@@ -109,6 +109,8 @@ export interface IGraphStore {
   getTokenUsageSummary(orgId: string, repoId: string): Promise<TokenUsageSummary>
 
   // Phase 5: Incremental Indexing
+  /** Create edges for a specific entity (used during incremental reindex) */
+  createEdgesForEntity(orgId: string, entityKey: string, edges: EdgeDoc[]): Promise<void>
   /** Get edges connected to specified entity keys */
   getEdgesForEntities(orgId: string, entityKeys: string[]): Promise<EdgeDoc[]>
   /** Batch delete entities by their keys */

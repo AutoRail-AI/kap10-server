@@ -31,6 +31,7 @@ export const getEmbedProgressQuery = defineQuery<number>("getEmbedProgress")
 export interface EmbedRepoInput {
   orgId: string
   repoId: string
+  lastIndexedSha?: string
 }
 
 export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
@@ -75,7 +76,7 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
     progress = 95
 
     // Step 6: Set status to "ready"
-    await activities.setReadyStatus({ orgId: input.orgId, repoId: input.repoId })
+    await activities.setReadyStatus({ orgId: input.orgId, repoId: input.repoId, lastIndexedSha: input.lastIndexedSha })
     progress = 98
 
     // Step 7: Chain to ontology discovery + justification pipeline (Phase 4)

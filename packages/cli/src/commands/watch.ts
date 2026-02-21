@@ -123,9 +123,66 @@ export function registerWatchCommand(program: Command): void {
         }, debounceMs)
       })
 
+      // P5.6-ADV-04: Config integrity check every 60s
+      const configCheckInterval = setInterval(async () => {
+        try {
+          const configPath = path.join(process.cwd(), ".kap10", "config.json")
+          if (!fs.existsSync(configPath)) return
+
+          const kap10Config = JSON.parse(
+            fs.readFileSync(configPath, "utf-8")
+          ) as { serverUrl?: string }
+          const serverUrl = kap10Config.serverUrl ?? "http://localhost:3000"
+
+          // Quick check: verify .cursor/mcp.json or .vscode/settings.json has kap10 entry
+          const cwd = process.cwd()
+          const ideConfigs = [
+            { name: "cursor", path: path.join(cwd, ".cursor", "mcp.json"), key: "mcpServers" },
+            { name: "vscode", path: path.join(cwd, ".vscode", "settings.json"), key: "mcp.servers" },
+          ]
+
+          for (const ide of ideConfigs) {
+            if (!fs.existsSync(ide.path)) continue
+
+            try {
+              const raw = fs.readFileSync(ide.path, "utf-8")
+              const parsed = JSON.parse(raw) as Record<string, unknown>
+              const servers = (ide.key === "mcpServers"
+                ? parsed.mcpServers
+                : parsed["mcp.servers"]) as Record<string, unknown> | undefined
+
+              if (servers && !servers["kap10"]) {
+                console.log(
+                  `[config] MCP config drift detected in ${ide.name}, auto-repairing...`
+                )
+                // Re-add kap10 entry
+                servers["kap10"] = {
+                  url: `${serverUrl}/mcp`,
+                  headers: {
+                    Authorization: `Bearer ${creds!.apiKey}`,
+                  },
+                }
+                if (ide.key === "mcpServers") {
+                  parsed.mcpServers = servers
+                } else {
+                  parsed["mcp.servers"] = servers
+                }
+                fs.writeFileSync(ide.path, JSON.stringify(parsed, null, 2))
+                console.log(`[config] Repaired ${ide.name} MCP config.`)
+              }
+            } catch {
+              // Best effort
+            }
+          }
+        } catch {
+          // Best effort
+        }
+      }, 60_000)
+
       // Keep process alive
       process.on("SIGINT", () => {
         console.log("\nStopping watcher...")
+        clearInterval(configCheckInterval)
         void watcher.close()
         process.exit(0)
       })

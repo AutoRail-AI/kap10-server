@@ -5,6 +5,7 @@
 import type { Container } from "@/lib/di/container"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
+import { resolveEntityWithOverlay } from "./dirty-buffer"
 
 // ── get_callers ─────────────────────────────────────────────────
 
@@ -44,6 +45,22 @@ export async function handleGetCallers(
 
   const depth = Math.min(Math.max(args.depth ?? 1, 1), 5)
 
+  // P5.6-ADV-05: Check dirty buffer for entity metadata
+  let entitySource = "committed"
+  try {
+    const overlay = await resolveEntityWithOverlay(
+      container,
+      ctx.orgId,
+      repoId,
+      args.name
+    )
+    if (overlay?.source === "dirty_buffer") {
+      entitySource = "dirty_buffer"
+    }
+  } catch {
+    // Best-effort overlay check
+  }
+
   // Find the entity first
   const results = await container.graphStore.searchEntities(ctx.orgId, repoId, args.name, 5)
   const match = results.find((r) => r.name === args.name)
@@ -66,6 +83,7 @@ export async function handleGetCallers(
       kind: entity.kind,
       file_path: entity.file_path,
       line: Number(entity.start_line) || 0,
+      ...(entitySource === "dirty_buffer" && { _source: "dirty_buffer" }),
     },
     callers: callers.map((c) => ({
       name: c.name,
@@ -116,6 +134,22 @@ export async function handleGetCallees(
 
   const depth = Math.min(Math.max(args.depth ?? 1, 1), 5)
 
+  // P5.6-ADV-05: Check dirty buffer for entity metadata
+  let entitySource = "committed"
+  try {
+    const overlay = await resolveEntityWithOverlay(
+      container,
+      ctx.orgId,
+      repoId,
+      args.name
+    )
+    if (overlay?.source === "dirty_buffer") {
+      entitySource = "dirty_buffer"
+    }
+  } catch {
+    // Best-effort overlay check
+  }
+
   const results = await container.graphStore.searchEntities(ctx.orgId, repoId, args.name, 5)
   const match = results.find((r) => r.name === args.name)
   if (!match) {
@@ -136,6 +170,7 @@ export async function handleGetCallees(
       kind: entity.kind,
       file_path: entity.file_path,
       line: Number(entity.start_line) || 0,
+      ...(entitySource === "dirty_buffer" && { _source: "dirty_buffer" }),
     },
     callees: callees.map((c) => ({
       name: c.name,

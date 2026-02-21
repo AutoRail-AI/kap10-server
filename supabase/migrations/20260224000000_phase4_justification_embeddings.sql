@@ -9,7 +9,7 @@ ALTER TYPE "kap10"."RepoStatus" ADD VALUE IF NOT EXISTS 'justify_failed';
 CREATE TABLE IF NOT EXISTS "kap10"."justification_embeddings" (
   "id"               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   "org_id"           TEXT NOT NULL,
-  "repo_id"          UUID NOT NULL REFERENCES "kap10"."repos"("id") ON DELETE CASCADE,
+  "repo_id"          TEXT NOT NULL REFERENCES "kap10"."repos"("id") ON DELETE CASCADE,
   "entity_id"        TEXT NOT NULL,
   "entity_name"      TEXT NOT NULL,
   "taxonomy"         TEXT NOT NULL,

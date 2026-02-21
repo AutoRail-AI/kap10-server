@@ -54,7 +54,7 @@ export function registerBranchesCommand(program: Command): void {
 
         console.log("\n  Branch              Entries  Statuses              Last Activity")
         console.log("  " + "─".repeat(75))
-        for (const [key, info] of branches) {
+        for (const [key, info] of Array.from(branches.entries())) {
           const statuses = Array.from(info.statuses).join(", ")
           console.log(
             `  ${key.padEnd(20)} ${String(info.count).padEnd(8)} ${statuses.padEnd(22)} ${new Date(info.latest).toLocaleString()}`

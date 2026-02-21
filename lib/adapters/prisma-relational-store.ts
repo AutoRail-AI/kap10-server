@@ -272,6 +272,16 @@ export class PrismaRelationalStore implements IRelationalStore {
     await this.prisma.repo.delete({ where: { id: repoId } })
   }
 
+  async promoteRepo(repoId: string): Promise<void> {
+    await this.prisma.repo.update({
+      where: { id: repoId },
+      data: {
+        ephemeral: false,
+        ephemeralExpiresAt: null,
+      },
+    })
+  }
+
   async getDeletionLogs(orgId: string, limit = 50): Promise<DeletionLogRecord[]> {
     const rows = await this.prisma.deletionLog.findMany({
       where: { organizationId: orgId },

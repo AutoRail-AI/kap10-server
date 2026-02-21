@@ -162,6 +162,9 @@ export interface IRelationalStore {
   updateWorkspaceSync(id: string, baseSha?: string): Promise<void>
   deleteExpiredWorkspaces(): Promise<WorkspaceRecord[]>
 
+  // Phase 5.6: Ephemeral sandbox
+  promoteRepo(repoId: string): Promise<void>
+
   // Phase 2: Repo onboarding
   updateRepoOnboardingPr(repoId: string, prUrl: string, prNumber: number): Promise<void>
 }
