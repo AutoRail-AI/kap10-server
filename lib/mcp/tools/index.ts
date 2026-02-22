@@ -1,5 +1,5 @@
 /**
- * MCP Tool Registry — registers all Phase 2–5.6 tools.
+ * MCP Tool Registry — registers all Phase 2–7 tools.
  */
 
 import type { Container } from "@/lib/di/container"
@@ -24,6 +24,11 @@ import { GET_TIMELINE_SCHEMA, handleGetTimeline, MARK_WORKING_SCHEMA, handleMark
 import { REVERT_TO_WORKING_SCHEMA, handleRevertToWorking } from "./rewind"
 // Phase 5.6: Dirty state overlay
 import { SYNC_DIRTY_BUFFER_SCHEMA, handleSyncDirtyBuffer } from "./dirty-buffer"
+// Phase 6: Pattern Enforcement & Rules Engine
+import { GET_RULES_SCHEMA, handleGetRules, CHECK_RULES_SCHEMA, handleCheckRules, GET_RELEVANT_RULES_SCHEMA, handleGetRelevantRules, DRAFT_ARCHITECTURE_RULE_SCHEMA, handleDraftArchitectureRule } from "./rules"
+import { CHECK_PATTERNS_SCHEMA, handleCheckPatterns, GET_CONVENTIONS_SCHEMA, handleGetConventions, SUGGEST_APPROACH_SCHEMA, handleSuggestApproach } from "./patterns"
+// Phase 7: PR Review Integration
+import { REVIEW_PR_STATUS_SCHEMA, handleReviewPrStatus } from "./review"
 
 export interface ToolDefinition {
   name: string
@@ -57,6 +62,16 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   { ...REVERT_TO_WORKING_SCHEMA, requiredScope: "mcp:sync" },
   // Phase 5.6: Dirty state overlay
   { ...SYNC_DIRTY_BUFFER_SCHEMA, requiredScope: "mcp:sync" },
+  // Phase 6: Pattern Enforcement & Rules Engine
+  { ...GET_RULES_SCHEMA, requiredScope: "mcp:read" },
+  { ...CHECK_RULES_SCHEMA, requiredScope: "mcp:read" },
+  { ...CHECK_PATTERNS_SCHEMA, requiredScope: "mcp:read" },
+  { ...GET_CONVENTIONS_SCHEMA, requiredScope: "mcp:read" },
+  { ...SUGGEST_APPROACH_SCHEMA, requiredScope: "mcp:read" },
+  { ...GET_RELEVANT_RULES_SCHEMA, requiredScope: "mcp:read" },
+  { ...DRAFT_ARCHITECTURE_RULE_SCHEMA, requiredScope: "mcp:sync" },
+  // Phase 7: PR Review Integration
+  { ...REVIEW_PR_STATUS_SCHEMA, requiredScope: "mcp:read" },
 ]
 
 type ToolHandler = (
@@ -90,6 +105,16 @@ const TOOL_HANDLERS: Record<string, { handler: ToolHandler; scope: string }> = {
   revert_to_working_state: { handler: handleRevertToWorking as ToolHandler, scope: "mcp:sync" },
   // Phase 5.6: Dirty state overlay
   sync_dirty_buffer: { handler: handleSyncDirtyBuffer as ToolHandler, scope: "mcp:sync" },
+  // Phase 6: Pattern Enforcement & Rules Engine
+  get_rules: { handler: handleGetRules as ToolHandler, scope: "mcp:read" },
+  check_rules: { handler: handleCheckRules as ToolHandler, scope: "mcp:read" },
+  check_patterns: { handler: handleCheckPatterns as ToolHandler, scope: "mcp:read" },
+  get_conventions: { handler: handleGetConventions as ToolHandler, scope: "mcp:read" },
+  suggest_approach: { handler: handleSuggestApproach as ToolHandler, scope: "mcp:read" },
+  get_relevant_rules: { handler: handleGetRelevantRules as ToolHandler, scope: "mcp:read" },
+  draft_architecture_rule: { handler: handleDraftArchitectureRule as ToolHandler, scope: "mcp:sync" },
+  // Phase 7: PR Review Integration
+  review_pr_status: { handler: handleReviewPrStatus as ToolHandler, scope: "mcp:read" },
 }
 
 /**

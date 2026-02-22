@@ -75,20 +75,23 @@ Generate a concise anti-pattern rule with name, description, pattern (code patte
     const crypto = require("node:crypto") as typeof import("node:crypto")
     const ruleId = crypto.randomUUID()
 
+    const now = new Date().toISOString()
     await container.graphStore.upsertRule(input.orgId, {
       id: ruleId,
       org_id: input.orgId,
       repo_id: input.repoId,
       name: rule.name,
-      description: rule.description,
-      pattern: rule.pattern,
-      severity: rule.severity,
-      category: rule.category,
-      fix_suggestion: rule.fix_suggestion,
-      source: "anti-pattern-synthesis",
-      rewind_entry_id: input.rewindEntryId,
-      reverted_entry_ids: input.revertedEntryIds,
-      created_at: new Date().toISOString(),
+      title: rule.name,
+      description: `${rule.description}\n\nPattern: ${rule.pattern}\nFix: ${rule.fix_suggestion}`,
+      type: "custom" as const,
+      scope: "repo" as const,
+      enforcement: rule.severity === "high" ? "block" as const : rule.severity === "medium" ? "warn" as const : "suggest" as const,
+      priority: rule.severity === "high" ? 90 : rule.severity === "medium" ? 60 : 30,
+      status: "active" as const,
+      astGrepQuery: rule.pattern,
+      createdBy: "anti-pattern-synthesis",
+      created_at: now,
+      updated_at: now,
     })
 
     // 4. Log token usage

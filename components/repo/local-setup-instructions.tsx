@@ -121,11 +121,19 @@ export function LocalSetupInstructions({ repoId, repoName, serverUrl }: LocalSet
             <p className="text-xs font-medium text-foreground">4. Start local MCP server</p>
             <CodeBlock code="kap10 serve" />
           </div>
+
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-foreground">5. (Optional) Enable pre-fetch</p>
+            <CodeBlock code="kap10 serve --prefetch" />
+            <p className="text-[11px] text-muted-foreground">
+              Predictive context pre-warming: pre-loads related entities as you navigate code.
+            </p>
+          </div>
         </div>
 
         <div className="rounded-md border border-border bg-muted/10 px-3 py-2">
           <p className="text-[11px] text-muted-foreground">
-            The local MCP server provides all graph query tools (callers, callees, file entities) with sub-5ms latency.
+            The local MCP server provides 9 local tools (graph queries + rules) with sub-5ms latency and 4 cloud tools.
             Semantic search and stats are routed to the cloud automatically.
           </p>
         </div>

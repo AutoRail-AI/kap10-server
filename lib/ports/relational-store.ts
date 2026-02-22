@@ -3,6 +3,8 @@
  * Phase 2: API keys, workspaces, repo onboarding fields.
  */
 
+import type { PrReviewRecord, PrReviewCommentRecord, ReviewConfig } from "./types"
+
 export interface RepoRecord {
   id: string
   organizationId: string
@@ -167,4 +169,22 @@ export interface IRelationalStore {
 
   // Phase 2: Repo onboarding
   updateRepoOnboardingPr(repoId: string, prUrl: string, prNumber: number): Promise<void>
+
+  // Phase 7: PR Review Integration
+  createPrReview(data: {
+    repoId: string
+    prNumber: number
+    prTitle: string
+    prUrl: string
+    headSha: string
+    baseSha: string
+  }): Promise<PrReviewRecord>
+  updatePrReview(id: string, data: Partial<Pick<PrReviewRecord, "status" | "checksPassed" | "checksWarned" | "checksFailed" | "reviewBody" | "githubReviewId" | "githubCheckRunId" | "autoApproved" | "errorMessage" | "completedAt">>): Promise<void>
+  getPrReview(id: string): Promise<PrReviewRecord | null>
+  getPrReviewByPrAndSha(repoId: string, prNumber: number, headSha: string): Promise<PrReviewRecord | null>
+  listPrReviews(repoId: string, opts?: { status?: string; limit?: number; cursor?: string }): Promise<{ items: PrReviewRecord[]; cursor: string | null; hasMore: boolean }>
+  createPrReviewComment(data: Omit<PrReviewCommentRecord, "id" | "createdAt">): Promise<PrReviewCommentRecord>
+  listPrReviewComments(reviewId: string): Promise<PrReviewCommentRecord[]>
+  updateRepoReviewConfig(repoId: string, config: ReviewConfig): Promise<void>
+  getRepoReviewConfig(repoId: string): Promise<ReviewConfig>
 }

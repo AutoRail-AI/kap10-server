@@ -22,7 +22,9 @@ export function registerServeCommand(program: Command): void {
     .command("serve")
     .description("Start local MCP server")
     .option("--repo <repoId>", "Specific repo to serve (default: all pulled repos)")
-    .action(async (opts: { repo?: string }) => {
+    .option("--prefetch", "Enable predictive context pre-fetching (default: false)")
+    .option("--no-prefetch", "Disable predictive context pre-fetching")
+    .action(async (opts: { repo?: string; prefetch?: boolean }) => {
       const creds = getCredentials()
       if (!creds) {
         console.error("Not authenticated. Run: kap10 auth login")
@@ -104,9 +106,29 @@ export function registerServeCommand(program: Command): void {
         apiKey: creds.apiKey,
       })
 
+      // Create rule evaluator
+      let ruleEvaluator: typeof import("../rule-evaluator.js").evaluateRules | undefined
+      try {
+        const ruleEvalModule = await import("../rule-evaluator.js")
+        ruleEvaluator = ruleEvalModule.evaluateRules
+      } catch {
+        console.warn("Rule evaluator not available — check_rules will use cloud fallback")
+      }
+
       // Create query router
       const { QueryRouter } = await import("../query-router.js")
-      const router = new QueryRouter(localGraph, cloudProxy)
+      const router = new QueryRouter(localGraph, cloudProxy, ruleEvaluator)
+
+      // Create prefetch manager if enabled
+      let prefetchManager: import("../prefetch.js").PrefetchManager | null = null
+      if (opts.prefetch) {
+        const { PrefetchManager } = await import("../prefetch.js")
+        prefetchManager = new PrefetchManager({
+          serverUrl: creds.serverUrl,
+          apiKey: creds.apiKey,
+        })
+        console.log("Prefetch enabled — predictive context pre-warming active")
+      }
 
       // Start stdio MCP server
       console.log("Starting MCP server on stdio...")
@@ -131,6 +153,8 @@ export function registerServeCommand(program: Command): void {
         { name: "find_similar", description: "Find similar entities (cloud)", inputSchema: { type: "object" as const, properties: { key: { type: "string" }, limit: { type: "number" } }, required: ["key"] } },
         { name: "get_project_stats", description: "Get project stats (cloud)", inputSchema: { type: "object" as const, properties: {} } },
         { name: "sync_local_diff", description: "Sync local changes (cloud)", inputSchema: { type: "object" as const, properties: { diff: { type: "string" } }, required: ["diff"] } },
+        { name: "get_rules", description: "Get applicable rules for a file path", inputSchema: { type: "object" as const, properties: { file_path: { type: "string", description: "Optional file path to filter rules by glob" } } } },
+        { name: "check_rules", description: "Check rules against file content (structural + naming, local evaluation)", inputSchema: { type: "object" as const, properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path", "content"] } },
       ]
 
       server.setRequestHandler(
@@ -143,6 +167,16 @@ export function registerServeCommand(program: Command): void {
         async (request: { params: { name: string; arguments?: Record<string, unknown> } }) => {
           const { name, arguments: args = {} } = request.params
           const result = await router.execute(name, args)
+
+          // Feed prefetch manager with file context from tool calls
+          if (prefetchManager && args.file_path && repoIds.length > 0) {
+            prefetchManager.onCursorChange({
+              filePath: args.file_path as string,
+              entityKey: args.key as string | undefined,
+              repoId: repoIds[0]!,
+            })
+          }
+
           return {
             content: [{ type: "text", text: JSON.stringify(result.content, null, 2) }],
             _meta: result._meta,
@@ -152,6 +186,20 @@ export function registerServeCommand(program: Command): void {
 
       const transport = new StdioServerTransport()
       await server.connect(transport)
-      console.error("kap10 MCP server running on stdio")
+
+      // Cleanup prefetch on exit
+      if (prefetchManager) {
+        process.on("SIGINT", () => {
+          prefetchManager?.dispose()
+          process.exit(0)
+        })
+        process.on("SIGTERM", () => {
+          prefetchManager?.dispose()
+          process.exit(0)
+        })
+      }
+
+      const ruleInfo = localGraph.hasRules() ? ` (${localGraph.getRules().length} rules loaded)` : ""
+      console.error(`kap10 MCP server running on stdio — 13 tools (9 local, 4 cloud)${ruleInfo}`)
     })
 }

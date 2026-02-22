@@ -2,15 +2,19 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Activity, Code, LayoutGrid, HeartPulse, Clock, GitCommit } from "lucide-react"
+import { Activity, Code, LayoutGrid, HeartPulse, Clock, GitCommit, Fingerprint, Shield, GitPullRequest, History } from "lucide-react"
 
 const tabs = [
   { label: "Code", href: "", icon: Code },
   { label: "Blueprint", href: "/blueprint", icon: LayoutGrid },
+  { label: "Patterns", href: "/patterns", icon: Fingerprint },
+  { label: "Rules", href: "/rules", icon: Shield },
+  { label: "Reviews", href: "/reviews", icon: GitPullRequest },
   { label: "Health", href: "/health", icon: HeartPulse },
   { label: "Activity", href: "/activity", icon: Activity },
   { label: "Timeline", href: "/timeline", icon: Clock },
   { label: "Commits", href: "/commits", icon: GitCommit },
+  { label: "History", href: "/history", icon: History },
 ] as const
 
 export default function RepoLayout({

@@ -5,6 +5,7 @@ import { env } from "./env.mjs"
 
 const config: NextConfig = {
   reactStrictMode: true,
+  serverExternalPackages: ["@ast-grep/napi"],
   logging: {
     fetches: {
       fullUrl: true,

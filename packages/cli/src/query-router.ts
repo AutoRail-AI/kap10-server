@@ -1,12 +1,13 @@
 /**
  * Query Router — decides whether a tool call runs locally or via cloud proxy.
  *
- * Local tools (7): graph queries that CozoDB can answer sub-5ms
+ * Local tools (9): graph queries + rules that CozoDB can answer sub-5ms
  * Cloud tools (4): require vector DB, aggregations, or server-side state
  */
 
 import type { CozoGraphStore } from "./local-graph.js"
 import type { CloudProxy } from "./cloud-proxy.js"
+import type { evaluateRules as EvaluateRulesFn } from "./rule-evaluator.js"
 
 export type ToolSource = "local" | "cloud"
 
@@ -14,7 +15,7 @@ export type ToolSource = "local" | "cloud"
  * Static routing table: tool name → source.
  */
 const ROUTING_TABLE: Record<string, ToolSource> = {
-  // Local tools (CozoDB)
+  // Local tools (CozoDB) — 9 total
   get_function: "local",
   get_class: "local",
   get_file: "local",
@@ -22,6 +23,8 @@ const ROUTING_TABLE: Record<string, ToolSource> = {
   get_callees: "local",
   get_imports: "local",
   search_code: "local",
+  get_rules: "local",
+  check_rules: "local",
 
   // Cloud tools (server-side)
   semantic_search: "cloud",
@@ -36,12 +39,21 @@ export interface ToolResult {
 }
 
 export class QueryRouter {
+  private ruleEvaluator: typeof EvaluateRulesFn | null
+
   constructor(
     private localGraph: CozoGraphStore,
-    private cloudProxy: CloudProxy
-  ) {}
+    private cloudProxy: CloudProxy,
+    ruleEvaluator?: typeof EvaluateRulesFn
+  ) {
+    this.ruleEvaluator = ruleEvaluator ?? null
+  }
 
   getRoute(toolName: string): ToolSource {
+    // get_rules and check_rules fall back to cloud if no local rules
+    if ((toolName === "get_rules" || toolName === "check_rules") && !this.localGraph.hasRules()) {
+      return "cloud"
+    }
     return ROUTING_TABLE[toolName] ?? "cloud"
   }
 
@@ -50,7 +62,7 @@ export class QueryRouter {
 
     if (source === "local") {
       try {
-        const result = this.executeLocal(toolName, args)
+        const result = await this.executeLocal(toolName, args)
         return { content: result, _meta: { source: "local" } }
       } catch {
         // Fallback to cloud on local failure
@@ -63,7 +75,7 @@ export class QueryRouter {
     return { content: result, _meta: { source: "cloud" } }
   }
 
-  private executeLocal(toolName: string, args: Record<string, unknown>): unknown {
+  private async executeLocal(toolName: string, args: Record<string, unknown>): Promise<unknown> {
     switch (toolName) {
       case "get_function":
       case "get_class":
@@ -87,6 +99,22 @@ export class QueryRouter {
         const query = args.query as string
         const limit = (args.limit as number) ?? 20
         return this.localGraph.searchEntities(query, limit)
+      }
+      case "get_rules": {
+        const filePath = args.file_path as string | undefined
+        return this.localGraph.getRules(filePath)
+      }
+      case "check_rules": {
+        const filePath = args.file_path as string
+        const content = args.content as string
+        if (!filePath || !content) {
+          throw new Error("check_rules requires file_path and content")
+        }
+        if (!this.ruleEvaluator) {
+          throw new Error("Rule evaluator not available")
+        }
+        const rules = this.localGraph.getRules(filePath)
+        return this.ruleEvaluator(rules, filePath, content, this.localGraph)
       }
       default:
         throw new Error(`Unknown local tool: ${toolName}`)

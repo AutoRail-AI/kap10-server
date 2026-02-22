@@ -21,14 +21,19 @@ pnpm e2e:ui                                  # Playwright with UI
 Phase 0 (Foundation)
   └─► Phase 1 (GitHub Connect & Indexing)
         └─► Phase 2 (Hosted MCP Server)
-              └─► Phase 3 (Semantic Search)
-                    └─► Phase 4 (Business Justification & Taxonomy)
-                          └─► Phase 5 (Incremental Indexing & GitHub Webhooks)
-                                └─► Phase 5.5 (Prompt Ledger, Rewind & Local Ingestion)
-                                      └─► Phase 5.6 (CLI-First Zero-Friction Onboarding)
+              ├─► Phase 3 (Semantic Search)
+              │     └─► Phase 4 (Business Justification & Taxonomy)
+              │           └─► Phase 5 (Incremental Indexing & GitHub Webhooks)
+              │                 └─► Phase 5.5 (Prompt Ledger, Rewind & Local Ingestion)
+              │                       └─► Phase 5.6 (CLI-First Zero-Friction Onboarding)
+              │                             └─► Phase 6 (Pattern Enforcement & Rules Engine)
+              │                                   └─► Phase 7 (PR Review Integration)
+              │                                         └─► Phase 10b (Local-First Proxy — Full)
+              └─► Phase 10a (Local-First Intelligence Proxy — MVP)
+                    └─► Phase 10b (Local-First Proxy — Full)
 ```
 
-Each phase depends on all prior phases. Tests should be run in order during initial setup; in CI all tests run together.
+Phase 10a branches from Phase 2 (it only needs the MCP server). Phase 10b depends on both Phase 6 (rules/patterns) and Phase 10a (local CLI). Phase 7 depends on Phase 6. Tests should be run in order during initial setup; in CI all tests run together.
 
 ---
 
@@ -97,14 +102,14 @@ Legend:
 
 ### Phase 2 — Hosted MCP Server
 
-> **Summary:** MCP protocol implementation with 20 tools, dual-mode auth (JWT + API key), secret scrubbing, rate limiting, workspace overlay for uncommitted changes.
+> **Summary:** MCP protocol implementation with 27 tools (20 base + 7 Phase 6), dual-mode auth (JWT + API key), secret scrubbing, rate limiting, workspace overlay for uncommitted changes.
 >
 > **Depends on:** Phase 1
 
 | Area | What to Test | Type | Test File / How |
 |------|-------------|------|-----------------|
 | MCP auth (JWT + API key) | Dual-mode authentication, cache, expiry | Auto | `lib/mcp/__tests__/auth.test.ts` |
-| MCP tools (structural) | 20 tools: search, inspect, traverse, sync, timeline, rewind, etc. | Auto | `lib/mcp/tools/__tests__/tools.test.ts` |
+| MCP tools (structural) | 27 tools: search, inspect, traverse, sync, timeline, rewind, rules, patterns, etc. | Auto | `lib/mcp/tools/__tests__/tools.test.ts` |
 | MCP tools (semantic) | Semantic search MCP tools | Auto | `lib/mcp/tools/__tests__/semantic.test.ts` |
 | Secret scrubber | PII/secrets stripped from MCP responses | Auto | `lib/mcp/security/__tests__/scrubber.test.ts` |
 | Rate limiter | Per-key rate limiting works correctly | Auto | `lib/mcp/security/__tests__/rate-limiter.test.ts` |
@@ -279,6 +284,143 @@ Legend:
 
 ---
 
+### Phase 6 — Pattern Enforcement & Rules Engine
+
+> **Summary:** Pattern detection via ast-grep, deterministic rule enforcement via Semgrep, hierarchical rule resolution (workspace > branch > path > repo > org), hybrid evaluation (syntactic + semantic), JIT rule injection, rule health tracking & decay, time-bound exceptions, blast radius simulation, pattern mining via Louvain community detection, LLM-assisted rule compilation, polyglot mapping, auto-remediation, 7 new MCP tools, 5 Temporal workflows, REST API for rules/patterns CRUD.
+>
+> **Depends on:** Phase 5.6
+
+| Area | What to Test | Type | Test File / How |
+|------|-------------|------|-----------------|
+| Rule resolver | Hierarchical scope resolution, dedup, priority sort, cap at 50, Redis caching | Auto | `lib/rules/__tests__/resolver.test.ts` |
+| Decay score | Weighted formula (40% override, 30% FP, 20% recency, 10% fix), shouldDeprecate | Auto | `lib/rules/__tests__/decay-score.test.ts` |
+| Exception ledger | Create/revoke exceptions, isExempt with TTL, entity-specific exemptions | Auto | `lib/rules/__tests__/exception-ledger.test.ts` |
+| Health ledger | Counter increments (triggered, overridden, false_positive, auto_fixed) | Auto | `lib/rules/__tests__/health-ledger.test.ts` |
+| Hybrid evaluator | Two-pass evaluation (syntactic Semgrep + semantic ArangoDB enrichment) | Auto | `lib/rules/__tests__/hybrid-evaluator.test.ts` |
+| JIT injection | Sub-graph traversal, relevance scoring, depth/topK limits | Auto | `lib/rules/__tests__/jit-injection.test.ts` |
+| MCP: get_rules | Returns hierarchically resolved rules with scope/type filters | Auto | `lib/mcp/tools/__tests__/rules-tools.test.ts` |
+| MCP: check_rules | Runs Semgrep against code, returns violations with fixes | Auto | `lib/mcp/tools/__tests__/rules-tools.test.ts` |
+| MCP: get_relevant_rules | Context-aware rule selection by file/entity | Auto | `lib/mcp/tools/__tests__/rules-tools.test.ts` |
+| MCP: draft_architecture_rule | LLM generateObject with Zod schema validation | Auto | `lib/mcp/tools/__tests__/rules-tools.test.ts` |
+| MCP: check_patterns | ast-grep scan, adherence rates, evidence | Auto | `lib/mcp/tools/__tests__/patterns-tools.test.ts` |
+| MCP: get_conventions | Formatted convention guide from rules + patterns | Auto | `lib/mcp/tools/__tests__/patterns-tools.test.ts` |
+| MCP: suggest_approach | Context-aware suggestions with rules/patterns/entities | Auto | `lib/mcp/tools/__tests__/patterns-tools.test.ts` |
+| REST: rules CRUD | GET/POST `/api/repos/[repoId]/rules`, PATCH/DELETE `.../[ruleId]` | Server | curl against running dev server |
+| REST: patterns | GET `/api/repos/[repoId]/patterns`, PATCH `.../[patternId]` | Server | curl against running dev server |
+| REST: org rules | GET/POST `/api/settings/rules` | Server | curl against running dev server |
+| REST: exceptions | GET/POST `/api/repos/[repoId]/rules/[ruleId]/exceptions` | Server | curl against running dev server |
+| REST: promote pattern | POST `/api/repos/[repoId]/rules/from-pattern` | Server | curl against running dev server |
+| Pattern detection workflow | 3-step pipeline: astGrepScan → llmSynthesize → storePatterns | Manual | Trigger re-index → verify patterns appear in ArangoDB |
+| Rule deprecation workflow | Auto-archives stale rules based on decay scores | Manual | Create rules with poor health → verify auto-deprecation |
+| Blast radius simulation | Dry-run new rule against codebase → impact report | Manual | Create staged rule → verify impact report generated |
+| Pattern mining | Louvain community detection on entity graph | Manual | Run mine-patterns workflow → verify mined_patterns collection |
+| Pattern library UI | `/repos/{id}/patterns` shows adherence, confidence, evidence | Manual | Browser: navigate to patterns page → verify rendering |
+| Rules management UI | `/repos/{id}/rules` lists rules with enforcement badges | Manual | Browser: navigate to rules → verify badges, delete button |
+| Rule creation form | `/repos/{id}/rules/new` submits all fields correctly | Manual | Browser: create new rule → verify appears in list |
+| Org rules UI | `/settings/rules` shows org-wide rules | Manual | Browser: navigate to settings/rules → verify display |
+| Semgrep CLI | Semgrep binary available and executes correctly | Manual | `semgrep --version` → verify installed on worker |
+| ast-grep detection | ast-grep finds structural patterns across codebase | Manual | Run check_patterns MCP tool → verify pattern matches |
+
+**Auto test files:** 8
+**What an LLM agent can do:** Run all 8 Auto test files. Cannot test real Semgrep/ast-grep execution against live codebases, visual UI rendering, or Temporal workflow execution against real infrastructure.
+
+---
+
+### Phase 7 — PR Review Integration
+
+> **Summary:** Automatic PR review via GitHub webhooks. When a PR is opened/synchronized, a four-activity Temporal workflow (`fetchDiff` → `runSemgrep` → `analyzeImpact` → `postReview`) analyzes the diff, computes blast radius via ArangoDB graph traversal, and posts line-level review comments plus a GitHub Check Run. Includes Semantic LGTM auto-approval for low-risk diffs, Auto-ADR generation for significant merges, and ledger merge tracking.
+>
+> **Depends on:** Phase 6
+
+| Area | What to Test | Type | Test File / How |
+|------|-------------|------|-----------------|
+| Diff analyzer | Line-in-hunk detection, multi-file diff parsing, entity overlap | Auto | `lib/review/__tests__/diff-analyzer.test.ts` |
+| Blast radius | N-hop traversal from changed functions to API boundaries | Auto | `lib/review/__tests__/blast-radius.test.ts` |
+| Comment builder | Inline GitHub review comments from findings, severity filtering | Auto | `lib/review/__tests__/comment-builder.test.ts` |
+| Check-run builder | GitHub Check Run summary from all finding types, truncation | Auto | `lib/review/__tests__/check-run-builder.test.ts` |
+| Semantic LGTM | Low-risk auto-approval gate (HORIZONTAL/UTILITY vs VERTICAL) | Auto | `lib/review/__tests__/semantic-lgtm.test.ts` |
+| ADR schema | Zod validation, markdown rendering, filename formatting | Auto | `lib/review/__tests__/adr-schema.test.ts` |
+| Complexity check | Cyclomatic complexity detection in changed entities | Auto | `lib/review/checks/__tests__/complexity-check.test.ts` |
+| Impact check | Changed entity impact scoring via graph traversal | Auto | `lib/review/checks/__tests__/impact-check.test.ts` |
+| Test check | Test coverage detection for changed functions | Auto | `lib/review/checks/__tests__/test-check.test.ts` |
+| Webhook handler | PR opened/synchronized triggers review workflow, draft/closed skip | Auto | `lib/github/webhook-handlers/__tests__/pull-request.test.ts` |
+| Review activities | fetchDiff, runSemgrep, analyzeImpact, postReview Temporal activities | Auto | `lib/temporal/activities/__tests__/review.test.ts` |
+| ADR generation | assessMergeSignificance + generateAdr activities | Auto | `lib/temporal/activities/__tests__/adr-generation.test.ts` |
+| Ledger merge | fetchLedgerEntries, reparentLedgerEntries, createMergeNode | Auto | `lib/temporal/activities/__tests__/ledger-merge.test.ts` |
+| Review MCP tool | handleReviewPrStatus — "Why did kap10 block PR #42?" | Auto | `lib/mcp/tools/__tests__/review.test.ts` |
+| Summarizer | LLM narrative synthesis for merge summaries | Auto | `lib/use-cases/__tests__/summarizer.test.ts` |
+| REST: reviews CRUD | GET/POST `/api/repos/[repoId]/reviews`, GET `.../[reviewId]` | Server | curl against running dev server |
+| REST: review retry | POST `/api/repos/[repoId]/reviews/[reviewId]/retry` | Server | curl against running dev server |
+| REST: review settings | GET/PATCH `/api/repos/[repoId]/settings/review` | Server | curl against running dev server |
+| REST: merge history | GET `/api/repos/[repoId]/history` | Server | curl against running dev server |
+| PR review end-to-end | Open PR → kap10 posts review comments + Check Run | Manual | Open PR on connected repo → verify review posted |
+| Semantic LGTM | Low-risk PR auto-approved without review | Manual | Open trivial-change PR → verify auto-approval |
+| Auto-ADR | Merge significant PR → ADR generated in repo | Manual | Merge large PR → verify ADR commit |
+| Review UI | `/repos/{id}/reviews` lists reviews with status badges | Manual | Browser: navigate to reviews page → verify rendering |
+| Review detail UI | `/repos/{id}/reviews/{reviewId}` shows findings + comments | Manual | Browser: navigate to review detail → verify layout |
+
+**Auto test files:** 15
+**What an LLM agent can do:** Run all 15 Auto test files. Cannot test real GitHub webhook delivery, PR review posting, or visual UI rendering.
+
+---
+
+### Phase 10a — Local-First Intelligence Proxy (MVP)
+
+> **Summary:** Ships a CLI (`@autorail/kap10`) that serves a local MCP server backed by an embedded CozoDB database. 7 of 9 structural tools resolve in <5ms from a local graph snapshot with no network round-trip. `kap10 pull` downloads a msgpack snapshot from cloud, `kap10 serve` starts the local MCP proxy. 2 tools (`sync_local_diff`, `semantic_search`) proxy transparently to the cloud.
+>
+> **Depends on:** Phase 2
+
+| Area | What to Test | Type | Test File / How |
+|------|-------------|------|-----------------|
+| CozoDB adapter | Point lookup, N-hop traversal, health check | Auto | `packages/cli/src/__tests__/local-graph.test.ts` |
+| Query router | Local dispatch, cloud dispatch, fallback, `_meta.source` | Auto | `packages/cli/src/__tests__/query-router.test.ts` |
+| Graph compactor | Body truncation, `_id` stripping, edge compaction | Auto | `lib/use-cases/__tests__/graph-compactor.test.ts` |
+| Graph serializer | Msgpack serialize/deserialize round-trip, version field | Auto | `lib/use-cases/__tests__/graph-serializer.test.ts` |
+| Graph export activity | `queryCompactGraph`, `serializeToMsgpack` v1 | Auto | `lib/temporal/activities/__tests__/graph-export.test.ts` |
+| Search index | Tokenizer (camelCase, snake_case, kebab-case splitting) | Auto | `packages/cli/src/__tests__/search-index.test.ts` |
+| Checksum | SHA-256 computation, determinism, tamper detection | Auto | `packages/cli/src/__tests__/checksum.test.ts` |
+| REST: snapshot list | `GET /api/graph-snapshots` → repos with snapshot metadata | Server | curl against running dev server |
+| REST: snapshot download | `GET /api/graph-snapshots/[repoId]/download` → pre-signed URL | Server | curl against running dev server |
+| REST: snapshot sync | `POST /api/graph-snapshots/[repoId]/sync` → triggers workflow | Server | curl against running dev server |
+| `kap10 pull` | Download msgpack → verify SHA-256 → bulk-load CozoDB | Manual | Terminal: `kap10 pull --repo org/repo` → verify entities loaded |
+| `kap10 serve` | Local MCP server starts, tools respond via stdio | Manual | Terminal: `kap10 serve` → verify tools respond in IDE |
+| Latency comparison | Local <5ms vs cloud ~200-300ms for same query | Manual | Measure `get_function` latency local vs cloud |
+| Dashboard snapshot status | Badge shows "available"/"generating", "Sync Now" button | Manual | Browser: `/repos/{id}` → verify snapshot status |
+
+**Auto test files:** 7
+**What an LLM agent can do:** Run all 7 Auto test files. Cannot test real CLI interactive flows, IDE MCP integration, or latency measurement.
+
+---
+
+### Phase 10b — Local-First Intelligence Proxy (Full)
+
+> **Summary:** Extends Phase 10a CLI with local rule evaluation and predictive pre-fetching. Adds `get_rules` and `check_rules` to local routing (9 local tools, up from 7), syncs rules/patterns in v2 snapshot envelopes, provides tree-sitter-based structural rule evaluation in the CLI, and adds a `POST /api/prefetch` endpoint for predictive context pre-warming.
+>
+> **Depends on:** Phase 10a, Phase 6
+
+| Area | What to Test | Type | Test File / How |
+|------|-------------|------|-----------------|
+| CozoDB rules/patterns | Insert, query, v2 envelope loading, glob filtering | Auto | `packages/cli/src/__tests__/local-graph.test.ts` (extended) |
+| Rule evaluator — naming | Regex matching against entity names from CozoDB | Auto | `packages/cli/src/__tests__/rule-evaluator.test.ts` |
+| Rule evaluator — structural | Tree-sitter AST matching, graceful degradation | Auto | `packages/cli/src/__tests__/rule-evaluator.test.ts` |
+| Rule evaluator — partitioning | Semgrep/LLM rules skipped, `_meta.skippedRules` annotated | Auto | `packages/cli/src/__tests__/rule-evaluator.test.ts` |
+| Pre-fetch debounce | 500ms debounce, 2/s rate limit, error silencing | Auto | `packages/cli/src/__tests__/prefetch.test.ts` |
+| Snapshot v2 envelope | v2 with rules+patterns, v2 with empty arrays, v1 compat | Auto | `packages/cli/src/__tests__/snapshot-v2.test.ts` |
+| Extended routing table | `get_rules`/`check_rules` → local, cloud fallback when empty | Auto | `packages/cli/src/__tests__/query-router.test.ts` (extended) |
+| Pre-fetch context use case | N-hop BFS expansion, Redis caching, deduplication | Auto | `lib/use-cases/__tests__/prefetch-context.test.ts` |
+| Pre-fetch cache hit | `semantic_search` returns cached results with `_meta.source: "cloud_prefetched"` | Auto | `lib/mcp/tools/__tests__/prefetch-cache.test.ts` |
+| v2 graph export | Rules/patterns compact export, enforcement→severity mapping | Auto | `lib/temporal/activities/__tests__/graph-export-v2.test.ts` |
+| REST: prefetch | `POST /api/prefetch` → context expansion → Redis cache | Server | curl against running dev server |
+| Local rule check latency | `get_rules` <5ms local vs ~200ms cloud | Manual | Measure latency with v2 snapshot loaded |
+| Pre-fetch verification | `kap10 serve --prefetch` → Redis populated → faster cloud response | Manual | Start serve → navigate → check Redis → verify speedup |
+| v2 pull | `kap10 pull` with v2 snapshot → rules/patterns loaded | Manual | Terminal: verify rule/pattern counts in pull output |
+| Rules synced indicator | Repo page shows "v2 · X rules" badge | Manual | Browser: `/repos/{id}` → verify badge |
+
+**Auto test files:** 8 (7 new files + 1 extended)
+**What an LLM agent can do:** Run all 8 Auto test files. Cannot test real CLI MCP integration, latency measurement, or visual UI badges.
+
+---
+
 ## Automation Summary
 
 | Phase | Auto Tests | E2E Tests | Manual Tests | Auto Coverage |
@@ -291,7 +433,11 @@ Legend:
 | 5 — Incremental | 10 files | 1 spec | 4 checks | ~70% |
 | 5.5 — Ledger/Rewind | 12 files | — | 6 checks | ~65% |
 | 5.6 — CLI Onboarding | 4 files | — | 7 checks | ~60% |
-| **Total (through 5.6)** | **61 files** | **9 specs** | **32 checks** | **~70%** |
+| 6 — Rules Engine | 8 files | — | 10 checks | ~65% |
+| 7 — PR Review | 15 files | — | 5 checks | ~75% |
+| 10a — Local Proxy MVP | 7 files | — | 4 checks | ~65% |
+| 10b — Local Proxy Full | 8 files | — | 4 checks | ~70% |
+| **Total (through 10b)** | **99 files** | **9 specs** | **55 checks** | **~70%** |
 
 ---
 
@@ -320,7 +466,24 @@ pnpm test lib/mcp/tools/__tests__/rewind         # Phase 5.5: Rewind tool
 pnpm test lib/mcp/security/__tests__/circuit     # Phase 5.5: Circuit breaker
 pnpm test lib/use-cases/__tests__/shadow-rewind  # Phase 5.5: Shadow rewind
 pnpm test app/api/cli/                           # Phase 5.6: CLI onboarding
-pnpm test packages/cli/                          # Phase 5.6 + 10a: CLI commands
+pnpm test packages/cli/                          # Phase 5.6 + 10a + 10b: CLI commands
+pnpm test lib/rules/                             # Phase 6: Rule resolver, decay, exceptions, health, hybrid, JIT
+pnpm test lib/mcp/tools/__tests__/rules-tools    # Phase 6: Rule MCP tools
+pnpm test lib/mcp/tools/__tests__/patterns-tools # Phase 6: Pattern MCP tools
+pnpm test lib/review/                            # Phase 7: PR review pipeline
+pnpm test lib/review/checks/                     # Phase 7: Review check modules
+pnpm test lib/github/webhook-handlers/           # Phase 7: PR webhook handler
+pnpm test lib/temporal/activities/__tests__/review           # Phase 7: Review activities
+pnpm test lib/temporal/activities/__tests__/adr-generation   # Phase 7: ADR generation
+pnpm test lib/temporal/activities/__tests__/ledger-merge     # Phase 7: Ledger merge
+pnpm test lib/mcp/tools/__tests__/review         # Phase 7: Review MCP tool
+pnpm test lib/use-cases/__tests__/summarizer     # Phase 7: Merge summarizer
+pnpm test lib/use-cases/__tests__/graph-compactor            # Phase 10a: Graph compactor
+pnpm test lib/use-cases/__tests__/graph-serializer           # Phase 10a: Graph serializer
+pnpm test lib/temporal/activities/__tests__/graph-export     # Phase 10a: Graph export
+pnpm test lib/use-cases/__tests__/prefetch-context           # Phase 10b: Pre-fetch context
+pnpm test lib/mcp/tools/__tests__/prefetch-cache             # Phase 10b: Pre-fetch cache hit
+pnpm test lib/temporal/activities/__tests__/graph-export-v2  # Phase 10b: v2 graph export
 
 # Integration tests (require running infra)
 pnpm test lib/adapters/arango-graph-store.integration.test.ts
@@ -428,6 +591,60 @@ pnpm e2e:headless
 | `packages/cli/src/__tests__/ephemeral.test.ts` | Ephemeral sandbox mode | CLI |
 | `packages/cli/src/__tests__/local-parse.test.ts` | Local AST parse fallback | CLI |
 
+### Phase 6 — Pattern Enforcement & Rules Engine
+| File | Tests | Area |
+|------|-------|------|
+| `lib/rules/__tests__/resolver.test.ts` | Hierarchical scope resolution, dedup, cap | Resolver |
+| `lib/rules/__tests__/decay-score.test.ts` | Decay formula, shouldDeprecate | Health |
+| `lib/rules/__tests__/exception-ledger.test.ts` | Create/revoke exceptions, isExempt | Exceptions |
+| `lib/rules/__tests__/health-ledger.test.ts` | Counter increments, health tracking | Health |
+| `lib/rules/__tests__/hybrid-evaluator.test.ts` | Two-pass syntactic + semantic evaluation | Evaluator |
+| `lib/rules/__tests__/jit-injection.test.ts` | Sub-graph traversal, relevance scoring | JIT |
+| `lib/mcp/tools/__tests__/rules-tools.test.ts` | get_rules, check_rules, get_relevant_rules, draft_architecture_rule | Tools |
+| `lib/mcp/tools/__tests__/patterns-tools.test.ts` | check_patterns, get_conventions, suggest_approach | Tools |
+
+### Phase 7 — PR Review Integration
+| File | Tests | Area |
+|------|-------|------|
+| `lib/review/__tests__/diff-analyzer.test.ts` | Line-in-hunk detection, multi-file diffs | Diff |
+| `lib/review/__tests__/blast-radius.test.ts` | N-hop traversal to API boundaries | Graph |
+| `lib/review/__tests__/comment-builder.test.ts` | Inline review comments, severity filtering | Builder |
+| `lib/review/__tests__/check-run-builder.test.ts` | Check Run summary, truncation | Builder |
+| `lib/review/__tests__/semantic-lgtm.test.ts` | Low-risk auto-approval gate | LGTM |
+| `lib/review/__tests__/adr-schema.test.ts` | ADR Zod schema, markdown rendering | Schema |
+| `lib/review/checks/__tests__/complexity-check.test.ts` | Cyclomatic complexity detection | Check |
+| `lib/review/checks/__tests__/impact-check.test.ts` | Entity impact scoring | Check |
+| `lib/review/checks/__tests__/test-check.test.ts` | Test coverage detection | Check |
+| `lib/github/webhook-handlers/__tests__/pull-request.test.ts` | PR webhook → review workflow trigger | Webhook |
+| `lib/temporal/activities/__tests__/review.test.ts` | fetchDiff, runSemgrep, analyzeImpact, postReview | Temporal |
+| `lib/temporal/activities/__tests__/adr-generation.test.ts` | Merge significance + ADR generation | Temporal |
+| `lib/temporal/activities/__tests__/ledger-merge.test.ts` | Ledger reparenting + merge node creation | Temporal |
+| `lib/mcp/tools/__tests__/review.test.ts` | handleReviewPrStatus MCP tool | Tools |
+| `lib/use-cases/__tests__/summarizer.test.ts` | LLM narrative synthesis for merge summaries | Use case |
+
+### Phase 10a — Local-First Proxy (MVP)
+| File | Tests | Area |
+|------|-------|------|
+| `packages/cli/src/__tests__/search-index.test.ts` | Tokenizer (camelCase, snake_case splitting) | Search |
+| `packages/cli/src/__tests__/checksum.test.ts` | SHA-256 computation, tamper detection | Integrity |
+| `packages/cli/src/__tests__/query-router.test.ts` | Local/cloud dispatch, fallback, `_meta.source` | Router |
+| `lib/temporal/activities/__tests__/graph-export.test.ts` | queryCompactGraph, serializeToMsgpack v1 | Temporal |
+| `lib/use-cases/__tests__/graph-compactor.test.ts` | Body truncation, `_id` stripping | Compactor |
+| `lib/use-cases/__tests__/graph-serializer.test.ts` | Msgpack round-trip, version field, checksum | Serializer |
+| `packages/cli/src/__tests__/local-graph.test.ts` | CozoDB point lookup, N-hop traversal | CozoDB |
+
+### Phase 10b — Local-First Proxy (Full)
+| File | Tests | Area |
+|------|-------|------|
+| `packages/cli/src/__tests__/local-graph.test.ts` | Rules/patterns CRUD, v2 envelope loading (extended) | CozoDB |
+| `packages/cli/src/__tests__/rule-evaluator.test.ts` | Naming regex, structural tree-sitter, engine partitioning | Evaluator |
+| `packages/cli/src/__tests__/prefetch.test.ts` | Debounce, rate limit, error silencing | Pre-fetch |
+| `packages/cli/src/__tests__/snapshot-v2.test.ts` | v2 envelope schema, v1 backward compat | Snapshot |
+| `packages/cli/src/__tests__/query-router.test.ts` | get_rules/check_rules routing, cloud fallback (extended) | Router |
+| `lib/use-cases/__tests__/prefetch-context.test.ts` | N-hop BFS expansion, Redis caching | Use case |
+| `lib/mcp/tools/__tests__/prefetch-cache.test.ts` | Prefetch cache hit/miss in semantic_search | Tools |
+| `lib/temporal/activities/__tests__/graph-export-v2.test.ts` | Rules/patterns export, enforcement→severity mapping | Temporal |
+
 ### E2E Tests (Playwright)
 | File | Tests | Phase |
 |------|-------|-------|
@@ -474,6 +691,14 @@ pnpm dev                # Start dev server
 
 ### Secondary (should pass, non-blocking)
 
+- [ ] **Rules**: `/repos/{id}/rules` → list rules with enforcement badges, create/delete works
+- [ ] **Patterns**: `/repos/{id}/patterns` → shows detected patterns with adherence rates
+- [ ] **Rule creation**: `/repos/{id}/rules/new` → form submits, rule appears in list
+- [ ] **Org rules**: `/settings/rules` → org-level rules display
+- [ ] **MCP get_rules**: Returns hierarchically resolved rules
+- [ ] **MCP check_rules**: Runs Semgrep against code, returns violations
+- [ ] **MCP check_patterns**: Detects patterns via ast-grep
+- [ ] **MCP get_conventions**: Returns formatted convention guide
 - [ ] **Search**: MCP `search_code` returns relevant results
 - [ ] **Semantic**: "Functions that handle auth" returns auth code
 - [ ] **Rate limiting**: Rapid API calls get rate-limited
@@ -487,6 +712,15 @@ pnpm dev                # Start dev server
 - [ ] **Promote**: `kap10 promote` → ephemeral becomes permanent
 - [ ] **Circuit breaker**: 4+ broken AI changes → agent halted
 - [ ] **Local proxy**: `kap10 pull && kap10 serve` → tools resolve locally
+- [ ] **PR review**: Open PR on connected repo → kap10 posts review comments + Check Run
+- [ ] **Semantic LGTM**: Open trivial-change PR → auto-approved without review
+- [ ] **Auto-ADR**: Merge significant PR → ADR generated
+- [ ] **Reviews UI**: `/repos/{id}/reviews` → list reviews with status badges
+- [ ] **Review detail UI**: `/repos/{id}/reviews/{reviewId}` → findings + comments
+- [ ] **Local rules**: `kap10 pull` v2 → `get_rules` resolves locally in <5ms
+- [ ] **Local check_rules**: Structural/naming rules evaluated locally, Semgrep skipped with `_meta`
+- [ ] **Pre-fetch**: `kap10 serve --prefetch` → Redis populated → semantic_search faster
+- [ ] **v2 snapshot**: Repo page shows "v2 · X rules" badge after pull
 
 ---
 
@@ -706,6 +940,106 @@ curl -s "http://localhost:3000/api/cli/context?remote=git@github.com:YourOrg/you
 curl -s "http://localhost:3000/api/cli/context?remote=github.com/YourOrg/your-repo" \
   -H "Authorization: Bearer $API_KEY"
 # Both should return the same repoId
+```
+
+### Phase 6 — Rules & Patterns API
+
+Requires a valid API key and a connected repo.
+
+```bash
+API_KEY="kap10_sk_<your_key>"
+REPO_ID="<your_repo_id>"
+
+# List rules (should return empty or existing rules)
+curl -s "http://localhost:3000/api/repos/$REPO_ID/rules" \
+  -H "Authorization: Bearer $API_KEY" | python3 -m json.tool
+
+# Create a rule
+curl -s -X POST "http://localhost:3000/api/repos/$REPO_ID/rules" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "No console.log",
+    "description": "Avoid console.log in production code",
+    "type": "style",
+    "scope": "repo",
+    "enforcement": "warn",
+    "priority": 50
+  }' | python3 -m json.tool
+# Expected: { success: true, data: { rule: { id, title, ... } } }
+
+# List patterns
+curl -s "http://localhost:3000/api/repos/$REPO_ID/patterns" \
+  -H "Authorization: Bearer $API_KEY" | python3 -m json.tool
+
+# Org-level rules
+curl -s "http://localhost:3000/api/settings/rules" \
+  -H "Authorization: Bearer $API_KEY" | python3 -m json.tool
+```
+
+### Phase 7 — PR Reviews API
+
+Requires a valid API key and a connected repo.
+
+```bash
+API_KEY="kap10_sk_<your_key>"
+REPO_ID="<your_repo_id>"
+
+# List reviews (should return empty or existing reviews)
+curl -s "http://localhost:3000/api/repos/$REPO_ID/reviews" \
+  -H "Authorization: Bearer $API_KEY" | python3 -m json.tool
+
+# Get review settings
+curl -s "http://localhost:3000/api/repos/$REPO_ID/settings/review" \
+  -H "Authorization: Bearer $API_KEY" | python3 -m json.tool
+
+# Get merge history
+curl -s "http://localhost:3000/api/repos/$REPO_ID/history" \
+  -H "Authorization: Bearer $API_KEY" | python3 -m json.tool
+```
+
+### Phase 10a — Graph Snapshots API
+
+```bash
+API_KEY="kap10_sk_<your_key>"
+REPO_ID="<your_repo_id>"
+
+# List available snapshots
+curl -s "http://localhost:3000/api/graph-snapshots" \
+  -H "Authorization: Bearer $API_KEY" | python3 -m json.tool
+
+# Download snapshot (returns pre-signed URL)
+curl -s "http://localhost:3000/api/graph-snapshots/$REPO_ID/download" \
+  -H "Authorization: Bearer $API_KEY" | python3 -m json.tool
+
+# Trigger sync manually
+curl -s -X POST "http://localhost:3000/api/graph-snapshots/$REPO_ID/sync" \
+  -H "Authorization: Bearer $API_KEY" | python3 -m json.tool
+```
+
+### Phase 10b — Pre-fetch API
+
+```bash
+API_KEY="kap10_sk_<your_key>"
+REPO_ID="<your_repo_id>"
+
+# Fire a pre-fetch request (fire-and-forget, returns 200 immediately)
+curl -s -X POST "http://localhost:3000/api/prefetch" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"repoId\": \"$REPO_ID\",
+    \"filePath\": \"lib/auth/jwt.ts\",
+    \"line\": 42
+  }" | python3 -m json.tool
+# Expected: { "success": true, "data": { "accepted": true } }
+
+# Missing fields → 400
+curl -s -X POST "http://localhost:3000/api/prefetch" \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"filePath": "test.ts"}' | python3 -m json.tool
+# Expected: { "error": "Invalid body: filePath and repoId are required" }
 ```
 
 ---

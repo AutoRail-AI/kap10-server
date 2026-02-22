@@ -138,8 +138,8 @@ describe("synthesizeAntiPatternRule", () => {
     })
 
     expect(capturedRuleData).not.toBeNull()
-    expect(capturedRuleData!.source).toBe("anti-pattern-synthesis")
-    expect(capturedRuleData!.rewind_entry_id).toBe("rewind-store")
+    expect(capturedRuleData!.createdBy).toBe("anti-pattern-synthesis")
+    expect(capturedRuleData!.type).toBe("custom")
   })
 
   it("logs token usage after synthesis", async () => {

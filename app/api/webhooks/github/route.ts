@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getContainer } from "@/lib/di/container"
+import { handlePullRequestEvent, type PullRequestPayload } from "@/lib/github/webhook-handlers/pull-request"
 
 const WEBHOOK_DEDUPE_TTL = 86400
 
@@ -69,6 +70,15 @@ export async function POST(req: NextRequest) {
     } catch (error: unknown) {
       console.error("[webhook] push handler error:", error instanceof Error ? error.message : String(error))
       // Don't fail the webhook response — log and continue
+    }
+  }
+
+  // Phase 7: Handle pull_request events for PR review
+  if (event === "pull_request") {
+    try {
+      await handlePullRequestEvent(payload as unknown as PullRequestPayload, container)
+    } catch (error: unknown) {
+      console.error("[webhook] pull_request handler error:", error instanceof Error ? error.message : String(error))
     }
   }
 

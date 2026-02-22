@@ -2,7 +2,7 @@ import { headers } from "next/headers"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
-import { ChevronRight, Download, FileCode, GitBranch, Layers, Plug } from "lucide-react"
+import { ChevronRight, Download, FileCode, GitBranch, Layers, Plug, Shield } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { RepoDetailClient } from "@/components/repo/repo-detail-client"
 import { McpStatus } from "@/components/repo/mcp-status"
@@ -53,13 +53,22 @@ async function RepoDetailContent({ repoId }: { repoId: string }) {
   const tree = buildFileTree(paths)
 
   // Fetch snapshot metadata for local sync status
-  let snapshot: { status: string; sizeBytes: number; entityCount: number; edgeCount: number; generatedAt: Date | null } | null = null
+  let snapshot: { status: string; sizeBytes: number; entityCount: number; edgeCount: number; generatedAt: Date | null; ruleCount?: number; patternCount?: number; snapshotVersion?: number } | null = null
   try {
     const { PrismaClient } = require("@prisma/client") as typeof import("@prisma/client")
     const prisma = new PrismaClient()
     const meta = await prisma.graphSnapshotMeta.findUnique({ where: { repoId } })
     if (meta) {
-      snapshot = { status: meta.status, sizeBytes: meta.sizeBytes, entityCount: meta.entityCount, edgeCount: meta.edgeCount, generatedAt: meta.generatedAt }
+      snapshot = {
+        status: meta.status,
+        sizeBytes: meta.sizeBytes,
+        entityCount: meta.entityCount,
+        edgeCount: meta.edgeCount,
+        generatedAt: meta.generatedAt,
+        ruleCount: (meta as Record<string, unknown>).ruleCount as number | undefined,
+        patternCount: (meta as Record<string, unknown>).patternCount as number | undefined,
+        snapshotVersion: (meta as Record<string, unknown>).snapshotVersion as number | undefined,
+      }
     }
     await prisma.$disconnect()
   } catch {
@@ -99,6 +108,14 @@ async function RepoDetailContent({ repoId }: { repoId: string }) {
               <Download className="h-3.5 w-3.5 text-emerald-400" />
               <span className="text-xs text-emerald-400">
                 Local Sync · {(snapshot.sizeBytes / 1024).toFixed(0)}KB
+              </span>
+            </div>
+          )}
+          {snapshot && snapshot.status === "available" && snapshot.snapshotVersion && snapshot.snapshotVersion >= 2 && (
+            <div className="flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-2.5 py-1">
+              <Shield className="h-3.5 w-3.5 text-primary" />
+              <span className="text-xs text-primary">
+                v2{snapshot.ruleCount ? ` · ${snapshot.ruleCount} rules` : ""}
               </span>
             </div>
           )}

@@ -12,6 +12,7 @@ import type { Container } from "@/lib/di/container"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
 import { hybridSearch, type SearchMode } from "@/lib/embeddings/hybrid-search"
+import { getPrefetchedContext } from "@/lib/use-cases/prefetch-context"
 
 // ── semantic_search ───────────────────────────────────────────────────────────
 
@@ -63,6 +64,35 @@ export async function handleSemanticSearch(
 
   const mode = validateSearchMode(args.mode)
   const limit = Math.min(Math.max(args.limit ?? 10, 1), 50)
+
+  // Phase 10b: Check prefetch cache before running full search
+  try {
+    const prefetched = await getPrefetchedContext(container, ctx.orgId, repoId, args.query.trim())
+    if (prefetched && prefetched.entities.length > 0) {
+      const cachedSummaries = prefetched.entities.slice(0, limit).map((e) => ({
+        entityKey: e.key,
+        entityName: e.name,
+        entityType: e.kind,
+        filePath: e.file_path,
+        lineStart: 0,
+        signature: "",
+        score: 1.0,
+        callers: [],
+        callees: [],
+      }))
+
+      return formatToolResponse({
+        query: args.query,
+        mode,
+        results: cachedSummaries,
+        count: cachedSummaries.length,
+        _hint: "Use get_function or get_class with the entityKey to retrieve full source code for relevant results.",
+        _meta: { source: "cloud_prefetched" },
+      })
+    }
+  } catch {
+    // Prefetch cache miss — fall through to normal search
+  }
 
   const searchResult = await hybridSearch(
     {

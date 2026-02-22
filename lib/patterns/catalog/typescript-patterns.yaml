@@ -1,0 +1,65 @@
+patterns:
+  - id: ts-no-any
+    type: naming
+    title: Avoid explicit any type
+    description: Prefer unknown over any for type safety
+    language: typescript
+    pattern: "$VAR: any"
+    message: "Use 'unknown' instead of 'any' for better type safety"
+    fix: "$VAR: unknown"
+
+  - id: ts-no-console-log
+    type: style
+    title: No console.log in production code
+    description: Use structured logger instead of console.log
+    language: typescript
+    pattern: "console.log($$$ARGS)"
+    message: "Use logger.info() instead of console.log()"
+
+  - id: ts-async-no-floating
+    type: error-handling
+    title: Awaited async calls
+    description: Async function calls should be awaited or handled
+    language: typescript
+    pattern: "$FN($$$ARGS)"
+    message: "Ensure async calls are awaited"
+
+  - id: ts-error-catch-unknown
+    type: error-handling
+    title: Catch with unknown type
+    description: Catch blocks should type error as unknown
+    language: typescript
+    pattern: "catch ($ERR)"
+    message: "Use 'catch (error: unknown)' for type-safe error handling"
+
+  - id: ts-no-enum
+    type: structural
+    title: Prefer const objects over enums
+    description: Use const objects with as const instead of TypeScript enums
+    language: typescript
+    pattern: "enum $NAME { $$$MEMBERS }"
+    message: "Prefer 'const $NAME = { ... } as const' over enum"
+
+  - id: ts-import-type
+    type: import
+    title: Use import type for type-only imports
+    description: Type-only imports should use import type syntax
+    language: typescript
+    pattern: "import { type $NAME } from '$MODULE'"
+    message: "Use 'import type { $NAME }' for type-only imports"
+
+  - id: ts-no-nested-ternary
+    type: style
+    title: Avoid nested ternary operators
+    description: Nested ternaries reduce readability
+    language: typescript
+    pattern: "$A ? $B : $C ? $D : $E"
+    message: "Avoid nested ternary operators; use if/else or switch"
+
+  - id: ts-exhaustive-switch
+    type: structural
+    title: Exhaustive switch with default
+    description: Switch statements should have a default case
+    language: typescript
+    pattern: "switch ($EXPR) { $$$CASES }"
+    message: "Consider adding a default case for exhaustive handling"

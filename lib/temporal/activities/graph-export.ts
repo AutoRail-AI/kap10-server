@@ -20,9 +20,34 @@ export interface GraphExportInput {
 /**
  * Query all entities and edges from ArangoDB, compact them for snapshot.
  */
+export interface CompactRule {
+  key: string
+  name: string
+  scope: string
+  severity: string
+  engine: string
+  query: string
+  message: string
+  file_glob: string
+  enabled: boolean
+  repo_id: string
+}
+
+export interface CompactPattern {
+  key: string
+  name: string
+  kind: string
+  frequency: number
+  confidence: number
+  exemplar_keys: string[]
+  promoted_rule_key: string
+}
+
 export async function queryCompactGraph(input: GraphExportInput): Promise<{
   entities: CompactEntity[]
   edges: CompactEdge[]
+  rules: CompactRule[]
+  patterns: CompactPattern[]
 }> {
   const container = getContainer()
   const { orgId, repoId } = input
@@ -76,8 +101,59 @@ export async function queryCompactGraph(input: GraphExportInput): Promise<{
     heartbeat(`Processing edges: ${edges.length} collected`)
   }
 
-  heartbeat(`Compact graph complete: ${entities.length} entities, ${edges.length} edges`)
-  return { entities, edges }
+  // Phase 10b: Export rules for this org+repo
+  const rules: CompactRule[] = []
+  try {
+    const allRules = await container.graphStore.queryRules(orgId, {
+      orgId,
+      repoId,
+      status: "active",
+      limit: 200,
+    })
+    for (const rule of allRules) {
+      rules.push({
+        key: rule.id,
+        name: rule.name || rule.title,
+        scope: rule.scope,
+        severity: rule.enforcement === "block" ? "error" : rule.enforcement === "warn" ? "warn" : "info",
+        engine: rule.semgrepRule ? "semgrep" : rule.astGrepQuery ? "structural" : rule.type === "naming" ? "naming" : "structural",
+        query: rule.astGrepQuery || rule.semgrepRule || "",
+        message: rule.description,
+        file_glob: rule.pathGlob || "",
+        enabled: rule.status === "active",
+        repo_id: rule.repo_id || repoId,
+      })
+    }
+  } catch {
+    // Rules not available — non-critical
+  }
+
+  // Phase 10b: Export patterns for this org+repo
+  const patterns: CompactPattern[] = []
+  try {
+    const allPatterns = await container.graphStore.queryPatterns(orgId, {
+      orgId,
+      repoId,
+      status: "confirmed",
+      limit: 200,
+    })
+    for (const pattern of allPatterns) {
+      patterns.push({
+        key: pattern.id,
+        name: pattern.name || pattern.title,
+        kind: pattern.type,
+        frequency: pattern.evidence?.length ?? 0,
+        confidence: pattern.confidence,
+        exemplar_keys: pattern.evidence?.slice(0, 5).map((e) => `${e.file}:${e.line}`) ?? [],
+        promoted_rule_key: "",
+      })
+    }
+  } catch {
+    // Patterns not available — non-critical
+  }
+
+  heartbeat(`Compact graph complete: ${entities.length} entities, ${edges.length} edges, ${rules.length} rules, ${patterns.length} patterns`)
+  return { entities, edges, rules, patterns }
 }
 
 /**
@@ -88,6 +164,8 @@ export async function serializeToMsgpack(input: {
   orgId: string
   entities: CompactEntity[]
   edges: CompactEdge[]
+  rules?: CompactRule[]
+  patterns?: CompactPattern[]
 }): Promise<{
   buffer: Buffer
   checksum: string
@@ -99,6 +177,8 @@ export async function serializeToMsgpack(input: {
     orgId: input.orgId,
     entities: input.entities,
     edges: input.edges,
+    rules: input.rules,
+    patterns: input.patterns,
   })
   const checksum = computeChecksum(buffer)
 

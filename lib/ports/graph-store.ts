@@ -1,4 +1,4 @@
-import type { ADRDoc, BlueprintData, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, PaginatedResult, PatternDoc, PatternFilter, ProjectStats, RuleDoc, RuleFilter, SearchResult, SnippetDoc, SnippetFilter, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "./types"
+import type { ADRDoc, BlueprintData, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, PatternFilter, ProjectStats, RuleDoc, RuleExceptionDoc, RuleFilter, RuleHealthDoc, SearchResult, SnippetDoc, SnippetFilter, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "./types"
 
 export interface IGraphStore {
   bootstrapGraphSchema(): Promise<void>
@@ -18,8 +18,29 @@ export interface IGraphStore {
 
   upsertRule(orgId: string, rule: RuleDoc): Promise<void>
   queryRules(orgId: string, filter: RuleFilter): Promise<RuleDoc[]>
+  deleteRule(orgId: string, ruleId: string): Promise<void>
+  archiveRule(orgId: string, ruleId: string): Promise<void>
   upsertPattern(orgId: string, pattern: PatternDoc): Promise<void>
   queryPatterns(orgId: string, filter: PatternFilter): Promise<PatternDoc[]>
+  updatePatternStatus(orgId: string, patternId: string, status: string): Promise<void>
+  getPatternByHash(orgId: string, repoId: string, hash: string): Promise<PatternDoc | null>
+
+  // Phase 6: Rule Health
+  getRuleHealth(orgId: string, ruleId: string): Promise<RuleHealthDoc | null>
+  upsertRuleHealth(orgId: string, health: RuleHealthDoc): Promise<void>
+
+  // Phase 6: Mined Patterns
+  upsertMinedPattern(orgId: string, pattern: MinedPatternDoc): Promise<void>
+  queryMinedPatterns(orgId: string, repoId: string): Promise<MinedPatternDoc[]>
+
+  // Phase 6: Impact Reports
+  upsertImpactReport(orgId: string, report: ImpactReportDoc): Promise<void>
+  getImpactReport(orgId: string, ruleId: string): Promise<ImpactReportDoc | null>
+
+  // Phase 6: Rule Exceptions
+  queryRuleExceptions(orgId: string, ruleId: string): Promise<RuleExceptionDoc[]>
+  upsertRuleException(orgId: string, exception: RuleExceptionDoc): Promise<void>
+  updateRuleException(orgId: string, exceptionId: string, status: string): Promise<void>
 
   upsertSnippet(orgId: string, snippet: SnippetDoc): Promise<void>
   querySnippets(orgId: string, filter: SnippetFilter): Promise<SnippetDoc[]>

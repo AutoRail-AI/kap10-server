@@ -6,6 +6,13 @@ export interface CloneOptions {
 export interface PullRequest {
   number: number
   title: string
+  headSha?: string
+  baseSha?: string
+  htmlUrl?: string
+  body?: string
+  draft?: boolean
+  merged?: boolean
+  state?: "open" | "closed"
   [key: string]: unknown
 }
 
@@ -56,4 +63,40 @@ export interface IGitHost {
   getLatestSha(owner: string, repo: string, branch: string, installationId: number): Promise<string>
   /** Git blame a specific line of a file */
   blame(workspacePath: string, filePath: string, line: number): Promise<string | null>
+
+  // Phase 7: PR Review Integration
+  /** Post a pull request review with inline comments */
+  postReview(owner: string, repo: string, prNumber: number, review: {
+    event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT"
+    body: string
+    comments?: Array<{ path: string; line: number; body: string }>
+  }): Promise<{ reviewId: number }>
+  /** Post a single review comment on a PR */
+  postReviewComment(owner: string, repo: string, prNumber: number, comment: {
+    path: string; line: number; body: string; commitId: string
+  }): Promise<{ commentId: number }>
+  /** Get files changed in a PR (paginated) */
+  getPullRequestFiles(owner: string, repo: string, prNumber: number): Promise<Array<{
+    filename: string; status: string; additions: number; deletions: number; patch?: string
+  }>>
+  /** Create a GitHub Check Run */
+  createCheckRun(owner: string, repo: string, opts: {
+    name: string; headSha: string; status: "in_progress"
+  }): Promise<{ checkRunId: number }>
+  /** Update a GitHub Check Run */
+  updateCheckRun(owner: string, repo: string, checkRunId: number, opts: {
+    status: "completed"
+    conclusion: "success" | "failure" | "neutral"
+    output: { title: string; summary: string; annotations: Array<{
+      path: string; start_line: number; end_line: number
+      annotation_level: "notice" | "warning" | "failure"
+      message: string; title: string; raw_details: string
+    }> }
+  }): Promise<void>
+  /** Post an issue/PR comment (not a review comment) */
+  postIssueComment(owner: string, repo: string, issueNumber: number, body: string): Promise<{ commentId: number }>
+  /** Create a new branch from a SHA */
+  createBranch(owner: string, repo: string, branchName: string, fromSha: string): Promise<void>
+  /** Create or update a file in a branch */
+  createOrUpdateFile(owner: string, repo: string, branch: string, path: string, content: string, opts: { message: string }): Promise<{ sha: string }>
 }

@@ -16,6 +16,27 @@ export interface SnapshotEnvelope {
   orgId: string
   entities: CompactEntity[]
   edges: CompactEdge[]
+  rules?: Array<{
+    key: string
+    name: string
+    scope: string
+    severity: string
+    engine: string
+    query: string
+    message: string
+    file_glob: string
+    enabled: boolean
+    repo_id: string
+  }>
+  patterns?: Array<{
+    key: string
+    name: string
+    kind: string
+    frequency: number
+    confidence: number
+    exemplar_keys: string[]
+    promoted_rule_key: string
+  }>
   generatedAt: string
 }
 
@@ -27,15 +48,20 @@ export function serializeSnapshot(data: {
   orgId: string
   entities: CompactEntity[]
   edges: CompactEdge[]
+  rules?: SnapshotEnvelope["rules"]
+  patterns?: SnapshotEnvelope["patterns"]
 }): Buffer {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { pack } = require("msgpackr") as typeof import("msgpackr")
+  const hasRulesOrPatterns = (data.rules && data.rules.length > 0) || (data.patterns && data.patterns.length > 0)
   const envelope: SnapshotEnvelope = {
-    version: 1,
+    version: hasRulesOrPatterns ? 2 : 1,
     repoId: data.repoId,
     orgId: data.orgId,
     entities: data.entities,
     edges: data.edges,
+    ...(data.rules && data.rules.length > 0 ? { rules: data.rules } : {}),
+    ...(data.patterns && data.patterns.length > 0 ? { patterns: data.patterns } : {}),
     generatedAt: new Date().toISOString(),
   }
   return pack(envelope) as Buffer
@@ -49,7 +75,7 @@ export function deserializeSnapshot(buf: Buffer): SnapshotEnvelope {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { unpack } = require("msgpackr") as typeof import("msgpackr")
   const data = unpack(buf) as SnapshotEnvelope
-  if (!data || data.version !== 1) {
+  if (!data || (data.version !== 1 && data.version !== 2)) {
     throw new Error(`Unsupported snapshot version: ${data?.version}`)
   }
   return data

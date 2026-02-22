@@ -3,6 +3,7 @@ import type * as heavy from "../activities/indexing-heavy"
 import type * as light from "../activities/indexing-light"
 import { embedRepoWorkflow } from "./embed-repo"
 import { syncLocalGraphWorkflow } from "./sync-local-graph"
+import { detectPatternsWorkflow } from "./detect-patterns"
 
 const heavyActivities = proxyActivities<typeof heavy>({
   taskQueue: "heavy-compute-queue",
@@ -110,6 +111,19 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
       workflowId: `sync-${input.orgId}-${input.repoId}`,
       taskQueue: "light-llm-queue",
       args: [{ orgId: input.orgId, repoId: input.repoId }],
+      parentClosePolicy: ParentClosePolicy.ABANDON,
+    })
+
+    // Step 7: Fire-and-forget pattern detection workflow (Phase 6)
+    await startChild(detectPatternsWorkflow, {
+      workflowId: `detect-patterns-${input.orgId}-${input.repoId}`,
+      taskQueue: "heavy-compute-queue",
+      args: [{
+        orgId: input.orgId,
+        repoId: input.repoId,
+        workspacePath: workspace.workspacePath,
+        languages: workspace.languages,
+      }],
       parentClosePolicy: ParentClosePolicy.ABANDON,
     })
 

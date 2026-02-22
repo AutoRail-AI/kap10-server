@@ -25,29 +25,45 @@ This repository is connected to **kap10** — a cloud-hosted code intelligence p
 
 Before making changes, gather context from the knowledge graph:
 
-1. **Understand the function** you're modifying:
+1. **Check applicable rules** to understand constraints:
+   \`\`\`
+   Call: get_rules with file_path="path/to/file.ts"
+   \`\`\`
+
+2. **Understand the function** you're modifying:
    \`\`\`
    Call: get_function with name="functionName"
    \`\`\`
    This returns the function signature, body, callers, and callees.
 
-2. **Check who calls it** to understand impact:
+3. **Check who calls it** to understand impact:
    \`\`\`
    Call: get_callers with name="functionName" depth=2
    \`\`\`
 
-3. **Search for related code** if exploring:
+4. **Search for related code** if exploring:
    \`\`\`
    Call: search_code with query="relevant keyword"
    \`\`\`
 
+5. **Get conventions** to follow established patterns:
+   \`\`\`
+   Call: get_conventions
+   \`\`\`
+
 ## Post-flight: After Writing Code
 
-After making changes, sync your local modifications so the knowledge graph stays current:
+After making changes:
 
-\`\`\`
-Call: sync_local_diff with diff="$(git diff)"
-\`\`\`
+1. **Check your code against rules**:
+   \`\`\`
+   Call: check_rules with code="<your new code>"
+   \`\`\`
+
+2. **Sync your local modifications** so the knowledge graph stays current:
+   \`\`\`
+   Call: sync_local_diff with diff="$(git diff)"
+   \`\`\`
 
 This updates the cloud knowledge graph with your uncommitted changes, so subsequent queries reflect your latest code.
 

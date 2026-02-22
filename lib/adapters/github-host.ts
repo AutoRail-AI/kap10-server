@@ -194,4 +194,233 @@ export class GitHubHost implements IGitHost {
       return null
     }
   }
+
+  // ── Phase 7: PR Review Integration ──────────────────────────────
+
+  async postReview(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    review: {
+      event: "APPROVE" | "REQUEST_CHANGES" | "COMMENT"
+      body: string
+      comments?: Array<{ path: string; line: number; body: string }>
+    }
+  ): Promise<{ reviewId: number }> {
+    // Resolve installation for this owner/repo
+    const inst = await this.resolveInstallation(owner, repo)
+    const octokit = getInstallationOctokit(inst)
+    const { data } = await octokit.rest.pulls.createReview({
+      owner,
+      repo,
+      pull_number: prNumber,
+      event: review.event,
+      body: review.body,
+      comments: review.comments?.map((c) => ({
+        path: c.path,
+        line: c.line,
+        body: c.body,
+      })),
+    })
+    return { reviewId: data.id }
+  }
+
+  async postReviewComment(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    comment: { path: string; line: number; body: string; commitId: string }
+  ): Promise<{ commentId: number }> {
+    const inst = await this.resolveInstallation(owner, repo)
+    const octokit = getInstallationOctokit(inst)
+    const { data } = await octokit.rest.pulls.createReviewComment({
+      owner,
+      repo,
+      pull_number: prNumber,
+      path: comment.path,
+      line: comment.line,
+      body: comment.body,
+      commit_id: comment.commitId,
+    })
+    return { commentId: data.id }
+  }
+
+  async getPullRequestFiles(
+    owner: string,
+    repo: string,
+    prNumber: number
+  ): Promise<Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }>> {
+    const inst = await this.resolveInstallation(owner, repo)
+    const octokit = getInstallationOctokit(inst)
+    const files: Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }> = []
+    let page = 1
+    const perPage = 100
+    while (true) {
+      const { data } = await octokit.rest.pulls.listFiles({
+        owner,
+        repo,
+        pull_number: prNumber,
+        per_page: perPage,
+        page,
+      })
+      for (const f of data) {
+        files.push({
+          filename: f.filename,
+          status: f.status ?? "modified",
+          additions: f.additions ?? 0,
+          deletions: f.deletions ?? 0,
+          patch: f.patch,
+        })
+      }
+      if (data.length < perPage) break
+      page++
+    }
+    return files
+  }
+
+  async createCheckRun(
+    owner: string,
+    repo: string,
+    opts: { name: string; headSha: string; status: "in_progress" }
+  ): Promise<{ checkRunId: number }> {
+    const inst = await this.resolveInstallation(owner, repo)
+    const octokit = getInstallationOctokit(inst)
+    const { data } = await octokit.rest.checks.create({
+      owner,
+      repo,
+      name: opts.name,
+      head_sha: opts.headSha,
+      status: opts.status,
+    })
+    return { checkRunId: data.id }
+  }
+
+  async updateCheckRun(
+    owner: string,
+    repo: string,
+    checkRunId: number,
+    opts: {
+      status: "completed"
+      conclusion: "success" | "failure" | "neutral"
+      output: {
+        title: string
+        summary: string
+        annotations: Array<{
+          path: string; start_line: number; end_line: number
+          annotation_level: "notice" | "warning" | "failure"
+          message: string; title: string; raw_details: string
+        }>
+      }
+    }
+  ): Promise<void> {
+    const inst = await this.resolveInstallation(owner, repo)
+    const octokit = getInstallationOctokit(inst)
+    // GitHub Checks API limits annotations to 50 per request
+    const allAnnotations = opts.output.annotations
+    const firstBatch = allAnnotations.slice(0, 50)
+    await octokit.rest.checks.update({
+      owner,
+      repo,
+      check_run_id: checkRunId,
+      status: opts.status,
+      conclusion: opts.conclusion,
+      output: {
+        title: opts.output.title,
+        summary: opts.output.summary,
+        annotations: firstBatch,
+      },
+    })
+    // Send remaining annotations in batches of 50
+    for (let i = 50; i < allAnnotations.length; i += 50) {
+      const batch = allAnnotations.slice(i, i + 50)
+      await octokit.rest.checks.update({
+        owner,
+        repo,
+        check_run_id: checkRunId,
+        output: {
+          title: opts.output.title,
+          summary: opts.output.summary,
+          annotations: batch,
+        },
+      })
+    }
+  }
+
+  async postIssueComment(
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    body: string
+  ): Promise<{ commentId: number }> {
+    const inst = await this.resolveInstallation(owner, repo)
+    const octokit = getInstallationOctokit(inst)
+    const { data } = await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: issueNumber,
+      body,
+    })
+    return { commentId: data.id }
+  }
+
+  async createBranch(
+    owner: string,
+    repo: string,
+    branchName: string,
+    fromSha: string
+  ): Promise<void> {
+    const inst = await this.resolveInstallation(owner, repo)
+    const octokit = getInstallationOctokit(inst)
+    await octokit.rest.git.createRef({
+      owner,
+      repo,
+      ref: `refs/heads/${branchName}`,
+      sha: fromSha,
+    })
+  }
+
+  async createOrUpdateFile(
+    owner: string,
+    repo: string,
+    branch: string,
+    path: string,
+    content: string,
+    opts: { message: string }
+  ): Promise<{ sha: string }> {
+    const inst = await this.resolveInstallation(owner, repo)
+    const octokit = getInstallationOctokit(inst)
+    // Check if file already exists to get its SHA
+    let existingSha: string | undefined
+    try {
+      const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref: branch })
+      if (!Array.isArray(data) && "sha" in data) {
+        existingSha = data.sha
+      }
+    } catch {
+      // File doesn't exist — creating new
+    }
+    const { data } = await octokit.rest.repos.createOrUpdateFileContents({
+      owner,
+      repo,
+      path,
+      message: opts.message,
+      content: Buffer.from(content).toString("base64"),
+      branch,
+      sha: existingSha,
+    })
+    return { sha: data.content?.sha ?? "" }
+  }
+
+  /** Resolve the installation ID for an owner/repo pair */
+  private async resolveInstallation(owner: string, _repo: string): Promise<number> {
+    // Look up installation from relational store by owner login
+    // This is called from within activities where the container is available
+    // For now, use the GitHub App API to get installation for the account
+    const { getAppOctokit } = require("@/lib/github/client") as typeof import("@/lib/github/client")
+    const appOctokit = getAppOctokit()
+    const { data } = await appOctokit.rest.apps.getUserInstallation({ username: owner }).catch(() =>
+      appOctokit.rest.apps.getOrgInstallation({ org: owner })
+    )
+    return data.id
+  }
 }

@@ -22,6 +22,7 @@ import type {
   FeatureAggregation,
   FeatureDoc,
   HealthReportDoc,
+  ImpactReportDoc,
   ImpactResult,
   ImportChain,
   IndexEventDoc,
@@ -30,12 +31,15 @@ import type {
   LedgerEntryStatus,
   LedgerSummary,
   LedgerTimelineQuery,
+  MinedPatternDoc,
   PaginatedResult,
   PatternDoc,
   PatternFilter,
   ProjectStats,
   RuleDoc,
+  RuleExceptionDoc,
   RuleFilter,
+  RuleHealthDoc,
   SearchResult,
   SnippetDoc,
   SnippetFilter,
@@ -70,9 +74,13 @@ const DOC_COLLECTIONS = [
   // Phase 5.5: Prompt Ledger
   "ledger_summaries",
   "working_snapshots",
+  // Phase 6: Pattern Enforcement & Rules Engine
+  "rule_health",
+  "mined_patterns",
+  "impact_reports",
 ] as const
 
-const EDGE_COLLECTIONS = ["contains", "calls", "imports", "extends", "implements"] as const
+const EDGE_COLLECTIONS = ["contains", "calls", "imports", "extends", "implements", "rule_exceptions", "language_implementations"] as const
 
 const TENANT_INDEX_FIELDS = ["org_id", "repo_id"]
 const FILE_PATH_INDEX_FIELDS = ["org_id", "repo_id", "file_path"]
@@ -285,6 +293,40 @@ export class ArangoGraphStore implements IGraphStore {
         })
       } catch { /* index exists */ }
 
+      // Phase 6: Rule/Pattern-specific indexes
+      try {
+        const rulesCol = db.collection("rules")
+        await rulesCol.ensureIndex({
+          type: "persistent",
+          fields: ["org_id", "scope", "status"],
+          name: "idx_rules_org_scope_status",
+        })
+      } catch { /* index exists */ }
+      try {
+        const rulesCol = db.collection("rules")
+        await rulesCol.ensureIndex({
+          type: "persistent",
+          fields: ["org_id", "repo_id", "status", "priority"],
+          name: "idx_rules_repo_status_priority",
+        })
+      } catch { /* index exists */ }
+      try {
+        const patternsCol = db.collection("patterns")
+        await patternsCol.ensureIndex({
+          type: "persistent",
+          fields: ["org_id", "repo_id", "status", "confidence"],
+          name: "idx_patterns_repo_status_confidence",
+        })
+      } catch { /* index exists */ }
+      try {
+        const rhCol = db.collection("rule_health")
+        await rhCol.ensureIndex({
+          type: "persistent",
+          fields: ["org_id", "rule_id"],
+          name: "idx_rule_health_org_rule",
+        })
+      } catch { /* index exists */ }
+
       for (const name of EDGE_COLLECTIONS) {
         const col = db.collection(name)
         try {
@@ -450,17 +492,206 @@ export class ArangoGraphStore implements IGraphStore {
     deduped.sort((a, b) => (Number(a.start_line) || 0) - (Number(b.start_line) || 0))
     return deduped
   }
-  async upsertRule(_orgId: string, _rule: RuleDoc): Promise<void> {
-    return Promise.resolve()
+  async upsertRule(orgId: string, rule: RuleDoc): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("rules")
+    await col.save(
+      { _key: rule.id, ...rule, org_id: rule.org_id ?? orgId, updated_at: new Date().toISOString() },
+      { overwriteMode: "update" }
+    )
   }
-  async queryRules(_orgId: string, _filter: RuleFilter): Promise<RuleDoc[]> {
-    return Promise.resolve([])
+
+  async queryRules(orgId: string, filter: RuleFilter): Promise<RuleDoc[]> {
+    const db = await getDbAsync()
+    const filters: string[] = ["doc.org_id == @orgId"]
+    const bindVars: Record<string, unknown> = { orgId, limit: Math.min(filter.limit ?? 50, 100) }
+    if (filter.repoId) { filters.push("(doc.repo_id == @repoId OR doc.repo_id == null)"); bindVars.repoId = filter.repoId }
+    if (filter.scope) { filters.push("doc.scope == @scope"); bindVars.scope = filter.scope }
+    if (filter.type) { filters.push("doc.type == @type"); bindVars.type = filter.type }
+    if (filter.status) { filters.push("doc.status == @status"); bindVars.status = filter.status }
+    if (filter.enforcement) { filters.push("doc.enforcement == @enforcement"); bindVars.enforcement = filter.enforcement }
+    if (filter.language) { filters.push("@language IN doc.languages"); bindVars.language = filter.language }
+    const cursor = await db.query(
+      `FOR doc IN rules FILTER ${filters.join(" AND ")} SORT doc.priority DESC LIMIT @limit RETURN doc`,
+      bindVars
+    )
+    const docs = await cursor.all()
+    return docs.map((d: { _key: string; _id: string; [k: string]: unknown }) => {
+      const { _key, _id, ...rest } = d
+      return { id: _key, ...rest } as RuleDoc
+    })
   }
-  async upsertPattern(_orgId: string, _pattern: PatternDoc): Promise<void> {
-    return Promise.resolve()
+
+  async deleteRule(orgId: string, ruleId: string): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("rules")
+    try {
+      const doc = await col.document(ruleId)
+      if ((doc as { org_id?: string }).org_id === orgId) {
+        await col.remove(ruleId)
+      }
+    } catch { /* not found */ }
   }
-  async queryPatterns(_orgId: string, _filter: PatternFilter): Promise<PatternDoc[]> {
-    return Promise.resolve([])
+
+  async archiveRule(orgId: string, ruleId: string): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("rules")
+    try {
+      const doc = await col.document(ruleId)
+      if ((doc as { org_id?: string }).org_id === orgId) {
+        await col.update(ruleId, { status: "archived", updated_at: new Date().toISOString() })
+      }
+    } catch { /* not found */ }
+  }
+
+  async upsertPattern(orgId: string, pattern: PatternDoc): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("patterns")
+    await col.save(
+      { _key: pattern.id, ...pattern, org_id: pattern.org_id ?? orgId, updated_at: new Date().toISOString() },
+      { overwriteMode: "update" }
+    )
+  }
+
+  async queryPatterns(orgId: string, filter: PatternFilter): Promise<PatternDoc[]> {
+    const db = await getDbAsync()
+    const filters: string[] = ["doc.org_id == @orgId"]
+    const bindVars: Record<string, unknown> = { orgId, limit: Math.min(filter.limit ?? 50, 100) }
+    if (filter.repoId) { filters.push("doc.repo_id == @repoId"); bindVars.repoId = filter.repoId }
+    if (filter.type) { filters.push("doc.type == @type"); bindVars.type = filter.type }
+    if (filter.status) { filters.push("doc.status == @status"); bindVars.status = filter.status }
+    if (filter.source) { filters.push("doc.source == @source"); bindVars.source = filter.source }
+    if (filter.language) { filters.push("doc.language == @language"); bindVars.language = filter.language }
+    if (filter.minConfidence !== undefined) { filters.push("doc.confidence >= @minConf"); bindVars.minConf = filter.minConfidence }
+    const cursor = await db.query(
+      `FOR doc IN patterns FILTER ${filters.join(" AND ")} SORT doc.confidence DESC LIMIT @limit RETURN doc`,
+      bindVars
+    )
+    const docs = await cursor.all()
+    return docs.map((d: { _key: string; _id: string; [k: string]: unknown }) => {
+      const { _key, _id, ...rest } = d
+      return { id: _key, ...rest } as PatternDoc
+    })
+  }
+
+  async updatePatternStatus(orgId: string, patternId: string, status: string): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("patterns")
+    try {
+      const doc = await col.document(patternId)
+      if ((doc as { org_id?: string }).org_id === orgId) {
+        await col.update(patternId, { status, updated_at: new Date().toISOString() })
+      }
+    } catch { /* not found */ }
+  }
+
+  async getPatternByHash(orgId: string, repoId: string, hash: string): Promise<PatternDoc | null> {
+    const db = await getDbAsync()
+    const cursor = await db.query(
+      `FOR doc IN patterns FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc._key == @hash LIMIT 1 RETURN doc`,
+      { orgId, repoId, hash }
+    )
+    const docs = await cursor.all()
+    if (docs.length === 0) return null
+    const { _key, _id, ...rest } = docs[0] as { _key: string; _id: string; [k: string]: unknown }
+    return { id: _key, ...rest } as PatternDoc
+  }
+
+  async getRuleHealth(orgId: string, ruleId: string): Promise<RuleHealthDoc | null> {
+    const db = await getDbAsync()
+    const cursor = await db.query(
+      `FOR doc IN rule_health FILTER doc.org_id == @orgId AND doc.rule_id == @ruleId LIMIT 1 RETURN doc`,
+      { orgId, ruleId }
+    )
+    const docs = await cursor.all()
+    if (docs.length === 0) return null
+    const { _key, _id, ...rest } = docs[0] as { _key: string; _id: string; [k: string]: unknown }
+    return { id: _key, ...rest } as RuleHealthDoc
+  }
+
+  async upsertRuleHealth(orgId: string, health: RuleHealthDoc): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("rule_health")
+    await col.save(
+      { _key: health.id, ...health, org_id: health.org_id ?? orgId, updated_at: new Date().toISOString() },
+      { overwriteMode: "update" }
+    )
+  }
+
+  async upsertMinedPattern(orgId: string, pattern: MinedPatternDoc): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("mined_patterns")
+    await col.save(
+      { _key: pattern.id, ...pattern, org_id: pattern.org_id ?? orgId },
+      { overwriteMode: "update" }
+    )
+  }
+
+  async queryMinedPatterns(orgId: string, repoId: string): Promise<MinedPatternDoc[]> {
+    const db = await getDbAsync()
+    const cursor = await db.query(
+      `FOR doc IN mined_patterns FILTER doc.org_id == @orgId AND doc.repo_id == @repoId SORT doc.confidence DESC LIMIT 100 RETURN doc`,
+      { orgId, repoId }
+    )
+    const docs = await cursor.all()
+    return docs.map((d: { _key: string; _id: string; [k: string]: unknown }) => {
+      const { _key, _id, ...rest } = d
+      return { id: _key, ...rest } as MinedPatternDoc
+    })
+  }
+
+  async upsertImpactReport(orgId: string, report: ImpactReportDoc): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("impact_reports")
+    await col.save(
+      { _key: report.id, ...report, org_id: report.org_id ?? orgId },
+      { overwriteMode: "update" }
+    )
+  }
+
+  async getImpactReport(orgId: string, ruleId: string): Promise<ImpactReportDoc | null> {
+    const db = await getDbAsync()
+    const cursor = await db.query(
+      `FOR doc IN impact_reports FILTER doc.org_id == @orgId AND doc.rule_id == @ruleId SORT doc.generated_at DESC LIMIT 1 RETURN doc`,
+      { orgId, ruleId }
+    )
+    const docs = await cursor.all()
+    if (docs.length === 0) return null
+    const { _key, _id, ...rest } = docs[0] as { _key: string; _id: string; [k: string]: unknown }
+    return { id: _key, ...rest } as ImpactReportDoc
+  }
+
+  async queryRuleExceptions(orgId: string, ruleId: string): Promise<RuleExceptionDoc[]> {
+    const db = await getDbAsync()
+    const cursor = await db.query(
+      `FOR doc IN rule_exceptions FILTER doc.org_id == @orgId AND doc.rule_id == @ruleId AND doc.status == "active" RETURN doc`,
+      { orgId, ruleId }
+    )
+    const docs = await cursor.all()
+    return docs.map((d: { _key: string; _id: string; [k: string]: unknown }) => {
+      const { _key, _id, ...rest } = d
+      return { id: _key, ...rest } as RuleExceptionDoc
+    })
+  }
+
+  async upsertRuleException(orgId: string, exception: RuleExceptionDoc): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("rule_exceptions")
+    await col.save(
+      { _key: exception.id, ...exception, org_id: exception.org_id ?? orgId },
+      { overwriteMode: "update" }
+    )
+  }
+
+  async updateRuleException(orgId: string, exceptionId: string, status: string): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("rule_exceptions")
+    try {
+      const doc = await col.document(exceptionId)
+      if ((doc as { org_id?: string }).org_id === orgId) {
+        await col.update(exceptionId, { status })
+      }
+    } catch { /* not found */ }
   }
   async upsertSnippet(_orgId: string, _snippet: SnippetDoc): Promise<void> {
     return Promise.resolve()

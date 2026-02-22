@@ -22,18 +22,136 @@ export interface EdgeDoc {
   [key: string]: unknown
 }
 
+// Phase 6: Rule scope and enforcement levels
+export type RuleScope = "org" | "repo" | "path" | "branch" | "workspace"
+export type RuleEnforcement = "suggest" | "warn" | "block"
+export type RuleType = "architecture" | "naming" | "security" | "performance" | "style" | "custom"
+export type RuleStatus = "active" | "draft" | "deprecated" | "archived"
+
 export interface RuleDoc {
   id: string
   org_id: string
+  repo_id?: string
   name: string
-  [key: string]: unknown
+  title: string
+  description: string
+  type: RuleType
+  scope: RuleScope
+  pathGlob?: string
+  fileTypes?: string[]
+  entityKinds?: string[]
+  enforcement: RuleEnforcement
+  semgrepRule?: string
+  astGrepQuery?: string
+  astGrepFix?: string
+  priority: number
+  status: RuleStatus
+  polyglot?: boolean
+  languages?: string[]
+  createdBy?: string
+  created_at: string
+  updated_at: string
 }
+
+// Phase 6: Pattern types
+export type PatternType = "structural" | "naming" | "error-handling" | "import" | "testing" | "custom"
+export type PatternStatus = "detected" | "confirmed" | "promoted" | "rejected"
+export type PatternSource = "ast-grep" | "mined" | "manual"
 
 export interface PatternDoc {
   id: string
   org_id: string
+  repo_id: string
   name: string
-  [key: string]: unknown
+  type: PatternType
+  title: string
+  astGrepQuery?: string
+  evidence: Array<{ file: string; line: number; snippet?: string }>
+  adherenceRate: number
+  confidence: number
+  status: PatternStatus
+  source: PatternSource
+  language?: string
+  created_at: string
+  updated_at: string
+}
+
+// Phase 6: Rule Health tracking
+export interface RuleHealthDoc {
+  id: string
+  org_id: string
+  rule_id: string
+  triggered_count: number
+  overridden_count: number
+  false_positive_count: number
+  auto_fixed_count: number
+  last_triggered_at: string | null
+  decay_score: number
+  updated_at: string
+}
+
+// Phase 6: Mined Pattern (from community detection)
+export interface MinedPatternDoc {
+  id: string
+  org_id: string
+  repo_id: string
+  community_id: number
+  motif_hash: string
+  entity_keys: string[]
+  edge_count: number
+  label: string
+  confidence: number
+  status: "pending" | "validated" | "rejected"
+  created_at: string
+}
+
+// Phase 6: Impact Report (blast radius simulation)
+export interface ImpactReportDoc {
+  id: string
+  org_id: string
+  repo_id: string
+  rule_id: string
+  total_files_scanned: number
+  total_violations: number
+  violations_by_severity: Record<string, number>
+  affected_files: Array<{ file: string; violations: number }>
+  estimated_fix_effort: "low" | "medium" | "high"
+  generated_at: string
+}
+
+// Phase 6: Rule Exception (time-bound exemptions)
+export interface RuleExceptionDoc {
+  id: string
+  org_id: string
+  rule_id: string
+  entity_id?: string
+  file_path?: string
+  reason: string
+  created_by: string
+  expires_at: string
+  status: "active" | "expired" | "revoked"
+  created_at: string
+}
+
+// Phase 6: ast-grep types
+export interface AstGrepResult {
+  file: string
+  line: number
+  column: number
+  endLine: number
+  endColumn: number
+  matchedCode: string
+  ruleId?: string
+  message?: string
+  fix?: string
+}
+
+export interface AstGrepQuery {
+  id: string
+  pattern: string
+  language: string
+  message?: string
+  fix?: string
 }
 
 export interface SnippetDoc {
@@ -88,12 +206,25 @@ export interface ImpactResult {
 
 export interface RuleFilter {
   orgId: string
-  [key: string]: unknown
+  repoId?: string
+  scope?: RuleScope
+  type?: RuleType
+  status?: RuleStatus
+  enforcement?: RuleEnforcement
+  language?: string
+  pathGlob?: string
+  limit?: number
 }
 
 export interface PatternFilter {
   orgId: string
-  [key: string]: unknown
+  repoId?: string
+  type?: PatternType
+  status?: PatternStatus
+  source?: PatternSource
+  language?: string
+  minConfidence?: number
+  limit?: number
 }
 
 export interface SnippetFilter {
@@ -397,4 +528,179 @@ export interface PaginatedResult<T> {
   items: T[]
   cursor: string | null
   hasMore: boolean
+}
+
+// Phase 7: PR Review Integration types
+
+export type PrReviewStatus = "pending" | "reviewing" | "completed" | "failed"
+
+export interface PrReviewRecord {
+  id: string
+  repoId: string
+  prNumber: number
+  prTitle: string
+  prUrl: string
+  headSha: string
+  baseSha: string
+  status: PrReviewStatus
+  checksPassed: number
+  checksWarned: number
+  checksFailed: number
+  reviewBody: string | null
+  githubReviewId: number | null
+  githubCheckRunId: number | null
+  autoApproved: boolean
+  errorMessage: string | null
+  createdAt: string
+  completedAt: string | null
+}
+
+export interface PrReviewCommentRecord {
+  id: string
+  reviewId: string
+  filePath: string
+  lineNumber: number
+  checkType: "pattern" | "impact" | "test" | "complexity" | "dependency"
+  severity: "info" | "warning" | "error"
+  message: string
+  suggestion: string | null
+  semgrepRuleId: string | null
+  ruleTitle: string | null
+  githubCommentId: number | null
+  autoFix: string | null
+  createdAt: string
+}
+
+export interface ReviewConfig {
+  enabled: boolean
+  autoApproveOnClean: boolean
+  targetBranches: string[]
+  skipDraftPrs: boolean
+  impactThreshold: number
+  complexityThreshold: number
+  checksEnabled: {
+    pattern: boolean
+    impact: boolean
+    test: boolean
+    complexity: boolean
+    dependency: boolean
+  }
+  ignorePaths: string[]
+  semanticLgtmEnabled: boolean
+  horizontalAreas: string[]
+  lowRiskCallerThreshold: number
+  nudgeEnabled: boolean
+  nudgeDelayHours: number
+}
+
+export const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
+  enabled: true,
+  autoApproveOnClean: false,
+  targetBranches: ["main"],
+  skipDraftPrs: true,
+  impactThreshold: 15,
+  complexityThreshold: 10,
+  checksEnabled: {
+    pattern: true,
+    impact: true,
+    test: true,
+    complexity: true,
+    dependency: true,
+  },
+  ignorePaths: [],
+  semanticLgtmEnabled: false,
+  horizontalAreas: ["utility", "infrastructure", "config", "docs", "test", "ci"],
+  lowRiskCallerThreshold: 5,
+  nudgeEnabled: true,
+  nudgeDelayHours: 48,
+}
+
+export interface PatternFinding {
+  ruleId: string
+  ruleTitle: string
+  filePath: string
+  line: number
+  endLine?: number
+  message: string
+  severity: "info" | "warning" | "error"
+  suggestion: string | null
+  adherenceRate?: number
+  semgrepRuleId?: string
+  autoFix?: { fixedCode: string; confidence: number } | null
+}
+
+export interface ImpactFinding {
+  entityId: string
+  entityName: string
+  filePath: string
+  line: number
+  callerCount: number
+  topCallers: Array<{ name: string; filePath: string }>
+}
+
+export interface TestFinding {
+  filePath: string
+  expectedTestPath: string
+  message: string
+}
+
+export interface ComplexityFinding {
+  entityId: string
+  entityName: string
+  filePath: string
+  line: number
+  complexity: number
+  threshold: number
+}
+
+export interface DependencyFinding {
+  filePath: string
+  importPath: string
+  line: number
+  message: string
+}
+
+export interface BlastRadiusSummary {
+  entity: string
+  filePath: string
+  upstreamBoundaries: Array<{
+    name: string
+    kind: string
+    filePath: string
+    depth: number
+    path: string
+  }>
+  callerCount: number
+}
+
+export interface ReviewCheckAnnotation {
+  path: string
+  start_line: number
+  end_line: number
+  annotation_level: "notice" | "warning" | "failure"
+  message: string
+  title: string
+  raw_details: string
+}
+
+export interface AdrContent {
+  title: string
+  context: string
+  decision: string
+  consequences: string
+  relatedEntities: string[]
+  relatedFeatureAreas: string[]
+}
+
+export interface MergeNodeDoc {
+  id: string
+  org_id: string
+  repo_id: string
+  source_branch: string
+  target_branch: string
+  pr_number: number
+  merged_by: string
+  entry_count: number
+  narrative?: string
+  created_at: string
 }

@@ -443,9 +443,9 @@ describe("dispatchToolCall", () => {
 })
 
 describe("getToolSchemas", () => {
-  it("returns all 20 tool schemas", () => {
+  it("returns all 28 tool schemas", () => {
     const schemas = getToolSchemas()
-    expect(schemas).toHaveLength(20)
+    expect(schemas).toHaveLength(28)
     expect(schemas.map((s) => s.name)).toContain("search_code")
     expect(schemas.map((s) => s.name)).toContain("semantic_search")
     expect(schemas.map((s) => s.name)).toContain("find_similar")
@@ -459,8 +459,8 @@ describe("getToolSchemas", () => {
 })
 
 describe("TOOL_DEFINITIONS", () => {
-  it("has 20 tools with required fields", () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(20)
+  it("has 28 tools with required fields", () => {
+    expect(TOOL_DEFINITIONS).toHaveLength(28)
     for (const def of TOOL_DEFINITIONS) {
       expect(def.name).toBeTruthy()
       expect(def.description).toBeTruthy()

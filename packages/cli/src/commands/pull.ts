@@ -22,6 +22,9 @@ export interface SnapshotManifest {
   sizeBytes: number
   entityCount: number
   edgeCount: number
+  ruleCount?: number
+  patternCount?: number
+  snapshotVersion?: number
   generatedAt: string | null
   pulledAt: string
   snapshotPath: string
@@ -126,20 +129,38 @@ export function registerPullCommand(program: Command): void {
       const snapshotPath = join(SNAPSHOTS_DIR, `${repoId}.msgpack`)
       writeFileSync(snapshotPath, buffer)
 
-      // Step 5: Save manifest
+      // Step 5: Detect v2 envelope (rules/patterns)
+      let ruleCount = 0
+      let patternCount = 0
+      let snapshotVersion = 1
+      try {
+        const { unpack } = await import("msgpackr")
+        const envelope = unpack(buffer) as { version?: number; rules?: unknown[]; patterns?: unknown[] }
+        snapshotVersion = envelope.version ?? 1
+        ruleCount = envelope.rules?.length ?? 0
+        patternCount = envelope.patterns?.length ?? 0
+      } catch {
+        // Parse failure — use defaults
+      }
+
+      // Step 6: Save manifest
       const manifest: SnapshotManifest = {
         repoId,
         checksum,
         sizeBytes: buffer.length,
         entityCount,
         edgeCount,
+        ruleCount,
+        patternCount,
+        snapshotVersion,
         generatedAt,
         pulledAt: new Date().toISOString(),
         snapshotPath,
       }
       writeFileSync(join(MANIFESTS_DIR, `${repoId}.json`), JSON.stringify(manifest, null, 2))
 
-      console.log(`Done! ${entityCount} entities, ${edgeCount} edges`)
+      const v2Info = snapshotVersion >= 2 ? `, ${ruleCount} rules, ${patternCount} patterns` : ""
+      console.log(`Done! ${entityCount} entities, ${edgeCount} edges${v2Info}`)
       console.log(`Saved to ${snapshotPath}`)
     })
 }

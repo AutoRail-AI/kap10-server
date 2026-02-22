@@ -17,6 +17,16 @@
   - [1.2 System Logic & State Management](#12-system-logic--state-management)
   - [1.3 Reliability & Resilience](#13-reliability--resilience)
   - [1.4 Performance Considerations](#14-performance-considerations)
+  - [1.4a Hybrid Rule Evaluation](#14a-hybrid-rule-evaluation--semantic--syntactic-two-pass-engine)
+  - [1.4b Context-Aware Rule RAG](#14b-context-aware-rule-rag--jit-rule-injection)
+  - [1.4c Automated Subgraph Pattern Mining](#14c-automated-subgraph-pattern-mining)
+  - [1.4d Auto-Remediation Generation](#14d-auto-remediation-generation--shift-left-fixing)
+  - [1.4e Rule Decay & Telemetry Tracking](#14e-rule-decay--telemetry-tracking)
+  - [1.4f Blast Radius Simulation](#14f-blast-radius-simulation--dry-run-rollout)
+  - [1.4g Time-Bound Exception Ledger](#14g-time-bound-exception-ledger)
+  - [1.4h LLM-Assisted Rule Compilation](#14h-llm-assisted-rule-compilation)
+  - [1.4i Polyglot Semantic Mapping](#14i-polyglot-semantic-mapping)
+  - [1.4j Recommended Package Integrations](#14j-recommended-package-integrations)
   - [1.5 Phase Bridge → Phase 7](#15-phase-bridge--phase-7)
 - [Part 2: Implementation & Tracing Tracker](#part-2-implementation--tracing-tracker)
   - [2.1 Infrastructure Layer](#21-infrastructure-layer)
@@ -45,6 +55,15 @@
 | **Rule Resolution** | — | `resolveRules()` | The process of selecting applicable Rules for a given context (orgId, repoId, branch, filePath, entityKind). Most specific scope wins on title conflict. Rules sorted by specificity then priority. | ~~rule matching~~, ~~rule lookup~~ |
 | **Pattern Detection Pipeline** | — | `detectPatternsWorkflow` | The three-activity Temporal workflow: ast-grep scan (heavy) → LLM synthesize Semgrep rules (light) → store patterns (light). Triggered post-indexing or manually. | ~~pattern scan~~, ~~convention detector~~ |
 | **Pattern Promotion** | — | `promoteToRule()` | The act of converting a high-confidence Pattern (adherence ≥ 0.9, pinned by user) into an explicit Rule. Creates a Rule with `createdBy: "auto-promoted"` linked to the source Pattern. | ~~rule creation from pattern~~, ~~auto-rule~~ |
+| **Hybrid Rule Evaluation** | — | `evaluateHybrid()` | Two-pass rule engine: Pass 1 (syntactic) runs ast-grep/Semgrep for structural matches; Pass 2 (semantic) enriches findings with Phase 4 `feature_area`/`business_value` from ArangoDB. Reduces false positives by verifying structural hits against business context. | ~~dual-pass~~, ~~combined check~~ |
+| **JIT Rule Injection** | — | `getRelevantRules()` | Context-Aware Rule RAG: instead of injecting all rules into the agent context, queries the sub-graph surrounding the target entities to select only contextually relevant rules. Reduces token waste by up to 90%. | ~~full rule dump~~, ~~eager injection~~ |
+| **Subgraph Pattern Mining** | `mined_patterns` (ArangoDB collection) | `MinedPatternDoc` (type) | Implicit rule discovery via graph isomorphism / Louvain community detection. Identifies recurring topological structures (e.g., "every service has a companion factory") that are unwritten conventions. | ~~graph analysis~~, ~~topology scan~~ |
+| **Auto-Remediation** | `fix` (ast-grep directive) | `autoFix` | AST-based auto-fix patches generated from ast-grep `fix:` YAML directives. Produces exact structural code diffs that eliminate agent guesswork for `block`-level violations. | ~~auto-fix~~, ~~suggested fix~~ |
+| **Rule Health Ledger** | `rule_health` (ArangoDB collection) | `RuleHealthDoc` (type) | Per-rule telemetry tracking evaluations, violations, overrides, and false-positive reports. Drives rule decay detection and deprecation workflows. | ~~rule metrics~~, ~~rule stats~~ |
+| **Blast Radius Simulation** | `status: "staged"` (on `rules`) | `simulateRule()` | Dry-run rollout for new rules: a `STAGED` rule is evaluated against the entire codebase in background, producing an Impact Report (violation count, affected files, affected teams) before enforcement. | ~~dry run~~, ~~test rule~~ |
+| **Rule Exception** | `rule_exceptions` (ArangoDB edge collection) | `RuleExceptionEdge` (type) | Time-bound override edge from an entity to a rule, granting a TTL-limited exemption. Expires automatically; MCP flags upcoming expirations. | ~~waiver~~, ~~exclusion~~ |
+| **Rule Compiler** | — | `draftArchitectureRule()` | LLM-Assisted Rule Compilation: natural language description → `generateObject()` with ast-grep YAML schema → validated YAML rule. Exposed as `draft_architecture_rule` MCP tool. | ~~rule generator~~, ~~AI rule writer~~ |
+| **Polyglot Semantic Mapping** | `language_implementations` (ArangoDB edge collection) | `LanguageImplementationEdge` (type) | Cross-language rule enforcement: a single Business Intent node links to multiple `LanguageImplementation` edges, each carrying language-specific syntax payloads. One rule, many languages. | ~~multi-language rule~~, ~~cross-lang~~ |
 
 ---
 
@@ -682,6 +701,8 @@ This is an additive, non-breaking change. Agents that don't have the updated Boo
 | 8 | **Concurrent pattern detection for same repo** | Temporal workflow ID dedup (`detect-patterns-{orgId}-{repoId}`) | Second workflow request is rejected by Temporal (existing workflow running). Caller receives "already in progress" response. | None — dedup by design |
 | 9 | **User creates rule with invalid Semgrep YAML** | `validateSemgrepYaml()` check on save | Return validation error to user. Rule saved as `draft` (not `active`) until YAML is fixed. | None — draft rules not enforced |
 | 10 | **Rule resolution returns too many rules (>50)** | Count check in `resolveRules()` | Cap at 50 most specific/highest-priority rules. Log warning with full count. Return `meta.truncated: true`. | Low — most relevant rules returned |
+| 11 | **Louvain community detection OOM on large graph** | Memory monitoring in `extractTopology` activity | Cap graph at 50K entities. For larger repos, sample by top-level directories. If OOM, retry with smaller sample. Pattern mining is non-critical — repo stays usable. | None — mined patterns are supplementary |
+| 12 | **Rule exception edge orphaned (entity deleted during refactor)** | Periodic cleanup query: edges where `_from` entity no longer exists | Auto-revoke orphaned exceptions on next detection cycle. Log warning. Dashboard shows "Exception target removed." | None — exception no longer needed |
 
 ### 1.3.2 Deterministic Enforcement Guarantee
 
@@ -749,6 +770,819 @@ The `astGrepScan` activity runs on `heavy-compute-queue` (same as SCIP indexing)
 
 ---
 
+## 1.4a Hybrid Rule Evaluation — Semantic + Syntactic Two-Pass Engine
+
+Standard ast-grep/Semgrep scans are purely syntactic — they find structural matches but have no concept of *why* the code exists. A "missing rate limiter" violation in an internal health-check route is noise. The Hybrid Rule Evaluation engine adds a semantic second pass using Phase 4's `feature_area` and `business_value` annotations from ArangoDB.
+
+### Two-Pass Algorithm
+
+```
+evaluateHybrid(code, filePath, rules, orgContext):
+
+  // ─── Pass 1: Syntactic (fast, deterministic) ───
+  syntacticHits = []
+  FOR EACH rule IN rules WHERE rule.semgrepRule IS NOT NULL:
+    findings = semgrep.matchRule(code, rule.semgrepRule)
+    syntacticHits.push(...findings.map(f => ({ rule, finding: f })))
+
+  // ─── Pass 2: Semantic Enrichment (ArangoDB lookup) ───
+  enrichedViolations = []
+  FOR EACH hit IN syntacticHits:
+    // Lookup the entity in ArangoDB by file + line
+    entity = graphStore.findEntityByFileLine(orgContext, filePath, hit.finding.line)
+
+    IF entity IS NULL:
+      // No entity mapping — trust syntactic result as-is
+      enrichedViolations.push({ ...hit, semanticContext: null, confidence: 0.7 })
+      CONTINUE
+
+    // Fetch Phase 4 justification data
+    justification = graphStore.getJustification(orgContext, entity._key)
+    featureArea = justification?.feature_area
+    businessValue = justification?.business_value
+
+    // Apply semantic filters
+    IF hit.rule.semanticFilter:
+      match = evaluateSemanticFilter(hit.rule.semanticFilter, {
+        featureArea, businessValue, entity.kind, entity.name
+      })
+      IF NOT match:
+        // Semantic context says this rule doesn't apply here
+        SKIP (do not include in violations)
+        CONTINUE
+
+    enrichedViolations.push({
+      ...hit,
+      semanticContext: { featureArea, businessValue, entityKind: entity.kind },
+      confidence: calculateConfidence(hit, justification)
+    })
+
+  RETURN {
+    violations: enrichedViolations,
+    syntacticTotal: syntacticHits.length,
+    semanticFiltered: syntacticHits.length - enrichedViolations.length,
+    meta: { twoPassEnabled: true }
+  }
+```
+
+### Semantic Filter Syntax (on RuleDoc)
+
+Rules gain an optional `semanticFilter` field:
+
+```json
+{
+  "title": "Rate limiting on all public endpoints",
+  "enforcement": "block",
+  "semgrepRule": "...",
+  "semanticFilter": {
+    "feature_area": { "$in": ["api", "webhook", "public"] },
+    "business_value": { "$gte": "medium" },
+    "entity_kind": { "$nin": ["test", "fixture"] }
+  }
+}
+```
+
+This tells the engine: only enforce this rule on entities in public-facing feature areas with medium+ business value, excluding test fixtures. The filter uses MongoDB-like query syntax evaluated in-memory against the Phase 4 justification data.
+
+### Confidence Scoring
+
+```
+calculateConfidence(syntacticHit, justification):
+  base = 0.6                            // syntactic match alone
+  IF justification EXISTS:
+    base += 0.15                         // entity has Phase 4 context
+    IF justification.business_value IN ["high", "critical"]:
+      base += 0.15                       // high-value code = higher confidence
+    IF justification.feature_area matches rule.semanticFilter:
+      base += 0.10                       // semantic alignment
+  RETURN min(base, 1.0)
+```
+
+---
+
+## 1.4b Context-Aware Rule RAG — JIT Rule Injection
+
+The naive approach to `get_rules` dumps all matching rules into the agent's context window. For large codebases with 200+ rules, this wastes tokens and dilutes attention. JIT Rule Injection queries the knowledge graph to select only rules relevant to the entities the agent is about to touch.
+
+### `get_relevant_rules` MCP Tool
+
+```
+get_relevant_rules({ entity_keys: string[], filePath?: string }):
+
+  // Step 1: Resolve the sub-graph around target entities
+  subGraph = graphStore.traverseNeighbors(orgContext, entity_keys, {
+    depth: 2,                            // 2-hop neighborhood
+    edgeTypes: ["calls", "imports", "belongs_to", "depends_on"]
+  })
+
+  // Step 2: Extract context signals from the sub-graph
+  signals = {
+    featureAreas: unique(subGraph.entities.map(e => e.feature_area)),
+    designPatterns: unique(subGraph.entities.map(e => e.design_pattern)),
+    entityKinds: unique(subGraph.entities.map(e => e.kind)),
+    importBoundaries: extractImportBoundaries(subGraph.edges),
+    layerViolations: detectLayerViolations(subGraph)
+  }
+
+  // Step 3: Score each candidate rule by relevance
+  allRules = resolveRules(orgContext)     // full resolution
+  scoredRules = allRules.map(rule => ({
+    rule,
+    relevance: scoreRelevance(rule, signals)
+  }))
+
+  // Step 4: Return top-K most relevant (default K=10)
+  topRules = scoredRules
+    .filter(r => r.relevance > 0.3)       // minimum relevance threshold
+    .sort((a, b) => b.relevance - a.relevance)
+    .slice(0, 10)
+
+  RETURN {
+    rules: topRules.map(r => formatRuleForAgent(r.rule)),
+    context: {
+      featureAreas: signals.featureAreas,
+      entitiesAnalyzed: entity_keys.length,
+      rulesConsidered: allRules.length,
+      rulesReturned: topRules.length
+    }
+  }
+```
+
+### Relevance Scoring
+
+```
+scoreRelevance(rule, signals):
+  score = 0.0
+
+  // Path match (strongest signal)
+  IF rule.pathGlob AND filePath matches rule.pathGlob:
+    score += 0.4
+
+  // Feature area overlap
+  IF rule.semanticFilter?.feature_area:
+    overlap = intersect(rule.semanticFilter.feature_area.$in, signals.featureAreas)
+    score += 0.25 * (overlap.length / rule.semanticFilter.feature_area.$in.length)
+
+  // Entity kind match
+  IF rule.entityKinds:
+    IF any(signals.entityKinds IN rule.entityKinds):
+      score += 0.2
+
+  // Import boundary relevance
+  IF rule.type == "architectural":
+    IF any(signals.importBoundaries overlaps rule.description):
+      score += 0.15
+
+  RETURN min(score, 1.0)
+```
+
+### Token Savings
+
+| Scenario | Naive `get_rules` | JIT `get_relevant_rules` | Savings |
+|---|---|---|---|
+| 200 org rules, editing a utility function | ~12K tokens | ~1.5K tokens (8 rules) | **87%** |
+| 50 repo rules, editing an API route | ~3K tokens | ~1K tokens (5 rules) | **67%** |
+| 300 rules, editing a test file | ~18K tokens | ~600 tokens (3 rules) | **97%** |
+
+---
+
+## 1.4c Automated Subgraph Pattern Mining
+
+Not all codebase conventions are written as explicit rules. Many are emergent — recurring topological structures in the knowledge graph that represent unwritten agreements. Subgraph Pattern Mining discovers these implicit rules automatically.
+
+### Pattern Mining Pipeline
+
+```
+patternMiningWorkflow(orgId, repoId):
+  // Activity 1: Extract topology (heavy-compute-queue)
+  topology = extractTopology(orgId, repoId)
+    // a) Query ArangoDB for all entities + edges in the repo
+    // b) Build a graphology graph in memory
+    // c) Run Louvain community detection → identify clusters
+    // d) Within each cluster, extract motifs (recurring subgraph shapes):
+    //    - "every service class has a companion factory"
+    //    - "every API route imports from a shared middleware set"
+    //    - "every React component has a colocated test file"
+
+  // Activity 2: Validate motifs via frequency (light-llm-queue)
+  validMotifs = []
+  FOR EACH motif IN topology.motifs:
+    IF motif.frequency >= 3 AND motif.adherence >= 0.7:
+      // LLM synthesizes a human-readable description
+      description = await llm.generateObject({
+        schema: MinedPatternDescriptionSchema,
+        prompt: `Describe this recurring code structure:
+          Motif shape: ${motif.shape}
+          Examples: ${motif.instances.slice(0, 5).map(formatInstance)}
+          Non-examples: ${motif.nonInstances.slice(0, 2).map(formatInstance)}`
+      })
+      validMotifs.push({ ...motif, description })
+
+  // Activity 3: Store mined patterns (light-llm-queue)
+  FOR EACH motif IN validMotifs:
+    graphStore.upsertMinedPattern(orgId, {
+      _key: `mined_${hash(motif.shape + repoId)}`,
+      shape: motif.shape,                 // serialized subgraph template
+      frequency: motif.frequency,
+      adherence: motif.adherence,
+      instances: motif.instances,
+      description: description.text,
+      suggestedRuleTitle: description.ruleTitle,
+      status: "discovered"                // discovered → reviewed → promoted | dismissed
+    })
+
+  RETURN { minedPatterns: validMotifs.length }
+```
+
+### Motif Detection Algorithm
+
+```
+extractMotifs(graph):
+  motifs = {}
+
+  // For each entity kind (class, function, file):
+  FOR EACH kind IN ["class", "function", "file"]:
+    entities = graph.filterNodes(n => n.kind == kind)
+
+    FOR EACH entity IN entities:
+      // Extract 1-hop ego graph (entity + direct neighbors + connecting edges)
+      egoGraph = graph.egoGraph(entity, { radius: 1 })
+
+      // Normalize: replace specific names with placeholders
+      //   "UserService → UserFactory" becomes "Service → Factory"
+      normalized = normalizeEgoGraph(egoGraph)
+
+      // Hash the normalized shape
+      shapeHash = SHA256(serialize(normalized))
+
+      IF shapeHash NOT IN motifs:
+        motifs[shapeHash] = { shape: normalized, instances: [], nonInstances: [] }
+      motifs[shapeHash].instances.push(entity)
+
+    // Find non-instances: entities of the same kind that DON'T have this shape
+    FOR EACH (shapeHash, motif) IN motifs:
+      FOR EACH entity IN entities:
+        IF entity NOT IN motif.instances:
+          motif.nonInstances.push(entity)
+
+      motif.frequency = motif.instances.length
+      motif.adherence = motif.instances.length / entities.length
+
+  RETURN Object.values(motifs)
+```
+
+### Dashboard Integration
+
+Mined patterns appear in a separate "Discovered" tab on the Pattern Library page:
+- **Motif visualization**: Miniature sub-graph diagram showing the topological shape
+- **Instances**: List of entities following the pattern
+- **Non-instances**: Entities that deviate (potential rule violations once promoted)
+- **Actions**: Review → Promote to Rule, Dismiss, Request More Evidence
+
+---
+
+## 1.4d Auto-Remediation Generation — Shift-Left Fixing
+
+When `check_rules` finds a `block`-level violation, the agent must fix it before presenting code to the user. Today, the agent guesses the fix based on the rule description and example. Auto-Remediation provides exact AST-based patches using ast-grep's `fix:` directive.
+
+### ast-grep Fix Directive
+
+```yaml
+# Example: Force catch(error: unknown) instead of catch(error)
+id: kap10.catch-unknown-error
+language: typescript
+rule:
+  pattern: catch ($ERR) { $$$ }
+  not:
+    pattern: catch ($ERR: unknown) { $$$ }
+fix: "catch ($ERR: unknown) { $$$ }"
+```
+
+The `fix:` field defines the structural replacement. ast-grep applies it via AST transformation — not string replacement — so it handles whitespace, comments, and formatting correctly.
+
+### Auto-Remediation Pipeline
+
+```
+autoRemediate(code, filePath, violations):
+  patches = []
+
+  FOR EACH violation IN violations:
+    rule = violation.rule
+
+    // Only auto-fix if rule has a fix directive
+    IF rule.astGrepFix IS NULL:
+      patches.push({
+        rule: rule.title,
+        type: "manual",
+        suggestion: rule.example        // fallback: show example
+      })
+      CONTINUE
+
+    // Apply ast-grep fix
+    fixedCode = astGrep.rewrite(code, {
+      rule: rule.astGrepQuery,
+      fix: rule.astGrepFix,
+      language: inferLanguage(filePath)
+    })
+
+    // Compute diff
+    diff = computeStructuralDiff(code, fixedCode)
+
+    patches.push({
+      rule: rule.title,
+      type: "auto",
+      diff: diff,                        // unified diff format
+      fixedCode: fixedCode,
+      confidence: 0.95                   // AST-based = high confidence
+    })
+
+  RETURN {
+    patches,
+    autoFixable: patches.filter(p => p.type == "auto").length,
+    manualOnly: patches.filter(p => p.type == "manual").length
+  }
+```
+
+### RuleDoc Extension
+
+```json
+{
+  "title": "API routes must use zod validation",
+  "semgrepRule": "...",
+  "astGrepFix": {
+    "rule": "pattern: export async function $HANDLER($REQ, $RES) { $$BODY }",
+    "fix": "export async function $HANDLER($REQ, $RES) {\n  const body = Schema.parse(await $REQ.json());\n  $$BODY\n}"
+  }
+}
+```
+
+### MCP Response Enhancement
+
+`check_rules` response gains an `autoFixes` field:
+
+```json
+{
+  "violations": [...],
+  "autoFixes": [
+    {
+      "rule": "API routes must use zod validation",
+      "diff": "--- original\n+++ fixed\n@@ -1,3 +1,4 @@\n export async function handler(req) {\n+  const body = Schema.parse(await req.json());\n   // ...\n }",
+      "confidence": 0.95
+    }
+  ],
+  "meta": { "autoFixable": 1, "manualOnly": 2, "totalViolations": 3 }
+}
+```
+
+The Bootstrap Rule is updated: "If check_rules returns autoFixes, apply them directly. For manual-only violations, follow the rule's example."
+
+---
+
+## 1.4e Rule Decay & Telemetry Tracking
+
+Rules have a lifespan. A rule created 6 months ago may no longer reflect current practice — the team may have moved on, or the rule may generate so many false positives that engineers routinely override it. The Rule Health Ledger tracks per-rule telemetry to detect decay.
+
+### Rule Health Ledger Schema (ArangoDB)
+
+```json
+{
+  "_key": "health_{ruleId}",
+  "org_id": "org_abc",
+  "rule_id": "rule_xyz",
+  "evaluations": 1284,              // total times rule was evaluated
+  "violations_found": 342,          // total violations detected
+  "violations_fixed": 298,          // violations that were fixed after detection
+  "overrides": 44,                  // times the violation was overridden (not fixed)
+  "override_authors": ["user_a", "user_b", "user_c"],
+  "false_positive_reports": 12,     // explicit "not a real violation" reports
+  "last_violation_at": "2026-02-19T...",
+  "last_override_at": "2026-02-20T...",
+  "decay_score": 0.35,              // 0.0 (healthy) → 1.0 (decayed)
+  "updated_at": "2026-02-21T..."
+}
+```
+
+### Decay Score Algorithm
+
+```
+calculateDecayScore(health):
+  overrideRate = health.overrides / max(health.violations_found, 1)
+  falsePositiveRate = health.false_positive_reports / max(health.evaluations, 1)
+  recency = daysSince(health.last_violation_at)
+
+  // Weighted decay formula
+  decay = (
+    0.40 * overrideRate +             // high override rate = stale rule
+    0.30 * falsePositiveRate +        // high FP rate = bad rule
+    0.20 * sigmoid(recency - 90) +    // no violations in 90+ days = unused
+    0.10 * (1 - health.violations_fixed / max(health.violations_found, 1))
+  )
+
+  RETURN clamp(decay, 0.0, 1.0)
+```
+
+### Deprecation Workflow
+
+```
+ruleDeprecationWorkflow(orgId, ruleId):
+  health = graphStore.getRuleHealth(orgId, ruleId)
+
+  IF health.decay_score < 0.6:
+    RETURN { action: "none", reason: "Rule is healthy" }
+
+  // Check if 3+ consecutive overrides by senior engineers
+  recentOverrides = graphStore.getRecentOverrides(orgId, ruleId, limit: 5)
+  seniorOverrides = recentOverrides.filter(o => o.userRole IN ["admin", "owner"])
+
+  IF seniorOverrides.length >= 3:
+    // Auto-downgrade enforcement
+    rule = graphStore.getRule(orgId, ruleId)
+    IF rule.enforcement == "block":
+      graphStore.updateRule(orgId, ruleId, { enforcement: "warn" })
+      notify(orgId, {
+        type: "rule_downgraded",
+        message: `Rule "${rule.title}" downgraded from block → warn (override rate: ${overrideRate}%)`
+      })
+    ELSE IF rule.enforcement == "warn":
+      graphStore.updateRule(orgId, ruleId, { enforcement: "suggest" })
+      notify(orgId, { type: "rule_downgraded", ... })
+    ELSE:
+      // Already at suggest level — flag for review
+      graphStore.updateRule(orgId, ruleId, { status: "review_needed" })
+      notify(orgId, {
+        type: "rule_review_needed",
+        message: `Rule "${rule.title}" has high decay score (${health.decay_score}). Consider archiving.`
+      })
+```
+
+### Dashboard Health Indicators
+
+Each rule in the Rules Management page gains a health indicator:
+- **Green** (decay < 0.3): Healthy — rule is actively enforced and rarely overridden
+- **Yellow** (0.3 ≤ decay < 0.6): Aging — override rate increasing, may need review
+- **Red** (decay ≥ 0.6): Decayed — rule is frequently overridden, consider deprecation
+- **Gray** (no evaluations): Dormant — rule has never been evaluated
+
+---
+
+## 1.4f Blast Radius Simulation — Dry Run Rollout
+
+Before enforcing a new `block`-level rule across the codebase, teams need to understand the impact. Blast Radius Simulation runs a new rule as `STAGED` against the entire codebase, producing an Impact Report without actually blocking any agents.
+
+### STAGED Rule Lifecycle
+
+```
+                    ┌──────────┐
+                    │  STAGED  │ ← New rule created with status "staged"
+                    └────┬─────┘
+                         │
+                    ┌────▼─────┐
+                    │ SIMULATE │ ← Background workflow scans entire codebase
+                    └────┬─────┘
+                         │
+                    ┌────▼──────────────┐
+                    │  IMPACT REPORT    │ ← Dashboard shows: N violations,
+                    │  (ready for       │   M files affected, K teams impacted
+                    │   review)         │
+                    └────┬──────────────┘
+                         │
+              ┌──────────┼──────────┐
+              ▼          ▼          ▼
+         ┌────────┐ ┌────────┐ ┌─────────┐
+         │ ACTIVE │ │ MODIFY │ │ DISCARD │
+         └────────┘ └────────┘ └─────────┘
+```
+
+### Simulation Workflow
+
+```
+simulateRuleWorkflow(orgId, repoId, ruleId):
+  rule = graphStore.getRule(orgId, ruleId)
+  ASSERT rule.status == "staged"
+
+  // Activity 1: Scan workspace with rule (heavy-compute-queue)
+  workspacePath = getWorkspacePath(orgId, repoId)
+  IF rule.semgrepRule:
+    findings = patternEngine.scanPatterns(workspacePath, rule.semgrepRule)
+  ELSE IF rule.astGrepQuery:
+    findings = patternEngine.scanWithAstGrep(workspacePath, [rule.astGrepQuery])
+  ELSE:
+    findings = []   // non-structural rule — manual review only
+
+  // Activity 2: Enrich findings with ownership (light-llm-queue)
+  enrichedFindings = []
+  FOR EACH finding IN findings:
+    entity = graphStore.findEntityByFileLine(orgContext, finding.file, finding.line)
+    IF entity:
+      justification = graphStore.getJustification(orgContext, entity._key)
+      enrichedFindings.push({
+        ...finding,
+        featureArea: justification?.feature_area,
+        businessValue: justification?.business_value,
+        lastModifiedBy: entity.last_modified_by
+      })
+
+  // Activity 3: Generate Impact Report (light-llm-queue)
+  impactReport = {
+    ruleId: ruleId,
+    ruleTitle: rule.title,
+    totalViolations: enrichedFindings.length,
+    affectedFiles: unique(enrichedFindings.map(f => f.file)).length,
+    affectedFeatureAreas: groupBy(enrichedFindings, 'featureArea'),
+    affectedAuthors: unique(enrichedFindings.map(f => f.lastModifiedBy)),
+    violationsByBusinessValue: groupBy(enrichedFindings, 'businessValue'),
+    sampleViolations: enrichedFindings.slice(0, 10),
+    estimatedFixEffort: estimateFixEffort(enrichedFindings, rule),
+    generatedAt: new Date()
+  }
+
+  // Store report
+  graphStore.upsertImpactReport(orgId, impactReport)
+
+  RETURN impactReport
+```
+
+### Impact Report Dashboard Card
+
+The impact report is shown on the rule detail page with:
+- **Violation count**: Total findings across the codebase
+- **File heatmap**: Files with most violations highlighted
+- **Team impact**: Which feature areas / authors are affected
+- **Business value breakdown**: Violations in high-value vs low-value code
+- **Sample violations**: First 10 findings with code snippets
+- **Estimated fix effort**: Based on auto-remediable count vs manual-only
+- **Action buttons**: Activate Rule, Modify Rule, Discard Rule
+
+---
+
+## 1.4g Time-Bound Exception Ledger
+
+Sometimes code legitimately violates a rule — a legacy module awaiting refactor, a vendor integration with unavoidable patterns, a temporary workaround with a fix scheduled. The Exception Ledger provides time-bound rule exemptions instead of permanently dismissing violations.
+
+### RuleException Edge (ArangoDB)
+
+```json
+{
+  "_from": "entities/entity_abc123",     // the entity with the exception
+  "_to": "rules/rule_xyz",              // the rule being excepted
+  "type": "RuleException",
+  "reason": "Legacy billing integration — refactor planned for Q2 2026",
+  "granted_by": "user_789",
+  "granted_at": "2026-02-21T10:00:00Z",
+  "expires_at": "2026-03-23T10:00:00Z", // 30-day default TTL
+  "status": "active",                    // active | expired | revoked
+  "jira_ticket": "KAP-1234"            // optional: linked tracking ticket
+}
+```
+
+### Exception Resolution in Rule Evaluation
+
+```
+resolveExceptions(violations, orgContext):
+  FOR EACH violation IN violations:
+    // Check for active exception
+    exception = graphStore.queryEdges(orgContext, {
+      _from: violation.entityKey,
+      _to: violation.ruleId,
+      type: "RuleException",
+      status: "active"
+    })
+
+    IF exception AND exception.expires_at > now():
+      violation.excepted = true
+      violation.exceptionReason = exception.reason
+      violation.exceptionExpires = exception.expires_at
+      // Downgrade enforcement to "suggest" for excepted violations
+      violation.effectiveEnforcement = "suggest"
+    ELSE IF exception AND exception.expires_at <= now():
+      // Exception expired — mark it
+      graphStore.updateEdge(orgContext, exception._key, { status: "expired" })
+      violation.excepted = false
+      violation.exceptionExpired = true
+      violation.exceptionExpiredAt = exception.expires_at
+
+  RETURN violations
+```
+
+### MCP Behavior
+
+When an exception is nearing expiry (within 7 days), `get_rules` includes a proactive flag:
+
+```json
+{
+  "rules": [...],
+  "expiringExceptions": [
+    {
+      "entity": "lib/billing/legacy-adapter.ts:PaymentProcessor",
+      "rule": "No direct database access from service layer",
+      "expiresIn": "5 days",
+      "reason": "Legacy billing integration",
+      "jiraTicket": "KAP-1234"
+    }
+  ]
+}
+```
+
+### Dashboard Integration
+
+- **Exception creation**: On any violation, "Grant Exception" button with reason field, TTL picker (7/14/30/60/90 days), optional JIRA ticket link
+- **Exception overview**: List of all active exceptions sorted by expiry date
+- **Expiry alerts**: Banner for exceptions expiring within 7 days
+- **Audit trail**: Full history of grants, revocations, and expirations
+
+---
+
+## 1.4h LLM-Assisted Rule Compilation
+
+Writing ast-grep YAML rules requires structural pattern expertise. Most engineers think in natural language: "API routes should validate request bodies with zod." The Rule Compiler translates natural language descriptions into validated ast-grep YAML rules via LLM.
+
+### `draft_architecture_rule` MCP Tool
+
+```
+draft_architecture_rule({ description: string, examples?: string[], language?: string }):
+
+  // Step 1: Generate ast-grep YAML via LLM
+  result = await llm.generateObject({
+    schema: AstGrepRuleSchema,           // Zod schema for ast-grep YAML
+    prompt: `Generate an ast-grep YAML rule for the following requirement:
+
+      Requirement: ${description}
+      Language: ${language || "typescript"}
+      ${examples ? `Examples of correct code:\n${examples.join('\n')}` : ''}
+
+      The rule should:
+      1. Use ast-grep pattern syntax (Tree-sitter based)
+      2. Include a descriptive 'id' field
+      3. Include 'rule.pattern' and optionally 'rule.not.pattern'
+      4. Include a 'fix' directive if possible
+      5. Be specific enough to avoid false positives
+
+      Return the YAML rule as a structured object.`
+  })
+
+  // Step 2: Validate the generated YAML
+  yamlString = yaml.stringify(result)
+  validation = patternEngine.validateSemgrepYaml(yamlString)
+
+  IF NOT validation.valid:
+    // Retry with error context
+    result = await llm.generateObject({
+      schema: AstGrepRuleSchema,
+      prompt: `The previous rule had validation errors: ${validation.errors.join(', ')}.
+               Fix the rule and try again. Original requirement: ${description}`
+    })
+    yamlString = yaml.stringify(result)
+    validation = patternEngine.validateSemgrepYaml(yamlString)
+
+  // Step 3: Return draft for human review
+  RETURN {
+    draft: {
+      title: result.id.replace('kap10.', '').replace(/-/g, ' '),
+      astGrepQuery: yamlString,
+      semgrepRule: convertToSemgrep(result),    // if applicable
+      astGrepFix: result.fix || null,
+      language: language || "typescript",
+      type: inferRuleType(description),
+      enforcement: "suggest"                     // always start as suggest
+    },
+    validation: validation,
+    status: validation.valid ? "ready_for_review" : "needs_manual_edit"
+  }
+```
+
+### AstGrepRuleSchema (Zod)
+
+```typescript
+const AstGrepRuleSchema = z.object({
+  id: z.string().regex(/^kap10\./),
+  language: z.enum(["typescript", "javascript", "python", "go", "rust"]),
+  rule: z.object({
+    pattern: z.string(),
+    not: z.object({ pattern: z.string() }).optional(),
+    inside: z.object({ pattern: z.string() }).optional(),
+    has: z.object({ pattern: z.string() }).optional(),
+  }),
+  fix: z.string().optional(),
+  message: z.string(),
+  severity: z.enum(["error", "warning", "info"]).default("warning"),
+})
+```
+
+### Workflow Integration
+
+The `draft_architecture_rule` tool returns a draft — it does NOT automatically create a rule. The human must review and confirm:
+
+1. Agent calls `draft_architecture_rule` with natural language description
+2. kap10 returns draft YAML + validation status
+3. Agent presents draft to user: "I've drafted a rule for your requirement. Here's the ast-grep YAML..."
+4. User reviews and approves via dashboard or CLI
+5. Rule created with `status: "staged"` (triggers Blast Radius Simulation)
+
+---
+
+## 1.4i Polyglot Semantic Mapping
+
+Enterprise codebases are polyglot — a single business concept like "validate API requests" may be implemented differently in TypeScript (zod), Python (pydantic), and Go (struct tags). Polyglot Semantic Mapping enforces business-intent-level rules across languages with language-specific syntax payloads.
+
+### Data Model
+
+```
+Business Intent Node (in `rules` collection):
+{
+  "_key": "rule_validate_api_requests",
+  "title": "All API routes must validate request bodies",
+  "type": "architectural",
+  "scope": "org",
+  "enforcement": "block",
+  "polyglot": true,                        // flag: this rule has language variants
+  "languages": ["typescript", "python", "go"]
+}
+
+LanguageImplementation Edges (in `language_implementations` edge collection):
+{
+  "_from": "rules/rule_validate_api_requests",
+  "_to": "rules/rule_validate_api_requests",     // self-referencing (payload on edge)
+  "language": "typescript",
+  "semgrepRule": "rules:\n  - id: kap10.ts-zod-validation\n    pattern: ...",
+  "astGrepQuery": "rule:\n  pattern: const $S = z.object({ $$$ })\n  ...",
+  "astGrepFix": "...",
+  "example": "const body = RequestSchema.parse(await req.json());",
+  "counterExample": "const body = await req.json();"
+}
+
+{
+  "_from": "rules/rule_validate_api_requests",
+  "_to": "rules/rule_validate_api_requests",
+  "language": "python",
+  "semgrepRule": "rules:\n  - id: kap10.py-pydantic-validation\n    pattern: ...",
+  "astGrepQuery": "rule:\n  pattern: class $Model(BaseModel): ...",
+  "example": "body = RequestModel(**await request.json())",
+  "counterExample": "body = await request.json()"
+}
+
+{
+  "_from": "rules/rule_validate_api_requests",
+  "_to": "rules/rule_validate_api_requests",
+  "language": "go",
+  "semgrepRule": "rules:\n  - id: kap10.go-struct-validation\n    pattern: ...",
+  "astGrepQuery": "rule:\n  pattern: type $Name struct { $$$ `validate:\"$$$\"` }",
+  "example": "type Request struct { Name string `validate:\"required\"`  }",
+  "counterExample": "type Request struct { Name string }"
+}
+```
+
+### Query Resolution with Language Selection
+
+```
+resolvePolyglotRules(orgContext, filePath):
+  language = inferLanguage(filePath)     // "typescript", "python", "go", etc.
+  rules = resolveRules(orgContext)
+
+  FOR EACH rule IN rules:
+    IF rule.polyglot:
+      // Fetch language-specific implementation
+      langImpl = graphStore.queryEdges(orgContext, {
+        _from: `rules/${rule._key}`,
+        type: "LanguageImplementation",
+        language: language
+      })
+
+      IF langImpl:
+        // Replace generic rule with language-specific payload
+        rule.semgrepRule = langImpl.semgrepRule
+        rule.astGrepQuery = langImpl.astGrepQuery
+        rule.astGrepFix = langImpl.astGrepFix
+        rule.example = langImpl.example
+        rule.counterExample = langImpl.counterExample
+      ELSE:
+        // No implementation for this language — skip or return as informational
+        rule.enforcement = "suggest"
+        rule.noLanguageImpl = true
+
+  RETURN rules
+```
+
+### Dashboard Support
+
+The rule creation form gains a "Polyglot" toggle. When enabled:
+- Language tabs appear (TypeScript, Python, Go, Rust, etc.)
+- Each tab has its own: Semgrep rule, ast-grep query, fix directive, example/counter-example
+- The rule title and description are shared across languages
+- A "Generate for Language" button uses the Rule Compiler to auto-draft implementations for additional languages
+
+---
+
+## 1.4j Recommended Package Integrations
+
+| Package | Purpose | Phase 6 Usage |
+|---|---|---|
+| **`@ast-grep/napi`** | Tree-sitter-based structural code search (native Node.js bindings) | Core detection engine: pattern scanning, fix generation, structural matching. Already specified in P6-INFRA-01. |
+| **`zod` + `yaml`** | Schema validation + YAML serialization | LLM rule compilation: `generateObject()` with `AstGrepRuleSchema` → validated ast-grep YAML. Draft rules round-trip through Zod → YAML → validate → store. |
+| **`execa`** | Safe subprocess execution (replaces `child_process`) | Semgrep CLI invocation: `execa('semgrep', ['--config', ...])` with timeout, stdio capture, and clean error handling. Avoids shell injection risks of `exec()`. |
+| **`graphology-communities`** | Louvain community detection for graphs | Subgraph Pattern Mining: cluster entities into communities, extract recurring motifs within and across communities. Part of the `graphology` ecosystem (already lightweight). |
+
+---
+
 ## 1.5 Phase Bridge → Phase 7
 
 Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) directly consumes:
@@ -783,7 +1617,9 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 > **Dependency graph:** Infrastructure (P6-INFRA) → Database (P6-DB) → Ports & Adapters (P6-ADAPT) → Backend (P6-API) → Frontend (P6-UI). Testing (P6-TEST) runs in parallel with each layer.
 >
-> **Recommended implementation order:** P6-INFRA-01 → P6-INFRA-02 → P6-DB-01 → P6-DB-02 → P6-ADAPT-01 → P6-ADAPT-02 → P6-ADAPT-03 → P6-API-01 → P6-API-02 → P6-API-03 → P6-API-04 → P6-API-05 → P6-API-06 → P6-API-07 → P6-API-08 → P6-API-09 → P6-UI-01 → P6-UI-02 → P6-UI-03 → P6-UI-04
+> **Recommended implementation order:** P6-INFRA-01 → P6-INFRA-02 → P6-DB-01 → P6-DB-02 → P6-ADAPT-01 → P6-ADAPT-02 → P6-ADAPT-03 → P6-API-01 → P6-API-02 → P6-API-03 → P6-API-04 → P6-API-05 → P6-API-06 → P6-API-07 → P6-API-08 → P6-API-09 → P6-API-10 → P6-API-11 → P6-API-12 → P6-API-13 → P6-API-15 → P6-API-16 → P6-API-17 → P6-API-18 → P6-API-19 → P6-API-20 → P6-API-14 → P6-UI-01 → P6-UI-02 → P6-UI-03 → P6-UI-04
+>
+> **Note:** P6-API-14 (Pattern Mining) is placed last among API items due to XL size and dependency on graphology ecosystem. P6-API-19 (Rule Compiler) must precede P6-API-20 (Polyglot Mapping) since "Generate for Language" depends on the compiler.
 
 ---
 
@@ -791,17 +1627,28 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-INFRA-01: ast-grep Installation & Worker Configuration
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Add `@ast-grep/napi` as a dependency. This is the Node.js native binding for ast-grep, providing Tree-sitter-based structural search without spawning a separate process. Configure heavy-compute worker Docker image to include ast-grep native binaries.
 - **Files:**
   - `package.json` (modify — add `@ast-grep/napi`)
   - `Dockerfile.heavy-worker` or equivalent (modify — ensure native deps build)
 - **Testing:** `import { lang, parse } from '@ast-grep/napi'` works. Can parse TypeScript source and find patterns.
+- **Env vars (add to `env.mjs`):**
+  - `HYBRID_EVALUATION_ENABLED` — Enable two-pass semantic+syntactic evaluation (default: `true`)
+  - `JIT_INJECTION_ENABLED` — Enable context-aware rule RAG (default: `true`)
+  - `JIT_INJECTION_DEPTH` — Sub-graph traversal depth for JIT injection (default: `2`)
+  - `JIT_INJECTION_TOP_K` — Max rules returned by `get_relevant_rules` (default: `10`)
+  - `PATTERN_MINING_ENABLED` — Enable automated subgraph pattern mining (default: `false`)
+  - `PATTERN_MINING_MAX_ENTITIES` — Max entities for Louvain (default: `50000`)
+  - `RULE_DECAY_ENABLED` — Enable rule health tracking and auto-deprecation (default: `true`)
+  - `RULE_DECAY_THRESHOLD` — Decay score threshold for deprecation workflow (default: `0.6`)
+  - `RULE_EXCEPTION_DEFAULT_TTL_DAYS` — Default TTL for rule exceptions (default: `30`)
+  - `BLAST_RADIUS_ENABLED` — Enable blast radius simulation for STAGED rules (default: `true`)
 - **Notes:** `@ast-grep/napi` requires Node.js >=16 and a compatible native binary. The npm package includes pre-built binaries for major platforms (linux-x64, darwin-arm64). Docker worker uses linux-x64.
 
 ### P6-INFRA-02: Semgrep CLI Installation & Worker Configuration
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Ensure Semgrep CLI is available on heavy-compute workers. Semgrep is a Python-based tool distributed as a standalone binary via `pip install semgrep` or as a Docker image. The worker needs `semgrep` on `$PATH`.
 - **Options:**
   - **Option A (recommended):** Install `semgrep` via pip in the Docker build stage
@@ -818,7 +1665,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-DB-01: ArangoDB Indexes for Patterns & Rules
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Add composite indexes to the already-bootstrapped `patterns` and `rules` collections for efficient querying. These collections exist but only have the default `org_id`/`repo_id` tenant indexes from Phase 1.
 - **Indexes to add:**
   - `patterns`: `{ org_id, repo_id, status }`, `{ org_id, repo_id, type, adherence_rate }`
@@ -830,7 +1677,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-DB-02: Domain Types — RuleDoc & PatternDoc Expansion
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Replace the minimal `RuleDoc`, `PatternDoc`, `RuleFilter`, `PatternFilter` types in `lib/ports/types.ts` with complete typed interfaces as defined in § 1.2.4. Add Zod schemas for validation.
 - **Files:**
   - `lib/ports/types.ts` (modify — expand interfaces)
@@ -845,7 +1692,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-ADAPT-01: IGraphStore — Rules & Patterns Real Implementation
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Replace the stub implementations of `upsertRule`, `queryRules`, `upsertPattern`, `queryPatterns` in `ArangoGraphStore` with real AQL queries. Add new methods needed for rule resolution and pattern management.
 - **Methods to implement (existing stubs):**
   - `upsertRule(orgId, rule)` — Insert or update rule by `_key`. Validate via RuleSchema.
@@ -865,7 +1712,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-ADAPT-02: SemgrepPatternEngine — Real Implementation
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Replace the `NotImplementedError` stubs in `SemgrepPatternEngine` with real implementations that invoke Semgrep CLI and ast-grep.
 - **Implementation:**
   - `scanPatterns(workspacePath, rulesPath)`:
@@ -894,7 +1741,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-ADAPT-03: InMemoryGraphStore + FakePatternEngine — Test Fakes
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Update test fakes to implement the new methods.
 - **Changes:**
   - `InMemoryGraphStore`: Implement real `upsertRule`, `queryRules`, `upsertPattern`, `queryPatterns` using in-memory arrays with proper filtering, sorting, and deduplication. Implement new methods (`deleteRule`, `archiveRule`, `updatePatternStatus`, `getPatternByHash`).
@@ -910,7 +1757,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-API-01: Detection Catalog — ast-grep Query Library
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Create the built-in catalog of ast-grep queries organized by pattern type. These YAML files define the structural queries that the `astGrepScan` activity runs against the codebase.
 - **Initial catalog (TypeScript/JavaScript):**
   - `structural/zod-validation.yaml` — API route handlers using zod
@@ -932,7 +1779,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-API-02: Rule Resolution Logic
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Implement the hierarchical rule resolution algorithm as defined in § 1.2.5. This is the core logic used by `get_rules`, `check_rules`, and internally by Phase 7.
 - **Implementation:**
   - `resolveRules(ctx: RuleResolutionContext): Promise<RuleDoc[]>`
@@ -949,7 +1796,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-API-03: get_rules MCP Tool
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** New MCP tool that returns applicable rules for a given file/context. Primary integration point for the Bootstrap Rule pre-flight.
 - **Input schema:**
   - `filePath?: string` — File the agent is about to modify
@@ -964,7 +1811,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-API-04: check_rules MCP Tool
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** New MCP tool that validates proposed code against applicable rules. Runs Semgrep for rules with `semgrepRule` defined, returns violations.
 - **Input schema:**
   - `code: string` — The code to check (max 10KB)
@@ -986,7 +1833,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-API-05: check_patterns MCP Tool
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Agent sends proposed code → kap10 runs Semgrep rules from auto-detected patterns → returns violations with evidence and examples.
 - **Input schema:**
   - `code: string` — Code to check
@@ -1004,7 +1851,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-API-06: get_conventions MCP Tool
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Returns a summary of detected codebase conventions — active/pinned patterns with examples.
 - **Input schema:**
   - `category?: string` — Filter by pattern type (structural, naming, architectural, etc.)
@@ -1019,7 +1866,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-API-07: suggest_approach MCP Tool
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Agent asks "how should I implement this?" and receives a template based on existing patterns and similar code.
 - **Input schema:**
   - `task: string` — What the agent is about to implement
@@ -1039,7 +1886,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-API-08: detectPatternsWorkflow — Temporal Workflow
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Three-activity Temporal workflow for automated pattern detection: ast-grep scan → LLM rule synthesis → store patterns.
 - **Workflow definition:**
   - Input: `{ orgId, repoId, workspacePath }`
@@ -1061,7 +1908,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-API-09: Chaining detectPatterns After Indexing
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Modify `indexRepoWorkflow` and `incrementalIndexWorkflow` to chain `detectPatternsWorkflow` after successful completion. The chaining is non-blocking — the repo stays `ready` while pattern detection runs.
 - **Implementation:**
   - After the last activity in indexing workflow, start `detectPatternsWorkflow` as a child workflow (or `continueAsNew` with signal)
@@ -1075,7 +1922,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-API-10: REST API Routes for Rules & Patterns
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Dashboard API routes for managing rules and patterns.
 - **Routes:**
   - `GET /api/repos/{repoId}/rules` — List rules (filtered by type, scope, status)
@@ -1100,7 +1947,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-API-11: Bootstrap Rule Extension
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Update the Bootstrap Rule template in `lib/onboarding/bootstrap-rule.ts` to include pre-flight `get_rules` call and post-flight `check_rules` call.
 - **Changes:**
   - Pre-flight section: Add step "Call get_rules for the file you're about to modify. Follow ALL returned rules."
@@ -1111,13 +1958,184 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 - **Notes:** This is an additive change. Agents with older Bootstrap Rules still work but don't get rule injection.
 - **Blocked by:** P6-API-03, P6-API-04
 
+### P6-API-12: Hybrid Rule Evaluation Engine
+
+- [x] **Status:** Complete
+- **Size:** L
+- **Description:** Implement the two-pass evaluation engine (§ 1.4a). Pass 1 runs syntactic matching via ast-grep/Semgrep. Pass 2 enriches findings with Phase 4 `feature_area`/`business_value` from ArangoDB, applies semantic filters, and computes confidence scores. Reduces false positives on internal/test code.
+- **Implementation:**
+  - `evaluateHybrid(code, filePath, rules, orgContext)` function
+  - Semantic filter evaluation using MongoDB-like query syntax
+  - Confidence scoring based on justification data
+  - Fallback: if Phase 4 justifications are unavailable, trust syntactic results at 0.7 confidence
+- **Files:**
+  - `lib/rules/hybrid-evaluator.ts` (new)
+  - `lib/rules/semantic-filter.ts` (new)
+  - `lib/mcp/tools/rules.ts` (modify — integrate hybrid evaluation into `check_rules`)
+- **Testing:** Semantic filter correctly suppresses violations in test fixtures. Confidence scores increase with justification data. Rules without semantic filters pass through unchanged. Phase 4 data unavailable → graceful fallback.
+- **Blocked by:** P6-API-02, P6-API-04
+
+### P6-API-13: Context-Aware Rule RAG — `get_relevant_rules` MCP Tool
+
+- [x] **Status:** Complete
+- **Size:** L
+- **Description:** Implement the JIT Rule Injection tool (§ 1.4b). Instead of returning all matching rules, queries the 2-hop sub-graph around target entities to select only contextually relevant rules. Returns top-K rules scored by relevance.
+- **Input schema:**
+  - `entity_keys: string[]` — Entity keys the agent is about to modify
+  - `filePath?: string` — File path for path-glob matching
+  - `limit?: number` — Max rules to return (default: 10)
+- **Implementation:**
+  - Sub-graph traversal via `graphStore.traverseNeighbors()`
+  - Signal extraction: feature areas, design patterns, import boundaries
+  - Relevance scoring per rule (path match, feature area overlap, entity kind match)
+  - Top-K selection with minimum relevance threshold (0.3)
+- **Files:**
+  - `lib/rules/jit-injection.ts` (new)
+  - `lib/mcp/tools/rules.ts` (modify — register `get_relevant_rules` tool)
+  - `lib/mcp/tools/index.ts` (modify — register tool)
+- **Testing:** Returns fewer rules than `get_rules` for same context. Relevance scoring prioritizes path-matched rules. Entities with no graph neighbors → falls back to `get_rules`. Token savings ≥ 50% for repos with 100+ rules.
+- **Blocked by:** P6-API-02, P6-ADAPT-01
+
+### P6-API-14: Automated Subgraph Pattern Mining Workflow
+
+- [x] **Status:** Complete
+- **Size:** XL
+- **Description:** Implement the `patternMiningWorkflow` (§ 1.4c). Three-activity Temporal workflow: extract topology (heavy) → validate motifs via LLM (light) → store mined patterns (light). Discovers implicit unwritten rules from recurring graph topologies.
+- **Implementation:**
+  - Activity 1: `extractTopology` — Build graphology graph from ArangoDB, run Louvain community detection, extract normalized ego-graph motifs
+  - Activity 2: `validateMotifs` — Filter by frequency ≥ 3 and adherence ≥ 0.7, LLM generates human-readable descriptions
+  - Activity 3: `storeMinedPatterns` — Upsert to `mined_patterns` ArangoDB collection
+  - Workflow ID: `mine-patterns-{orgId}-{repoId}` (dedup)
+- **Dependencies:** `graphology`, `graphology-communities` (Louvain)
+- **Files:**
+  - `lib/temporal/workflows/mine-patterns.ts` (new)
+  - `lib/temporal/activities/pattern-mining.ts` (new)
+- **Testing:** Detects "every service has a companion factory" motif in sample graph. Filters out low-frequency noise. LLM timeout → motif stored without description. Re-mining preserves reviewed/dismissed motifs.
+- **Blocked by:** P6-ADAPT-01, P6-DB-01
+
+### P6-API-15: Auto-Remediation Generation
+
+- [x] **Status:** Complete
+- **Size:** M
+- **Description:** Implement the auto-remediation pipeline (§ 1.4d). When `check_rules` detects a `block`-level violation and the rule has an `astGrepFix` directive, generate an exact AST-based patch using ast-grep's `rewrite()` API.
+- **Implementation:**
+  - `autoRemediate(code, filePath, violations)` function
+  - ast-grep `rewrite()` via `@ast-grep/napi`
+  - Structural diff computation (unified diff format)
+  - Integrate into `check_rules` MCP tool response as `autoFixes` field
+  - RuleDoc extension: `astGrepFix` optional field
+- **Files:**
+  - `lib/rules/auto-remediation.ts` (new)
+  - `lib/mcp/tools/rules.ts` (modify — add autoFixes to check_rules response)
+  - `lib/ports/types.ts` (modify — add `astGrepFix` to RuleDoc)
+- **Testing:** Fix directive produces valid code. Structural diff is correct. Rules without fix directive → fallback to example. Multiple violations → multiple patches. ast-grep rewrite failure → graceful degradation.
+- **Blocked by:** P6-INFRA-01, P6-API-04
+
+### P6-API-16: Rule Decay & Health Ledger
+
+- [x] **Status:** Complete
+- **Size:** L
+- **Description:** Implement the Rule Health Ledger (§ 1.4e). Per-rule telemetry collection on every evaluation, violation, override, and false-positive report. Decay score computation. Deprecation workflow for decayed rules.
+- **Implementation:**
+  - `rule_health` ArangoDB collection with per-rule counters
+  - Telemetry hooks in `check_rules` and `evaluateHybrid`: increment counters on each evaluation
+  - `calculateDecayScore()` — weighted formula: override rate (40%), FP rate (30%), recency (20%), fix rate (10%)
+  - `ruleDeprecationWorkflow` — Temporal workflow: auto-downgrade enforcement (block → warn → suggest) after 3 consecutive senior overrides
+  - Dashboard health indicators: green/yellow/red/gray
+- **Files:**
+  - `lib/rules/health-ledger.ts` (new)
+  - `lib/rules/decay-score.ts` (new)
+  - `lib/temporal/workflows/rule-deprecation.ts` (new)
+  - `lib/temporal/activities/rule-decay.ts` (new)
+- **Testing:** Evaluation increments counter. Override increments override counter. Decay score ≥ 0.6 triggers deprecation. Auto-downgrade from block → warn. 3 senior overrides required. Decay score 0.0 for new rules.
+- **Blocked by:** P6-ADAPT-01, P6-API-04
+
+### P6-API-17: Blast Radius Simulation
+
+- [x] **Status:** Complete
+- **Size:** L
+- **Description:** Implement the `simulateRuleWorkflow` (§ 1.4f). Runs a `STAGED` rule against the entire codebase in background, producing an Impact Report with violation counts, affected files, affected teams, and business value breakdown.
+- **Implementation:**
+  - `status: "staged"` added to Rule status enum
+  - `simulateRuleWorkflow` — 3-activity Temporal workflow: scan workspace → enrich with ownership → generate impact report
+  - Impact Report stored in ArangoDB (`impact_reports` collection)
+  - Dashboard: Impact Report card on rule detail page with heatmap, team breakdown, sample violations
+  - Action buttons: Activate / Modify / Discard
+- **Files:**
+  - `lib/temporal/workflows/simulate-rule.ts` (new)
+  - `lib/temporal/activities/rule-simulation.ts` (new)
+  - `lib/rules/impact-report.ts` (new — report generation logic)
+- **Testing:** STAGED rule scanned against workspace. Impact report has correct violation count. Enrichment includes feature areas and authors. Report stored in ArangoDB. Activation changes status from staged → active.
+- **Blocked by:** P6-ADAPT-02, P6-API-02
+
+### P6-API-18: Time-Bound Exception Ledger
+
+- [x] **Status:** Complete
+- **Size:** M
+- **Description:** Implement the Exception Ledger (§ 1.4g). `RuleException` edges in ArangoDB with TTL-limited exemptions. Exception resolution during rule evaluation. Proactive MCP flagging for expiring exceptions.
+- **Implementation:**
+  - `rule_exceptions` ArangoDB edge collection
+  - `resolveExceptions()` — checks for active exceptions during violation evaluation, downgrades enforcement to `suggest` for excepted violations
+  - Expired exception auto-marking (status: expired)
+  - MCP `get_rules` enhancement: `expiringExceptions` field for exceptions within 7 days of expiry
+  - REST API: `POST /api/repos/{repoId}/rules/{ruleId}/exceptions` (grant), `DELETE ...` (revoke)
+  - Dashboard: Grant Exception button on violations, exception overview page, expiry alerts
+- **Files:**
+  - `lib/rules/exception-ledger.ts` (new)
+  - `app/api/repos/[repoId]/rules/[ruleId]/exceptions/route.ts` (new)
+  - `lib/mcp/tools/rules.ts` (modify — add expiringExceptions to get_rules)
+- **Testing:** Active exception downgrades enforcement. Expired exception → normal enforcement resumes. Expiring exceptions flagged in MCP. Grant + revoke API works. TTL picker creates correct expires_at.
+- **Blocked by:** P6-ADAPT-01, P6-DB-01
+
+### P6-API-19: LLM-Assisted Rule Compilation — `draft_architecture_rule` MCP Tool
+
+- [x] **Status:** Complete
+- **Size:** M
+- **Description:** Implement the Rule Compiler (§ 1.4h). New MCP tool that takes a natural language rule description and generates a validated ast-grep YAML rule via LLM `generateObject()`.
+- **Input schema:**
+  - `description: string` — Natural language rule requirement
+  - `examples?: string[]` — Example code snippets showing correct usage
+  - `language?: string` — Target language (default: "typescript")
+- **Implementation:**
+  - `AstGrepRuleSchema` Zod schema for structured LLM output
+  - LLM call with `generateObject()` + retry on validation failure
+  - YAML serialization via `yaml` package
+  - Validation via `patternEngine.validateSemgrepYaml()`
+  - Returns draft (not auto-created) for human review
+  - Draft includes: title, ast-grep query, Semgrep rule, fix directive, validation status
+- **Files:**
+  - `lib/rules/compiler.ts` (new)
+  - `lib/mcp/tools/rules.ts` (modify — register `draft_architecture_rule` tool)
+  - `lib/mcp/tools/index.ts` (modify — register tool)
+- **Testing:** Natural language → valid ast-grep YAML. Validation failure → retry succeeds. Invalid description → descriptive error. Generated rule catches expected violation in sample code. Token budget respected.
+- **Blocked by:** P6-ADAPT-02
+
+### P6-API-20: Polyglot Semantic Mapping
+
+- [x] **Status:** Complete
+- **Size:** XL
+- **Description:** Implement polyglot rule enforcement (§ 1.4i). Business Intent nodes in `rules` collection with `polyglot: true` link to `LanguageImplementation` edges carrying language-specific syntax payloads. Rule resolution dynamically selects the correct language implementation.
+- **Implementation:**
+  - `language_implementations` ArangoDB edge collection
+  - `polyglot` boolean field on RuleDoc
+  - `resolvePolyglotRules()` — queries language-specific edge for the target file's language, replaces generic rule fields with language payload
+  - Dashboard: Polyglot toggle on rule form, language tabs for per-language Semgrep/ast-grep/fix/examples
+  - "Generate for Language" button using Rule Compiler (P6-API-19)
+- **Files:**
+  - `lib/rules/polyglot-mapping.ts` (new)
+  - `lib/rules/resolver.ts` (modify — integrate polyglot resolution)
+  - `lib/ports/types.ts` (modify — add `polyglot`, `languages` to RuleDoc)
+  - `lib/adapters/arango-graph-store.ts` (modify — bootstrap `language_implementations` edge collection)
+- **Testing:** TypeScript file → TypeScript rule payload. Python file → Python payload. Unknown language → fallback to suggest. Polyglot toggle creates language edges. Language tab saves correct payload.
+- **Blocked by:** P6-ADAPT-01, P6-DB-01, P6-API-19
+
 ---
 
 ## 2.5 Frontend / UI Layer
 
 ### P6-UI-01: Pattern Library Page
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Dashboard page at `/repos/[repoId]/patterns` showing auto-detected patterns with adherence rates, evidence counts, and management actions.
 - **Design:**
   - Pattern cards grouped by type (structural, naming, architectural, etc.)
@@ -1138,7 +2156,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-UI-02: Rules Management Page
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Dashboard page at `/repos/[repoId]/rules` for creating, editing, and organizing rules.
 - **Design:**
   - Rule list grouped by scope (org, repo, path, branch, workspace)
@@ -1158,7 +2176,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-UI-03: Org-Level Rules Page
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Settings page at `/settings/rules` for managing org-wide rules that apply across all repos.
 - **Design:**
   - Same layout as repo rules but scoped to org
@@ -1173,7 +2191,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-UI-04: Dashboard Navigation Update
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Add "Patterns" and "Rules" to the repo sub-navigation in the dashboard.
 - **Files:**
   - `components/dashboard/dashboard-nav.tsx` (modify — add nav items)
@@ -1186,7 +2204,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-TEST-01: ast-grep Detection Accuracy
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Unit tests verifying that built-in catalog queries produce correct results on sample codebases.
 - **Test cases:**
   - Zod validation query: finds all route handlers, correctly identifies those with/without zod
@@ -1202,7 +2220,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-TEST-02: Semgrep Rule Execution
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Unit tests verifying Semgrep CLI invocation and result parsing.
 - **Test cases:**
   - Valid Semgrep rule catches violation in sample code
@@ -1217,7 +2235,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-TEST-03: Rule Resolution Logic
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Unit tests for the hierarchical rule resolution algorithm.
 - **Test cases:**
   - Org rule applies to all repos
@@ -1236,7 +2254,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-TEST-04: LLM Semgrep Rule Synthesis
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Unit tests for the LLM-powered Semgrep YAML generation from ast-grep detection results.
 - **Test cases:**
   - Valid detection input → Zod-valid SemgrepRuleSchema output
@@ -1252,7 +2270,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-TEST-05: detectPatternsWorkflow End-to-End
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Integration test for the full three-activity workflow: scan → synthesize → store.
 - **Test cases:**
   - Full pipeline on sample codebase → patterns stored with correct adherence rates
@@ -1268,7 +2286,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-TEST-06: MCP Tools — Rules & Patterns
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Unit tests for all five new MCP tools.
 - **Test cases:**
   - `get_rules`: returns rules for file path, empty path returns all, enforcement levels correct
@@ -1283,7 +2301,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-TEST-07: Pattern Stability Across Re-Detection
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Tests verifying that pattern status is preserved across multiple detection cycles.
 - **Test cases:**
   - Active pattern updated (adherence rate changes) but stays active
@@ -1299,7 +2317,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-TEST-08: REST API CRUD Operations
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Integration tests for the dashboard API routes.
 - **Test cases:**
   - Rules CRUD: create, read, update, archive, list with filters
@@ -1316,7 +2334,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-TEST-09: Bootstrap Rule Integration
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Verify that the updated Bootstrap Rule correctly instructs agents to use pre-flight and post-flight rule checks.
 - **Test cases:**
   - Generated Bootstrap Rule includes `get_rules` in pre-flight steps
@@ -1330,7 +2348,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 
 ### P6-TEST-10: Port Compliance — IPatternEngine Extension
 
-- [ ] **Status:** Not started
+- [x] **Status:** Complete
 - **Description:** Extend the port compliance test to cover the new `IPatternEngine` methods.
 - **Test cases:**
   - `FakePatternEngine` implements `scanWithAstGrep` and `validateSemgrepYaml`
@@ -1340,6 +2358,169 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 - **Files:**
   - `lib/di/__tests__/port-compliance.test.ts` (modify — extend `IPatternEngine` tests)
 - **Blocked by:** P6-ADAPT-02, P6-ADAPT-03
+
+### P6-TEST-11: Hybrid Rule Evaluation
+
+- [x] **Status:** Complete
+- **Description:** Tests for the two-pass evaluation engine.
+- **Test cases:**
+  - Syntactic pass produces raw findings
+  - Semantic pass enriches findings with feature_area and business_value
+  - Semantic filter suppresses violations in excluded feature areas (e.g., test fixtures)
+  - Confidence score increases when justification data exists
+  - Missing Phase 4 justification → fallback to syntactic confidence (0.7)
+  - Rules without semantic filter → pass-through unchanged
+  - Performance: semantic pass adds <50ms for 20 findings
+- **Files:**
+  - `lib/rules/__tests__/hybrid-evaluator.test.ts` (new)
+- **Blocked by:** P6-API-12
+
+### P6-TEST-12: JIT Rule Injection
+
+- [x] **Status:** Complete
+- **Description:** Tests for the context-aware rule selection.
+- **Test cases:**
+  - Returns fewer rules than full `get_rules` for same context
+  - Relevance scoring prioritizes path-matched rules
+  - Feature area overlap boosts relevance
+  - Entity kind match boosts relevance
+  - Minimum relevance threshold (0.3) filters irrelevant rules
+  - Entities with no graph neighbors → fallback to `get_rules`
+  - Token savings measurement: count returned rules × avg rule size
+  - Empty entity_keys → returns empty (not full dump)
+- **Files:**
+  - `lib/rules/__tests__/jit-injection.test.ts` (new)
+- **Blocked by:** P6-API-13
+
+### P6-TEST-13: Subgraph Pattern Mining
+
+- [x] **Status:** Complete
+- **Description:** Tests for the pattern mining workflow.
+- **Test cases:**
+  - Louvain community detection produces clusters
+  - Ego-graph extraction captures 1-hop neighborhoods
+  - Normalized shape hash is stable across different entity names
+  - Motif frequency ≥ 3 threshold filters noise
+  - Motif adherence ≥ 0.7 threshold filters low-adherence motifs
+  - LLM generates human-readable motif descriptions
+  - Re-mining preserves reviewed/dismissed motifs
+  - Workflow dedup by ID
+- **Files:**
+  - `lib/temporal/activities/__tests__/pattern-mining.test.ts` (new)
+  - `lib/temporal/workflows/__tests__/mine-patterns-workflow.test.ts` (new)
+- **Blocked by:** P6-API-14
+
+### P6-TEST-14: Auto-Remediation
+
+- [x] **Status:** Complete
+- **Description:** Tests for AST-based auto-fix generation.
+- **Test cases:**
+  - ast-grep fix directive produces valid fixed code
+  - Structural diff is correct (unified format)
+  - Multiple violations → multiple independent patches
+  - Rules without fix directive → fallback to manual suggestion
+  - ast-grep rewrite failure → graceful degradation (returns manual type)
+  - Fix preserves surrounding code (comments, whitespace outside fix zone)
+  - `check_rules` response includes `autoFixes` field
+  - Bootstrap Rule updated to reference autoFixes
+- **Files:**
+  - `lib/rules/__tests__/auto-remediation.test.ts` (new)
+- **Blocked by:** P6-API-15
+
+### P6-TEST-15: Rule Decay & Health Ledger
+
+- [x] **Status:** Complete
+- **Description:** Tests for the rule health telemetry and decay system.
+- **Test cases:**
+  - Evaluation increments evaluation counter
+  - Violation increments violation counter
+  - Override increments override counter and records author
+  - False positive report increments FP counter
+  - Decay score calculation: healthy rule (0.0–0.3), aging (0.3–0.6), decayed (0.6+)
+  - Deprecation workflow: 3 senior overrides → auto-downgrade (block → warn)
+  - Auto-downgrade: warn → suggest after further decay
+  - Review needed: suggest-level rule with high decay → flagged
+  - New rule: decay score = 0.0
+  - Dashboard health indicator colors match thresholds
+- **Files:**
+  - `lib/rules/__tests__/health-ledger.test.ts` (new)
+  - `lib/rules/__tests__/decay-score.test.ts` (new)
+- **Blocked by:** P6-API-16
+
+### P6-TEST-16: Blast Radius Simulation
+
+- [x] **Status:** Complete
+- **Description:** Tests for the simulation workflow and impact report.
+- **Test cases:**
+  - STAGED rule scanned against workspace → findings returned
+  - Impact report: correct violation count, affected file count
+  - Enrichment: findings include feature areas and last_modified_by
+  - Business value breakdown: groups violations by value
+  - Sample violations: first 10 findings included
+  - Estimated fix effort based on auto-remediable count
+  - Report stored in ArangoDB
+  - Activation: status changes from staged → active
+  - Modify: rule updated, re-simulation triggered
+  - Discard: rule deleted
+- **Files:**
+  - `lib/temporal/workflows/__tests__/simulate-rule-workflow.test.ts` (new)
+  - `lib/rules/__tests__/impact-report.test.ts` (new)
+- **Blocked by:** P6-API-17
+
+### P6-TEST-17: Exception Ledger
+
+- [x] **Status:** Complete
+- **Description:** Tests for time-bound rule exceptions.
+- **Test cases:**
+  - Active exception downgrades enforcement to `suggest`
+  - Expired exception → normal enforcement resumes
+  - Exception within 7 days of expiry → flagged in MCP `expiringExceptions`
+  - Grant exception via API → RuleException edge created
+  - Revoke exception → status set to `revoked`
+  - Multiple exceptions on same entity → most recent wins
+  - Exception with JIRA ticket → stored and returned
+  - TTL picker: 7/14/30/60/90 days → correct expires_at
+  - Exception audit trail: full history of grants/revocations
+- **Files:**
+  - `lib/rules/__tests__/exception-ledger.test.ts` (new)
+- **Blocked by:** P6-API-18
+
+### P6-TEST-18: LLM Rule Compilation
+
+- [x] **Status:** Complete
+- **Description:** Tests for the natural language → ast-grep YAML compiler.
+- **Test cases:**
+  - Natural language description → valid ast-grep YAML
+  - Generated YAML passes validation
+  - Generated rule catches expected violation in sample code
+  - Validation failure → retry with error context → success
+  - Invalid/vague description → descriptive error message
+  - Fix directive generated when possible
+  - Language parameter respected (TypeScript vs Python output)
+  - Draft returned (not auto-created) — human review required
+  - Token budget: input < 3K, output < 600
+- **Files:**
+  - `lib/rules/__tests__/compiler.test.ts` (new)
+- **Blocked by:** P6-API-19
+
+### P6-TEST-19: Polyglot Semantic Mapping
+
+- [x] **Status:** Complete
+- **Description:** Tests for cross-language rule enforcement.
+- **Test cases:**
+  - TypeScript file → TypeScript-specific Semgrep/ast-grep payloads
+  - Python file → Python-specific payloads
+  - Go file → Go-specific payloads
+  - Unknown/unsupported language → enforcement downgraded to `suggest`
+  - Polyglot rule without language edge for target language → informational only
+  - Non-polyglot rule → standard resolution (unchanged)
+  - Language edge creation via dashboard form
+  - "Generate for Language" button invokes Rule Compiler
+  - Rule resolution queries correct language edge
+  - Edge collection bootstrapped on schema init
+- **Files:**
+  - `lib/rules/__tests__/polyglot-mapping.test.ts` (new)
+- **Blocked by:** P6-API-20
 
 ---
 
@@ -1369,10 +2550,29 @@ lib/
   rules/
     schema.ts                       ← RuleSchema Zod definition with enums
     resolver.ts                     ← Hierarchical rule resolution algorithm
+    hybrid-evaluator.ts             ← Two-pass syntactic + semantic evaluation engine
+    semantic-filter.ts              ← MongoDB-like semantic filter evaluator
+    jit-injection.ts                ← Context-aware JIT rule selection (sub-graph traversal)
+    auto-remediation.ts             ← AST-based auto-fix patch generation via ast-grep fix:
+    health-ledger.ts                ← Per-rule telemetry tracking and counters
+    decay-score.ts                  ← Weighted decay score computation
+    impact-report.ts                ← Blast radius impact report generation
+    exception-ledger.ts             ← Time-bound RuleException edge management
+    compiler.ts                     ← LLM-assisted natural language → ast-grep YAML
+    polyglot-mapping.ts             ← Cross-language rule resolution with LanguageImplementation edges
     __tests__/
       resolver.test.ts              ← Resolution logic tests
+      hybrid-evaluator.test.ts      ← Two-pass evaluation tests
+      jit-injection.test.ts         ← JIT rule injection tests
+      auto-remediation.test.ts      ← Auto-fix generation tests
+      health-ledger.test.ts         ← Rule health telemetry tests
+      decay-score.test.ts           ← Decay score computation tests
+      impact-report.test.ts         ← Impact report tests
+      exception-ledger.test.ts      ← Exception TTL and resolution tests
+      compiler.test.ts              ← LLM rule compilation tests
+      polyglot-mapping.test.ts      ← Cross-language enforcement tests
   mcp/tools/
-    rules.ts                        ← get_rules, check_rules MCP tools
+    rules.ts                        ← get_rules, check_rules, get_relevant_rules, draft_architecture_rule
     patterns.ts                     ← check_patterns, get_conventions, suggest_approach
     __tests__/
       rules.test.ts                 ← Rules MCP tool tests
@@ -1380,12 +2580,21 @@ lib/
   temporal/
     workflows/
       detect-patterns.ts            ← detectPatternsWorkflow definition
+      mine-patterns.ts              ← patternMiningWorkflow (graph isomorphism + Louvain)
+      simulate-rule.ts              ← simulateRuleWorkflow (blast radius dry run)
+      rule-deprecation.ts           ← ruleDeprecationWorkflow (auto-downgrade decayed rules)
       __tests__/
         detect-patterns-workflow.test.ts
+        mine-patterns-workflow.test.ts
+        simulate-rule-workflow.test.ts
     activities/
       pattern-detection.ts          ← astGrepScan, llmSynthesizeRules, storePatterns
+      pattern-mining.ts             ← extractTopology, validateMotifs, storeMinedPatterns
+      rule-simulation.ts            ← scanWorkspace, enrichFindings, generateImpactReport
+      rule-decay.ts                 ← decayEvaluation, autoDowngrade activities
       __tests__/
         pattern-detection.test.ts   ← Activity tests
+        pattern-mining.test.ts      ← Mining activity tests
   onboarding/
     __tests__/
       bootstrap-rule-phase6.test.ts ← Bootstrap Rule update tests
@@ -1398,6 +2607,7 @@ app/
       rules/
         route.ts                    ← GET/POST rules
         [ruleId]/route.ts           ← PATCH/DELETE rule
+        [ruleId]/exceptions/route.ts ← POST/DELETE rule exceptions (grant/revoke)
         from-pattern/route.ts       ← POST promote pattern to rule
       rules/__tests__/
         rules-api.test.ts
@@ -1407,37 +2617,43 @@ app/
       rules/route.ts                ← GET/POST org-level rules
   (dashboard)/
     repos/[repoId]/
-      patterns/page.tsx             ← Pattern library UI
-      rules/page.tsx                ← Rules management UI
-      rules/new/page.tsx            ← Rule creation form
+      patterns/page.tsx             ← Pattern library UI (includes "Discovered" tab for mined patterns)
+      rules/page.tsx                ← Rules management UI (includes health indicators)
+      rules/new/page.tsx            ← Rule creation form (includes polyglot toggle + language tabs)
     settings/
       rules/page.tsx                ← Org-level rules management
 components/repo/
   pattern-card.tsx                  ← Pattern display card
   pattern-evidence.tsx              ← Evidence file:line list
   pattern-filters.tsx               ← Filter bar for patterns
-  rule-card.tsx                     ← Rule display card
-  rule-form.tsx                     ← Rule create/edit form
+  rule-card.tsx                     ← Rule display card (includes health indicator badge)
+  rule-form.tsx                     ← Rule create/edit form (includes polyglot tabs, fix directive)
   rule-filters.tsx                  ← Filter bar for rules
+  rule-health-badge.tsx             ← Green/yellow/red/gray health indicator
+  impact-report-card.tsx            ← Blast radius simulation results card
+  exception-manager.tsx             ← Grant/revoke/view rule exceptions
+  mined-pattern-card.tsx            ← Discovered motif card with mini sub-graph visualization
 ```
 
 ## Modified Files Summary
 
 ```
-lib/ports/types.ts                          ← Expand RuleDoc, PatternDoc, RuleFilter, PatternFilter
-lib/ports/graph-store.ts                    ← Add deleteRule, archiveRule, updatePatternStatus, getPatternByHash
+lib/ports/types.ts                          ← Expand RuleDoc, PatternDoc, RuleFilter, PatternFilter + add astGrepFix, polyglot, languages fields
+lib/ports/graph-store.ts                    ← Add deleteRule, archiveRule, updatePatternStatus, getPatternByHash, getRuleHealth, upsertMinedPattern, upsertImpactReport
 lib/ports/pattern-engine.ts                 ← Add scanWithAstGrep, validateSemgrepYaml
-lib/adapters/arango-graph-store.ts          ← Implement all rule/pattern methods (replace stubs), add indexes
+lib/adapters/arango-graph-store.ts          ← Implement all rule/pattern methods, add indexes, bootstrap rule_exceptions + language_implementations + mined_patterns + rule_health + impact_reports collections
 lib/adapters/semgrep-pattern-engine.ts      ← Replace NotImplementedError stubs with real Semgrep + ast-grep
 lib/di/fakes.ts                             ← Implement rule/pattern methods on InMemoryGraphStore, update FakePatternEngine
 lib/di/__tests__/port-compliance.test.ts    ← Extend IPatternEngine tests
-lib/mcp/tools/index.ts                      ← Register 5 new tools
+lib/mcp/tools/index.ts                      ← Register 8 new tools (get_rules, check_rules, check_patterns, get_conventions, suggest_approach, get_relevant_rules, draft_architecture_rule + mined patterns)
+lib/mcp/tools/rules.ts                      ← Integrate hybrid evaluation, autoFixes, expiringExceptions, JIT injection, rule compiler
 lib/temporal/workflows/index-repo.ts        ← Chain detectPatternsWorkflow
-lib/temporal/workflows/index.ts             ← Export detectPatternsWorkflow
-lib/temporal/activities/index.ts            ← Export pattern detection activities
-lib/onboarding/bootstrap-rule.ts            ← Add pre-flight get_rules + post-flight check_rules
+lib/temporal/workflows/index.ts             ← Export detectPatternsWorkflow, patternMiningWorkflow, simulateRuleWorkflow, ruleDeprecationWorkflow
+lib/temporal/activities/index.ts            ← Export pattern detection, mining, simulation, decay activities
+lib/onboarding/bootstrap-rule.ts            ← Add pre-flight get_rules + post-flight check_rules + autoFixes instruction
+lib/rules/resolver.ts                       ← Integrate polyglot resolution in resolveRules()
 components/dashboard/dashboard-nav.tsx       ← Add Patterns and Rules nav items
-package.json                                ← Add @ast-grep/napi dependency
+package.json                                ← Add @ast-grep/napi, execa, graphology-communities, yaml dependencies
 ```
 
 ---
@@ -1447,3 +2663,4 @@ package.json                                ← Add @ast-grep/napi dependency
 | Date | Author | Changes |
 |---|---|---|
 | 2026-02-21 | Phase 6 Design | Initial document. 7 user flows, 8 system logic sections, 10 failure scenarios, 8 latency budgets, phase bridge to Phase 7, 43 tracker items across 6 layers. |
+| 2026-02-21 | Phase 6 Enhancement | Added 10 canonical terms (Hybrid Rule Evaluation, JIT Rule Injection, Subgraph Pattern Mining, Auto-Remediation, Rule Health Ledger, Blast Radius Simulation, Rule Exception, Rule Compiler, Polyglot Semantic Mapping). Added 10 architectural sections (§ 1.4a–1.4j) with algorithms, schemas, and MCP tool designs. Added 9 API tracker items (P6-API-12 through P6-API-20). Added 9 test tracker items (P6-TEST-11 through P6-TEST-19). Added package recommendations table. Updated new/modified files summaries. Total: **61 tracker items.** |

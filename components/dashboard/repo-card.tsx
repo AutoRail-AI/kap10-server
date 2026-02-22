@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { ArrowRight, CheckCircle2, Download, ExternalLink, FolderGit2, GitPullRequest, RotateCw, Square } from "lucide-react"
+import { ArrowRight, CheckCircle2, Download, ExternalLink, FolderGit2, GitPullRequest, RotateCw, Shield, Square } from "lucide-react"
 import Link from "next/link"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -9,7 +9,7 @@ import { Progress } from "@/components/ui/progress"
 import { useRepoStatus } from "@/hooks/use-repo-status"
 import type { RepoRecord } from "@/lib/ports/relational-store"
 
-export function RepoCard({ repo, snapshotStatus }: { repo: RepoRecord; snapshotStatus?: "available" | "generating" | "failed" | null }) {
+export function RepoCard({ repo, snapshotStatus, snapshotVersion }: { repo: RepoRecord; snapshotStatus?: "available" | "generating" | "failed" | null; snapshotVersion?: number }) {
   const { status, progress, setStatus } = useRepoStatus(
     repo.id,
     repo.status,
@@ -176,6 +176,12 @@ export function RepoCard({ repo, snapshotStatus }: { repo: RepoRecord; snapshotS
                   <Badge variant="outline" className="h-5 gap-1 px-1.5 text-[10px] font-normal text-destructive border-destructive/30">
                     <Download className="h-2.5 w-2.5" />
                     Sync Failed
+                  </Badge>
+                )}
+                {snapshotStatus === "available" && snapshotVersion && snapshotVersion >= 2 && (
+                  <Badge variant="outline" className="h-5 gap-1 px-1.5 text-[10px] font-normal text-primary border-primary/30">
+                    <Shield className="h-2.5 w-2.5" />
+                    v2
                   </Badge>
                 )}
               </div>

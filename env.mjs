@@ -100,10 +100,40 @@ export const env = createEnv({
     DIRTY_OVERLAY_DEBOUNCE: z.string().optional().transform((val) => val ? parseInt(val, 10) : 2000),
     DIRTY_OVERLAY_PARSE_TIMEOUT: z.string().optional().transform((val) => val ? parseInt(val, 10) : 500),
 
+    // ── Phase 6: Pattern Enforcement & Rules Engine ──────────
+    HYBRID_EVALUATION_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val === "true").default("false"),
+    JIT_INJECTION_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val !== "false").default("true"),
+    JIT_INJECTION_DEPTH: z.string().optional().transform((val) => val ? parseInt(val, 10) : 2),
+    JIT_INJECTION_TOP_K: z.string().optional().transform((val) => val ? parseInt(val, 10) : 10),
+    PATTERN_MINING_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val === "true").default("false"),
+    PATTERN_MINING_MAX_ENTITIES: z.string().optional().transform((val) => val ? parseInt(val, 10) : 50000),
+    RULE_DECAY_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val !== "false").default("true"),
+    RULE_DECAY_THRESHOLD: z.string().optional().transform((val) => val ? parseFloat(val) : 0.6),
+    RULE_EXCEPTION_DEFAULT_TTL_DAYS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 30),
+    BLAST_RADIUS_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val !== "false").default("true"),
+
+    // ── Phase 7: PR Review Integration ────────────────────
+    CHECK_RUNS_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val !== "false").default("true"),
+    CLICK_TO_COMMIT_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val !== "false").default("true"),
+    CLICK_TO_COMMIT_MAX_SUGGESTIONS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 10),
+    BLAST_RADIUS_MAX_HOPS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 5),
+    BLAST_RADIUS_MAX_ENTITIES: z.string().optional().transform((val) => val ? parseInt(val, 10) : 20),
+    SEMANTIC_LGTM_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val === "true").default("false"),
+    SEMANTIC_LGTM_CALLER_THRESHOLD: z.string().optional().transform((val) => val ? parseInt(val, 10) : 5),
+    NUDGE_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val !== "false").default("true"),
+    NUDGE_DELAY_HOURS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 48),
+    ADR_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val === "true").default("false"),
+    ADR_SIGNIFICANCE_THRESHOLD: z.string().optional().transform((val) => val ? parseInt(val, 10) : 10),
+    ADR_MAX_PER_REPO_PER_DAY: z.string().optional().transform((val) => val ? parseInt(val, 10) : 1),
+
     // ── Graph Snapshots (Phase 10a — Local-First Intelligence) ────
     GRAPH_SNAPSHOT_BUCKET: z.string().optional().default("graph-snapshots"),
     GRAPH_SNAPSHOT_TTL_HOURS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 24),
     GRAPH_SYNC_CRON: z.string().optional().default("0 2 * * *"),
+
+    // ── Phase 10b: Pre-fetch & Local Intelligence ──────────────────
+    PREFETCH_REDIS_TTL_SECONDS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 300),
+    PREFETCH_EXPANSION_HOPS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 2),
 
     // ── MCP Server (Phase 2) ──────────────────────────────────────
     MCP_SERVER_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid MCP Server URL").optional(),
@@ -200,10 +230,37 @@ export const env = createEnv({
     DIRTY_OVERLAY_TTL: process.env.DIRTY_OVERLAY_TTL,
     DIRTY_OVERLAY_DEBOUNCE: process.env.DIRTY_OVERLAY_DEBOUNCE,
     DIRTY_OVERLAY_PARSE_TIMEOUT: process.env.DIRTY_OVERLAY_PARSE_TIMEOUT,
+    // Phase 6: Pattern Enforcement & Rules Engine
+    HYBRID_EVALUATION_ENABLED: process.env.HYBRID_EVALUATION_ENABLED,
+    JIT_INJECTION_ENABLED: process.env.JIT_INJECTION_ENABLED,
+    JIT_INJECTION_DEPTH: process.env.JIT_INJECTION_DEPTH,
+    JIT_INJECTION_TOP_K: process.env.JIT_INJECTION_TOP_K,
+    PATTERN_MINING_ENABLED: process.env.PATTERN_MINING_ENABLED,
+    PATTERN_MINING_MAX_ENTITIES: process.env.PATTERN_MINING_MAX_ENTITIES,
+    RULE_DECAY_ENABLED: process.env.RULE_DECAY_ENABLED,
+    RULE_DECAY_THRESHOLD: process.env.RULE_DECAY_THRESHOLD,
+    RULE_EXCEPTION_DEFAULT_TTL_DAYS: process.env.RULE_EXCEPTION_DEFAULT_TTL_DAYS,
+    BLAST_RADIUS_ENABLED: process.env.BLAST_RADIUS_ENABLED,
+    // Phase 7: PR Review Integration
+    CHECK_RUNS_ENABLED: process.env.CHECK_RUNS_ENABLED,
+    CLICK_TO_COMMIT_ENABLED: process.env.CLICK_TO_COMMIT_ENABLED,
+    CLICK_TO_COMMIT_MAX_SUGGESTIONS: process.env.CLICK_TO_COMMIT_MAX_SUGGESTIONS,
+    BLAST_RADIUS_MAX_HOPS: process.env.BLAST_RADIUS_MAX_HOPS,
+    BLAST_RADIUS_MAX_ENTITIES: process.env.BLAST_RADIUS_MAX_ENTITIES,
+    SEMANTIC_LGTM_ENABLED: process.env.SEMANTIC_LGTM_ENABLED,
+    SEMANTIC_LGTM_CALLER_THRESHOLD: process.env.SEMANTIC_LGTM_CALLER_THRESHOLD,
+    NUDGE_ENABLED: process.env.NUDGE_ENABLED,
+    NUDGE_DELAY_HOURS: process.env.NUDGE_DELAY_HOURS,
+    ADR_ENABLED: process.env.ADR_ENABLED,
+    ADR_SIGNIFICANCE_THRESHOLD: process.env.ADR_SIGNIFICANCE_THRESHOLD,
+    ADR_MAX_PER_REPO_PER_DAY: process.env.ADR_MAX_PER_REPO_PER_DAY,
     // Graph Snapshots
     GRAPH_SNAPSHOT_BUCKET: process.env.GRAPH_SNAPSHOT_BUCKET,
     GRAPH_SNAPSHOT_TTL_HOURS: process.env.GRAPH_SNAPSHOT_TTL_HOURS,
     GRAPH_SYNC_CRON: process.env.GRAPH_SYNC_CRON,
+    // Phase 10b: Pre-fetch
+    PREFETCH_REDIS_TTL_SECONDS: process.env.PREFETCH_REDIS_TTL_SECONDS,
+    PREFETCH_EXPANSION_HOPS: process.env.PREFETCH_EXPANSION_HOPS,
     // MCP Server
     MCP_SERVER_URL: process.env.MCP_SERVER_URL,
     MCP_SERVER_PORT: process.env.MCP_SERVER_PORT,

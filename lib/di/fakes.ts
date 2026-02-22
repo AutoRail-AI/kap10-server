@@ -14,8 +14,8 @@ import type { CostBreakdown, IObservability, ModelUsageEntry } from "@/lib/ports
 import type { IPatternEngine, PatternMatch } from "@/lib/ports/pattern-engine"
 import type { ApiKeyRecord, DeletionLogRecord, GitHubInstallationRecord, IRelationalStore, RepoRecord, WorkspaceRecord } from "@/lib/ports/relational-store"
 import type { IStorageProvider } from "@/lib/ports/storage-provider"
-import type { ADRDoc, BlueprintData, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, PaginatedResult, ProjectStats, SearchResult, SnippetDoc, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "@/lib/ports/types"
-import { validateLedgerTransition } from "@/lib/ports/types"
+import type { ADRDoc, BlueprintData, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, PrReviewCommentRecord, PrReviewRecord, ProjectStats, ReviewConfig, RuleDoc, RuleExceptionDoc, RuleHealthDoc, SearchResult, SnippetDoc, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "@/lib/ports/types"
+import { DEFAULT_REVIEW_CONFIG, validateLedgerTransition } from "@/lib/ports/types"
 import type { IVectorSearch } from "@/lib/ports/vector-search"
 import type { IWorkflowEngine } from "@/lib/ports/workflow-engine"
 
@@ -75,13 +75,82 @@ export class InMemoryGraphStore implements IGraphStore {
       .filter((e) => e.org_id === orgId && e.repo_id === repoId && e.file_path === filePath)
       .sort((a, b) => (Number(a.start_line) || 0) - (Number(b.start_line) || 0))
   }
-  async upsertRule(): Promise<void> {}
-  async queryRules(): Promise<never[]> {
-    return []
+  private rules = new Map<string, RuleDoc>()
+  private patterns = new Map<string, PatternDoc>()
+  private ruleHealth = new Map<string, RuleHealthDoc>()
+  private minedPatterns = new Map<string, MinedPatternDoc>()
+  private impactReports = new Map<string, ImpactReportDoc>()
+  private ruleExceptions = new Map<string, RuleExceptionDoc>()
+
+  async upsertRule(_orgId: string, rule: RuleDoc): Promise<void> {
+    this.rules.set(rule.id, rule)
   }
-  async upsertPattern(): Promise<void> {}
-  async queryPatterns(): Promise<never[]> {
-    return []
+  async queryRules(orgId: string, filter: { repoId?: string; status?: string; scope?: string; limit?: number }): Promise<RuleDoc[]> {
+    let results = Array.from(this.rules.values()).filter((r) => r.org_id === orgId)
+    if (filter.repoId) results = results.filter((r) => !r.repo_id || r.repo_id === filter.repoId)
+    if (filter.status) results = results.filter((r) => r.status === filter.status)
+    if (filter.scope) results = results.filter((r) => r.scope === filter.scope)
+    results.sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
+    return results.slice(0, filter.limit ?? 50)
+  }
+  async deleteRule(orgId: string, ruleId: string): Promise<void> {
+    const rule = this.rules.get(ruleId)
+    if (rule && rule.org_id === orgId) this.rules.delete(ruleId)
+  }
+  async archiveRule(orgId: string, ruleId: string): Promise<void> {
+    const rule = this.rules.get(ruleId)
+    if (rule && rule.org_id === orgId) rule.status = "archived"
+  }
+  async upsertPattern(_orgId: string, pattern: PatternDoc): Promise<void> {
+    this.patterns.set(pattern.id, pattern)
+  }
+  async queryPatterns(orgId: string, filter: { repoId?: string; status?: string; minConfidence?: number; limit?: number }): Promise<PatternDoc[]> {
+    let results = Array.from(this.patterns.values()).filter((p) => p.org_id === orgId)
+    if (filter.repoId) results = results.filter((p) => p.repo_id === filter.repoId)
+    if (filter.status) results = results.filter((p) => p.status === filter.status)
+    if (filter.minConfidence !== undefined) results = results.filter((p) => p.confidence >= filter.minConfidence!)
+    results.sort((a, b) => b.confidence - a.confidence)
+    return results.slice(0, filter.limit ?? 50)
+  }
+  async updatePatternStatus(orgId: string, patternId: string, status: string): Promise<void> {
+    const p = this.patterns.get(patternId)
+    if (p && p.org_id === orgId) (p as unknown as Record<string, unknown>).status = status
+  }
+  async getPatternByHash(orgId: string, repoId: string, hash: string): Promise<PatternDoc | null> {
+    return Array.from(this.patterns.values()).find((p) => p.org_id === orgId && p.repo_id === repoId && p.id === hash) ?? null
+  }
+  async getRuleHealth(orgId: string, ruleId: string): Promise<RuleHealthDoc | null> {
+    return Array.from(this.ruleHealth.values()).find((h) => h.org_id === orgId && h.rule_id === ruleId) ?? null
+  }
+  async upsertRuleHealth(_orgId: string, health: RuleHealthDoc): Promise<void> {
+    this.ruleHealth.set(health.id, health)
+  }
+  async upsertMinedPattern(_orgId: string, pattern: MinedPatternDoc): Promise<void> {
+    this.minedPatterns.set(pattern.id, pattern)
+  }
+  async queryMinedPatterns(orgId: string, repoId: string): Promise<MinedPatternDoc[]> {
+    return Array.from(this.minedPatterns.values())
+      .filter((p) => p.org_id === orgId && p.repo_id === repoId)
+      .sort((a, b) => b.confidence - a.confidence)
+  }
+  async upsertImpactReport(_orgId: string, report: ImpactReportDoc): Promise<void> {
+    this.impactReports.set(report.id, report)
+  }
+  async getImpactReport(orgId: string, ruleId: string): Promise<ImpactReportDoc | null> {
+    return Array.from(this.impactReports.values())
+      .filter((r) => r.org_id === orgId && r.rule_id === ruleId)
+      .sort((a, b) => b.generated_at.localeCompare(a.generated_at))[0] ?? null
+  }
+  async queryRuleExceptions(orgId: string, ruleId: string): Promise<RuleExceptionDoc[]> {
+    return Array.from(this.ruleExceptions.values())
+      .filter((e) => e.org_id === orgId && e.rule_id === ruleId && e.status === "active")
+  }
+  async upsertRuleException(_orgId: string, exception: RuleExceptionDoc): Promise<void> {
+    this.ruleExceptions.set(exception.id, exception)
+  }
+  async updateRuleException(orgId: string, exceptionId: string, status: string): Promise<void> {
+    const e = this.ruleExceptions.get(exceptionId)
+    if (e && e.org_id === orgId) (e as unknown as Record<string, unknown>).status = status
   }
   async upsertSnippet(): Promise<void> {}
   async querySnippets(): Promise<SnippetDoc[]> {
@@ -751,6 +820,77 @@ export class InMemoryRelationalStore implements IRelationalStore {
       r.onboardingPrNumber = prNumber
     }
   }
+
+  // Phase 7: PR Review CRUD
+  private prReviews: PrReviewRecord[] = []
+  private prReviewComments: PrReviewCommentRecord[] = []
+  private reviewConfigs = new Map<string, ReviewConfig>()
+
+  async createPrReview(data: {
+    repoId: string; prNumber: number; prTitle: string; prUrl: string; headSha: string; baseSha: string
+  }): Promise<PrReviewRecord> {
+    const rec: PrReviewRecord = {
+      id: `review-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      repoId: data.repoId,
+      prNumber: data.prNumber,
+      prTitle: data.prTitle,
+      prUrl: data.prUrl,
+      headSha: data.headSha,
+      baseSha: data.baseSha,
+      status: "pending",
+      checksPassed: 0,
+      checksWarned: 0,
+      checksFailed: 0,
+      reviewBody: null,
+      githubReviewId: null,
+      githubCheckRunId: null,
+      autoApproved: false,
+      errorMessage: null,
+      createdAt: new Date().toISOString(),
+      completedAt: null,
+    }
+    this.prReviews.push(rec)
+    return rec
+  }
+  async updatePrReview(id: string, data: Partial<Pick<PrReviewRecord, "status" | "checksPassed" | "checksWarned" | "checksFailed" | "reviewBody" | "githubReviewId" | "githubCheckRunId" | "autoApproved" | "errorMessage" | "completedAt">>): Promise<void> {
+    const r = this.prReviews.find((x) => x.id === id)
+    if (!r) return
+    Object.assign(r, data)
+  }
+  async getPrReview(id: string): Promise<PrReviewRecord | null> {
+    return this.prReviews.find((r) => r.id === id) ?? null
+  }
+  async getPrReviewByPrAndSha(repoId: string, prNumber: number, headSha: string): Promise<PrReviewRecord | null> {
+    return this.prReviews.find((r) => r.repoId === repoId && r.prNumber === prNumber && r.headSha === headSha) ?? null
+  }
+  async listPrReviews(repoId: string, opts?: { status?: string; limit?: number; cursor?: string }): Promise<{ items: PrReviewRecord[]; cursor: string | null; hasMore: boolean }> {
+    let filtered = this.prReviews.filter((r) => r.repoId === repoId)
+    if (opts?.status) filtered = filtered.filter((r) => r.status === opts.status)
+    filtered.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    const cursorIdx = opts?.cursor ? filtered.findIndex((r) => r.id === opts.cursor) + 1 : 0
+    const limit = opts?.limit ?? 20
+    const items = filtered.slice(cursorIdx, cursorIdx + limit)
+    const hasMore = cursorIdx + limit < filtered.length
+    return { items, cursor: items.length > 0 ? items[items.length - 1]!.id : null, hasMore }
+  }
+  async createPrReviewComment(data: Omit<PrReviewCommentRecord, "id" | "createdAt">): Promise<PrReviewCommentRecord> {
+    const rec: PrReviewCommentRecord = {
+      ...data,
+      id: `comment-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: new Date().toISOString(),
+    }
+    this.prReviewComments.push(rec)
+    return rec
+  }
+  async listPrReviewComments(reviewId: string): Promise<PrReviewCommentRecord[]> {
+    return this.prReviewComments.filter((c) => c.reviewId === reviewId)
+  }
+  async updateRepoReviewConfig(repoId: string, config: ReviewConfig): Promise<void> {
+    this.reviewConfigs.set(repoId, config)
+  }
+  async getRepoReviewConfig(repoId: string): Promise<ReviewConfig> {
+    return this.reviewConfigs.get(repoId) ?? { ...DEFAULT_REVIEW_CONFIG }
+  }
 }
 
 export class MockLLMProvider implements ILLMProvider {
@@ -828,6 +968,51 @@ export class FakeGitHost implements IGitHost {
   }
   async blame(): Promise<string | null> {
     return this.blameResult
+  }
+
+  // Phase 7: PR Review
+  postedReviews: Array<{ owner: string; repo: string; prNumber: number; review: unknown }> = []
+  postedComments: Array<{ owner: string; repo: string; prNumber: number; comment: unknown }> = []
+  checkRuns: Array<{ id: number; owner: string; repo: string; status: string; conclusion?: string; output?: unknown }> = []
+  issueComments: Array<{ owner: string; repo: string; issueNumber: number; body: string }> = []
+  branches: Array<{ owner: string; repo: string; name: string; fromSha: string }> = []
+  files: Array<{ owner: string; repo: string; branch: string; path: string; content: string }> = []
+  private nextCheckRunId = 1
+
+  async postReview(owner: string, repo: string, prNumber: number, review: { event: string; body: string; comments?: unknown[] }): Promise<{ reviewId: number }> {
+    this.postedReviews.push({ owner, repo, prNumber, review })
+    return { reviewId: this.postedReviews.length }
+  }
+  async postReviewComment(owner: string, repo: string, prNumber: number, comment: { path: string; line: number; body: string; commitId: string }): Promise<{ commentId: number }> {
+    this.postedComments.push({ owner, repo, prNumber, comment })
+    return { commentId: this.postedComments.length }
+  }
+  async getPullRequestFiles(): Promise<Array<{ filename: string; status: string; additions: number; deletions: number; patch?: string }>> {
+    return []
+  }
+  async createCheckRun(owner: string, repo: string, opts: { name: string; headSha: string; status: string }): Promise<{ checkRunId: number }> {
+    const id = this.nextCheckRunId++
+    this.checkRuns.push({ id, owner, repo, status: opts.status })
+    return { checkRunId: id }
+  }
+  async updateCheckRun(owner: string, repo: string, checkRunId: number, opts: { status: string; conclusion: string; output?: unknown }): Promise<void> {
+    const run = this.checkRuns.find((r) => r.id === checkRunId)
+    if (run) {
+      run.status = opts.status
+      run.conclusion = opts.conclusion
+      run.output = opts.output
+    }
+  }
+  async postIssueComment(owner: string, repo: string, issueNumber: number, body: string): Promise<{ commentId: number }> {
+    this.issueComments.push({ owner, repo, issueNumber, body })
+    return { commentId: this.issueComments.length }
+  }
+  async createBranch(owner: string, repo: string, branchName: string, fromSha: string): Promise<void> {
+    this.branches.push({ owner, repo, name: branchName, fromSha })
+  }
+  async createOrUpdateFile(owner: string, repo: string, branch: string, path: string, content: string): Promise<{ sha: string }> {
+    this.files.push({ owner, repo, branch, path, content })
+    return { sha: `fake-sha-${Date.now()}` }
   }
 }
 
@@ -1022,6 +1207,12 @@ export class FakePatternEngine implements IPatternEngine {
   }
   async matchRule(): Promise<PatternMatch[]> {
     return []
+  }
+  async scanWithAstGrep(): Promise<import("@/lib/ports/types").AstGrepResult[]> {
+    return []
+  }
+  async validateSemgrepYaml(): Promise<{ valid: boolean; errors: string[] }> {
+    return { valid: true, errors: [] }
   }
 }
 
