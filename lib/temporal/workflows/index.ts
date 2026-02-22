@@ -1,5 +1,7 @@
 /**
- * Temporal workflow exports (Phase 1).
+ * Temporal workflow exports.
+ * ALL workflows must be exported here so the Temporal worker bundle includes them.
+ * Missing exports cause "no such function is exported by the workflow bundle" errors.
  */
 
 export { indexRepoWorkflow, getProgressQuery } from "./index-repo"
@@ -8,3 +10,34 @@ export { deleteRepoWorkflow } from "./delete-repo"
 export type { DeleteRepoInput } from "./delete-repo"
 export { syncLocalGraphWorkflow } from "./sync-local-graph"
 export type { SyncLocalGraphInput } from "./sync-local-graph"
+export { detectPatternsWorkflow } from "./detect-patterns"
+export type { DetectPatternsInput } from "./detect-patterns"
+export { embedRepoWorkflow } from "./embed-repo"
+export type { EmbedRepoInput } from "./embed-repo"
+export { discoverOntologyWorkflow } from "./discover-ontology"
+export type { DiscoverOntologyInput } from "./discover-ontology"
+export { justifyRepoWorkflow } from "./justify-repo"
+export type { JustifyRepoInput } from "./justify-repo"
+export { generateHealthReportWorkflow } from "./generate-health-report"
+export type { HealthReportInput } from "./generate-health-report"
+export { incrementalIndexWorkflow } from "./incremental-index"
+export type { IncrementalIndexInput } from "./incremental-index"
+export { reconciliationWorkflow } from "./reconciliation"
+export type { ReconciliationInput } from "./reconciliation"
+export { reviewPrWorkflow } from "./review-pr"
+export type { ReviewPrInput } from "./review-pr"
+export { mergeLedgerWorkflow } from "./merge-ledger"
+export type { MergeLedgerInput } from "./merge-ledger"
+export { generateAdrWorkflow } from "./generate-adr"
+export type { GenerateAdrInput } from "./generate-adr"
+export { prFollowUpWorkflow } from "./pr-follow-up"
+export type { PrFollowUpInput } from "./pr-follow-up"
+export { minePatternsWorkflow } from "./mine-patterns"
+export type { MinePatternsInput } from "./mine-patterns"
+export { simulateRuleWorkflow } from "./simulate-rule"
+export type { SimulateRuleInput } from "./simulate-rule"
+export { ruleDeprecationWorkflow } from "./rule-deprecation"
+export type { RuleDeprecationInput } from "./rule-deprecation"
+export { cleanupWorkspacesWorkflow } from "./cleanup-workspaces"
+export { justifyEntityWorkflow } from "./justify-entity"
+export type { JustifyEntityInput } from "./justify-entity"

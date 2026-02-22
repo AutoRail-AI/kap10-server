@@ -10,6 +10,14 @@
 import { heartbeat } from "@temporalio/activity"
 import { getContainer } from "@/lib/di/container"
 
+/** Lazily create a PrismaClient with the DATABASE_URL from env */
+function getPrisma() {
+  const { PrismaClient } = require("@prisma/client") as typeof import("@prisma/client")
+  return new PrismaClient({
+    datasourceUrl: process.env.DATABASE_URL,
+  })
+}
+
 export interface UploadInput {
   orgId: string
   repoId: string
@@ -46,8 +54,7 @@ export async function uploadToStorage(input: UploadInput): Promise<{
   heartbeat(`Uploaded ${input.buffer.length} bytes to ${storagePath}`)
 
   // Upsert snapshot metadata via Prisma
-  const { PrismaClient } = require("@prisma/client") as typeof import("@prisma/client")
-  const prisma = new PrismaClient()
+  const prisma = getPrisma()
 
   try {
     await prisma.graphSnapshotMeta.upsert({
@@ -88,8 +95,7 @@ export async function updateSnapshotStatus(input: {
   repoId: string
   status: "generating" | "available" | "failed"
 }): Promise<void> {
-  const { PrismaClient } = require("@prisma/client") as typeof import("@prisma/client")
-  const prisma = new PrismaClient()
+  const prisma = getPrisma()
 
   try {
     await prisma.graphSnapshotMeta.upsert({

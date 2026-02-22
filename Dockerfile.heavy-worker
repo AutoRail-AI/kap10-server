@@ -23,8 +23,8 @@ COPY package.json pnpm-lock.yaml ./
 COPY patches ./patches
 RUN pnpm install
 
-# Pre-install scip-typescript globally so it doesn't npx-download each run
-RUN npx scip-typescript --version || true
+# Pre-install @sourcegraph/scip-typescript globally so it doesn't npx-download each run
+RUN npx @sourcegraph/scip-typescript --version || true
 
 COPY . .
 

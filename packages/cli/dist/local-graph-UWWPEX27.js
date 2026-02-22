@@ -33,6 +33,33 @@ function initSchema(db) {
       entity_key: String
     }
   `);
+  db.run(`
+    :create rules {
+      key: String
+      =>
+      name: String default "",
+      scope: String default "repo",
+      severity: String default "warn",
+      engine: String default "structural",
+      query: String default "",
+      message: String default "",
+      file_glob: String default "",
+      enabled: Bool default true,
+      repo_id: String default ""
+    }
+  `);
+  db.run(`
+    :create patterns {
+      key: String
+      =>
+      name: String default "",
+      kind: String default "",
+      frequency: Int default 0,
+      confidence: Float default 0.0,
+      exemplar_keys: String default "",
+      promoted_rule_key: String default ""
+    }
+  `);
 }
 
 // src/search-index.ts
@@ -110,6 +137,12 @@ var CozoGraphStore = class {
         `?[from_key, to_key, type] <- [[$from, $to, $type]] :put edges { from_key, to_key, type }`,
         { from: edge.from_key, to: edge.to_key, type: edge.type }
       );
+    }
+    if (envelope.rules && envelope.rules.length > 0) {
+      this.loadRules(envelope.rules);
+    }
+    if (envelope.patterns && envelope.patterns.length > 0) {
+      this.loadPatterns(envelope.patterns);
     }
     buildSearchIndex(this.db);
     this.loaded = true;
@@ -193,6 +226,98 @@ var CozoGraphStore = class {
     });
   }
   /**
+   * Bulk insert rules into CozoDB.
+   */
+  loadRules(rules) {
+    for (const rule of rules) {
+      this.db.run(
+        `?[key, name, scope, severity, engine, query, message, file_glob, enabled, repo_id] <- [[$key, $name, $scope, $severity, $engine, $query, $message, $fg, $enabled, $rid]]
+         :put rules { key => name, scope, severity, engine, query, message, file_glob, enabled, repo_id }`,
+        {
+          key: rule.key,
+          name: rule.name,
+          scope: rule.scope,
+          severity: rule.severity,
+          engine: rule.engine,
+          query: rule.query,
+          message: rule.message,
+          fg: rule.file_glob,
+          enabled: rule.enabled,
+          rid: rule.repo_id
+        }
+      );
+    }
+  }
+  /**
+   * Bulk insert patterns into CozoDB.
+   */
+  loadPatterns(patterns) {
+    for (const pattern of patterns) {
+      this.db.run(
+        `?[key, name, kind, frequency, confidence, exemplar_keys, promoted_rule_key] <- [[$key, $name, $kind, $freq, $conf, $ek, $prk]]
+         :put patterns { key => name, kind, frequency, confidence, exemplar_keys, promoted_rule_key }`,
+        {
+          key: pattern.key,
+          name: pattern.name,
+          kind: pattern.kind,
+          freq: pattern.frequency,
+          conf: pattern.confidence,
+          ek: pattern.exemplar_keys.join(","),
+          prk: pattern.promoted_rule_key
+        }
+      );
+    }
+  }
+  /**
+   * Check if rules exist in the local store.
+   */
+  hasRules() {
+    const result = this.db.run("?[key] := *rules[key, name, scope, severity, engine, query, message, fg, enabled, rid] :limit 1");
+    return result.rows.length > 0;
+  }
+  /**
+   * Get rules, optionally filtered by file path glob matching.
+   * Returns rules sorted by scope priority (workspace > branch > path > repo > org).
+   */
+  getRules(filePath) {
+    const result = this.db.run(
+      "?[key, name, scope, severity, engine, query, message, fg, enabled, rid] := *rules[key, name, scope, severity, engine, query, message, fg, enabled, rid], enabled = true"
+    );
+    const rules = result.rows.map((row) => {
+      const [key, name, scope, severity, engine, query, message, file_glob, enabled, repo_id] = row;
+      return { key, name, scope, severity, engine, query, message, file_glob, enabled, repo_id };
+    });
+    if (filePath) {
+      return rules.filter((rule) => {
+        if (!rule.file_glob) return true;
+        return matchGlob(filePath, rule.file_glob);
+      });
+    }
+    const scopePriority = { workspace: 5, branch: 4, path: 3, repo: 2, org: 1 };
+    rules.sort((a, b) => (scopePriority[b.scope] ?? 0) - (scopePriority[a.scope] ?? 0));
+    return rules;
+  }
+  /**
+   * Get all patterns.
+   */
+  getPatterns() {
+    const result = this.db.run(
+      "?[key, name, kind, freq, conf, ek, prk] := *patterns[key, name, kind, freq, conf, ek, prk]"
+    );
+    return result.rows.map((row) => {
+      const [key, name, kind, frequency, confidence, exemplarKeysStr, promoted_rule_key] = row;
+      return {
+        key,
+        name,
+        kind,
+        frequency,
+        confidence,
+        exemplar_keys: exemplarKeysStr ? exemplarKeysStr.split(",").filter(Boolean) : [],
+        promoted_rule_key
+      };
+    });
+  }
+  /**
    * Health check — always up for local store.
    */
   healthCheck() {
@@ -202,6 +327,10 @@ var CozoGraphStore = class {
     return this.loaded;
   }
 };
+function matchGlob(filePath, glob) {
+  const regex = glob.replace(/\./g, "\\.").replace(/\*\*/g, "{{GLOBSTAR}}").replace(/\*/g, "[^/]*").replace(/\{\{GLOBSTAR\}\}/g, ".*");
+  return new RegExp(`^${regex}$`).test(filePath);
+}
 export {
   CozoGraphStore
 };

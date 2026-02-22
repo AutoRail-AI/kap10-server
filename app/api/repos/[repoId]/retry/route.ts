@@ -46,12 +46,14 @@ export const POST = withAuth(async (req: NextRequest) => {
     return errorResponse("No matching GitHub installation", 400)
   }
 
-  const workflowId = `index-${orgId}-${repoId}`
+  // Cancel any existing workflow for this repo before starting a new one
+  const oldWorkflowId = repo.workflowId ?? `index-${orgId}-${repoId}`
   try {
-    await container.workflowEngine.cancelWorkflow(workflowId)
+    await container.workflowEngine.cancelWorkflow(oldWorkflowId)
   } catch {
     // may not be running
   }
+  const workflowId = `index-${orgId}-${repoId}-${Date.now()}`
   try {
     await container.workflowEngine.startWorkflow({
       workflowId,

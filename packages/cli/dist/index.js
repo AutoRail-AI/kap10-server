@@ -956,18 +956,33 @@ function registerPullCommand(program2) {
     mkdirSync5(MANIFESTS_DIR, { recursive: true });
     const snapshotPath = join10(SNAPSHOTS_DIR, `${repoId}.msgpack`);
     writeFileSync5(snapshotPath, buffer);
+    let ruleCount = 0;
+    let patternCount = 0;
+    let snapshotVersion = 1;
+    try {
+      const { unpack } = await import("msgpackr");
+      const envelope = unpack(buffer);
+      snapshotVersion = envelope.version ?? 1;
+      ruleCount = envelope.rules?.length ?? 0;
+      patternCount = envelope.patterns?.length ?? 0;
+    } catch {
+    }
     const manifest = {
       repoId,
       checksum,
       sizeBytes: buffer.length,
       entityCount,
       edgeCount,
+      ruleCount,
+      patternCount,
+      snapshotVersion,
       generatedAt,
       pulledAt: (/* @__PURE__ */ new Date()).toISOString(),
       snapshotPath
     };
     writeFileSync5(join10(MANIFESTS_DIR, `${repoId}.json`), JSON.stringify(manifest, null, 2));
-    console.log(`Done! ${entityCount} entities, ${edgeCount} edges`);
+    const v2Info = snapshotVersion >= 2 ? `, ${ruleCount} rules, ${patternCount} patterns` : "";
+    console.log(`Done! ${entityCount} entities, ${edgeCount} edges${v2Info}`);
     console.log(`Saved to ${snapshotPath}`);
   });
 }
@@ -1064,7 +1079,7 @@ var KAP10_DIR2 = join12(homedir4(), ".kap10");
 var SNAPSHOTS_DIR2 = join12(KAP10_DIR2, "snapshots");
 var MANIFESTS_DIR2 = join12(KAP10_DIR2, "manifests");
 function registerServeCommand(program2) {
-  program2.command("serve").description("Start local MCP server").option("--repo <repoId>", "Specific repo to serve (default: all pulled repos)").action(async (opts) => {
+  program2.command("serve").description("Start local MCP server").option("--repo <repoId>", "Specific repo to serve (default: all pulled repos)").option("--prefetch", "Enable predictive context pre-fetching (default: false)").option("--no-prefetch", "Disable predictive context pre-fetching").action(async (opts) => {
     const creds = getCredentials();
     if (!creds) {
       console.error("Not authenticated. Run: kap10 auth login");
@@ -1099,7 +1114,7 @@ function registerServeCommand(program2) {
       process.exit(1);
     }
     const db = new CozoDb();
-    const { CozoGraphStore } = await import("./local-graph-AJM6PEGS.js");
+    const { CozoGraphStore } = await import("./local-graph-UWWPEX27.js");
     const localGraph = new CozoGraphStore(db);
     for (const repoId of repoIds) {
       const manifest = getManifest(repoId);
@@ -1124,8 +1139,24 @@ function registerServeCommand(program2) {
       serverUrl: creds.serverUrl,
       apiKey: creds.apiKey
     });
-    const { QueryRouter } = await import("./query-router-KJCUB7F2.js");
-    const router = new QueryRouter(localGraph, cloudProxy);
+    let ruleEvaluator;
+    try {
+      const ruleEvalModule = await import("./rule-evaluator-PB46ITLW.js");
+      ruleEvaluator = ruleEvalModule.evaluateRules;
+    } catch {
+      console.warn("Rule evaluator not available \u2014 check_rules will use cloud fallback");
+    }
+    const { QueryRouter } = await import("./query-router-QW6NGQFQ.js");
+    const router = new QueryRouter(localGraph, cloudProxy, ruleEvaluator);
+    let prefetchManager = null;
+    if (opts.prefetch) {
+      const { PrefetchManager } = await import("./prefetch-UT52MZQS.js");
+      prefetchManager = new PrefetchManager({
+        serverUrl: creds.serverUrl,
+        apiKey: creds.apiKey
+      });
+      console.log("Prefetch enabled \u2014 predictive context pre-warming active");
+    }
     console.log("Starting MCP server on stdio...");
     const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
     const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
@@ -1144,7 +1175,9 @@ function registerServeCommand(program2) {
       { name: "semantic_search", description: "Semantic search (cloud)", inputSchema: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"] } },
       { name: "find_similar", description: "Find similar entities (cloud)", inputSchema: { type: "object", properties: { key: { type: "string" }, limit: { type: "number" } }, required: ["key"] } },
       { name: "get_project_stats", description: "Get project stats (cloud)", inputSchema: { type: "object", properties: {} } },
-      { name: "sync_local_diff", description: "Sync local changes (cloud)", inputSchema: { type: "object", properties: { diff: { type: "string" } }, required: ["diff"] } }
+      { name: "sync_local_diff", description: "Sync local changes (cloud)", inputSchema: { type: "object", properties: { diff: { type: "string" } }, required: ["diff"] } },
+      { name: "get_rules", description: "Get applicable rules for a file path", inputSchema: { type: "object", properties: { file_path: { type: "string", description: "Optional file path to filter rules by glob" } } } },
+      { name: "check_rules", description: "Check rules against file content (structural + naming, local evaluation)", inputSchema: { type: "object", properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path", "content"] } }
     ];
     server.setRequestHandler(
       { method: "tools/list" },
@@ -1155,6 +1188,13 @@ function registerServeCommand(program2) {
       async (request) => {
         const { name, arguments: args = {} } = request.params;
         const result = await router.execute(name, args);
+        if (prefetchManager && args.file_path && repoIds.length > 0) {
+          prefetchManager.onCursorChange({
+            filePath: args.file_path,
+            entityKey: args.key,
+            repoId: repoIds[0]
+          });
+        }
         return {
           content: [{ type: "text", text: JSON.stringify(result.content, null, 2) }],
           _meta: result._meta
@@ -1163,7 +1203,18 @@ function registerServeCommand(program2) {
     );
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("kap10 MCP server running on stdio");
+    if (prefetchManager) {
+      process.on("SIGINT", () => {
+        prefetchManager?.dispose();
+        process.exit(0);
+      });
+      process.on("SIGTERM", () => {
+        prefetchManager?.dispose();
+        process.exit(0);
+      });
+    }
+    const ruleInfo = localGraph.hasRules() ? ` (${localGraph.getRules().length} rules loaded)` : "";
+    console.error(`kap10 MCP server running on stdio \u2014 13 tools (9 local, 4 cloud)${ruleInfo}`);
   });
 }
 

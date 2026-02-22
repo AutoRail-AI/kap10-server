@@ -12,6 +12,7 @@ import {
   Zap,
 } from "lucide-react"
 import { useRouter } from "next/navigation"
+import { useEffect, useState } from "react"
 import { useTheme } from "next-themes"
 import { useAccountContext } from "@/components/providers/account-context"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -57,6 +58,11 @@ export function UserProfileMenu({ serverUser }: UserProfileMenuProps) {
     switchContext,
     isLoading,
   } = useAccountContext()
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   const user = serverUser
   const initials = getInitials(user?.name, user?.email)
@@ -67,33 +73,43 @@ export function UserProfileMenu({ serverUser }: UserProfileMenuProps) {
     await signOut({ fetchOptions: { onSuccess: () => router.push("/login") } })
   }
 
+  const triggerButton = (
+    <button
+      type="button"
+      className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      aria-label="Account menu"
+      disabled={isLoading}
+    >
+      <Avatar className="h-7 w-7 rounded-md">
+        {user?.image && (
+          <AvatarImage src={user.image} alt={user.name ?? "Avatar"} />
+        )}
+        <AvatarFallback className="rounded-md bg-rail-fade text-[10px] font-semibold text-white">
+          {initials}
+        </AvatarFallback>
+      </Avatar>
+      <div className="flex min-w-0 flex-1 flex-col text-left">
+        <span className="truncate text-xs font-medium text-foreground">
+          {contextLabel}
+        </span>
+        <span className="truncate text-[10px] text-muted-foreground">
+          {user?.email}
+        </span>
+      </div>
+      <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+    </button>
+  )
+
+  // Defer Radix DropdownMenu until after hydration to prevent useId() mismatch
+  // caused by Better Auth hooks resolving different data on server vs client
+  if (!mounted) {
+    return triggerButton
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="Account menu"
-          disabled={isLoading}
-        >
-          <Avatar className="h-7 w-7 rounded-md">
-            {user?.image && (
-              <AvatarImage src={user.image} alt={user.name ?? "Avatar"} />
-            )}
-            <AvatarFallback className="rounded-md bg-rail-fade text-[10px] font-semibold text-white">
-              {initials}
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex min-w-0 flex-1 flex-col text-left">
-            <span className="truncate text-xs font-medium text-foreground">
-              {contextLabel}
-            </span>
-            <span className="truncate text-[10px] text-muted-foreground">
-              {user?.email}
-            </span>
-          </div>
-          <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        </button>
+        {triggerButton}
       </DropdownMenuTrigger>
 
       <DropdownMenuContent

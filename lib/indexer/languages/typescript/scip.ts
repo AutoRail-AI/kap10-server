@@ -1,7 +1,7 @@
 /**
  * SCIP indexer for TypeScript/JavaScript.
  *
- * Runs `npx scip-typescript index` to produce a .scip file,
+ * Runs `npx @sourcegraph/scip-typescript index` to produce a .scip file,
  * then parses the protobuf output into ParsedEntity[] and ParsedEdge[].
  */
 import { execFile } from "node:child_process"
@@ -47,7 +47,7 @@ export async function runSCIPTypeScript(
     // Run scip-typescript
     await execFileAsync(
       "npx",
-      ["--yes", "scip-typescript", "index", "--output", outputFile],
+      ["--yes", "@sourcegraph/scip-typescript", "index", "--output", outputFile],
       {
         cwd: absRoot,
         timeout: SCIP_TIMEOUT_MS,

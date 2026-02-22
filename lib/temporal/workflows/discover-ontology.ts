@@ -6,7 +6,7 @@
  * Queue: light-llm-queue
  */
 
-import { ParentClosePolicy, proxyActivities, startChild } from "@temporalio/workflow"
+import { ParentClosePolicy, proxyActivities, startChild, workflowInfo } from "@temporalio/workflow"
 import type * as ontologyActivities from "../activities/ontology"
 import { justifyRepoWorkflow } from "./justify-repo"
 
@@ -43,7 +43,7 @@ export async function discoverOntologyWorkflow(input: DiscoverOntologyInput): Pr
 
   // Step 4: Chain to justification workflow
   await startChild(justifyRepoWorkflow, {
-    workflowId: `justify-${input.orgId}-${input.repoId}`,
+    workflowId: `justify-${input.orgId}-${input.repoId}-${workflowInfo().runId.slice(0, 8)}`,
     taskQueue: "light-llm-queue",
     args: [{ orgId: input.orgId, repoId: input.repoId }],
     parentClosePolicy: ParentClosePolicy.ABANDON,

@@ -16,6 +16,7 @@ export function RepoCard({ repo, snapshotStatus, snapshotVersion }: { repo: Repo
     repo.indexProgress ?? 0
   )
   const [loading, setLoading] = useState(false)
+  const [rateLimited, setRateLimited] = useState(false)
 
   const statusBadge =
     status === "ready"
@@ -45,10 +46,18 @@ export function RepoCard({ repo, snapshotStatus, snapshotVersion }: { repo: Repo
   const handleRestart = async (e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
+    if (loading || rateLimited) return
     setLoading(true)
     try {
-      await fetch(`/api/repos/${repo.id}/retry`, { method: "POST" })
-      setStatus("indexing")
+      const res = await fetch(`/api/repos/${repo.id}/retry`, { method: "POST" })
+      if (res.status === 429) {
+        setRateLimited(true)
+        setTimeout(() => setRateLimited(false), 60_000)
+        return
+      }
+      if (res.ok) {
+        setStatus("indexing")
+      }
     } finally {
       setLoading(false)
     }
@@ -121,11 +130,11 @@ export function RepoCard({ repo, snapshotStatus, snapshotVersion }: { repo: Repo
               size="sm"
               variant="outline"
               onClick={handleRestart}
-              disabled={loading}
+              disabled={loading || rateLimited}
               className="h-7 gap-1.5 text-xs"
             >
               <RotateCw className="h-3.5 w-3.5" />
-              Retry Justification
+              {rateLimited ? "Try again in 1 min" : "Retry Justification"}
             </Button>
           </>
         )}
@@ -141,11 +150,11 @@ export function RepoCard({ repo, snapshotStatus, snapshotVersion }: { repo: Repo
               size="sm"
               variant="outline"
               onClick={handleRestart}
-              disabled={loading}
+              disabled={loading || rateLimited}
               className="h-7 gap-1.5 text-xs"
             >
               <RotateCw className="h-3.5 w-3.5" />
-              Retry Embedding
+              {rateLimited ? "Try again in 1 min" : "Retry Embedding"}
             </Button>
           </>
         )}
@@ -216,11 +225,11 @@ export function RepoCard({ repo, snapshotStatus, snapshotVersion }: { repo: Repo
                 size="sm"
                 variant="outline"
                 onClick={handleRestart}
-                disabled={loading}
+                disabled={loading || rateLimited}
                 className="h-7 gap-1.5 px-2 text-xs"
               >
                 <RotateCw className="h-3 w-3" />
-                Re-index
+                {rateLimited ? "Try again in 1 min" : "Re-index"}
               </Button>
             </div>
           </div>
@@ -237,11 +246,11 @@ export function RepoCard({ repo, snapshotStatus, snapshotVersion }: { repo: Repo
               size="sm"
               variant="outline"
               onClick={handleRestart}
-              disabled={loading}
+              disabled={loading || rateLimited}
               className="h-7 gap-1.5 text-xs"
             >
               <RotateCw className="h-3.5 w-3.5" />
-              Re-index
+              {rateLimited ? "Try again in 1 min" : "Re-index"}
             </Button>
           </>
         )}

@@ -123,7 +123,7 @@ async function handlePushEvent(
     // SHA gap — there were pushes we missed. Trigger full re-index instead.
     await container.workflowEngine.startWorkflow({
       workflowFn: "indexRepoWorkflow",
-      workflowId: `reindex-${orgId}-${repoId}`,
+      workflowId: `reindex-${orgId}-${repoId}-${Date.now()}`,
       args: [{
         orgId,
         repoId,

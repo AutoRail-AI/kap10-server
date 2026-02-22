@@ -1,4 +1,4 @@
-import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild } from "@temporalio/workflow"
+import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild, workflowInfo } from "@temporalio/workflow"
 import type * as heavy from "../activities/indexing-heavy"
 import type * as light from "../activities/indexing-light"
 import { embedRepoWorkflow } from "./embed-repo"
@@ -96,11 +96,16 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     })
     progress = 95
 
+    // Derive unique child workflow IDs from the parent run ID so re-indexing
+    // never collides with previous runs
+    const { runId } = workflowInfo()
+    const suffix = runId.slice(0, 8)
+
     // Step 5: Fire-and-forget the embedding workflow (Phase 3)
     // Uses ParentClosePolicy.ABANDON so the embed workflow runs independently
     // even if this parent workflow completes/terminates.
     await startChild(embedRepoWorkflow, {
-      workflowId: `embed-${input.orgId}-${input.repoId}`,
+      workflowId: `embed-${input.orgId}-${input.repoId}-${suffix}`,
       taskQueue: "light-llm-queue",
       args: [{ orgId: input.orgId, repoId: input.repoId, lastIndexedSha: workspace.lastSha }],
       parentClosePolicy: ParentClosePolicy.ABANDON,
@@ -108,7 +113,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
 
     // Step 6: Fire-and-forget the local graph sync workflow (Phase 10a)
     await startChild(syncLocalGraphWorkflow, {
-      workflowId: `sync-${input.orgId}-${input.repoId}`,
+      workflowId: `sync-${input.orgId}-${input.repoId}-${suffix}`,
       taskQueue: "light-llm-queue",
       args: [{ orgId: input.orgId, repoId: input.repoId }],
       parentClosePolicy: ParentClosePolicy.ABANDON,
@@ -116,7 +121,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
 
     // Step 7: Fire-and-forget pattern detection workflow (Phase 6)
     await startChild(detectPatternsWorkflow, {
-      workflowId: `detect-patterns-${input.orgId}-${input.repoId}`,
+      workflowId: `detect-patterns-${input.orgId}-${input.repoId}-${suffix}`,
       taskQueue: "heavy-compute-queue",
       args: [{
         orgId: input.orgId,

@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 /**
- * Temporal heavy-compute worker (Phase 0: registers queue, no activities yet).
- * Phase 1+ will add prepareWorkspace, runSCIP, runSemgrep, astGrepScan.
+ * Temporal heavy-compute worker.
+ * Registers all CPU-bound activities on the heavy-compute-queue.
  *
  * Usage: pnpm temporal:worker:heavy
  * Connection retries with exponential backoff when Temporal server is not ready.
@@ -10,6 +10,11 @@
 import { NativeConnection, Worker } from "@temporalio/worker"
 import path from "node:path"
 import * as indexingHeavy from "@/lib/temporal/activities/indexing-heavy"
+import * as patternDetection from "@/lib/temporal/activities/pattern-detection"
+import * as patternMining from "@/lib/temporal/activities/pattern-mining"
+import * as incremental from "@/lib/temporal/activities/incremental"
+import * as review from "@/lib/temporal/activities/review"
+import * as ruleSimulation from "@/lib/temporal/activities/rule-simulation"
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233"
 const TASK_QUEUE = "heavy-compute-queue"
@@ -35,9 +40,18 @@ async function createWorkerWithRetry(): Promise<Worker> {
         taskQueue: TASK_QUEUE,
         connection,
         activities: {
-          prepareWorkspace: indexingHeavy.prepareWorkspace,
-          runSCIP: indexingHeavy.runSCIP,
-          parseRest: indexingHeavy.parseRest,
+          // Phase 1: Indexing (heavy)
+          ...indexingHeavy,
+          // Phase 5: Incremental indexing (heavy: pullAndDiff, reIndexBatch)
+          ...incremental,
+          // Phase 6: Pattern detection (heavy: astGrepScan)
+          ...patternDetection,
+          // Phase 6: Pattern mining (heavy)
+          ...patternMining,
+          // Phase 6: Rule simulation (heavy)
+          ...ruleSimulation,
+          // PR review (heavy: runChecksHeavy)
+          ...review,
         },
       })
       return worker

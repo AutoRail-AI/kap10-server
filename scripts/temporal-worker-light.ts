@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 /**
- * Temporal light-llm worker (Phase 0: registers queue, no activities yet).
- * Phase 1+ will add writeToArango, justifyEntity, etc.
+ * Temporal light-llm worker.
+ * Registers all network-bound / LLM / DB-write activities on the light-llm-queue.
  *
  * Usage: pnpm temporal:worker:light
  * Connection retries with exponential backoff when Temporal server is not ready.
@@ -12,6 +12,20 @@ import path from "node:path"
 import * as indexingLight from "@/lib/temporal/activities/indexing-light"
 import * as graphExport from "@/lib/temporal/activities/graph-export"
 import * as graphUpload from "@/lib/temporal/activities/graph-upload"
+import * as embedding from "@/lib/temporal/activities/embedding"
+import * as justification from "@/lib/temporal/activities/justification"
+import * as ontology from "@/lib/temporal/activities/ontology"
+import * as healthReport from "@/lib/temporal/activities/health-report"
+import * as driftAlert from "@/lib/temporal/activities/drift-alert"
+import * as ledgerMerge from "@/lib/temporal/activities/ledger-merge"
+import * as adrGeneration from "@/lib/temporal/activities/adr-generation"
+import * as ruleDecay from "@/lib/temporal/activities/rule-decay"
+import * as workspaceCleanup from "@/lib/temporal/activities/workspace-cleanup"
+import * as onboarding from "@/lib/temporal/activities/onboarding"
+import * as antiPattern from "@/lib/temporal/activities/anti-pattern"
+import * as review from "@/lib/temporal/activities/review"
+import * as incremental from "@/lib/temporal/activities/incremental"
+import * as patternDetection from "@/lib/temporal/activities/pattern-detection"
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233"
 const TASK_QUEUE = "light-llm-queue"
@@ -37,15 +51,38 @@ async function createWorkerWithRetry(): Promise<Worker> {
         taskQueue: TASK_QUEUE,
         connection,
         activities: {
-          writeToArango: indexingLight.writeToArango,
-          updateRepoError: indexingLight.updateRepoError,
-          deleteRepoData: indexingLight.deleteRepoData,
+          // Phase 1: Indexing (light)
+          ...indexingLight,
+          // Phase 3: Embedding
+          ...embedding,
+          // Phase 4: Ontology & Justification
+          ...ontology,
+          ...justification,
+          // Phase 4: Health reports
+          ...healthReport,
+          // Phase 5: Incremental indexing (light activities)
+          ...incremental,
+          // Phase 5: Drift detection
+          ...driftAlert,
+          // Phase 6: Pattern detection (light: llmSynthesizeRules, storePatterns)
+          ...patternDetection,
+          // Phase 6: Rule decay
+          ...ruleDecay,
+          // Phase 6: Anti-pattern
+          ...antiPattern,
+          // PR review (light: fetchDiff, runChecks, postReview, checkAndPostNudge)
+          ...review,
+          // Ledger merge
+          ...ledgerMerge,
+          // ADR generation
+          ...adrGeneration,
           // Phase 10a: Graph snapshot activities
-          queryCompactGraph: graphExport.queryCompactGraph,
-          serializeToMsgpack: graphExport.serializeToMsgpack,
-          uploadToStorage: graphUpload.uploadToStorage,
-          updateSnapshotStatus: graphUpload.updateSnapshotStatus,
-          notifyConnectedClients: graphUpload.notifyConnectedClients,
+          ...graphExport,
+          ...graphUpload,
+          // Workspace cleanup
+          ...workspaceCleanup,
+          // Onboarding
+          ...onboarding,
         },
       })
       return worker

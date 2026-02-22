@@ -16,7 +16,7 @@
  *   9. Set repo status to "ready"
  */
 
-import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild } from "@temporalio/workflow"
+import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild, workflowInfo } from "@temporalio/workflow"
 import type * as justificationActivities from "../activities/justification"
 import { generateHealthReportWorkflow } from "./generate-health-report"
 import type { JustificationDoc } from "@/lib/ports/types"
@@ -94,7 +94,7 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
 
     // Step 8: Chain to health report
     await startChild(generateHealthReportWorkflow, {
-      workflowId: `health-${input.orgId}-${input.repoId}`,
+      workflowId: `health-${input.orgId}-${input.repoId}-${workflowInfo().runId.slice(0, 8)}`,
       taskQueue: "light-llm-queue",
       args: [{ orgId: input.orgId, repoId: input.repoId }],
       parentClosePolicy: ParentClosePolicy.ABANDON,

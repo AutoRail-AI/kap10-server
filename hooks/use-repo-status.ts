@@ -7,8 +7,9 @@ export function useRepoStatus(repoId: string, initialStatus: string, initialProg
   const [progress, setProgress] = useState(initialProgress)
 
   useEffect(() => {
-    if (status !== "indexing") return
-    setProgress((prev) => (prev === 0 ? 0 : prev))
+    const activeStatuses = ["indexing", "embedding", "justifying"]
+    if (!activeStatuses.includes(status)) return
+
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`/api/repos/${repoId}/status`)
@@ -17,12 +18,12 @@ export function useRepoStatus(repoId: string, initialStatus: string, initialProg
         if (data) {
           setStatus(data.status ?? status)
           setProgress(data.progress ?? 0)
-          if (data.status !== "indexing") clearInterval(interval)
+          if (!activeStatuses.includes(data.status ?? "")) clearInterval(interval)
         }
       } catch {
         clearInterval(interval)
       }
-    }, 5000)
+    }, 8000)
     return () => clearInterval(interval)
   }, [repoId, status])
 
