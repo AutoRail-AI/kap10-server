@@ -118,10 +118,10 @@ export interface IGraphStore {
   getBatchSubgraphs(orgId: string, entityIds: string[], depth?: number): Promise<Map<string, SubgraphResult>>
 
   // Phase 4: Bulk fetch entities + edges for a repo
-  /** Get all entities for a repo */
-  getAllEntities(orgId: string, repoId: string): Promise<EntityDoc[]>
-  /** Get all edges for a repo */
-  getAllEdges(orgId: string, repoId: string): Promise<EdgeDoc[]>
+  /** Get all entities for a repo (default limit 10000 to prevent OOM) */
+  getAllEntities(orgId: string, repoId: string, limit?: number): Promise<EntityDoc[]>
+  /** Get all edges for a repo (default limit 20000 to prevent OOM) */
+  getAllEdges(orgId: string, repoId: string, limit?: number): Promise<EdgeDoc[]>
 
   // Phase 4: Token usage tracking
   /** Log a token usage entry */

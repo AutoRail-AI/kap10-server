@@ -31,7 +31,7 @@ export function RepoOnboardingConsole({
   errorMessage,
 }: RepoOnboardingConsoleProps) {
   const router = useRouter()
-  const { status, progress } = useRepoStatus(repoId, initialStatus, initialProgress)
+  const { status, progress, indexingStartedAt } = useRepoStatus(repoId, initialStatus, initialProgress)
   const isActive = ["indexing", "embedding", "justifying", "ontology", "pending"].includes(status)
   const isError = ERROR_STATUSES.includes(status)
   const isReady = status === "ready"
@@ -131,7 +131,7 @@ export function RepoOnboardingConsole({
             <PipelineLogViewer repoId={repoId} status={status} />
           </div>
           <div className="lg:col-span-1">
-            <WhatsHappeningPanel status={status} progress={progress} logs={logs} />
+            <WhatsHappeningPanel status={status} progress={progress} logs={logs} indexingStartedAt={indexingStartedAt} />
           </div>
         </div>
       )}

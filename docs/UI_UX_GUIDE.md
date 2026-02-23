@@ -930,6 +930,8 @@ Enterprise-grade pipeline experience shown on `/repos/[repoId]` while a reposito
 - ❌ `bg-muted/30` for cards — use `glass-card` or `glass-panel`
 - ❌ `text-xl` or `text-2xl` for page titles — `text-lg font-semibold` maximum
 - ❌ Rail Purple for body text (WCAG fail — use Cloud White)
+- ❌ Rail Purple (`text-primary`) for status labels or badges — contrast fails on Void Black. Use `text-warning` (#FFB800) for in-progress states, `text-electric-cyan` for active/intelligence states.
+- **Rule: When Rail Purple is used as a background (`bg-primary`, `bg-rail-fade`), text inside MUST be white (`text-white` or `text-primary-foreground`).** Purple background + purple text = invisible. Purple background + white text = readable.
 - ❌ Muted primary content text (descriptions, body, table content)
 - ❌ Light backgrounds anywhere
 - ❌ Cyan-to-purple gradient blending

@@ -1207,7 +1207,7 @@ packages/cli/src/                  ← @autorail/kap10 CLI package (shared acros
 lib/temporal/workflows/
   sync-local-graph.ts              ← syncLocalGraphWorkflow definition ✅
 lib/temporal/activities/
-  graph-export.ts                  ← queryCompactGraph, serializeToMsgpack, computeChecksum ✅
+  graph-export.ts                  ← queryAndSerializeCompactGraph (combined — entity/edge arrays stay in worker); legacy: queryCompactGraph, serializeToMsgpack ✅
   graph-upload.ts                  ← uploadToStorage, notifyConnectedClients (pending)
 lib/use-cases/
   graph-compactor.ts               ← Body truncation + edge key extraction ✅

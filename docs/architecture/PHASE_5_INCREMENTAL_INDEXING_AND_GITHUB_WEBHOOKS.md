@@ -1188,7 +1188,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
 
 - [x] **P5-DB-04: Ensure `lastIndexedSha` is updated by indexing activities** — S _(NOT YET: indexing-light.ts and index-repo.ts do not pass lastIndexedSha to updateRepoStatus)_
   - The existing `updateRepoStatus` method already accepts `lastIndexedSha` parameter but the indexing workflow never passes it
-  - Fix: Phase 1's `writeToArango` activity and Phase 5's `applyEntityDiffs` activity must pass `lastIndexedSha` when updating repo status
+  - Fix: Phase 1's `finalizeIndexing` activity (formerly `writeToArango`) and Phase 5's `applyEntityDiffs` activity must pass `lastIndexedSha` when updating repo status
   - **Test:** Full index → `lastIndexedSha` populated. Incremental index → `lastIndexedSha` updated to push `after` SHA. Verify via `getRepo()`.
   - **Depends on:** Nothing
   - **Files:** `lib/temporal/activities/indexing-light.ts` (modify), `lib/temporal/workflows/index-repo.ts` (modify)
@@ -1902,7 +1902,7 @@ supabase/migrations/
 ```
 app/api/webhooks/github/route.ts          ← Add push event handler (currently only handles installations)
 lib/temporal/activities/indexing-light.ts  ← Pass lastIndexedSha to updateRepoStatus
-lib/temporal/workflows/index-repo.ts      ← Pass lastIndexedSha after writeToArango
+lib/temporal/workflows/index-repo.ts      ← Pass lastIndexedSha after finalizeIndexing (formerly writeToArango)
 lib/ports/graph-store.ts                  ← Add entity-by-file, edge repair, index event methods
 lib/ports/git-host.ts                     ← Add pullLatest, diffFiles, getLatestSha methods
 lib/adapters/arango-graph-store.ts        ← Implement new methods + bootstrapGraphSchema additions + branch-aware queries

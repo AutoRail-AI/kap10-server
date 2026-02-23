@@ -5,6 +5,7 @@
 
 import { heartbeat } from "@temporalio/activity"
 import { getContainer } from "@/lib/di/container"
+import { writeEntitiesToGraph } from "@/lib/temporal/activities/graph-writer"
 import { diffEntitySets } from "@/lib/indexer/incremental"
 import { repairEdges } from "@/lib/indexer/edge-repair"
 import { buildCascadeQueue } from "@/lib/indexer/cascade"
@@ -57,22 +58,22 @@ export interface ReIndexBatchInput {
 }
 
 export interface ReIndexBatchResult {
-  entities: EntityDoc[]
-  edges: Array<{ _from: string; _to: string; kind: string; org_id: string; repo_id: string }>
+  entityIds: string[]
+  entityCount: number
+  edgeCount: number
   quarantined: Array<{ filePath: string; reason: string }>
 }
 
 /**
- * Re-index a batch of changed files to extract entities and edges.
- * Runs on heavy-compute-queue (CPU-bound extraction).
- * Uses the same language plugin pipeline as parseRest.
+ * Re-index a batch of changed files: extract entities/edges and write
+ * directly to ArangoDB. Returns only entity IDs and counts — no large
+ * payloads cross the Temporal boundary.
  */
 export async function reIndexBatch(input: ReIndexBatchInput): Promise<ReIndexBatchResult> {
   const fs = require("node:fs") as typeof import("node:fs")
   const path = require("node:path") as typeof import("node:path")
   const { getPluginForExtension } = require("@/lib/indexer/languages/registry") as typeof import("@/lib/indexer/languages/registry")
   const { initializeRegistry } = require("@/lib/indexer/languages/registry") as typeof import("@/lib/indexer/languages/registry")
-
   await initializeRegistry()
 
   const allEntities: EntityDoc[] = []
@@ -95,7 +96,6 @@ export async function reIndexBatch(input: ReIndexBatchInput): Promise<ReIndexBat
       async () => {
         const entities: EntityDoc[] = []
 
-        // Create file entity
         const fileId = entityHash(input.repoId, filePath, "file", filePath)
         entities.push({
           id: fileId,
@@ -106,7 +106,6 @@ export async function reIndexBatch(input: ReIndexBatchInput): Promise<ReIndexBat
           file_path: filePath,
         })
 
-        // Parse with language plugin if available
         const plugin = getPluginForExtension(ext)
         if (plugin) {
           const content = fs.readFileSync(fullPath, "utf-8")
@@ -117,7 +116,6 @@ export async function reIndexBatch(input: ReIndexBatchInput): Promise<ReIndexBat
             repoId: input.repoId,
           })
 
-          // Convert ParsedEntity to EntityDoc
           for (const pe of parsed.entities) {
             entities.push({
               id: pe.id,
@@ -136,7 +134,6 @@ export async function reIndexBatch(input: ReIndexBatchInput): Promise<ReIndexBat
             })
           }
 
-          // Convert ParsedEdge to edge docs + contains edges
           for (const pe of parsed.edges) {
             allEdges.push({
               _from: pe.from_id,
@@ -165,13 +162,29 @@ export async function reIndexBatch(input: ReIndexBatchInput): Promise<ReIndexBat
     allQuarantined.push(...result.quarantined)
   }
 
-  return { entities: allEntities, edges: allEdges, quarantined: allQuarantined }
+  // Write directly to ArangoDB — large payloads stay in the worker
+  const container = getContainer()
+  const writeResult = await writeEntitiesToGraph(
+    container,
+    input.orgId,
+    input.repoId,
+    allEntities,
+    allEdges as import("@/lib/ports/types").EdgeDoc[],
+  )
+
+  return {
+    entityIds: allEntities.map((e) => e.id),
+    entityCount: writeResult.entitiesWritten,
+    edgeCount: writeResult.edgesWritten,
+    quarantined: allQuarantined,
+  }
 }
 
 export interface ApplyEntityDiffsInput {
   orgId: string
   repoId: string
-  diff: EntityDiff
+  addedEntityIds: string[]
+  removedFilePaths: string[]
 }
 
 export interface ApplyEntityDiffsResult {
@@ -181,46 +194,67 @@ export interface ApplyEntityDiffsResult {
 }
 
 /**
- * Apply entity diffs to the graph store.
- * Runs on light-llm-queue (network I/O to ArangoDB).
+ * Finalize entity diffs: delete entities for removed files.
+ * Added/updated entities are already written by reIndexBatch.
+ * Only lightweight IDs/paths cross the Temporal boundary.
  */
 export async function applyEntityDiffs(input: ApplyEntityDiffsInput): Promise<ApplyEntityDiffsResult> {
   const container = getContainer()
   heartbeat("applying entity diffs")
 
-  // Delete removed entities
-  if (input.diff.deleted.length > 0) {
-    const deletedKeys = input.diff.deleted.map((e) => e.id)
-    await container.graphStore.batchDeleteEntities(input.orgId, deletedKeys)
-  }
-
-  // Upsert added and updated entities
-  const toUpsert = [...input.diff.added, ...input.diff.updated]
-  if (toUpsert.length > 0) {
-    await container.graphStore.bulkUpsertEntities(input.orgId, toUpsert)
+  let deletedCount = 0
+  if (input.removedFilePaths.length > 0) {
+    for (const filePath of input.removedFilePaths) {
+      const fileEntities = await container.graphStore.getEntitiesByFile(
+        input.orgId,
+        input.repoId,
+        filePath,
+      )
+      if (fileEntities.length > 0) {
+        const keys = fileEntities.map((e) => e.id)
+        await container.graphStore.batchDeleteEntities(input.orgId, keys)
+        deletedCount += keys.length
+      }
+    }
   }
 
   return {
-    entitiesAdded: input.diff.added.length,
-    entitiesUpdated: input.diff.updated.length,
-    entitiesDeleted: input.diff.deleted.length,
+    entitiesAdded: input.addedEntityIds.length,
+    entitiesUpdated: 0,
+    entitiesDeleted: deletedCount,
   }
 }
 
 export interface RepairEdgesInput {
   orgId: string
   repoId: string
-  diff: EntityDiff
+  changedEntityIds: string[]
+  removedFilePaths: string[]
 }
 
 /**
  * Repair broken edges after entity changes.
- * Runs on light-llm-queue.
+ * Fetches full entity data from ArangoDB internally — only IDs cross Temporal.
  */
 export async function repairEdgesActivity(input: RepairEdgesInput): Promise<{ edgesCreated: number; edgesDeleted: number }> {
   const container = getContainer()
   heartbeat("repairing edges")
-  return repairEdges(input.orgId, input.repoId, input.diff, container.graphStore)
+
+  // Build a lightweight diff from IDs by fetching entities from ArangoDB
+  const added: EntityDoc[] = []
+  for (const id of input.changedEntityIds) {
+    const entity = await container.graphStore.getEntity(input.orgId, id)
+    if (entity) added.push(entity)
+  }
+
+  const deleted: EntityDoc[] = []
+  for (const filePath of input.removedFilePaths) {
+    const entities = await container.graphStore.getEntitiesByFile(input.orgId, input.repoId, filePath)
+    deleted.push(...entities)
+  }
+
+  const diff: EntityDiff = { added, updated: [], deleted }
+  return repairEdges(input.orgId, input.repoId, diff, container.graphStore)
 }
 
 export interface UpdateEmbeddingsInput {

@@ -56,31 +56,16 @@ export async function discoverOntologyWorkflow(input: DiscoverOntologyInput): Pr
   const ctx = { organizationId: input.orgId, repoId: input.repoId }
   wfLog("INFO", "Ontology discovery workflow started", ctx, "Start")
 
-  // Step 1: Fetch entities
-  wfLog("INFO", "Step 1/4: Fetching entities", ctx, "Step 1/4")
-  const entities = await activities.fetchEntitiesForOntology({
+  // Step 1: Discover, refine, and store ontology (all in one activity — no large payloads)
+  wfLog("INFO", "Step 1/2: Discovering and storing ontology", ctx, "Step 1/2")
+  const { termCount } = await activities.discoverAndStoreOntology({
     orgId: input.orgId,
     repoId: input.repoId,
   })
-  wfLog("INFO", "Step 1 complete: entities fetched", { ...ctx, entityCount: entities.length }, "Step 1/4")
+  wfLog("INFO", "Step 1 complete: ontology stored", { ...ctx, termCount }, "Step 1/2")
 
-  // Step 2: Extract and refine ontology
-  wfLog("INFO", "Step 2/4: Extracting and refining ontology", ctx, "Step 2/4")
-  const ontology = await activities.extractAndRefineOntology(
-    { orgId: input.orgId, repoId: input.repoId },
-    entities
-  )
-  wfLog("INFO", "Step 2 complete: ontology refined", { ...ctx, termCount: ontology.terms.length }, "Step 2/4")
-
-  // Step 3: Store ontology
-  wfLog("INFO", "Step 3/4: Storing ontology", ctx, "Step 3/4")
-  await activities.storeOntology(
-    { orgId: input.orgId, repoId: input.repoId },
-    ontology
-  )
-
-  // Step 4: Chain to justification workflow
-  wfLog("INFO", "Step 4/4: Starting justification workflow", ctx, "Step 4/4")
+  // Step 2: Chain to justification workflow
+  wfLog("INFO", "Step 2/2: Starting justification workflow", ctx, "Step 2/2")
   await startChild(justifyRepoWorkflow, {
     workflowId: `justify-${input.orgId}-${input.repoId}-${workflowInfo().runId.slice(0, 8)}`,
     taskQueue: "light-llm-queue",

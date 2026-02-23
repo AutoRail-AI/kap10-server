@@ -56,10 +56,10 @@ async function RepoHeader({ repoId }: { repoId: string }) {
   const [projectStats, activeRules, patterns] = await Promise.all([
     container.graphStore.getProjectStats(orgId, repoId).catch(() => null),
     container.graphStore
-      .queryRules(orgId, { orgId, repoId, status: "active" })
+      .queryRules(orgId, { orgId, repoId, status: "active", limit: 100 })
       .catch(() => []),
     container.graphStore
-      .queryPatterns(orgId, { orgId, repoId })
+      .queryPatterns(orgId, { orgId, repoId, limit: 100 })
       .catch(() => []),
   ])
 
@@ -194,19 +194,30 @@ function StatusPill({ status }: { status: string }) {
     status === "error" ||
     status === "embed_failed" ||
     status === "justify_failed"
+  const isProcessing =
+    status === "indexing" ||
+    status === "embedding" ||
+    status === "justifying" ||
+    status === "ontology" ||
+    status === "pending"
+
+  const pillClasses = isError
+    ? "border border-destructive/30 bg-destructive/5 text-destructive"
+    : isProcessing
+      ? "border border-warning/30 bg-warning/5 text-warning"
+      : "border border-white/10 bg-white/5 text-white/60"
+
+  const dotClasses = isError
+    ? "bg-destructive"
+    : isProcessing
+      ? "bg-warning animate-pulse"
+      : "bg-white/30"
+
   return (
     <span
-      className={`ml-2 inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-        isError
-          ? "border border-destructive/30 bg-destructive/5 text-destructive"
-          : "border border-primary/30 bg-primary/5 text-primary"
-      }`}
+      className={`ml-2 inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${pillClasses}`}
     >
-      <span
-        className={`h-1.5 w-1.5 rounded-full ${
-          isError ? "bg-destructive" : "bg-primary animate-pulse"
-        }`}
-      />
+      <span className={`h-1.5 w-1.5 rounded-full ${dotClasses}`} />
       {status.replace("_", " ")}
     </span>
   )

@@ -1,9 +1,39 @@
 /**
  * Phase 6: Pattern detection activities for Temporal.
- * Three-step pipeline: astGrepScan (heavy) → llmSynthesizeRules (light) → storePatterns (light)
+ * Primary activity: scanSynthesizeAndStore (combined — no large payloads cross Temporal)
+ * Legacy pipeline: astGrepScan (heavy) → llmSynthesizeRules (light) → storePatterns (light)
  */
 
 import { heartbeat } from "@temporalio/activity"
+
+/**
+ * Combined activity: scan patterns, synthesize rules, and store — all in one step.
+ * Pattern evidence arrays stay inside the worker, only counts cross Temporal.
+ */
+export async function scanSynthesizeAndStore(input: AstGrepScanInput): Promise<{
+  patternsDetected: number
+  rulesGenerated: number
+}> {
+  const scanResult = await astGrepScan(input)
+  if (scanResult.detectedPatterns.length === 0) {
+    return { patternsDetected: 0, rulesGenerated: 0 }
+  }
+
+  const synthesizeResult = await llmSynthesizeRules({
+    orgId: input.orgId,
+    repoId: input.repoId,
+    detectedPatterns: scanResult.detectedPatterns,
+  })
+
+  const storeResult = await storePatterns({
+    orgId: input.orgId,
+    repoId: input.repoId,
+    detectedPatterns: scanResult.detectedPatterns,
+    synthesizedRules: synthesizeResult.synthesizedRules,
+  })
+
+  return { patternsDetected: storeResult.patternsStored, rulesGenerated: storeResult.rulesStored }
+}
 
 export interface AstGrepScanInput {
   orgId: string

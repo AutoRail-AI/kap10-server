@@ -81,6 +81,7 @@ export const POST = withAuth(async (req: NextRequest, { userId }) => {
       status: "indexing",
       workflowId,
       errorMessage: null,
+      indexingStartedAt: new Date(),
     })
     logger.info("Retry started: indexing workflow launched", { ...ctx, workflowId, previousStatus: repo.status })
   } catch (err: unknown) {

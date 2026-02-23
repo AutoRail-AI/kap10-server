@@ -110,6 +110,7 @@ export class PrismaRelationalStore implements IRelationalStore {
     const rows = await this.prisma.repo.findMany({
       where: { organizationId: orgId },
       orderBy: { createdAt: "desc" },
+      take: 200,
     })
     return rows.map((r) => this.mapRepo(r))
   }
@@ -655,7 +656,7 @@ export class PrismaRelationalStore implements IRelationalStore {
 
   async listPrReviewComments(reviewId: string): Promise<PrReviewCommentRecord[]> {
     const rows = await this.prisma.$queryRaw<Array<Record<string, unknown>>>`
-      SELECT * FROM kap10.pr_review_comments WHERE review_id = ${reviewId} ORDER BY created_at ASC
+      SELECT * FROM kap10.pr_review_comments WHERE review_id = ${reviewId} ORDER BY created_at ASC LIMIT 500
     `
     return rows.map((r) => ({
       id: String(r.id),

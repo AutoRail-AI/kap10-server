@@ -33,10 +33,10 @@ async function OverviewContent() {
   const [repos, activeRules, detectedPatterns] = await Promise.all([
     container.relationalStore.getRepos(activeOrgId),
     container.graphStore
-      .queryRules(activeOrgId, { orgId: activeOrgId, status: "active" })
+      .queryRules(activeOrgId, { orgId: activeOrgId, status: "active", limit: 100 })
       .catch(() => []),
     container.graphStore
-      .queryPatterns(activeOrgId, { orgId: activeOrgId })
+      .queryPatterns(activeOrgId, { orgId: activeOrgId, limit: 100 })
       .catch(() => []),
   ])
 

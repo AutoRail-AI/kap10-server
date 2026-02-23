@@ -649,7 +649,7 @@ Not all 38 checks need to run on every push. The system uses the **incremental i
   - Added imports for all 4 new check functions
   - Added to `Promise.all` with `.catch(() => [])` wrappers for graceful degradation
   - Extended return type with `trustBoundary`, `env`, `contract`, `idempotency`
-  - Passes `blastRadius` from `fetchDiff` to `runChecks` for contract check
+  - Passes `blastRadius` to checks for contract check. Note: `fetchDiff` and `runChecks` have since been combined into `fetchDiffAndRunChecks` to avoid serializing entity/diff arrays through Temporal.
   - **Files:** `lib/temporal/activities/review.ts`
 
 - [x] **ADV-PIPE-03: Format new finding types in comment builder** — S

@@ -759,7 +759,7 @@ Phase 10b is designed so that Phase 11 (Native IDE Integrations) requires **zero
   - **Depends on:** Phase 10a P10a-API-04, Phase 6 rules/patterns in ArangoDB
   - **Files:** `lib/temporal/activities/graph-export.ts` (modified)
   - **Acceptance:** Rules and patterns included in compact export. Org-level rules exported for all repos in the org.
-  - Notes: Extended `graph-export.ts` `queryCompactGraph()` to query rules via `graphStore.queryRules()` and patterns via `graphStore.queryPatterns()`. Enforcement→severity mapping: block→error, warn→warn, suggest→info. Graceful fallback on errors (returns empty arrays). 6 tests passing in `graph-export-v2.test.ts`.
+  - Notes: Extended `graph-export.ts` `queryCompactGraph()` (now `queryAndSerializeCompactGraph` — combined query+serialize to avoid passing large entity/edge arrays through Temporal) to query rules via `graphStore.queryRules()` and patterns via `graphStore.queryPatterns()`. Enforcement→severity mapping: block→error, warn→warn, suggest→info. Graceful fallback on errors (returns empty arrays). 6 tests passing in `graph-export-v2.test.ts`.
 
 - [x] **P10b-API-05: Update `serializeToMsgpack` to produce v2 envelope** — S
   - Bump snapshot version from 1 to 2 when rules or patterns are present
@@ -1049,7 +1049,7 @@ packages/cli/src/
   commands/pull.ts               ← Load rules/patterns from v2 snapshot
   commands/serve.ts              ← Pre-fetch integration + --prefetch flag
 lib/temporal/activities/
-  graph-export.ts                ← Export rules + patterns in queryCompactGraph
+  graph-export.ts                ← Export rules + patterns in queryAndSerializeCompactGraph (combined query+serialize)
 lib/use-cases/
   graph-serializer.ts            ← v2 envelope (version=2 when rules/patterns present)
 lib/temporal/workflows/

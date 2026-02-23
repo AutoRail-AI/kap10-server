@@ -1569,20 +1569,14 @@ Phase 7 establishes the review pipeline that Phase 8 (Usage-Based Billing) measu
 ### P7-API-08: reviewPrWorkflow — Temporal Workflow
 
 - [x] **Status:** Complete
-- **Description:** The four-activity Temporal workflow that orchestrates the PR review pipeline.
+- **Description:** PR review Temporal workflow. Originally four activities, now consolidated into two to avoid serializing large entity/diff arrays through Temporal's data converter.
 - **Workflow definition:**
   - Input: `{ orgId, repoId, prNumber, installationId, headSha, baseSha, owner, repo, reviewId }`
-  - Activity 1: `fetchDiff` (light-llm-queue, timeout: 30s, retry: 3×)
-  - Activity 2: `runSemgrep` (heavy-compute-queue, timeout: 60s, retry: 2×)
-  - Activity 3: `analyzeImpact` (light-llm-queue, timeout: 30s, retry: 3×)
-  - Activity 4: `postReview` (light-llm-queue, timeout: 30s, retry: 5× with exponential backoff)
+  - Activity 1: `fetchDiffAndRunChecks` (light-llm-queue, timeout: 120s, retry: 3×) — combined: fetches diff, maps to entities, computes blast radius, runs all 9 checks (pattern, impact, test, complexity, dependency, trust boundary, env, contract, idempotency). Only findings cross Temporal.
+  - Activity 2: `postReviewSelfSufficient` (light-llm-queue, timeout: 30s, retry: 5×) — re-fetches diff internally (PR-scoped, small), builds review, posts to GitHub, stores comments.
   - On success: Update PrReview status to `completed`
   - On failure (all retries exhausted): Update PrReview status to `failed` with error message
-- **Activities implementation:**
-  - `fetchDiff`: Call `IGitHost.getDiff()`, parse + filter, return parsed hunks
-  - `runSemgrep`: Fetch rules/patterns, run Semgrep, map to findings
-  - `analyzeImpact`: Run all checks (impact, test, complexity, dependency)
-  - `postReview`: Build comments, post to GitHub, store comments in Supabase
+- **Legacy activities** (still exported for backward compatibility): `fetchDiff`, `runChecks`, `postReview`
 - **Files:**
   - `lib/temporal/workflows/review-pr.ts` (new)
   - `lib/temporal/activities/review.ts` (new)
@@ -2222,7 +2216,7 @@ lib/
         generate-adr-workflow.test.ts
         pr-follow-up-workflow.test.ts
     activities/
-      review.ts                     ← fetchDiff, runSemgrep, analyzeImpact, postReview, postNudgeComment
+      review.ts                     ← fetchDiffAndRunChecks (combined), postReviewSelfSufficient (re-fetches diff), checkAndPostNudge; legacy: fetchDiff, runChecks, postReview
       ledger-merge.ts               ← fetchLedgerEntries, reparentLedgerEntries, createMergeNode
       adr-generation.ts             ← assessMergeSignificance, generateAdr, commitAdrPr
   use-cases/

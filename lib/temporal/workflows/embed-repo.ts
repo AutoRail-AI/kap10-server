@@ -6,11 +6,14 @@
  *
  * Steps:
  *   1. Set repo status to "embedding"
- *   2. Fetch all entities from ArangoDB
- *   3. Build embeddable documents (text + metadata)
- *   4. Generate embeddings + store in pgvector (batched, with heartbeat)
- *   5. Delete orphaned embeddings (entities removed since last embed)
- *   6. Set repo status to "ready"
+ *   2. Fetch file paths (lightweight — only string[], not full entities)
+ *   3. Process file batches: for each chunk of FILES_PER_BATCH files, call
+ *      processAndEmbedBatch which fetches entities, builds docs, embeds,
+ *      and stores — all inside the worker, never serializing large payloads
+ *      through Temporal's data converter.
+ *   4. Delete orphaned embeddings (entities removed since last embed)
+ *   5. Set repo status to "ready"
+ *   6. Chain to ontology discovery workflow
  *
  * On failure: set repo status to "embed_failed"
  */
@@ -32,6 +35,14 @@ const logActivities = proxyActivities<typeof pipelineLogs>({
   startToCloseTimeout: "5s",
   retry: { maximumAttempts: 1 },
 })
+
+/**
+ * Number of files to process per activity invocation. Kept small to prevent
+ * OOM on the light worker — the ONNX embedding model (~500MB) + entity data
+ * + inference tensors must fit within the container memory limit (6GB).
+ * 10 files ≈ 17 entities ≈ 2 embedding sub-batches — safe headroom.
+ */
+const FILES_PER_BATCH = 10
 
 export const getEmbedProgressQuery = defineQuery<number>("getEmbedProgress")
 
@@ -76,54 +87,67 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
 
   try {
     // Step 1: Set status to "embedding"
-    wfLog("INFO", "Step 1/7: Setting status to embedding", ctx, "Step 1/7")
+    wfLog("INFO", "Step 1/6: Setting status to embedding", ctx, "Step 1/6")
     await activities.setEmbeddingStatus({ orgId: input.orgId, repoId: input.repoId })
     progress = 5
 
-    // Step 2: Fetch all entities from ArangoDB
-    wfLog("INFO", "Step 2/7: Fetching entities", ctx, "Step 2/7")
-    const entities = await activities.fetchEntities({
+    // Step 2: Fetch file paths (lightweight — only string[])
+    wfLog("INFO", "Step 2/6: Fetching file paths", ctx, "Step 2/6")
+    const allFilePaths = await activities.fetchFilePaths({
       orgId: input.orgId,
       repoId: input.repoId,
     })
-    progress = 15
-    wfLog("INFO", "Step 2 complete: entities fetched", { ...ctx, entityCount: entities.length }, "Step 2/7")
+    progress = 10
+    wfLog("INFO", "Step 2 complete: file paths fetched", { ...ctx, fileCount: allFilePaths.length }, "Step 2/6")
 
-    // Step 3: Build embeddable documents
-    wfLog("INFO", "Step 3/7: Building embeddable documents", ctx, "Step 3/7")
-    const documents = await activities.buildDocuments(
-      { orgId: input.orgId, repoId: input.repoId },
-      entities
-    )
-    progress = 25
-    wfLog("INFO", "Step 3 complete: documents built", { ...ctx, documentCount: documents.length }, "Step 3/7")
+    // Step 3: Process file batches — chunk paths and fan out
+    const totalBatches = Math.max(1, Math.ceil(allFilePaths.length / FILES_PER_BATCH))
+    wfLog("INFO", `Step 3/6: Processing ${totalBatches} file batches (${FILES_PER_BATCH} files each)`, { ...ctx, totalBatches }, "Step 3/6")
 
-    // Step 4: Generate embeddings + store in pgvector
-    wfLog("INFO", "Step 4/7: Generating and storing embeddings", ctx, "Step 4/7")
-    const { embeddingsStored } = await activities.generateAndStoreEmbeds(
-      { orgId: input.orgId, repoId: input.repoId },
-      documents
-    )
+    let totalEmbeddingsStored = 0
+    const allEntityKeys: string[] = []
+
+    for (let i = 0; i < totalBatches; i++) {
+      const start = i * FILES_PER_BATCH
+      const batchPaths = allFilePaths.slice(start, start + FILES_PER_BATCH)
+
+      const result = await activities.processAndEmbedBatch(
+        { orgId: input.orgId, repoId: input.repoId },
+        batchPaths,
+        { index: i, total: totalBatches },
+      )
+
+      totalEmbeddingsStored += result.embeddingsStored
+      allEntityKeys.push(...result.entityKeys)
+
+      // Progress: 10% (after file paths) → 85% (after all batches)
+      progress = 10 + Math.round(((i + 1) / totalBatches) * 75)
+      wfLog("INFO", `Batch ${i + 1}/${totalBatches} complete`, {
+        ...ctx,
+        batchEmbeddings: result.embeddingsStored,
+        totalSoFar: totalEmbeddingsStored,
+      }, "Step 3/6")
+    }
+
     progress = 85
-    wfLog("INFO", "Step 4 complete: embeddings stored", { ...ctx, embeddingsStored }, "Step 4/7")
+    wfLog("INFO", "Step 3 complete: all batches embedded", { ...ctx, totalEmbeddingsStored }, "Step 3/6")
 
-    // Step 5: Delete orphaned embeddings
-    wfLog("INFO", "Step 5/7: Deleting orphaned embeddings", ctx, "Step 5/7")
-    const currentEntityKeys = documents.map((d) => d.entityKey)
+    // Step 4: Delete orphaned embeddings
+    wfLog("INFO", "Step 4/6: Deleting orphaned embeddings", ctx, "Step 4/6")
     const { deletedCount } = await activities.deleteOrphanedEmbeddings(
       { orgId: input.orgId, repoId: input.repoId },
-      currentEntityKeys
+      allEntityKeys,
     )
     progress = 95
-    wfLog("INFO", "Step 5 complete: orphans deleted", { ...ctx, deletedCount }, "Step 5/7")
+    wfLog("INFO", "Step 4 complete: orphans deleted", { ...ctx, deletedCount }, "Step 4/6")
 
-    // Step 6: Set status to "ready"
-    wfLog("INFO", "Step 6/7: Setting status to ready", ctx, "Step 6/7")
+    // Step 5: Set status to "ready"
+    wfLog("INFO", "Step 5/6: Setting status to ready", ctx, "Step 5/6")
     await activities.setReadyStatus({ orgId: input.orgId, repoId: input.repoId, lastIndexedSha: input.lastIndexedSha })
     progress = 98
 
-    // Step 7: Chain to ontology discovery + justification pipeline (Phase 4)
-    wfLog("INFO", "Step 7/7: Starting ontology discovery workflow", ctx, "Step 7/7")
+    // Step 6: Chain to ontology discovery + justification pipeline (Phase 4)
+    wfLog("INFO", "Step 6/6: Starting ontology discovery workflow", ctx, "Step 6/6")
     await startChild(discoverOntologyWorkflow, {
       workflowId: `ontology-${input.orgId}-${input.repoId}-${workflowInfo().runId.slice(0, 8)}`,
       taskQueue: "light-llm-queue",
@@ -132,9 +156,9 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
     })
     progress = 100
 
-    wfLog("INFO", "Embedding workflow complete", { ...ctx, embeddingsStored, orphansDeleted: deletedCount }, "Complete")
+    wfLog("INFO", "Embedding workflow complete", { ...ctx, embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount }, "Complete")
     logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
-    return { embeddingsStored, orphansDeleted: deletedCount }
+    return { embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     wfLog("ERROR", "Embedding workflow failed", { ...ctx, errorMessage: message }, "Error")

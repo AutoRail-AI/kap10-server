@@ -95,8 +95,8 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
 
     const pipe = await getEmbeddingPipeline()
 
-    // Process in batches to avoid OOM
-    const batchSize = parseInt(process.env.EMBEDDING_BATCH_SIZE ?? "100", 10)
+    // Process in batches to avoid OOM — ONNX allocates ~100MB of tensors per doc
+    const batchSize = parseInt(process.env.EMBEDDING_BATCH_SIZE ?? "8", 10)
     const allEmbeddings: number[][] = []
 
     for (let i = 0; i < texts.length; i += batchSize) {

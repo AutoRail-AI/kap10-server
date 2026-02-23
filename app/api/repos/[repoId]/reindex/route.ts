@@ -70,18 +70,20 @@ export const POST = withAuth(async (req: NextRequest) => {
       taskQueue: "heavy-compute-queue",
     })
 
-    // Shadow reindex: keep status as "ready" if already ready
+    const startedAt = new Date()
     if (repo.status === "ready") {
       await container.relationalStore.updateRepoStatus(repoId, {
         status: "ready",
         progress: 0,
         workflowId,
+        indexingStartedAt: startedAt,
       })
     } else {
       await container.relationalStore.updateRepoStatus(repoId, {
         status: "indexing",
         progress: 0,
         workflowId,
+        indexingStartedAt: startedAt,
       })
     }
 

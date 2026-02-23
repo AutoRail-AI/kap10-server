@@ -664,7 +664,7 @@ export class ArangoGraphStore implements IGraphStore {
   async queryRuleExceptions(orgId: string, ruleId: string): Promise<RuleExceptionDoc[]> {
     const db = await getDbAsync()
     const cursor = await db.query(
-      `FOR doc IN rule_exceptions FILTER doc.org_id == @orgId AND doc.rule_id == @ruleId AND doc.status == "active" RETURN doc`,
+      `FOR doc IN rule_exceptions FILTER doc.org_id == @orgId AND doc.rule_id == @ruleId AND doc.status == "active" LIMIT 500 RETURN doc`,
       { orgId, ruleId }
     )
     const docs = await cursor.all()
@@ -1055,6 +1055,7 @@ export class ArangoGraphStore implements IGraphStore {
       `
       FOR doc IN justifications
         FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.valid_to == null
+        LIMIT 10000
         RETURN doc
       `,
       { orgId, repoId }
@@ -1073,6 +1074,7 @@ export class ArangoGraphStore implements IGraphStore {
       FOR doc IN justifications
         FILTER doc.org_id == @orgId AND doc.entity_id == @entityId
         SORT doc.valid_from DESC
+        LIMIT 100
         RETURN doc
       `,
       { orgId, entityId }
@@ -1106,6 +1108,7 @@ export class ArangoGraphStore implements IGraphStore {
       `
       FOR doc IN features_agg
         FILTER doc.org_id == @orgId AND doc.repo_id == @repoId
+        LIMIT 500
         RETURN doc
       `,
       { orgId, repoId }
@@ -1198,6 +1201,7 @@ export class ArangoGraphStore implements IGraphStore {
       `
       FOR doc IN drift_scores
         FILTER doc.org_id == @orgId AND doc.repo_id == @repoId
+        LIMIT 5000
         RETURN doc
       `,
       { orgId, repoId }
@@ -1231,6 +1235,7 @@ export class ArangoGraphStore implements IGraphStore {
       `
       FOR doc IN adrs
         FILTER doc.org_id == @orgId AND doc.repo_id == @repoId
+        LIMIT 200
         RETURN doc
       `,
       { orgId, repoId }
@@ -1381,17 +1386,20 @@ export class ArangoGraphStore implements IGraphStore {
 
   // ── Phase 4: Bulk fetch all entities/edges ─────────────────────
 
-  async getAllEntities(orgId: string, repoId: string): Promise<EntityDoc[]> {
+  async getAllEntities(orgId: string, repoId: string, limit = 10000): Promise<EntityDoc[]> {
     const db = await getDbAsync()
     const results: EntityDoc[] = []
+    const perCollectionLimit = Math.ceil(limit / ALL_ENTITY_COLLECTIONS.length)
     for (const collName of ALL_ENTITY_COLLECTIONS) {
+      if (results.length >= limit) break
       const cursor = await db.query(
         `
         FOR doc IN @@coll
           FILTER doc.org_id == @orgId AND doc.repo_id == @repoId
+          LIMIT @lim
           RETURN doc
         `,
-        { "@coll": collName, orgId, repoId }
+        { "@coll": collName, orgId, repoId, lim: perCollectionLimit }
       )
       const docs = await cursor.all()
       for (const d of docs) {
@@ -1399,27 +1407,30 @@ export class ArangoGraphStore implements IGraphStore {
         results.push({ id: _key, ...rest } as EntityDoc)
       }
     }
-    return results
+    return results.slice(0, limit)
   }
 
-  async getAllEdges(orgId: string, repoId: string): Promise<EdgeDoc[]> {
+  async getAllEdges(orgId: string, repoId: string, limit = 20000): Promise<EdgeDoc[]> {
     const db = await getDbAsync()
     const results: EdgeDoc[] = []
+    const perCollectionLimit = Math.ceil(limit / EDGE_COLLECTIONS.length)
     for (const edgeName of EDGE_COLLECTIONS) {
+      if (results.length >= limit) break
       const cursor = await db.query(
         `
         FOR doc IN @@coll
           FILTER doc.org_id == @orgId AND doc.repo_id == @repoId
+          LIMIT @lim
           RETURN doc
         `,
-        { "@coll": edgeName, orgId, repoId }
+        { "@coll": edgeName, orgId, repoId, lim: perCollectionLimit }
       )
       const docs = await cursor.all()
       for (const d of docs) {
         results.push(d as EdgeDoc)
       }
     }
-    return results
+    return results.slice(0, limit)
   }
 
   // ── Phase 4: Token Usage Tracking ──────────────────────────────
@@ -1440,6 +1451,7 @@ export class ArangoGraphStore implements IGraphStore {
       FOR doc IN token_usage_log
         FILTER doc.org_id == @orgId AND doc.repo_id == @repoId
         SORT doc.created_at DESC
+        LIMIT 1000
         RETURN doc
       `,
       { orgId, repoId }
@@ -1759,6 +1771,7 @@ export class ArangoGraphStore implements IGraphStore {
         FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.branch == @branch
           AND doc.status NOT IN ["committed", "reverted"]
         SORT doc.created_at ASC
+        LIMIT 500
         RETURN doc
       `,
       { orgId, repoId, branch }

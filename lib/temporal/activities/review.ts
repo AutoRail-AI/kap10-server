@@ -32,6 +32,128 @@ import type {
 } from "@/lib/ports/types"
 import type { DiffFile } from "@/lib/review/diff-analyzer"
 
+/**
+ * Combined activity: fetch diff + run all checks in one step.
+ * Keeps large entity/diff arrays inside the worker — only findings cross Temporal.
+ */
+export async function fetchDiffAndRunChecks(input: {
+  orgId: string
+  repoId: string
+  owner: string
+  repo: string
+  baseSha: string
+  headSha: string
+  installationId: number
+}): Promise<{
+  hasChanges: boolean
+  findings: {
+    pattern: PatternFinding[]
+    impact: ImpactFinding[]
+    test: TestFinding[]
+    complexity: ComplexityFinding[]
+    dependency: DependencyFinding[]
+    trustBoundary: TrustBoundaryFinding[]
+    env: EnvFinding[]
+    contract: ContractFinding[]
+    idempotency: IdempotencyFinding[]
+  }
+  filePaths: string[]
+}> {
+  const container = getContainer()
+  const token = await container.gitHost.getInstallationToken(input.installationId)
+  const rawDiff = await container.gitHost.getDiff(input.owner, input.repo, input.baseSha, input.headSha)
+  const result = await analyzeDiff(rawDiff, input.orgId, input.repoId, container.graphStore)
+
+  if (result.files.length === 0) {
+    return {
+      hasChanges: false,
+      findings: { pattern: [], impact: [], test: [], complexity: [], dependency: [], trustBoundary: [], env: [], contract: [], idempotency: [] },
+      filePaths: [],
+    }
+  }
+
+  let blastRadius: BlastRadiusSummary[] = []
+  try {
+    blastRadius = await buildBlastRadiusSummary(input.orgId, result.affectedEntities, container.graphStore)
+  } catch (error: unknown) {
+    console.error("[fetchDiffAndRunChecks] blast radius failed:", error instanceof Error ? error.message : String(error))
+  }
+
+  const config = await container.relationalStore.getRepoReviewConfig(input.orgId)
+  const os = await import("node:os")
+  const path = await import("node:path")
+  const workspacePath = path.join(os.tmpdir(), "kap10-workspaces", input.orgId, input.repoId)
+
+  const [pattern, impact, test, complexity, dependency, trustBoundary, env, contract, idempotency] = await Promise.all([
+    runPatternCheck(input.orgId, input.repoId, result.files, workspacePath, container.graphStore, container.patternEngine, config),
+    runImpactCheck(input.orgId, result.affectedEntities, container.graphStore, config),
+    runTestCheck(result.files, workspacePath, config),
+    runComplexityCheck(result.affectedEntities, config),
+    runDependencyCheck(input.orgId, input.repoId, result.files, workspacePath, container.graphStore, config),
+    runTrustBoundaryCheck(input.orgId, input.repoId, result.affectedEntities, container.graphStore, config).catch(() => [] as TrustBoundaryFinding[]),
+    runEnvCheck(result.files as unknown as Array<{ path: string; hunks: Array<{ content: string; newStart: number }> }>, workspacePath, config).catch(() => [] as EnvFinding[]),
+    runContractCheck(input.orgId, result.affectedEntities, blastRadius, config).catch(() => [] as ContractFinding[]),
+    runIdempotencyCheck(input.orgId, input.repoId, result.affectedEntities, container.graphStore, config).catch(() => [] as IdempotencyFinding[]),
+  ])
+
+  return {
+    hasChanges: true,
+    findings: { pattern, impact, test, complexity, dependency, trustBoundary, env, contract, idempotency },
+    filePaths: result.files.map((f) => f.filePath),
+  }
+}
+
+/**
+ * Self-sufficient post-review: re-fetches diff and entities from source
+ * to build the review and post to GitHub. Only findings and metadata
+ * come from the workflow.
+ */
+export async function postReviewSelfSufficient(input: {
+  orgId: string
+  repoId: string
+  reviewId: string
+  owner: string
+  repo: string
+  prNumber: number
+  headSha: string
+  baseSha: string
+  installationId: number
+  findings: {
+    pattern: PatternFinding[]
+    impact: ImpactFinding[]
+    test: TestFinding[]
+    complexity: ComplexityFinding[]
+    dependency: DependencyFinding[]
+    trustBoundary?: TrustBoundaryFinding[]
+    env?: EnvFinding[]
+    contract?: ContractFinding[]
+    idempotency?: IdempotencyFinding[]
+  }
+}): Promise<void> {
+  const container = getContainer()
+
+  // Re-fetch diff + entities (PR-scoped, typically small)
+  const rawDiff = await container.gitHost.getDiff(input.owner, input.repo, input.baseSha, input.headSha)
+  const diffResult = await analyzeDiff(rawDiff, input.orgId, input.repoId, container.graphStore)
+
+  let blastRadius: BlastRadiusSummary[] = []
+  try {
+    blastRadius = await buildBlastRadiusSummary(input.orgId, diffResult.affectedEntities, container.graphStore)
+  } catch {
+    // Non-critical
+  }
+
+  // Delegate to existing postReview logic
+  await postReview({
+    ...input,
+    diffFiles: diffResult.files,
+    affectedEntities: diffResult.affectedEntities,
+    findings: input.findings,
+    blastRadius,
+  })
+}
+
+/** @deprecated Use fetchDiffAndRunChecks instead. */
 export async function fetchDiff(input: {
   orgId: string
   repoId: string

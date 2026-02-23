@@ -248,11 +248,11 @@ sequenceDiagram
 | `prepareWorkspace` | `heavy-compute-queue` | 30 min | 2 min | 3× with backoff | Full git clone via `simple-git`, detect language, `npm ci` / `go mod download`, detect monorepo roots |
 | `runSCIP` | `heavy-compute-queue` | 30 min | 2 min | 3× with backoff | Run `scip-typescript` / `scip-go` / `scip-python` per workspace root, merge for monorepos |
 | `parseRest` | `heavy-compute-queue` | 10 min | 1 min | 3× with backoff | Tree-sitter WASM for files SCIP didn't cover (e.g., `.yaml`, `.json`, decorators) |
-| `writeToArango` | `light-llm-queue` | 5 min | 1 min | 3× with backoff | Transform + batch insert entities/edges to ArangoDB, update repo status in Supabase |
+| `finalizeIndexing` | `light-llm-queue` | 5 min | 1 min | 3× with backoff | Shadow reindex cleanup + update repo status in Supabase (no entity data — just counts) |
 
-> **Phase 5.5 CLI provider branch:** When `provider === "local_cli"`, `prepareWorkspace` skips `git clone` and instead downloads the uploaded zip from Supabase Storage via `IStorageProvider.downloadFile()`, extracts it to the workspace directory, then proceeds with dependency install and language detection as normal. The rest of the pipeline (`runSCIP`, `parseRest`, `writeToArango`) is identical regardless of provider.
+> **Payload optimization (Feb 2026):** `runSCIP` and `parseRest` now write entities/edges directly to ArangoDB via the shared `writeEntitiesToGraph` helper. The workflow only passes lightweight counts (not full entity/edge arrays) through Temporal's data converter. `writeToArango` was replaced by `finalizeIndexing` which handles only status updates and shadow reindex cleanup.
 
-**Why `writeToArango` runs on `light-llm-queue`:** It's network-bound (ArangoDB HTTP API), not CPU-bound. Keeping it off the heavy queue preserves CPU for SCIP indexing of other repos.
+> **Phase 5.5 CLI provider branch:** When `provider === "local_cli"`, `prepareWorkspace` skips `git clone` and instead downloads the uploaded zip from Supabase Storage via `IStorageProvider.downloadFile()`, extracts it to the workspace directory, then proceeds with dependency install and language detection as normal. The rest of the pipeline (`runSCIP`, `parseRest`, `finalizeIndexing`) is identical regardless of provider.
 
 **Progress tracking via Temporal workflow state:**
 
@@ -1518,7 +1518,8 @@ lib/
       delete-repo.ts                       ← deleteRepoWorkflow definition
     activities/
       indexing-heavy.ts                    ← prepareWorkspace, runSCIP, parseRest
-      indexing-light.ts                    ← writeToArango, deleteRepoData
+      indexing-light.ts                    ← finalizeIndexing, writeToArango (legacy), deleteRepoData
+      graph-writer.ts                      ← shared writeEntitiesToGraph helper (hashing, dedup, file entities)
   utils/
     file-tree-builder.ts                   ← Flat paths → nested tree structure
 app/

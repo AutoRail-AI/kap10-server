@@ -112,20 +112,23 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
     wfLog("INFO", "Step 5/10: Justifying entities level-by-level", { ...ctx, levelCount: levels.length }, "Step 5/10")
     let totalJustified = 0
     const levelProgressStep = 50 / Math.max(levels.length, 1)
-    let cumulativeChangedIds: string[] = []
+    // Use a bounded set to track changed IDs — avoids unbounded array growth
+    // through Temporal's workflow state. Only the most recent batch of changed
+    // IDs is passed to the next level (callee changes propagate one level up).
+    let previousLevelChangedIds: string[] = []
     const PARALLEL_CHUNK_SIZE = 100
 
     for (let i = 0; i < levels.length; i++) {
       const levelEntityIds = levels[i]!
       wfLog("INFO", `Processing level ${i + 1}/${levels.length}`, { ...ctx, levelEntityCount: levelEntityIds.length }, `Step 5/10 (L${i + 1})`)
 
+      const levelChangedIds: string[] = []
+
       if (levelEntityIds.length <= PARALLEL_CHUNK_SIZE) {
-        // Small level — process as a single batch
-        const { justifiedCount, changedEntityIds } = await activities.justifyBatch(input, levelEntityIds, cumulativeChangedIds)
+        const { justifiedCount, changedEntityIds } = await activities.justifyBatch(input, levelEntityIds, previousLevelChangedIds)
         totalJustified += justifiedCount
-        cumulativeChangedIds = [...cumulativeChangedIds, ...changedEntityIds]
+        levelChangedIds.push(...changedEntityIds)
       } else {
-        // Large level — split into parallel chunks (entities within a level have no dependencies)
         const chunks: string[][] = []
         for (let j = 0; j < levelEntityIds.length; j += PARALLEL_CHUNK_SIZE) {
           chunks.push(levelEntityIds.slice(j, j + PARALLEL_CHUNK_SIZE))
@@ -133,14 +136,16 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
         wfLog("INFO", `Splitting level ${i + 1} into ${chunks.length} parallel chunks`, { ...ctx, chunkCount: chunks.length }, `Step 5/10 (L${i + 1})`)
 
         const chunkResults = await Promise.all(
-          chunks.map((chunk) => activities.justifyBatch(input, chunk, cumulativeChangedIds))
+          chunks.map((chunk) => activities.justifyBatch(input, chunk, previousLevelChangedIds))
         )
         for (const { justifiedCount, changedEntityIds } of chunkResults) {
           totalJustified += justifiedCount
-          cumulativeChangedIds = [...cumulativeChangedIds, ...changedEntityIds]
+          levelChangedIds.push(...changedEntityIds)
         }
       }
 
+      // Only carry forward this level's changes (not cumulative across all levels)
+      previousLevelChangedIds = levelChangedIds
       progress = Math.round(25 + (i + 1) * levelProgressStep)
     }
 

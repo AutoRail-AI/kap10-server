@@ -60,16 +60,16 @@ export async function handleReviewPrStatus(
   const warnings = comments.filter((c) => c.severity === "warning")
   const infos = comments.filter((c) => c.severity === "info")
 
-  // Enrich blockers with rule context
-  const enrichedBlockers = []
-  for (const blocker of blockers) {
+  // Fetch rules once for all blockers (not per-blocker)
+  const hasRuleBlockers = blockers.some((b) => b.semgrepRuleId)
+  const allRules = hasRuleBlockers
+    ? await container.graphStore.queryRules(ctx.orgId, { orgId: ctx.orgId, repoId, limit: 200 })
+    : []
+
+  const enrichedBlockers = blockers.map((blocker) => {
     let ruleContext = null
     if (blocker.semgrepRuleId) {
-      const rules = await container.graphStore.queryRules(ctx.orgId, {
-        orgId: ctx.orgId,
-        repoId,
-      })
-      const rule = rules.find((r) => r.id === blocker.semgrepRuleId || r.name === blocker.semgrepRuleId)
+      const rule = allRules.find((r) => r.id === blocker.semgrepRuleId || r.name === blocker.semgrepRuleId)
       if (rule) {
         ruleContext = {
           title: rule.title,
@@ -79,8 +79,7 @@ export async function handleReviewPrStatus(
         }
       }
     }
-
-    enrichedBlockers.push({
+    return {
       filePath: blocker.filePath,
       lineNumber: blocker.lineNumber,
       checkType: blocker.checkType,
@@ -89,8 +88,8 @@ export async function handleReviewPrStatus(
       suggestion: blocker.suggestion,
       autoFix: blocker.autoFix,
       rule: ruleContext,
-    })
-  }
+    }
+  })
 
   const guidance = blockers.length > 0
     ? `Your PR is blocked by ${blockers.length} rule(s). I can help you refactor the code to satisfy these rules. Would you like me to apply the suggested fixes?`

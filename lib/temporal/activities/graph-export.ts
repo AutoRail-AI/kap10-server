@@ -43,7 +43,42 @@ export interface CompactPattern {
   promoted_rule_key: string
 }
 
+/**
+ * Combined activity: query graph + serialize to msgpack in one step.
+ * Keeps the full entity/edge arrays inside the worker — only the
+ * compressed binary buffer crosses Temporal.
+ */
+export async function queryAndSerializeCompactGraph(input: GraphExportInput): Promise<{
+  buffer: Buffer
+  checksum: string
+  entityCount: number
+  edgeCount: number
+}> {
+  const { entities, edges, rules, patterns } = await queryCompactGraphInternal(input)
+  const buffer = serializeSnapshot({
+    repoId: input.repoId,
+    orgId: input.orgId,
+    entities,
+    edges,
+    rules,
+    patterns,
+  })
+  const checksum = computeChecksum(buffer)
+  heartbeat(`Serialized: ${buffer.length} bytes, ${entities.length} entities, ${edges.length} edges`)
+  return { buffer, checksum, entityCount: entities.length, edgeCount: edges.length }
+}
+
+/** @deprecated Use queryAndSerializeCompactGraph instead. */
 export async function queryCompactGraph(input: GraphExportInput): Promise<{
+  entities: CompactEntity[]
+  edges: CompactEdge[]
+  rules: CompactRule[]
+  patterns: CompactPattern[]
+}> {
+  return queryCompactGraphInternal(input)
+}
+
+async function queryCompactGraphInternal(input: GraphExportInput): Promise<{
   entities: CompactEntity[]
   edges: CompactEdge[]
   rules: CompactRule[]

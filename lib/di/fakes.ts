@@ -393,13 +393,15 @@ export class InMemoryGraphStore implements IGraphStore {
     }
     return result
   }
-  async getAllEntities(orgId: string, repoId: string): Promise<EntityDoc[]> {
+  async getAllEntities(orgId: string, repoId: string, limit = 10000): Promise<EntityDoc[]> {
     return Array.from(this.entities.values())
       .filter((e) => e.org_id === orgId && e.repo_id === repoId)
+      .slice(0, limit)
   }
-  async getAllEdges(orgId: string, repoId: string): Promise<import("@/lib/ports/types").EdgeDoc[]> {
-    return this.edges
-      .filter((e) => e.org_id === orgId && e.repo_id === repoId) as unknown as import("@/lib/ports/types").EdgeDoc[]
+  async getAllEdges(orgId: string, repoId: string, limit = 20000): Promise<import("@/lib/ports/types").EdgeDoc[]> {
+    return (this.edges
+      .filter((e) => e.org_id === orgId && e.repo_id === repoId) as unknown as import("@/lib/ports/types").EdgeDoc[])
+      .slice(0, limit)
   }
   async logTokenUsage(_orgId: string, entry: TokenUsageEntry): Promise<void> {
     this.tokenUsageLog.set(entry.id, entry)

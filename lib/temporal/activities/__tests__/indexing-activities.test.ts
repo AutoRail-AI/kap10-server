@@ -105,7 +105,7 @@ describe("indexing-heavy activities", () => {
   })
 
   describe("runSCIP", () => {
-    it("returns entities, edges, and coveredFiles (empty for non-existent workspace)", async () => {
+    it("returns counts and coveredFiles (empty for non-existent workspace)", async () => {
       const result = await runSCIP({
         workspacePath: "/data/workspaces/org-1/repo-1",
         orgId: "org-1",
@@ -114,17 +114,17 @@ describe("indexing-heavy activities", () => {
         workspaceRoots: ["."],
       })
 
-      expect(result).toHaveProperty("entities")
-      expect(result).toHaveProperty("edges")
+      expect(result).toHaveProperty("entityCount")
+      expect(result).toHaveProperty("edgeCount")
       expect(result).toHaveProperty("coveredFiles")
-      expect(Array.isArray(result.entities)).toBe(true)
-      expect(Array.isArray(result.edges)).toBe(true)
+      expect(typeof result.entityCount).toBe("number")
+      expect(typeof result.edgeCount).toBe("number")
       expect(Array.isArray(result.coveredFiles)).toBe(true)
     })
   })
 
   describe("parseRest", () => {
-    it("returns extra entities and edges (empty for non-existent workspace)", async () => {
+    it("returns counts (empty for non-existent workspace)", async () => {
       const result = await parseRest({
         workspacePath: "/data/workspaces/org-1/repo-1",
         orgId: "org-1",
@@ -132,10 +132,10 @@ describe("indexing-heavy activities", () => {
         coveredFiles: [],
       })
 
-      expect(result).toHaveProperty("extraEntities")
-      expect(result).toHaveProperty("extraEdges")
-      expect(Array.isArray(result.extraEntities)).toBe(true)
-      expect(Array.isArray(result.extraEdges)).toBe(true)
+      expect(result).toHaveProperty("entityCount")
+      expect(result).toHaveProperty("edgeCount")
+      expect(typeof result.entityCount).toBe("number")
+      expect(typeof result.edgeCount).toBe("number")
     })
   })
 })

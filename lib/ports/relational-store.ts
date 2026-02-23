@@ -38,6 +38,8 @@ export interface RepoRecord {
   currentIndexVersion?: string | null
   pendingIndexVersion?: string | null
   reindexStatus?: string | null
+  // Pipeline timing
+  indexingStartedAt?: Date | null
 }
 
 export interface GitHubInstallationRecord {
@@ -134,6 +136,7 @@ export interface IRelationalStore {
       classCount?: number
       errorMessage?: string | null
       lastIndexedSha?: string | null
+      indexingStartedAt?: Date | null
     }
   ): Promise<void>
   getRepoByGithubId(orgId: string, githubRepoId: number): Promise<RepoRecord | null>

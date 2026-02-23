@@ -22,15 +22,12 @@ export interface HealthReportInput {
 }
 
 export async function generateHealthReportWorkflow(input: HealthReportInput): Promise<void> {
-  // Step 1: Fetch justifications and entities
-  const data = await activities.fetchJustificationsAndEntities(input)
+  // Step 1: Aggregate features (self-sufficient — fetches own data from ArangoDB)
+  await activities.aggregateAndStoreFeatures(input)
 
-  // Step 2: Aggregate features
-  const features = await activities.aggregateAndStoreFeatures(input, data)
+  // Step 2: Build and store health report (self-sufficient)
+  await activities.buildAndStoreHealthReport(input)
 
-  // Step 3: Build and store health report (now passes full data for expanded risk detection)
-  await activities.buildAndStoreHealthReport(input, data, features)
-
-  // Step 4: Synthesize ADRs
-  await activities.synthesizeAndStoreADRs(input, features, data.justifications)
+  // Step 3: Synthesize ADRs (self-sufficient)
+  await activities.synthesizeAndStoreADRs(input)
 }

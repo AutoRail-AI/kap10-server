@@ -1323,7 +1323,7 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - **Depends on:** P4-API-01, P4-ADAPT-04, P4-ADAPT-06, Phase 3 embeddings
   - **Files:** `lib/temporal/activities/health-report.ts`
   - **Acceptance:** All 7 analyses produce correct results. Synthesis generates coherent report. Storage works.
-  - Notes: Done. Created `lib/temporal/activities/health-report.ts` with activities: fetchJustificationsAndEntities, aggregateAndStoreFeatures, buildAndStoreHealthReport, synthesizeAndStoreADRs.
+  - Notes: Done. Created `lib/temporal/activities/health-report.ts`. Activities refactored to be self-sufficient (each fetches own data from ArangoDB internally): aggregateAndStoreFeatures, buildAndStoreHealthReport, synthesizeAndStoreADRs. No large payloads cross Temporal's data converter.
 
 - [x] **P4-API-12: Chain `justifyRepoWorkflow` trigger from `embedRepoWorkflow` completion** — M
   - After `embedRepoWorkflow` completes successfully, start `justifyRepoWorkflow`

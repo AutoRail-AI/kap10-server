@@ -17,17 +17,47 @@ export interface OntologyInput {
   repoId: string
 }
 
+/** @deprecated Use discoverAndStoreOntology instead. */
 export async function fetchEntitiesForOntology(input: OntologyInput): Promise<EntityDoc[]> {
-  const log = logger.child({ service: "ontology", organizationId: input.orgId, repoId: input.repoId })
-  log.info("Fetching entities for ontology discovery")
   const container = getContainer()
+  heartbeat("fetching entities for ontology")
+  return container.graphStore.getAllEntities(input.orgId, input.repoId)
+}
+
+/**
+ * Combined activity: fetch entities, extract ontology, refine with LLM, and store.
+ * All heavy data stays inside the worker — only a term count crosses Temporal.
+ */
+export async function discoverAndStoreOntology(
+  input: OntologyInput,
+): Promise<{ termCount: number }> {
+  const log = logger.child({ service: "ontology", organizationId: input.orgId, repoId: input.repoId })
+  const container = getContainer()
+
   heartbeat("fetching entities for ontology")
   const entities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
   log.info("Fetched entities for ontology", { entityCount: entities.length })
-  return entities
+
+  heartbeat("extracting and refining ontology")
+  const ontology = await extractAndRefineOntologyInternal(input, entities)
+  log.info("Ontology refined", { termCount: ontology.terms.length })
+
+  heartbeat("storing ontology")
+  await container.graphStore.upsertDomainOntology(input.orgId, ontology)
+  log.info("Ontology stored")
+
+  return { termCount: ontology.terms.length }
 }
 
+/** @deprecated Use discoverAndStoreOntology instead. */
 export async function extractAndRefineOntology(
+  input: OntologyInput,
+  entities: EntityDoc[]
+): Promise<DomainOntologyDoc> {
+  return extractAndRefineOntologyInternal(input, entities)
+}
+
+async function extractAndRefineOntologyInternal(
   input: OntologyInput,
   entities: EntityDoc[]
 ): Promise<DomainOntologyDoc> {

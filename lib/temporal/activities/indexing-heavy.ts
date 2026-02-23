@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { getContainer } from "@/lib/di/container"
+import { writeEntitiesToGraph } from "@/lib/temporal/activities/graph-writer"
 import { extractDocComment } from "@/lib/indexer/doc-extractor"
 import { entityHash } from "@/lib/indexer/entity-hash"
 import { createFileEntity } from "@/lib/indexer/languages/generic"
@@ -130,13 +131,24 @@ export interface RunSCIPInput {
   workspaceRoots: string[]
 }
 
+/** @deprecated Use RunSCIPLightResult instead — full arrays no longer cross Temporal. */
 export interface RunSCIPResult {
   entities: EntityDoc[]
   edges: EdgeDoc[]
   coveredFiles: string[]
 }
 
-export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPResult> {
+export interface RunSCIPLightResult {
+  entityCount: number
+  edgeCount: number
+  coveredFiles: string[]
+}
+
+/**
+ * Run SCIP indexers, write entities/edges directly to ArangoDB,
+ * and return only lightweight metadata. Large payloads never leave the worker.
+ */
+export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> {
   const log = logger.child({ service: "indexing-heavy", organizationId: input.orgId, repoId: input.repoId })
   const plog = createPipelineLogger(input.repoId, "indexing")
   log.info("Starting SCIP indexers", { languages: input.languages })
@@ -147,7 +159,6 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPResult> {
   const allEdges: ParsedEdge[] = []
   const allCoveredFiles: string[] = []
 
-  // Get the set of language plugins to run
   const files = await scanWorkspace(input.workspacePath)
   const extensions = Array.from(new Set(files.map((f) => f.extension)))
   const plugins = getPluginsForExtensions(extensions)
@@ -171,15 +182,25 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPResult> {
     }
   }
 
-  // Post-pass: fill body for SCIP-extracted entities that have start_line/end_line but no body
   heartbeat("filling source bodies for SCIP entities")
   fillBodiesFromSource(allEntities, input.workspacePath)
 
-  log.info("SCIP indexing complete", { entityCount: allEntities.length, edgeCount: allEdges.length, coveredFiles: allCoveredFiles.length })
-  plog.log("info", "Step 2/7", `SCIP complete — found ${allEntities.length} entities, ${allEdges.length} edges`)
+  // Write directly to ArangoDB — no large payloads cross Temporal
+  heartbeat("writing SCIP results to graph store")
+  const container = getContainer()
+  const writeResult = await writeEntitiesToGraph(
+    container,
+    input.orgId,
+    input.repoId,
+    toEntityDocs(allEntities, input.orgId, input.repoId),
+    toEdgeDocs(allEdges, input.orgId, input.repoId),
+  )
+
+  log.info("SCIP indexing complete", { entityCount: writeResult.entitiesWritten, edgeCount: writeResult.edgesWritten, coveredFiles: allCoveredFiles.length })
+  plog.log("info", "Step 2/7", `SCIP complete — wrote ${writeResult.entitiesWritten} entities, ${writeResult.edgesWritten} edges`)
   return {
-    entities: toEntityDocs(allEntities, input.orgId, input.repoId),
-    edges: toEdgeDocs(allEdges, input.orgId, input.repoId),
+    entityCount: writeResult.entitiesWritten,
+    edgeCount: writeResult.edgesWritten,
     coveredFiles: allCoveredFiles,
   }
 }
@@ -191,12 +212,22 @@ export interface ParseRestInput {
   coveredFiles: string[]
 }
 
+/** @deprecated Use ParseRestLightResult instead — full arrays no longer cross Temporal. */
 export interface ParseRestResult {
   extraEntities: EntityDoc[]
   extraEdges: EdgeDoc[]
 }
 
-export async function parseRest(input: ParseRestInput): Promise<ParseRestResult> {
+export interface ParseRestLightResult {
+  entityCount: number
+  edgeCount: number
+}
+
+/**
+ * Parse uncovered files, write entities/edges directly to ArangoDB,
+ * and return only lightweight metadata. Large payloads never leave the worker.
+ */
+export async function parseRest(input: ParseRestInput): Promise<ParseRestLightResult> {
   const log = logger.child({ service: "indexing-heavy", organizationId: input.orgId, repoId: input.repoId })
   const plog = createPipelineLogger(input.repoId, "indexing")
   log.info("Parsing uncovered files", { coveredFileCount: input.coveredFiles.length })
@@ -210,13 +241,11 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestResult>
 
   heartbeat("parsing uncovered files")
 
-  // Create file entities for ALL files (every file gets representation)
   for (const file of files) {
     const fileEntity = createFileEntity(input.repoId, file.relativePath)
     allEntities.push(fileEntity)
   }
 
-  // Parse uncovered files with tree-sitter/regex fallback
   const uncoveredFiles = files.filter((f) => !coveredSet.has(f.relativePath))
   let processed = 0
 
@@ -235,7 +264,6 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestResult>
       allEntities.push(...result.entities)
       allEdges.push(...result.edges)
 
-      // Create contains edges: file → entity
       const fileId = entityHash(input.repoId, file.relativePath, "file", file.relativePath)
       for (const entity of result.entities) {
         allEdges.push({ from_id: fileId, to_id: entity.id, kind: "contains" })
@@ -250,11 +278,22 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestResult>
     }
   }
 
-  log.info("File parsing complete", { entityCount: allEntities.length, edgeCount: allEdges.length, uncoveredFiles: uncoveredFiles.length })
-  plog.log("info", "Step 3/7", `Parsing complete — ${allEntities.length} entities from ${uncoveredFiles.length} uncovered files`)
+  // Write directly to ArangoDB — no large payloads cross Temporal
+  heartbeat("writing parse results to graph store")
+  const container = getContainer()
+  const writeResult = await writeEntitiesToGraph(
+    container,
+    input.orgId,
+    input.repoId,
+    toEntityDocs(allEntities, input.orgId, input.repoId),
+    toEdgeDocs(allEdges, input.orgId, input.repoId),
+  )
+
+  log.info("File parsing complete", { entityCount: writeResult.entitiesWritten, edgeCount: writeResult.edgesWritten, uncoveredFiles: uncoveredFiles.length })
+  plog.log("info", "Step 3/7", `Parsing complete — wrote ${writeResult.entitiesWritten} entities from ${uncoveredFiles.length} uncovered files`)
   return {
-    extraEntities: toEntityDocs(allEntities, input.orgId, input.repoId),
-    extraEdges: toEdgeDocs(allEdges, input.orgId, input.repoId),
+    entityCount: writeResult.entitiesWritten,
+    edgeCount: writeResult.edgesWritten,
   }
 }
 

@@ -35,7 +35,7 @@ const lightActivities = proxyActivities<
   retry: { maximumAttempts: 3 },
 })
 
-const lightWriteActivities = proxyActivities<Pick<typeof light, "writeToArango" | "updateRepoError">>({
+const lightWriteActivities = proxyActivities<Pick<typeof light, "writeToArango" | "finalizeIndexing" | "updateRepoError">>({
   taskQueue: "light-llm-queue",
   startToCloseTimeout: "5m",
   heartbeatTimeout: "1m",
@@ -146,7 +146,7 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
       return { entitiesAdded: 0, entitiesUpdated: 0, entitiesDeleted: 0, edgesRepaired: 0, embeddingsUpdated: 0, cascadeEntities: 0 }
     }
 
-    // Step 3: Fan-out re-index batches
+    // Step 3: Fan-out re-index batches (entities written directly to ArangoDB)
     progress = 30
     const addedOrModified = pullResult.changedFiles
       .filter((f) => f.changeType !== "removed")
@@ -168,37 +168,31 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
       reindexResults.push(result)
     }
 
-    // Merge all re-indexed entities
-    const newEntities = reindexResults.flatMap((r) => r.entities)
+    // Collect lightweight IDs and quarantine info (no full entities in workflow)
+    const allEntityIds = reindexResults.flatMap((r) => r.entityIds)
     const allQuarantined = reindexResults.flatMap((r) => r.quarantined)
 
-    // Step 4: Compute entity diff
+    // Step 4: Delete entities for removed files
     progress = 50
-    // For now, treat all new entities as the diff (full diff computed in activity)
-    const diff = {
-      added: newEntities.filter((e) => !e._quarantined),
-      updated: [] as typeof newEntities,
-      deleted: [] as typeof newEntities,
-    }
-
-    // Apply diffs
     const diffResult = await lightActivities.applyEntityDiffs({
       orgId: input.orgId,
       repoId: input.repoId,
-      diff,
+      addedEntityIds: allEntityIds,
+      removedFilePaths: removed,
     })
 
-    // Step 5: Repair edges
+    // Step 5: Repair edges (passes only IDs, fetches full data internally)
     progress = 60
     const edgeResult = await lightActivities.repairEdgesActivity({
       orgId: input.orgId,
       repoId: input.repoId,
-      diff,
+      changedEntityIds: allEntityIds,
+      removedFilePaths: removed,
     })
 
     // Step 6: Update embeddings
     progress = 70
-    const changedKeys = [...diff.added, ...diff.updated].map((e) => e.id)
+    const changedKeys = allEntityIds
     const embedResult = await lightActivities.updateEmbeddings({
       orgId: input.orgId,
       repoId: input.repoId,
@@ -244,12 +238,10 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
     }
     await lightActivities.writeIndexEvent({ orgId: input.orgId, repoId: input.repoId, event })
 
-    // Step 10: Update lastIndexedSha
-    await lightWriteActivities.writeToArango({
+    // Step 10: Finalize status
+    await lightWriteActivities.finalizeIndexing({
       orgId: input.orgId,
       repoId: input.repoId,
-      entities: [],
-      edges: [],
       fileCount: 0,
       functionCount: 0,
       classCount: 0,

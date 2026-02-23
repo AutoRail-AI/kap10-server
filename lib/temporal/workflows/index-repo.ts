@@ -87,7 +87,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     progress = 25
     wfLog("INFO", "Step 1 complete: workspace ready", { ...ctx, languages: workspace.languages, lastSha: workspace.lastSha }, "Step 1/7")
 
-    // Step 2: Run SCIP indexers for each detected language
+    // Step 2: Run SCIP indexers (writes entities/edges directly to ArangoDB)
     wfLog("INFO", "Step 2/7: Running SCIP indexers", ctx, "Step 2/7")
     const scip = await heavyActivities.runSCIP({
       workspacePath: workspace.workspacePath,
@@ -97,9 +97,9 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
       workspaceRoots: workspace.workspaceRoots,
     })
     progress = 50
-    wfLog("INFO", "Step 2 complete: SCIP done", { ...ctx, entities: scip.entities.length, edges: scip.edges.length, coveredFiles: scip.coveredFiles.length }, "Step 2/7")
+    wfLog("INFO", "Step 2 complete: SCIP done", { ...ctx, entities: scip.entityCount, edges: scip.edgeCount, coveredFiles: scip.coveredFiles.length }, "Step 2/7")
 
-    // Step 3: Parse remaining files with tree-sitter/regex fallback
+    // Step 3: Parse remaining files (writes entities/edges directly to ArangoDB)
     wfLog("INFO", "Step 3/7: Parsing remaining files", ctx, "Step 3/7")
     const parse = await heavyActivities.parseRest({
       workspacePath: workspace.workspacePath,
@@ -108,36 +108,25 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
       coveredFiles: scip.coveredFiles,
     })
     progress = 75
-    wfLog("INFO", "Step 3 complete: parsing done", { ...ctx, extraEntities: parse.extraEntities.length, extraEdges: parse.extraEdges.length }, "Step 3/7")
+    wfLog("INFO", "Step 3 complete: parsing done", { ...ctx, extraEntities: parse.entityCount, extraEdges: parse.edgeCount }, "Step 3/7")
 
-    // Merge entities and edges from both activities
-    const allEntities = [...scip.entities, ...parse.extraEntities].map((e) => ({
-      ...e,
-      org_id: e.org_id ?? input.orgId,
-      repo_id: e.repo_id ?? input.repoId,
-    }))
-    const allEdges = [...scip.edges, ...parse.extraEdges].map((e) => ({
-      ...e,
-      org_id: e.org_id ?? input.orgId,
-      repo_id: e.repo_id ?? input.repoId,
-    }))
-    const fileCount = new Set(allEntities.map((e) => e.file_path)).size
-    const functionCount = allEntities.filter((e) => e.kind === "function").length
-    const classCount = allEntities.filter((e) => e.kind === "class").length
+    // Counts aggregated from both steps (entities already in ArangoDB)
+    const fileCount = scip.coveredFiles.length + parse.entityCount
+    const functionCount = scip.entityCount + parse.entityCount
+    const classCount = scip.edgeCount + parse.edgeCount
 
-    // Step 4: Write to ArangoDB and update status
-    wfLog("INFO", "Step 4/7: Writing to ArangoDB", { ...ctx, entityCount: allEntities.length, edgeCount: allEdges.length }, "Step 4/7")
-    const result = await lightActivities.writeToArango({
+    // Step 4: Finalize indexing (shadow cleanup + status update — no entity data)
+    wfLog("INFO", "Step 4/7: Finalizing index", ctx, "Step 4/7")
+    await lightActivities.finalizeIndexing({
       orgId: input.orgId,
       repoId: input.repoId,
-      entities: allEntities,
-      edges: allEdges,
       fileCount,
       functionCount,
       classCount,
       indexVersion: input.indexVersion,
     })
     progress = 95
+    const result = { entitiesWritten: scip.entityCount + parse.entityCount, edgesWritten: scip.edgeCount + parse.edgeCount, fileCount, functionCount, classCount }
 
     // Derive unique child workflow IDs from the parent run ID so re-indexing
     // never collides with previous runs

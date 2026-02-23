@@ -2,19 +2,22 @@
  * Phase 3: Embedding activities for the embedRepoWorkflow.
  * Runs on light-llm-queue (CPU-bound ONNX inference, no GPU needed).
  *
- * Activities:
+ * Primary activities (chunked — avoids large Temporal payloads):
  *   - setEmbeddingStatus: Set repo status to "embedding"
- *   - fetchEntities: Read all entities from ArangoDB
- *   - buildDocuments: Transform entities into embeddable text + metadata
- *   - generateAndStoreEmbeds: Batch embed + upsert into pgvector
+ *   - fetchFilePaths: Return lightweight file path list for workflow-level chunking
+ *   - processAndEmbedBatch: Fetch entities → build docs → embed → store for a batch of files
  *   - deleteOrphanedEmbeddings: Remove stale embeddings for deleted entities
  *   - setReadyStatus: Set repo status to "ready"
  *   - setEmbedFailedStatus: Set repo status to "embed_failed"
+ *
+ * Legacy activities (kept for backwards compatibility / tests):
+ *   - fetchEntities, buildDocuments, generateAndStoreEmbeds
  */
 
 import { heartbeat } from "@temporalio/activity"
 import { getContainer } from "@/lib/di/container"
-import type { EntityDoc } from "@/lib/ports/types"
+import type { Container } from "@/lib/di/container"
+import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
 import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
@@ -37,6 +40,158 @@ export interface EmbeddableDocument {
     filePath: string
     textContent: string
   }
+}
+
+// ── Helpers (pure functions, not activities) ──────────────────────────────────
+
+/** Max tokens for entity body before truncation. */
+const MAX_BODY_CHARS = 24000 // ~6000 tokens at 4 chars/token
+
+function formatKindLabel(kind: string): string {
+  switch (kind) {
+    case "function": return "Function"
+    case "method": return "Method"
+    case "class": return "Class"
+    case "struct": return "Struct"
+    case "interface": return "Interface"
+    case "variable": return "Variable"
+    case "type": return "Type"
+    case "enum": return "Enum"
+    case "decorator": return "Decorator"
+    default: return kind.charAt(0).toUpperCase() + kind.slice(1)
+  }
+}
+
+/**
+ * Pure helper: transform entities into embeddable documents.
+ * Extracted from the old `buildDocuments` activity so it can be reused
+ * inside `processAndEmbedBatch` without an extra Temporal round-trip.
+ */
+export function buildEmbeddableDocuments(
+  input: EmbeddingInput,
+  entities: EntityDoc[],
+  justificationMap: Map<string, JustificationDoc>,
+): EmbeddableDocument[] {
+  const docs: EmbeddableDocument[] = []
+
+  for (const entity of entities) {
+    if (entity.kind === "file" || entity.kind === "directory" || entity.kind === "module" || entity.kind === "namespace") {
+      continue
+    }
+
+    const kindLabel = formatKindLabel(entity.kind)
+    const name = entity.name ?? "unknown"
+    const filePath = entity.file_path ?? ""
+    const signature = (entity.signature as string) ?? ""
+    const body = (entity.body as string) ?? ""
+
+    const parts: string[] = []
+    parts.push(`${kindLabel}: ${name}`)
+    if (filePath) parts.push(`File: ${filePath}`)
+    if (signature) parts.push(`Signature: ${signature}`)
+
+    const justification = justificationMap.get(entity.id)
+    if (justification) {
+      parts.push(`Purpose: ${justification.business_purpose}`)
+      if (justification.domain_concepts.length > 0) {
+        parts.push(`Domain: ${justification.domain_concepts.join(", ")}`)
+      }
+      parts.push(`Feature: ${justification.feature_tag}`)
+    }
+
+    if (body) {
+      const truncatedBody = body.length > MAX_BODY_CHARS
+        ? body.slice(0, MAX_BODY_CHARS) + `\n[truncated — ${body.length} chars total]`
+        : body
+      parts.push("")
+      parts.push(truncatedBody)
+    }
+
+    const text = parts.join("\n")
+
+    docs.push({
+      entityKey: entity.id,
+      text,
+      metadata: {
+        orgId: input.orgId,
+        repoId: input.repoId,
+        entityKey: entity.id,
+        entityType: entity.kind,
+        entityName: name,
+        filePath,
+        textContent: text,
+      },
+    })
+  }
+
+  return docs
+}
+
+/**
+ * Fetch justifications for a repo, returning a map keyed by entity_id.
+ * Returns empty map on failure (first index may not have justifications yet).
+ */
+async function loadJustificationMap(
+  container: Container,
+  orgId: string,
+  repoId: string,
+): Promise<Map<string, JustificationDoc>> {
+  try {
+    const justifications = await container.graphStore.getJustifications(orgId, repoId)
+    return new Map(justifications.map((j) => [j.entity_id, j]))
+  } catch {
+    return new Map()
+  }
+}
+
+/**
+ * Embed a set of documents and store in pgvector, processing in sub-batches
+ * of EMBEDDING_BATCH_SIZE (default 8). Kept small to prevent OOM — the ONNX
+ * model allocates ~100MB of intermediate tensors per document in the batch.
+ */
+async function embedAndStore(
+  container: Container,
+  docs: EmbeddableDocument[],
+  log: ReturnType<typeof logger.child>,
+): Promise<number> {
+  const batchSize = parseInt(process.env.EMBEDDING_BATCH_SIZE ?? "8", 10)
+  const totalBatches = Math.ceil(docs.length / batchSize)
+  let totalStored = 0
+
+  for (let i = 0; i < totalBatches; i++) {
+    const start = i * batchSize
+    const batch = docs.slice(start, start + batchSize)
+    const texts = batch.map((d) => d.text)
+    let embeddings: number[][]
+
+    try {
+      embeddings = await container.vectorSearch.embed(texts)
+    } catch (err: unknown) {
+      log.warn("Embed sub-batch failed, retrying with half size", {
+        subBatch: i,
+        size: batch.length,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      const half = Math.ceil(batch.length / 2)
+      const first = await container.vectorSearch.embed(batch.slice(0, half).map((d) => d.text))
+      const second = await container.vectorSearch.embed(batch.slice(half).map((d) => d.text))
+      embeddings = [...first, ...second]
+    }
+
+    await container.vectorSearch.upsert(
+      batch.map((d) => d.entityKey),
+      embeddings,
+      batch.map((d) => d.metadata),
+    )
+    totalStored += batch.length
+
+    // Release ONNX tensor memory between batches
+    if (global.gc) global.gc()
+
+    heartbeat({ subBatch: i + 1, totalSubBatches: totalBatches, stored: totalStored })
+  }
+
+  return totalStored
 }
 
 // ── Status Activities ─────────────────────────────────────────────────────────
@@ -75,227 +230,85 @@ export async function setEmbedFailedStatus(
   })
 }
 
-// ── fetchEntities ─────────────────────────────────────────────────────────────
+// ── Primary Activities (chunked) ──────────────────────────────────────────────
 
-export async function fetchEntities(input: EmbeddingInput): Promise<EntityDoc[]> {
+/**
+ * Return the list of file paths for a repo. This is lightweight (string[])
+ * so it can safely pass through Temporal's data converter, enabling the
+ * workflow to chunk paths and fan out to processAndEmbedBatch.
+ */
+export async function fetchFilePaths(input: EmbeddingInput): Promise<string[]> {
   const log = logger.child({ service: "embedding", organizationId: input.orgId, repoId: input.repoId })
   const plog = createPipelineLogger(input.repoId, "embedding")
   const container = getContainer()
-  plog.log("info", "Step 2/7", "Fetching entities from graph store...")
 
-  // Get all file paths for the repo, then get all entities per file
+  plog.log("info", "Step 2/7", "Fetching file paths from graph store...")
   const filePaths = await container.graphStore.getFilePaths(input.orgId, input.repoId)
-  const allEntities: EntityDoc[] = []
+  const paths = filePaths.map((f) => f.path)
 
-  for (const { path } of filePaths) {
+  log.info("Fetched file paths for embedding", { fileCount: paths.length })
+  plog.log("info", "Step 2/7", `Found ${paths.length} files to process`)
+  heartbeat(`Found ${paths.length} files`)
+  return paths
+}
+
+/**
+ * Combined activity: for a batch of file paths, fetch entities, build
+ * embeddable documents, generate embeddings, and store in pgvector.
+ *
+ * This keeps large payloads (entity bodies, document text, embeddings) inside
+ * the worker and never serializes them through Temporal's data converter.
+ * Only lightweight inputs (file paths) and outputs (entity keys + count)
+ * cross the Temporal boundary.
+ */
+export async function processAndEmbedBatch(
+  input: EmbeddingInput,
+  filePaths: string[],
+  batchLabel: { index: number; total: number },
+): Promise<{ embeddingsStored: number; entityKeys: string[] }> {
+  const log = logger.child({
+    service: "embedding",
+    organizationId: input.orgId,
+    repoId: input.repoId,
+    fileBatch: `${batchLabel.index + 1}/${batchLabel.total}`,
+  })
+  const plog = createPipelineLogger(input.repoId, "embedding")
+  const container = getContainer()
+
+  log.info("Processing file batch", { fileCount: filePaths.length })
+
+  // 1. Fetch entities for this batch of files
+  const allEntities: EntityDoc[] = []
+  for (const path of filePaths) {
     const entities = await container.graphStore.getEntitiesByFile(
       input.orgId,
       input.repoId,
-      path
+      path,
     )
     allEntities.push(...entities)
   }
+  heartbeat(`Fetched ${allEntities.length} entities from ${filePaths.length} files`)
 
-  log.info("Fetched entities for embedding", { fileCount: filePaths.length, entityCount: allEntities.length })
-  plog.log("info", "Step 2/7", `Fetched ${allEntities.length} entities from ${filePaths.length} files`)
-  heartbeat(`Fetched ${allEntities.length} entities`)
-  return allEntities
-}
+  // 2. Build embeddable documents (filters out file/directory/module/namespace)
+  const justificationMap = await loadJustificationMap(container, input.orgId, input.repoId)
+  const docs = buildEmbeddableDocuments(input, allEntities, justificationMap)
 
-// ── buildDocuments ────────────────────────────────────────────────────────────
-
-/** Max tokens for entity body before truncation. */
-const MAX_BODY_CHARS = 24000 // ~6000 tokens at 4 chars/token
-
-/**
- * Transform entities into embeddable documents with enriched text + metadata.
- *
- * Enhanced format includes justification data (purpose, domain concepts, feature tag)
- * and graph relationships (callers/callees) when available. This enables semantic
- * search by business meaning, not just code text.
- */
-export async function buildDocuments(
-  input: EmbeddingInput,
-  entities: EntityDoc[]
-): Promise<EmbeddableDocument[]> {
-  const docs: EmbeddableDocument[] = []
-  const container = getContainer()
-
-  // Fetch justifications for enrichment (skip edges to reduce memory usage)
-  let justificationMap = new Map<string, import("@/lib/ports/types").JustificationDoc>()
-  try {
-    const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
-    justificationMap = new Map(justifications.map((j) => [j.entity_id, j]))
-  } catch {
-    // First index may not have justifications yet — continue without enrichment
+  if (docs.length === 0) {
+    log.info("No embeddable entities in batch, skipping")
+    return { embeddingsStored: 0, entityKeys: [] }
   }
 
-  // Skip edge loading for memory efficiency — caller/callee enrichment is
-  // a nice-to-have but not worth OOM-killing the worker. The semantic search
-  // quality is primarily driven by entity names, signatures, and justifications.
-  const callersOf = new Map<string, string[]>()
-  const calleesOf = new Map<string, string[]>()
+  // 3. Embed + store in pgvector (sub-batched internally)
+  const stored = await embedAndStore(container, docs, log)
 
-  for (const entity of entities) {
-    // Skip file entities (they don't carry meaningful semantic content)
-    if (entity.kind === "file" || entity.kind === "directory" || entity.kind === "module" || entity.kind === "namespace") {
-      continue
-    }
+  plog.log(
+    "info",
+    "Step 3/7",
+    `Batch ${batchLabel.index + 1}/${batchLabel.total}: embedded ${stored} entities from ${filePaths.length} files`,
+  )
+  log.info("File batch complete", { embeddingsStored: stored, entityCount: allEntities.length })
 
-    const kindLabel = formatKindLabel(entity.kind)
-    const name = entity.name ?? "unknown"
-    const filePath = entity.file_path ?? ""
-    const signature = (entity.signature as string) ?? ""
-    const body = (entity.body as string) ?? ""
-
-    // Build enriched text for embedding
-    const parts: string[] = []
-    parts.push(`${kindLabel}: ${name}`)
-    if (filePath) parts.push(`File: ${filePath}`)
-    if (signature) parts.push(`Signature: ${signature}`)
-
-    // Enrichment from justification (if available)
-    const justification = justificationMap.get(entity.id)
-    if (justification) {
-      parts.push(`Purpose: ${justification.business_purpose}`)
-      if (justification.domain_concepts.length > 0) {
-        parts.push(`Domain: ${justification.domain_concepts.join(", ")}`)
-      }
-      parts.push(`Feature: ${justification.feature_tag}`)
-    }
-
-    // Caller/callee context
-    const callers = callersOf.get(entity.id)
-    const callees = calleesOf.get(entity.id)
-    if (callers && callers.length > 0) {
-      parts.push(`Callers: ${Array.from(new Set(callers)).slice(0, 5).join(", ")}`)
-    }
-    if (callees && callees.length > 0) {
-      parts.push(`Callees: ${Array.from(new Set(callees)).slice(0, 5).join(", ")}`)
-    }
-
-    if (body) {
-      const truncatedBody = body.length > MAX_BODY_CHARS
-        ? body.slice(0, MAX_BODY_CHARS) + `\n[truncated — ${body.length} chars total]`
-        : body
-      parts.push("")
-      parts.push(truncatedBody)
-    }
-
-    const text = parts.join("\n")
-
-    docs.push({
-      entityKey: entity.id,
-      text,
-      metadata: {
-        orgId: input.orgId,
-        repoId: input.repoId,
-        entityKey: entity.id,
-        entityType: entity.kind,
-        entityName: name,
-        filePath,
-        textContent: text,
-      },
-    })
-  }
-
-  heartbeat(`Built ${docs.length} documents from ${entities.length} entities`)
-  return docs
-}
-
-/**
- * Convert entity kind to a human-readable label for embedding context.
- */
-function formatKindLabel(kind: string): string {
-  switch (kind) {
-    case "function": return "Function"
-    case "method": return "Method"
-    case "class": return "Class"
-    case "struct": return "Struct"
-    case "interface": return "Interface"
-    case "variable": return "Variable"
-    case "type": return "Type"
-    case "enum": return "Enum"
-    case "decorator": return "Decorator"
-    default: return kind.charAt(0).toUpperCase() + kind.slice(1)
-  }
-}
-
-// ── generateAndStoreEmbeds ────────────────────────────────────────────────────
-
-/**
- * Batch embed documents and store in pgvector.
- * Combines generateEmbeds + storeInPGVector into one activity for efficiency.
- * Reports progress via Temporal heartbeat.
- */
-export async function generateAndStoreEmbeds(
-  input: EmbeddingInput,
-  documents: EmbeddableDocument[]
-): Promise<{ embeddingsStored: number }> {
-  const log = logger.child({ service: "embedding", organizationId: input.orgId, repoId: input.repoId })
-  if (documents.length === 0) {
-    log.info("No documents to embed, skipping")
-    return { embeddingsStored: 0 }
-  }
-
-  log.info("Starting embedding generation", { documentCount: documents.length })
-  const plog = createPipelineLogger(input.repoId, "embedding")
-  plog.log("info", "Step 4/7", `Generating embeddings for ${documents.length} documents...`)
-  const container = getContainer()
-  const batchSize = parseInt(process.env.EMBEDDING_BATCH_SIZE ?? "32", 10)
-  const totalBatches = Math.ceil(documents.length / batchSize)
-  let totalStored = 0
-
-  for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-    const start = batchIndex * batchSize
-    const batch = documents.slice(start, start + batchSize)
-
-    // Generate embeddings for this batch
-    const texts = batch.map((d) => d.text)
-    let embeddings: number[][]
-
-    try {
-      embeddings = await container.vectorSearch.embed(texts)
-    } catch (err: unknown) {
-      log.warn("Batch embed failed, retrying with half batch size", {
-        batchIndex,
-        batchSize: batch.length,
-        errorMessage: err instanceof Error ? err.message : String(err),
-      })
-      // On OOM or batch failure, retry with half batch size
-      const halfSize = Math.ceil(batch.length / 2)
-      const firstHalf = batch.slice(0, halfSize)
-      const secondHalf = batch.slice(halfSize)
-
-      const firstTexts = firstHalf.map((d) => d.text)
-      const secondTexts = secondHalf.map((d) => d.text)
-
-      const firstEmbeds = await container.vectorSearch.embed(firstTexts)
-      const secondEmbeds = await container.vectorSearch.embed(secondTexts)
-      embeddings = [...firstEmbeds, ...secondEmbeds]
-    }
-
-    // Store in pgvector
-    const ids = batch.map((d) => d.entityKey)
-    const metadata = batch.map((d) => d.metadata)
-    await container.vectorSearch.upsert(ids, embeddings, metadata)
-
-    totalStored += batch.length
-    plog.log("info", "Step 4/7", `Embedding batch ${batchIndex + 1}/${totalBatches} complete (${totalStored}/${documents.length})`)
-
-    // Report progress via heartbeat
-    const progress = Math.round(((batchIndex + 1) / totalBatches) * 100)
-    heartbeat({
-      batchIndex: batchIndex + 1,
-      totalBatches,
-      entitiesProcessed: totalStored,
-      totalEntities: documents.length,
-      progress,
-    })
-  }
-
-  log.info("Embedding generation complete", { embeddingsStored: totalStored })
-  return { embeddingsStored: totalStored }
+  return { embeddingsStored: stored, entityKeys: docs.map((d) => d.entityKey) }
 }
 
 // ── deleteOrphanedEmbeddings ──────────────────────────────────────────────────
@@ -320,4 +333,65 @@ export async function deleteOrphanedEmbeddings(
   }
 
   return { deletedCount: 0 }
+}
+
+// ── Legacy Activities (kept for backward compatibility / tests) ───────────────
+
+/** @deprecated Use fetchFilePaths + processAndEmbedBatch instead. */
+export async function fetchEntities(input: EmbeddingInput): Promise<EntityDoc[]> {
+  const log = logger.child({ service: "embedding", organizationId: input.orgId, repoId: input.repoId })
+  const plog = createPipelineLogger(input.repoId, "embedding")
+  const container = getContainer()
+  plog.log("info", "Step 2/7", "Fetching entities from graph store...")
+
+  const filePaths = await container.graphStore.getFilePaths(input.orgId, input.repoId)
+  const allEntities: EntityDoc[] = []
+
+  for (const { path } of filePaths) {
+    const entities = await container.graphStore.getEntitiesByFile(
+      input.orgId,
+      input.repoId,
+      path
+    )
+    allEntities.push(...entities)
+  }
+
+  log.info("Fetched entities for embedding", { fileCount: filePaths.length, entityCount: allEntities.length })
+  plog.log("info", "Step 2/7", `Fetched ${allEntities.length} entities from ${filePaths.length} files`)
+  heartbeat(`Fetched ${allEntities.length} entities`)
+  return allEntities
+}
+
+/** @deprecated Use fetchFilePaths + processAndEmbedBatch instead. */
+export async function buildDocuments(
+  input: EmbeddingInput,
+  entities: EntityDoc[]
+): Promise<EmbeddableDocument[]> {
+  const container = getContainer()
+  const justificationMap = await loadJustificationMap(container, input.orgId, input.repoId)
+  const docs = buildEmbeddableDocuments(input, entities, justificationMap)
+  heartbeat(`Built ${docs.length} documents from ${entities.length} entities`)
+  return docs
+}
+
+/** @deprecated Use fetchFilePaths + processAndEmbedBatch instead. */
+export async function generateAndStoreEmbeds(
+  input: EmbeddingInput,
+  documents: EmbeddableDocument[]
+): Promise<{ embeddingsStored: number }> {
+  const log = logger.child({ service: "embedding", organizationId: input.orgId, repoId: input.repoId })
+  if (documents.length === 0) {
+    log.info("No documents to embed, skipping")
+    return { embeddingsStored: 0 }
+  }
+
+  log.info("Starting embedding generation", { documentCount: documents.length })
+  const plog = createPipelineLogger(input.repoId, "embedding")
+  plog.log("info", "Step 4/7", `Generating embeddings for ${documents.length} documents...`)
+
+  const container = getContainer()
+  const stored = await embedAndStore(container, documents, log)
+
+  log.info("Embedding generation complete", { embeddingsStored: stored })
+  return { embeddingsStored: stored }
 }

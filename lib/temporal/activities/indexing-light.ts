@@ -116,6 +116,45 @@ export interface DeleteRepoDataInput {
   repoId: string
 }
 
+export interface FinalizeIndexingInput {
+  orgId: string
+  repoId: string
+  fileCount: number
+  functionCount: number
+  classCount: number
+  indexVersion?: string
+}
+
+/**
+ * Lightweight finalize step: bootstrap schema, handle shadow reindex cleanup,
+ * and update repo status. Called after heavy activities have already written
+ * entities/edges directly to ArangoDB.
+ */
+export async function finalizeIndexing(input: FinalizeIndexingInput): Promise<void> {
+  const log = logger.child({ service: "indexing-light", organizationId: input.orgId, repoId: input.repoId })
+  const plog = createPipelineLogger(input.repoId, "indexing")
+  const container = getContainer()
+
+  await container.graphStore.bootstrapGraphSchema()
+
+  if (input.indexVersion) {
+    plog.log("info", "Step 4/7", "Shadow swap: cleaning up previous index version…")
+    await container.graphStore.deleteByIndexVersion(input.orgId, input.repoId, "__old__")
+      .catch(() => {})
+  }
+
+  await container.relationalStore.updateRepoStatus(input.repoId, {
+    status: "indexing",
+    progress: 90,
+    fileCount: input.fileCount,
+    functionCount: input.functionCount,
+    classCount: input.classCount,
+    errorMessage: null,
+  })
+  plog.log("info", "Step 4/7", `Index finalized — ${input.fileCount} files, ${input.functionCount} functions, ${input.classCount} classes`)
+  log.info("Index finalized", { fileCount: input.fileCount, functionCount: input.functionCount, classCount: input.classCount })
+}
+
 export async function updateRepoError(repoId: string, errorMessage: string): Promise<void> {
   logger.error("Indexing failed", undefined, { service: "indexing", repoId, errorMessage })
   const container = getContainer()

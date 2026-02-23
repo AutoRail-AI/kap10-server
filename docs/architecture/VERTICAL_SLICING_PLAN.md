@@ -66,8 +66,8 @@ Not all activities are equal. SCIP indexing a large monorepo is CPU/memory-heavy
 
 | Queue | Activities | Worker Profile | Scaling |
 |-------|-----------|----------------|---------|
-| `heavy-compute-queue` | `prepareWorkspace`, `runSCIP`, `runSemgrep`, `astGrepScan` | 4 vCPU / 8 GB RAM, max 2 concurrent | Scale to 0 when idle (Temporal's `sticky-queue` keeps context) |
-| `light-llm-queue` | `justifyEntity`, `llmSynthesizeRules`, `buildDocuments`, `generateEmbeds`, `classifyEntity` | 0.5 vCPU / 512 MB, max 20 concurrent (network-bound, low CPU) | Always-on pool (cheap, handles bursts) |
+| `heavy-compute-queue` | `prepareWorkspace`, `runSCIP`, `parseRest`, `scanSynthesizeAndStore`, `reIndexBatch` | 4 vCPU / 8 GB RAM, max 2 concurrent | Scale to 0 when idle (Temporal's `sticky-queue` keeps context) |
+| `light-llm-queue` | `justifyBatch`, `processAndEmbedBatch`, `aggregateAndStoreFeatures`, `postReviewSelfSufficient` | 0.5 vCPU / 512 MB, max 20 concurrent (network-bound, low CPU) | Always-on pool (cheap, handles bursts) |
 
 ```typescript
 // lib/temporal/workers/heavy-compute.ts
@@ -80,7 +80,7 @@ const worker = await Worker.create({
 // lib/temporal/workers/light-llm.ts
 const worker = await Worker.create({
   taskQueue: 'light-llm-queue',
-  activities: { justifyEntity, llmSynthesizeRules, classifyEntity, buildDocuments, generateEmbeds },
+  activities: { justifyBatch, processAndEmbedBatch, aggregateAndStoreFeatures, postReviewSelfSufficient },
   maxConcurrentActivityTaskExecutions: 20, // network-bound, pile them on
 });
 ```
@@ -1381,38 +1381,23 @@ model Repo {
 
 | Workflow | Activities | Queue | Retry policy |
 |----------|-----------|-------|--------------|
-| `indexRepoWorkflow` | `prepareWorkspace` → `runSCIP` → `parseRest` → `writeToArango` | Heavy (first 3), Light (write) | Each activity retries 3× with backoff. If `runSCIP` OOMs, workflow resumes from `runSCIP` (not from clone). |
+| `indexRepoWorkflow` | `prepareWorkspace` → `runSCIP` → `parseRest` → `finalizeIndexing` | Heavy (first 3, write directly to ArangoDB), Light (finalize) | Each activity retries 3×. Heavy activities write entities/edges directly to ArangoDB — no large payloads cross Temporal's data converter. |
 
 ```typescript
-// lib/temporal/workflows/index-repo.ts
-import { proxyActivities } from '@temporalio/workflow';
-import type * as heavyActivities from '../activities/indexing-heavy';
-import type * as lightActivities from '../activities/indexing-light';
-
-const heavy = proxyActivities<typeof heavyActivities>({
-  taskQueue: 'heavy-compute-queue',
-  startToCloseTimeout: '30m',
-  heartbeatTimeout: '2m',
-  retry: { maximumAttempts: 3 },
-});
-
-const light = proxyActivities<typeof lightActivities>({
-  taskQueue: 'light-llm-queue',
-  startToCloseTimeout: '5m',
-  retry: { maximumAttempts: 3 },
-});
-
+// lib/temporal/workflows/index-repo.ts — lightweight payloads only
 export async function indexRepoWorkflow(input: IndexRepoInput): Promise<IndexResult> {
   const workspace = await heavy.prepareWorkspace(input);
-  const scipIndex = await heavy.runSCIP({ workspacePath: workspace.path, languages: input.languages });
-  const extraEntities = await heavy.parseRest({ workspacePath: workspace.path, scipCoverage: scipIndex.coveredFiles });
-  const result = await light.writeToArango({
-    orgId: input.orgId,
-    repoId: input.repoId,
-    scipIndex,
-    extraEntities,
-  });
-  return result;
+
+  // runSCIP writes entities/edges directly to ArangoDB, returns only counts
+  const scip = await heavy.runSCIP({ workspacePath: workspace.path, ... });
+  // => { entityCount: number, edgeCount: number, coveredFiles: string[] }
+
+  // parseRest writes directly too, returns only counts
+  const parse = await heavy.parseRest({ workspacePath: workspace.path, coveredFiles: scip.coveredFiles });
+  // => { entityCount: number, edgeCount: number }
+
+  // Finalize: shadow cleanup + status update (no entity data)
+  await light.finalizeIndexing({ orgId, repoId, fileCount, functionCount, classCount });
 }
 ```
 
@@ -1435,8 +1420,9 @@ lib/
     workflows/
       index-repo.ts        ← indexRepoWorkflow definition
     activities/
-      indexing-heavy.ts    ← prepareWorkspace, runSCIP, parseRest (heavy-compute-queue)
-      indexing-light.ts    ← writeToArango (light-llm-queue)
+      indexing-heavy.ts    ← prepareWorkspace, runSCIP, parseRest (heavy-compute-queue, writes directly to ArangoDB)
+      indexing-light.ts    ← finalizeIndexing (light-llm-queue, status update only)
+      graph-writer.ts      ← shared writeEntitiesToGraph helper (hashing, dedup, file entities)
 app/
   api/
     github/
@@ -1889,7 +1875,7 @@ Entity extracted (Phase 1)
 │                                                                       │
 │  ┌────────────────┐    ┌────────────────┐    ┌────────────────────┐  │
 │  │ Activity:       │───▶│ Activity:       │───▶│ Activity:          │  │
-│  │ buildDocuments  │    │ generateEmbeds  │    │ storeInPGVector    │  │
+│  │ fetchFilePaths  │    │ processAndEmbed │    │ deleteOrphaned     │  │
 │  │                 │    │                 │    │                    │  │
 │  │ LlamaIndex     │    │ LlamaIndex +    │    │ LlamaIndex         │  │
 │  │ Document from   │    │ Transformers.js │    │ PGVectorStore      │  │
@@ -1997,7 +1983,7 @@ lib/
     workflows/
       embed-repo.ts        ← embedRepoWorkflow definition
     activities/
-      embedding.ts         ← buildDocuments, generateEmbeds, storeInPGVector activities
+      embedding.ts         ← fetchFilePaths, processAndEmbedBatch (chunked — 50 files per batch)
 app/
   api/
     search/route.ts        ← Update: add semantic search mode
@@ -2009,7 +1995,7 @@ app/
 
 | Workflow | Activities | Queue | What it does |
 |----------|-----------|-------|--------------|
-| `embedRepoWorkflow` | `buildDocuments` → `generateEmbeds` → `storeInPGVector` | `light-llm-queue` | Batch embed all entities for a repo. Resumes from last embedded batch on failure. |
+| `embedRepoWorkflow` | `fetchFilePaths` → `processAndEmbedBatch` (×N batches of 50 files) → `deleteOrphanedEmbeddings` | `light-llm-queue` | Chunked embedding: workflow fans out file batches, each activity fetches entities + embeds + stores internally. Only file paths (string[]) and entity keys cross Temporal. |
 
 ### Test
 - `pnpm test` — LlamaIndex retriever returns relevant results; hybrid merge works correctly
@@ -2643,12 +2629,29 @@ All reindexing controls, history, and logs are consolidated into a dedicated **P
 
 ### Embedding OOM Prevention
 
-The embedding activity (`generateAndStoreEmbeds`) was OOM-killing the light worker (exit code 137) for repos with 700+ entities. Mitigations:
+The embedding pipeline was redesigned to avoid serializing large payloads through Temporal:
 
+- **Chunked file batches**: `embedRepoWorkflow` fetches lightweight file paths (`string[]`), then fans out to `processAndEmbedBatch` which processes 50 files at a time — fetching entities, building documents, generating embeddings, and storing in pgvector all inside the worker. Only file paths and entity keys cross Temporal's data converter.
 - `buildDocuments` no longer loads ALL edges via `getAllEdges()` — caller/callee enrichment skipped to prevent OOM
 - Default embedding batch size reduced from 100 to 32 (`EMBEDDING_BATCH_SIZE` env var)
 - Temporal heartbeat timeout increased from 2m to 5m; `startToCloseTimeout` from 30m to 60m
 - Light worker container memory increased from 4GB to 6GB; Node.js heap from 3072MB to 4096MB
+
+### Temporal Payload Optimization (All Pipelines)
+
+All Temporal workflows follow a "keep heavy data in the worker" principle to avoid exceeding the ~4MB gRPC payload limit and to reduce serialization overhead:
+
+| Pipeline | Before | After | Max Temporal Payload |
+|----------|--------|-------|---------------------|
+| **Indexing** | Full `EntityDoc[]`/`EdgeDoc[]` arrays through workflow (25MB+) | `runSCIP`/`parseRest` write directly to ArangoDB via `writeEntitiesToGraph` helper, return only counts | ~1KB |
+| **Embedding** | All entities → all documents → all embeddings through workflow | File path chunks (50 per batch), each `processAndEmbedBatch` self-sufficient | ~5KB |
+| **Ontology** | Full entities returned → passed to LLM → passed to store | Single `discoverAndStoreOntology` activity does everything | ~100B |
+| **Health Report** | Full entities/edges/justifications passed to 3 activities (4× serialization) | Each activity self-sufficient — fetches own data from ArangoDB | ~100B |
+| **Graph Export** | Full compact entity/edge/rule/pattern arrays through workflow | `queryAndSerializeCompactGraph` returns only compressed buffer | Buffer size |
+| **PR Review** | Affected entities + diff files passed to 3 activities (3× serialization) | `fetchDiffAndRunChecks` combined; `postReviewSelfSufficient` re-fetches internally | ~50KB (findings only) |
+| **Pattern Detection** | Evidence arrays passed between 3 activities | `scanSynthesizeAndStore` combined — all in one activity | ~100B |
+| **Incremental Index** | Full entity diffs passed to 3 activities | `reIndexBatch` writes directly; subsequent activities take only IDs | ~10KB |
+| **Justification** | `cumulativeChangedIds` grew unboundedly across all levels | Bounded: only previous level's changes propagate up | ~50KB max |
 
 ### Test
 - `pnpm test` — incremental indexer correctly diffs using entity hashes; detects renames/deletes; cascade re-justification triggers for changed dependencies
@@ -3363,7 +3366,7 @@ rules:
 │                                                                       │
 │  ┌────────────────┐    ┌──────────────────┐    ┌──────────────────┐  │
 │  │ Activity:       │───▶│ Activity:         │───▶│ Activity:         │  │
-│  │ astGrepScan     │    │ llmSynthesizeRules│    │ storePatterns     │  │
+│  │ scanSynthesize  │    │                   │    │                   │  │
 │  │                 │    │                   │    │                   │  │
 │  │ Run ast-grep    │    │ Vercel AI SDK:    │    │ Store in ArangoDB │  │
 │  │ structural      │    │ generateObject()  │    │ + generated       │  │
@@ -3672,7 +3675,7 @@ lib/
     workflows/
       detect-patterns.ts   ← detectPatternsWorkflow definition
     activities/
-      patterns.ts          ← astGrepScan (heavy), llmSynthesizeRules (light), storePatterns (light)
+      pattern-detection.ts  ← scanSynthesizeAndStore (combined — scan + synthesize + store in one activity)
   mcp/
     tools/
       patterns.ts          ← check_patterns, get_conventions, suggest_approach
@@ -3699,7 +3702,7 @@ app/
 
 | Workflow | Activities | Queue | What it does |
 |----------|-----------|-------|--------------|
-| `detectPatternsWorkflow` | `astGrepScan` → `llmSynthesizeRules` → `storePatterns` | Heavy (scan), Light (synthesize + store) | Full pattern analysis for a repo. LLM step can fail/retry without re-scanning. |
+| `detectPatternsWorkflow` | `scanSynthesizeAndStore` | Heavy (all-in-one) | Combined scan + synthesize + store — pattern evidence stays inside the worker. Only counts cross Temporal. |
 
 ### Test
 - `pnpm test` — ast-grep scanner finds "all routes use rateLimit" when 90%+ do; Semgrep rule catches violations
@@ -3736,7 +3739,7 @@ The auto-generated Semgrep rules from Phase 6 are **deterministic YAML** — no 
 │                                                                       │
 │  ┌────────────┐    ┌────────────────┐    ┌───────────────────────┐   │
 │  │ Activity:   │───▶│ Activity:       │───▶│ Activity:              │   │
-│  │ fetchDiff   │    │ runSemgrep     │    │ analyzeImpact          │   │
+│  │ fetchDiff   │    │ postReview     │    │                         │   │
 │  │             │    │                │    │                         │   │
 │  │ GitHub API: │    │ Semgrep CLI    │    │ ArangoDB graph:         │   │
 │  │ get PR diff │    │ against diff   │    │ callers of changed fns  │   │
@@ -3786,7 +3789,7 @@ lib/
     workflows/
       review-pr.ts         ← reviewPrWorkflow definition
     activities/
-      review.ts            ← fetchDiff (light), runSemgrep (heavy), analyzeImpact (light), postReview (light)
+      review.ts            ← fetchDiffAndRunChecks (combined — diff + all checks in one), postReviewSelfSufficient (re-fetches diff internally)
 app/
   api/
     reviews/
@@ -3843,7 +3846,7 @@ model PrReviewComment {
 
 | Workflow | Activities | Queue | What it does |
 |----------|-----------|-------|--------------|
-| `reviewPrWorkflow` | `fetchDiff` → `runSemgrep` → `analyzeImpact` → `postReview` | Mixed (see pipeline diagram) | Full PR review. If GitHub API rate-limits on `postReview`, Temporal retries just that step. |
+| `reviewPrWorkflow` | `fetchDiffAndRunChecks` → `postReviewSelfSufficient` | Light (both) | Combined diff+checks in one activity (entities stay in worker). Post-review re-fetches diff internally — only findings cross Temporal. |
 
 ### Test
 - `pnpm test` — Semgrep runner catches violations from auto-generated rules; diff analyzer maps changed lines to entities
@@ -4662,7 +4665,7 @@ packages/cli/src/
 lib/temporal/workflows/
   sync-local-graph.ts         # syncLocalGraphWorkflow (nightly compaction + upload)
 lib/temporal/activities/
-  graph-export.ts             # queryCompactGraph, serializeToMsgpack
+  graph-export.ts             # queryAndSerializeCompactGraph (combined — entity/edge arrays stay in worker)
   graph-upload.ts             # uploadToStorage, notifyClient
 app/api/prefetch/route.ts     # Prefetch endpoint (receives cursor context, pre-warms Redis)
 lib/use-cases/

@@ -52,21 +52,11 @@ export async function syncLocalGraphWorkflow(input: SyncLocalGraphInput): Promis
       status: "generating",
     })
 
-    // Step 2: Query + compact graph from ArangoDB (v2: includes rules + patterns)
-    const { entities, edges, rules, patterns } = await exportActivities.queryCompactGraph({
-      orgId: input.orgId,
-      repoId: input.repoId,
-    })
-
-    // Step 3: Serialize to msgpack (v2 envelope when rules/patterns present)
+    // Step 2+3: Query, compact, and serialize graph (combined — no large arrays in workflow)
     const { buffer, checksum, entityCount, edgeCount } =
-      await exportActivities.serializeToMsgpack({
-        repoId: input.repoId,
+      await exportActivities.queryAndSerializeCompactGraph({
         orgId: input.orgId,
-        entities,
-        edges,
-        rules,
-        patterns,
+        repoId: input.repoId,
       })
 
     // Step 4: Upload to Supabase Storage

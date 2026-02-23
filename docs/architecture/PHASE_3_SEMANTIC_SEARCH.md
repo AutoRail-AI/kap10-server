@@ -47,24 +47,19 @@ Step  System Action                                                         Stat
       signals Phase 3 trigger
 2     Temporal: startWorkflow("embedRepoWorkflow",                          Repo status: "embedding"
       { orgId, repoId })                                                    Supabase: kap10.repos.status
-3     Activity: fetchEntities                                               None (read-only)
-      → ArangoDB query: all entities for org_id + repo_id
-      → Return entity docs with name, signature, body, file_path, kind
-4     Activity: buildDocuments                                              None (in-memory transform)
-      → For each entity, construct a LlamaIndex Document:
-        - text: formatted entity text (name + signature + body + file context)
-        - metadata: { orgId, repoId, entityKey, entityType, entityName, filePath }
-      → Batch into chunks of 100 documents
-5     Activity: generateEmbeds                                              None (in-memory vectors)
-      → For each batch of 100 documents:
-        - HuggingFaceEmbedding (nomic-embed-text-v1.5) generates 768-dim vectors
-        - Local CPU execution in Temporal light-llm-queue worker
-        - No API call, no cost, no rate limit
-      → Return: pairs of (document, embedding vector)
-6     Activity: storeInPGVector                                             Supabase: kap10.entity_embeddings
-      → LlamaIndex PGVectorStore.add() with createTable: false              rows inserted/upserted
-        (Prisma owns the schema)
-      → Upsert by (repo_id, entity_key) composite — idempotent on retry
+3     Activity: fetchFilePaths                                              None (lightweight string[])
+      → ArangoDB: getFilePaths(orgId, repoId)
+      → Return: string[] of file paths (NOT full entities)
+4     Workflow chunks file paths into batches of 50 files                   None (in-workflow)
+5     For each batch: Activity: processAndEmbedBatch                        pgvector rows inserted/upserted
+      → Fetch entities for this batch of files from ArangoDB
+      → Build embeddable documents (name + signature + body + justification)
+      → Generate embeddings (nomic-embed-text-v1.5, sub-batched by 32)
+      → Store in pgvector via vectorSearch.upsert()
+      → Return: { embeddingsStored, entityKeys } (lightweight)
+      All heavy data stays inside the worker — never serialized through Temporal.
+6     Activity: deleteOrphanedEmbeddings                                    Removed rows for deleted entities
+      → Compare collected entity keys vs pgvector entity keys
 7     Workflow completes →                                                  Repo status: "ready"
       update repo status                                                    Supabase: kap10.repos.status
 ```
@@ -91,10 +86,10 @@ Step  System Action                                                         Stat
 ────  ──────────────────────────────────────────────────────────────────────  ──────────────────────────────
 1     Push webhook → indexRepoWorkflow (re-index)                           Repo status: "indexing"
 2     Re-index completes → embedRepoWorkflow starts                         Repo status: "embedding"
-3     fetchEntities returns ALL current entities                            None
-4     buildDocuments + generateEmbeds (full repo)                           None
-5     storeInPGVector upserts all embeddings                                Updated rows in entity_embeddings
-6     deleteOrphanedEmbeddings:                                             Removed rows for deleted entities
+3     fetchFilePaths returns lightweight string[]                           None
+4     processAndEmbedBatch (×N batches of 50 files)                        pgvector rows upserted
+      → Each batch: fetch entities → build docs → embed → store
+5     deleteOrphanedEmbeddings:                                             Removed rows for deleted entities
       DELETE FROM entity_embeddings
       WHERE repo_id = ? AND entity_key NOT IN (current entity keys)
 7     Workflow completes                                                    Repo status: "ready"
@@ -1133,7 +1128,7 @@ lib/
     workflows/
       embed-repo.ts                   ← embedRepoWorkflow definition
     activities/
-      embedding.ts                    ← fetchEntities, buildDocuments, generateEmbeds, storeInPGVector, deleteOrphanedEmbeddings
+      embedding.ts                    ← fetchFilePaths, processAndEmbedBatch (chunked — 50 files/batch), deleteOrphanedEmbeddings
 app/
   api/
     search/

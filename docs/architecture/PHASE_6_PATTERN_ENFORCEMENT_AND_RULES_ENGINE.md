@@ -1887,17 +1887,16 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 ### P6-API-08: detectPatternsWorkflow — Temporal Workflow
 
 - [x] **Status:** Complete
-- **Description:** Three-activity Temporal workflow for automated pattern detection: ast-grep scan → LLM rule synthesis → store patterns.
+- **Description:** Pattern detection workflow. Originally three activities, now combined into one to avoid serializing pattern evidence arrays through Temporal's data converter.
 - **Workflow definition:**
-  - Input: `{ orgId, repoId, workspacePath }`
-  - Activity 1: `astGrepScan` (heavy-compute-queue, timeout: 5 min)
-  - Activity 2: `llmSynthesizeRules` (light-llm-queue, timeout: 60s, retry: 3×)
-  - Activity 3: `storePatterns` (light-llm-queue, timeout: 30s, retry: 3×)
+  - Input: `{ orgId, repoId, workspacePath, languages }`
+  - Activity: `scanSynthesizeAndStore` (heavy-compute-queue, timeout: 15 min) — scan + synthesize + store all in one step; pattern evidence arrays stay inside the worker, only `{ patternsDetected, rulesGenerated }` counts cross Temporal.
   - Chained after indexing but non-blocking for repo status
-- **Activities:**
-  - `astGrepScan`: Load catalog queries, run ast-grep on workspace, compute adherence rates, filter noise
-  - `llmSynthesizeRules`: For high-adherence patterns (≥0.8), generate Semgrep YAML via LLM. Validate output.
-  - `storePatterns`: Upsert patterns to ArangoDB. Preserve pinned/dismissed status.
+- **Activities (combined inside `scanSynthesizeAndStore`):**
+  - Scan: Load catalog queries, run ast-grep on workspace, compute adherence rates, filter noise
+  - Synthesize: For high-adherence patterns (≥3 matches), generate rule suggestions. Validate output.
+  - Store: Upsert patterns + rules to ArangoDB. Preserve pinned/dismissed status.
+- **Legacy activities** (still exported for backward compatibility): `astGrepScan`, `llmSynthesizeRules`, `storePatterns`
 - **Files:**
   - `lib/temporal/workflows/detect-patterns.ts` (new)
   - `lib/temporal/activities/pattern-detection.ts` (new)
@@ -2588,7 +2587,7 @@ lib/
         mine-patterns-workflow.test.ts
         simulate-rule-workflow.test.ts
     activities/
-      pattern-detection.ts          ← astGrepScan, llmSynthesizeRules, storePatterns
+      pattern-detection.ts          ← scanSynthesizeAndStore (combined — scan + synthesize + store in one activity; legacy: astGrepScan, llmSynthesizeRules, storePatterns)
       pattern-mining.ts             ← extractTopology, validateMotifs, storeMinedPatterns
       rule-simulation.ts            ← scanWorkspace, enrichFindings, generateImpactReport
       rule-decay.ts                 ← decayEvaluation, autoDowngrade activities

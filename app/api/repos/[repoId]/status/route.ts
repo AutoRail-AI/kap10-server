@@ -22,35 +22,28 @@ export const GET = withAuth(async (req: NextRequest) => {
     return errorResponse("Repo not found", 404)
   }
 
+  const base = {
+    status: repo.status,
+    progress: repo.indexProgress ?? 0,
+    fileCount: repo.fileCount,
+    functionCount: repo.functionCount,
+    classCount: repo.classCount,
+    errorMessage: repo.errorMessage,
+    indexingStartedAt: repo.indexingStartedAt ? new Date(repo.indexingStartedAt).getTime() : null,
+  }
+
   if (repo.status !== "indexing" || !repo.workflowId) {
-    return successResponse({
-      status: repo.status,
-      progress: repo.indexProgress ?? 0,
-      fileCount: repo.fileCount,
-      functionCount: repo.functionCount,
-      classCount: repo.classCount,
-      errorMessage: repo.errorMessage,
-    })
+    return successResponse(base)
   }
 
   try {
-    const status = await container.workflowEngine.getWorkflowStatus(repo.workflowId)
+    const wfStatus = await container.workflowEngine.getWorkflowStatus(repo.workflowId)
     return successResponse({
-      status: status.status === "RUNNING" ? "indexing" : repo.status,
-      progress: status.progress ?? repo.indexProgress ?? 0,
-      fileCount: repo.fileCount,
-      functionCount: repo.functionCount,
-      classCount: repo.classCount,
-      errorMessage: repo.errorMessage,
+      ...base,
+      status: wfStatus.status === "RUNNING" ? "indexing" : repo.status,
+      progress: wfStatus.progress ?? repo.indexProgress ?? 0,
     })
   } catch {
-    return successResponse({
-      status: repo.status,
-      progress: repo.indexProgress ?? 0,
-      fileCount: repo.fileCount,
-      functionCount: repo.functionCount,
-      classCount: repo.classCount,
-      errorMessage: repo.errorMessage,
-    })
+    return successResponse(base)
   }
 })

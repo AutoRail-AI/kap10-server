@@ -42,14 +42,15 @@ export const GET = withAuth(async (req: NextRequest) => {
     }
   }
 
-  // Top 20 most-called entities
+  // Top 20 most-called entities (limited fetch + parallel caller lookup)
   try {
-    const allEntities = await container.graphStore.getAllEntities(orgId, repoId)
-    const functionEntities = allEntities.filter(
-      (e) => e.kind === "function" || e.kind === "method"
-    )
+    const allEntities = await container.graphStore.getAllEntities(orgId, repoId, 5000)
+    const functionEntities = allEntities
+      .filter((e) => e.kind === "function" || e.kind === "method")
+      .slice(0, 100)
 
-    // Get caller counts for each function/method
+    // Parallel caller count lookup (batched to avoid flooding ArangoDB)
+    const BATCH = 20
     const entitiesWithCallers: Array<{
       id: string
       name: string
@@ -58,22 +59,23 @@ export const GET = withAuth(async (req: NextRequest) => {
       callerCount: number
     }> = []
 
-    for (const entity of functionEntities.slice(0, 100)) {
-      try {
-        const callers = await container.graphStore.getCallersOf(orgId, entity.id)
-        entitiesWithCallers.push({
-          id: entity.id,
-          name: entity.name,
-          kind: entity.kind,
-          filePath: entity.file_path,
-          callerCount: callers.length,
+    for (let i = 0; i < functionEntities.length; i += BATCH) {
+      const batch = functionEntities.slice(i, i + BATCH)
+      const results = await Promise.all(
+        batch.map(async (entity) => {
+          try {
+            const callers = await container.graphStore.getCallersOf(orgId, entity.id)
+            return { id: entity.id, name: entity.name, kind: entity.kind, filePath: entity.file_path, callerCount: callers.length }
+          } catch {
+            return null
+          }
         })
-      } catch {
-        // Skip entities with graph traversal errors
+      )
+      for (const r of results) {
+        if (r) entitiesWithCallers.push(r)
       }
     }
 
-    // Sort by caller count descending, take top 20
     entitiesWithCallers.sort((a, b) => b.callerCount - a.callerCount)
     const topEntities = entitiesWithCallers.slice(0, 20)
 

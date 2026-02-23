@@ -44,8 +44,8 @@ const statusConfig: Record<
   },
   indexing: {
     label: "Indexing",
-    classes: "text-primary border-primary/30",
-    dot: "bg-primary animate-pulse",
+    classes: "text-warning border-warning/30",
+    dot: "bg-warning animate-pulse",
   },
   embedding: {
     label: "Embedding",
@@ -54,8 +54,8 @@ const statusConfig: Record<
   },
   justifying: {
     label: "Analyzing",
-    classes: "text-electric-cyan border-electric-cyan/30",
-    dot: "bg-electric-cyan animate-pulse",
+    classes: "text-warning border-warning/30",
+    dot: "bg-warning animate-pulse",
   },
   ready: {
     label: "Active",

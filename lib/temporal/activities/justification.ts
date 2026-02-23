@@ -58,11 +58,16 @@ export async function fetchEntitiesAndEdges(
   return { entityCount: entities.length, edgeCount: edges.length }
 }
 
+/**
+ * Pre-warm ontology cache. Return value intentionally void —
+ * downstream activities fetch the ontology themselves from ArangoDB,
+ * avoiding serialization of the full DomainOntologyDoc through Temporal.
+ */
 export async function loadOntology(
   input: JustificationInput
-): Promise<import("@/lib/ports/types").DomainOntologyDoc | null> {
+): Promise<void> {
   const container = getContainer()
-  return container.graphStore.getDomainOntology(input.orgId, input.repoId)
+  await container.graphStore.getDomainOntology(input.orgId, input.repoId)
 }
 
 /**
