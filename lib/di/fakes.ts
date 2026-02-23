@@ -597,9 +597,17 @@ export class InMemoryGraphStore implements IGraphStore {
     return snapshots[0] ?? null
   }
 
+  async findCrossFeatureMutations(_orgId: string, _repoId: string): Promise<import("@/lib/ports/types").BoundedContextFinding[]> {
+    return []
+  }
+
   async deleteByIndexVersion(_orgId: string, _repoId: string, _indexVersion: string): Promise<void> {
-    this.entities = this.entities.filter((e) => e.index_version !== _indexVersion)
-    this.edges = this.edges.filter((e) => e.index_version !== _indexVersion)
+    const keysToDelete: string[] = []
+    this.entities.forEach((entity, key) => {
+      if (entity.index_version === _indexVersion) keysToDelete.push(key)
+    })
+    keysToDelete.forEach((key) => this.entities.delete(key))
+    this.edges = this.edges.filter((e) => (e as EdgeDoc).index_version !== _indexVersion)
   }
 }
 

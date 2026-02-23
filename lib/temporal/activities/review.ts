@@ -3,24 +3,32 @@
  */
 
 import { getContainer } from "@/lib/di/container"
-import { analyzeDiff } from "@/lib/review/diff-analyzer"
-import { runPatternCheck } from "@/lib/review/checks/pattern-check"
-import { runImpactCheck } from "@/lib/review/checks/impact-check"
-import { runTestCheck } from "@/lib/review/checks/test-check"
-import { runComplexityCheck } from "@/lib/review/checks/complexity-check"
-import { runDependencyCheck } from "@/lib/review/checks/dependency-check"
-import { buildReviewResult } from "@/lib/review/comment-builder"
-import { buildCheckRunOutput } from "@/lib/review/check-run-builder"
 import { buildBlastRadiusSummary } from "@/lib/review/blast-radius"
+import { buildCheckRunOutput } from "@/lib/review/check-run-builder"
+import { runComplexityCheck } from "@/lib/review/checks/complexity-check"
+import { runContractCheck } from "@/lib/review/checks/contract-check"
+import { runDependencyCheck } from "@/lib/review/checks/dependency-check"
+import { runEnvCheck } from "@/lib/review/checks/env-check"
+import { runIdempotencyCheck } from "@/lib/review/checks/idempotency-check"
+import { runImpactCheck } from "@/lib/review/checks/impact-check"
+import { runPatternCheck } from "@/lib/review/checks/pattern-check"
+import { runTestCheck } from "@/lib/review/checks/test-check"
+import { runTrustBoundaryCheck } from "@/lib/review/checks/trust-boundary-check"
+import { buildReviewResult } from "@/lib/review/comment-builder"
+import { analyzeDiff } from "@/lib/review/diff-analyzer"
 import { evaluateSemanticLgtm } from "@/lib/review/semantic-lgtm"
 import type {
   BlastRadiusSummary,
   ComplexityFinding,
+  ContractFinding,
   DependencyFinding,
+  EnvFinding,
   EntityDoc,
+  IdempotencyFinding,
   ImpactFinding,
   PatternFinding,
   TestFinding,
+  TrustBoundaryFinding,
 } from "@/lib/ports/types"
 import type { DiffFile } from "@/lib/review/diff-analyzer"
 
@@ -71,12 +79,17 @@ export async function runChecks(input: {
   diffFiles: DiffFile[]
   affectedEntities: Array<EntityDoc & { changedLines: Array<{ start: number; end: number }> }>
   installationId: number
+  blastRadius?: BlastRadiusSummary[]
 }): Promise<{
   pattern: PatternFinding[]
   impact: ImpactFinding[]
   test: TestFinding[]
   complexity: ComplexityFinding[]
   dependency: DependencyFinding[]
+  trustBoundary: TrustBoundaryFinding[]
+  env: EnvFinding[]
+  contract: ContractFinding[]
+  idempotency: IdempotencyFinding[]
 }> {
   const container = getContainer()
   const config = await container.relationalStore.getRepoReviewConfig(input.orgId)
@@ -86,15 +99,19 @@ export async function runChecks(input: {
   const workspacePath = path.join(os.tmpdir(), "kap10-workspaces", input.orgId, input.repoId)
 
   // Run all checks in parallel
-  const [pattern, impact, test, complexity, dependency] = await Promise.all([
+  const [pattern, impact, test, complexity, dependency, trustBoundary, env, contract, idempotency] = await Promise.all([
     runPatternCheck(input.orgId, input.repoId, input.diffFiles, workspacePath, container.graphStore, container.patternEngine, config),
     runImpactCheck(input.orgId, input.affectedEntities, container.graphStore, config),
     runTestCheck(input.diffFiles, workspacePath, config),
     runComplexityCheck(input.affectedEntities, config),
     runDependencyCheck(input.orgId, input.repoId, input.diffFiles, workspacePath, container.graphStore, config),
+    runTrustBoundaryCheck(input.orgId, input.repoId, input.affectedEntities, container.graphStore, config).catch(() => [] as TrustBoundaryFinding[]),
+    runEnvCheck(input.diffFiles as unknown as Array<{ path: string; hunks: Array<{ content: string; newStart: number }> }>, workspacePath, config).catch(() => [] as EnvFinding[]),
+    runContractCheck(input.orgId, input.affectedEntities, input.blastRadius ?? [], config).catch(() => [] as ContractFinding[]),
+    runIdempotencyCheck(input.orgId, input.repoId, input.affectedEntities, container.graphStore, config).catch(() => [] as IdempotencyFinding[]),
   ])
 
-  return { pattern, impact, test, complexity, dependency }
+  return { pattern, impact, test, complexity, dependency, trustBoundary, env, contract, idempotency }
 }
 
 export async function runChecksHeavy(input: {
@@ -125,6 +142,10 @@ export async function postReview(input: {
     test: TestFinding[]
     complexity: ComplexityFinding[]
     dependency: DependencyFinding[]
+    trustBoundary?: TrustBoundaryFinding[]
+    env?: EnvFinding[]
+    contract?: ContractFinding[]
+    idempotency?: IdempotencyFinding[]
   }
   blastRadius: BlastRadiusSummary[]
 }): Promise<void> {
@@ -160,7 +181,11 @@ export async function postReview(input: {
       input.findings.complexity,
       input.findings.dependency,
       config,
-      semanticLgtm
+      semanticLgtm,
+      input.findings.trustBoundary ?? [],
+      input.findings.env ?? [],
+      input.findings.contract ?? [],
+      input.findings.idempotency ?? []
     )
 
     // Build Check Run output
@@ -170,7 +195,11 @@ export async function postReview(input: {
       input.findings.test,
       input.findings.complexity,
       input.findings.dependency,
-      input.blastRadius
+      input.blastRadius,
+      input.findings.trustBoundary ?? [],
+      input.findings.env ?? [],
+      input.findings.contract ?? [],
+      input.findings.idempotency ?? []
     )
 
     let githubCheckRunId: number | null = null

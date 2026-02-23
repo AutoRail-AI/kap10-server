@@ -5,11 +5,15 @@
 import type {
   BlastRadiusSummary,
   ComplexityFinding,
+  ContractFinding,
   DependencyFinding,
+  EnvFinding,
+  IdempotencyFinding,
   ImpactFinding,
   PatternFinding,
   ReviewCheckAnnotation,
   TestFinding,
+  TrustBoundaryFinding,
 } from "@/lib/ports/types"
 
 const MAX_ANNOTATIONS = 50
@@ -27,7 +31,11 @@ export function buildCheckRunOutput(
   testFindings: TestFinding[],
   complexityFindings: ComplexityFinding[],
   dependencyFindings: DependencyFinding[],
-  blastRadius?: BlastRadiusSummary[]
+  blastRadius?: BlastRadiusSummary[],
+  trustBoundaryFindings: TrustBoundaryFinding[] = [],
+  envFindings: EnvFinding[] = [],
+  contractFindings: ContractFinding[] = [],
+  idempotencyFindings: IdempotencyFinding[] = []
 ): CheckRunOutput {
   const allAnnotations: ReviewCheckAnnotation[] = []
 
@@ -96,6 +104,58 @@ export function buildCheckRunOutput(
     })
   }
 
+  // Trust boundary findings → annotations (failure level)
+  for (const f of trustBoundaryFindings) {
+    allAnnotations.push({
+      path: f.filePath,
+      start_line: f.line,
+      end_line: f.line,
+      annotation_level: "failure",
+      message: f.message,
+      title: "Trust Boundary Gap",
+      raw_details: `Source: ${f.sourceEntity.name} → Sink: ${f.sinkEntity.name} (${f.pathLength} hops)`,
+    })
+  }
+
+  // Env findings → annotations (warning level)
+  for (const f of envFindings) {
+    allAnnotations.push({
+      path: f.filePath,
+      start_line: f.line,
+      end_line: f.line,
+      annotation_level: "warning",
+      message: f.message,
+      title: `Missing Env Var: ${f.envVar}`,
+      raw_details: "",
+    })
+  }
+
+  // Contract findings → annotations (warning level)
+  for (const f of contractFindings) {
+    allAnnotations.push({
+      path: f.filePath,
+      start_line: f.line,
+      end_line: f.line,
+      annotation_level: "warning",
+      message: f.message,
+      title: `API Contract Risk: ${f.affectedRoute.name}`,
+      raw_details: `Depth: ${f.depth}, Callers: ${f.callerCount}`,
+    })
+  }
+
+  // Idempotency findings → annotations (warning level)
+  for (const f of idempotencyFindings) {
+    allAnnotations.push({
+      path: f.filePath,
+      start_line: f.line,
+      end_line: f.line,
+      annotation_level: "warning",
+      message: f.message,
+      title: "Idempotency Risk",
+      raw_details: `Trigger: ${f.triggerEntity.name} → Mutation: ${f.mutationEntity.name}`,
+    })
+  }
+
   const blockers = allAnnotations.filter((a) => a.annotation_level === "failure").length
   const warnings = allAnnotations.filter((a) => a.annotation_level === "warning").length
   const total = allAnnotations.length
@@ -114,7 +174,11 @@ export function buildCheckRunOutput(
     impactFindings,
     testFindings,
     complexityFindings,
-    dependencyFindings
+    dependencyFindings,
+    trustBoundaryFindings,
+    envFindings,
+    contractFindings,
+    idempotencyFindings
   )
 
   if (blastRadius && blastRadius.length > 0) {
@@ -145,7 +209,11 @@ function buildSummaryMarkdown(
   impacts: ImpactFinding[],
   tests: TestFinding[],
   complexities: ComplexityFinding[],
-  dependencies: DependencyFinding[]
+  dependencies: DependencyFinding[],
+  trustBoundaries: TrustBoundaryFinding[] = [],
+  envs: EnvFinding[] = [],
+  contracts: ContractFinding[] = [],
+  idempotencies: IdempotencyFinding[] = []
 ): string {
   const sections: string[] = []
 
@@ -188,6 +256,38 @@ function buildSummaryMarkdown(
     sections.push(
       `### New Dependencies (${dependencies.length})\n\n${dependencies
         .map((f) => `- \`${f.importPath}\` in \`${f.filePath}:${f.line}\``)
+        .join("\n")}`
+    )
+  }
+
+  if (trustBoundaries.length > 0) {
+    sections.push(
+      `### Trust Boundary Gaps (${trustBoundaries.length})\n\n| Source | Sink | Path | File |\n|---|---|---|---|\n${trustBoundaries
+        .map((f) => `| \`${f.sourceEntity.name}\` | \`${f.sinkEntity.name}\` | ${f.pathLength} hops | \`${f.filePath}\` |`)
+        .join("\n")}`
+    )
+  }
+
+  if (envs.length > 0) {
+    sections.push(
+      `### Missing Env Vars (${envs.length})\n\n${envs
+        .map((f) => `- \`${f.envVar}\` in \`${f.filePath}:${f.line}\``)
+        .join("\n")}`
+    )
+  }
+
+  if (contracts.length > 0) {
+    sections.push(
+      `### API Contract Risks (${contracts.length})\n\n| Changed Entity | Affected Route | Depth | Callers |\n|---|---|---|---|\n${contracts
+        .map((f) => `| \`${f.changedEntity.name}\` | \`${f.affectedRoute.name}\` (${f.affectedRoute.kind}) | ${f.depth} | ${f.callerCount} |`)
+        .join("\n")}`
+    )
+  }
+
+  if (idempotencies.length > 0) {
+    sections.push(
+      `### Idempotency Risks (${idempotencies.length})\n\n${idempotencies
+        .map((f) => `- \`${f.triggerEntity.name}\` → \`${f.mutationEntity.name}\` in \`${f.filePath}:${f.line}\``)
         .join("\n")}`
     )
   }

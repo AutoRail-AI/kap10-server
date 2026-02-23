@@ -4,6 +4,7 @@ import {
   Activity,
   BookOpen,
   BookText,
+  Brain,
   Clock,
   Code,
   Fingerprint,
@@ -14,6 +15,8 @@ import {
   LayoutGrid,
   Settings2,
   Shield,
+  TrendingDown,
+  Zap,
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -25,6 +28,9 @@ const tabs = [
   { label: "Rules", href: "/rules", icon: Shield },
   { label: "Reviews", href: "/reviews", icon: GitPullRequest },
   { label: "Health", href: "/health", icon: HeartPulse },
+  { label: "Impact", href: "/impact", icon: Zap },
+  { label: "Drift", href: "/drift", icon: TrendingDown },
+  { label: "Intelligence", href: "/intelligence", icon: Brain },
   { label: "ADRs", href: "/adrs", icon: BookOpen },
   { label: "Glossary", href: "/glossary", icon: BookText },
   { label: "Activity", href: "/activity", icon: Activity },

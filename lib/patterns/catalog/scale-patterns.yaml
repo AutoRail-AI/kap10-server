@@ -1,0 +1,61 @@
+patterns:
+  - id: destructive-column-drop
+    type: structural
+    title: Destructive column drop in migration
+    description: DROP COLUMN in SQL migrations can cause data loss
+    language: sql
+    pattern: "DROP COLUMN $COL"
+    message: "DROP COLUMN is destructive and irreversible. Consider a phased migration: stop writing, deploy, then drop."
+
+  - id: destructive-column-rename
+    type: structural
+    title: Destructive column rename in migration
+    description: RENAME COLUMN in SQL migrations breaks existing queries
+    language: sql
+    pattern: "RENAME COLUMN $OLD TO $NEW"
+    message: "RENAME COLUMN breaks existing queries. Use add-copy-drop pattern for zero-downtime renames."
+
+  - id: rate-limit-loop-fetch
+    type: error-handling
+    title: Fetch in while loop without backoff
+    description: fetch() inside a while loop without backoff can cause rate limiting or self-DDoS
+    language: typescript
+    pattern: |
+      while ($$$COND) {
+        $$$BEFORE
+        fetch($$$ARGS)
+        $$$AFTER
+      }
+    message: "fetch() in a while loop without backoff risks rate limiting or self-DDoS. Add exponential backoff."
+
+  - id: dark-launch-route
+    type: structural
+    title: Route handler without feature flag
+    description: Exported route handlers should be behind feature flags for dark launches
+    language: typescript
+    pattern: "export async function $HANDLER($REQ) { $$$BODY }"
+    message: "Route handler exported without feature flag. Consider wrapping in a feature gate for safe dark launches."
+
+  - id: zero-downtime-alter
+    type: structural
+    title: ALTER TABLE ADD COLUMN with DEFAULT
+    description: Adding a column with DEFAULT without CONCURRENTLY locks the table
+    language: sql
+    pattern: "ALTER TABLE $TABLE ADD COLUMN $COL $TYPE DEFAULT $VAL"
+    message: "ALTER TABLE ADD COLUMN DEFAULT locks the table. Add column as nullable first, backfill, then set default."
+
+  - id: flaky-date-now
+    type: testing
+    title: Date.now() in tests without fake timers
+    description: Date.now() in tests creates flaky time-dependent assertions
+    language: typescript
+    pattern: "Date.now()"
+    message: "Date.now() in tests creates flaky assertions. Use vi.useFakeTimers() or inject a clock."
+
+  - id: flaky-math-random
+    type: testing
+    title: Math.random() in tests
+    description: Math.random() in tests creates non-deterministic behavior
+    language: typescript
+    pattern: "Math.random()"
+    message: "Math.random() in tests creates non-deterministic results. Use a seeded PRNG or mock the value."

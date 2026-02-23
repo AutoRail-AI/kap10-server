@@ -1,0 +1,108 @@
+patterns:
+  - id: resilience-missing-fetch
+    type: error-handling
+    title: Fetch without error handling
+    description: fetch() calls should be wrapped in try-catch for resilience
+    language: typescript
+    pattern: "fetch($$$ARGS)"
+    message: "Wrap fetch() in try-catch to handle network failures gracefully"
+
+  - id: resilience-missing-axios
+    type: error-handling
+    title: Axios without error handling
+    description: axios calls should be wrapped in try-catch for resilience
+    language: typescript
+    pattern: "axios.$METHOD($$$ARGS)"
+    message: "Wrap axios calls in try-catch to handle network failures gracefully"
+
+  - id: error-swallowing-empty
+    type: error-handling
+    title: Empty catch block
+    description: Catch blocks with empty bodies silently swallow errors
+    language: typescript
+    pattern: "catch ($ERR) {}"
+    message: "Empty catch block swallows errors silently. At minimum, log the error."
+
+  - id: error-swallowing-null
+    type: error-handling
+    title: Catch returning null
+    description: Catch blocks that return null hide failures from callers
+    language: typescript
+    pattern: "catch ($ERR) { return null }"
+    message: "Returning null in catch hides failures. Consider re-throwing or returning a typed error."
+
+  - id: n-plus-one-prisma
+    type: structural
+    title: N+1 query with Prisma in loop
+    description: Prisma findMany inside a loop causes N+1 query problems
+    language: typescript
+    pattern: |
+      for ($$$INIT) {
+        $$$BEFORE
+        prisma.$MODEL.findMany($$$ARGS)
+        $$$AFTER
+      }
+    message: "Prisma query inside loop causes N+1 problem. Use a single query with 'where: { id: { in: ids } }' instead."
+
+  - id: n-plus-one-supabase
+    type: structural
+    title: N+1 query with Supabase in loop
+    description: Supabase select inside a loop causes N+1 query problems
+    language: typescript
+    pattern: |
+      for ($$$INIT) {
+        $$$BEFORE
+        supabase.from($TABLE).select($$$ARGS)
+        $$$AFTER
+      }
+    message: "Supabase query inside loop causes N+1 problem. Batch the query outside the loop."
+
+  - id: connection-pool-prisma
+    type: structural
+    title: PrismaClient not at module scope
+    description: Creating PrismaClient inside functions causes connection pool exhaustion
+    language: typescript
+    pattern: |
+      function $FN($$$PARAMS) {
+        $$$BEFORE
+        new PrismaClient($$$ARGS)
+        $$$AFTER
+      }
+    message: "new PrismaClient() inside a function creates a new connection pool per call. Move to module scope."
+
+  - id: connection-pool-redis
+    type: structural
+    title: Redis client not at module scope
+    description: Creating Redis inside functions causes connection pool exhaustion
+    language: typescript
+    pattern: |
+      function $FN($$$PARAMS) {
+        $$$BEFORE
+        new Redis($$$ARGS)
+        $$$AFTER
+      }
+    message: "new Redis() inside a function creates a new connection per call. Move to module scope."
+
+  - id: mock-theater
+    type: testing
+    title: Excessive mocking
+    description: Files with many mock calls may indicate test theater rather than meaningful tests
+    language: typescript
+    pattern: "vi.mock($$$ARGS)"
+    message: "Excessive mocking (>3 per file) may indicate test theater. Consider integration tests or dependency injection."
+
+  - id: lifecycle-interval
+    type: structural
+    title: setInterval without cleanup
+    description: setInterval without matching clearInterval causes memory leaks
+    language: typescript
+    pattern: "setInterval($$$ARGS)"
+    message: "setInterval() without clearInterval causes memory leaks. Store the return value and clear on cleanup."
+
+  - id: lifecycle-listener
+    type: structural
+    title: addEventListener without cleanup
+    description: addEventListener without matching removeEventListener causes memory leaks
+    language: typescript
+    pattern: "addEventListener($$$ARGS)"
+    message: "addEventListener() without removeEventListener causes memory leaks. Clean up in useEffect return or component unmount."

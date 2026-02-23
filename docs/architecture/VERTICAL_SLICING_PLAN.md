@@ -2476,6 +2476,9 @@ const HealthReportSchema = z.object({
 
 **Auto-seeded rules:** The `suggestedRules` from the report can be one-click promoted to active rules in the Rules Engine (Phase 6), giving users an instant set of guardrails based on their actual codebase's architecture.
 
+> **Implementation Note — Post-Onboarding "Wow" Experience:**
+> The health report was expanded from 4 to 13 risk types (dead code, architectural violations, low-quality justifications, fan-in/fan-out hotspots, circular dependencies, taxonomy anomalies, confidence gaps, missing justifications) and the UI was redesigned with category grouping, a letter grade (A-F), InsightCards with "Create Rule" deep-links, and fix guidance. Additionally, the overview page was redesigned with hero stats, domain intelligence, and top insights; ADR browser and Domain Glossary pages were added; entity detail was enhanced with quality scores, architectural pattern badges, and dead code warnings. See **[PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md)** for full implementation details.
+
 ### Test
 - `pnpm test` — topological sort produces correct level ordering; Vercel AI SDK `generateObject` returns typed taxonomy; feature aggregation groups correctly
 - `pnpm test` — Dead code detection finds entities with 0 inbound edges; architecture drift catches VERTICAL→VERTICAL imports; testing gap analysis cross-references test files; health report `generateObject` produces valid typed output with all sections
@@ -5177,6 +5180,12 @@ Phase 4: Business Justification + Taxonomy (Vercel AI SDK)   │
  + Architecture Health Report)                               │
     │                                                        │
     ▼                                                        │
+Phase 4+: Post-Onboarding "Wow" Experience                   │
+(+ 13 risk types + A-F grade + InsightCards                  │
+ + ADR browser + Domain Glossary + Overview redesign         │
+ + Entity detail enhancements + Rule-from-insight)           │
+    │                                                        │
+    ▼                                                        │
 Phase 5: Incremental Indexing (entity hash diff + cascade)   │
     │                                                        │
     ▼                                                        │
@@ -5231,6 +5240,8 @@ Phase 11: Native IDE Integrations        Phase 12: Multiplayer
 
 **Cross-Cutting (all phases):** Structured output mandate (§6), 24-hour deletion SLA (§7), pool-based multi-tenancy
 
+**Phase 4+ Detail:** See [PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md) — 11 new files, 7 modified files, 6 new API endpoints, 3 new dashboard pages.
+
 ### Estimated scope per phase
 
 | Phase | New files | Modified files | New DB tables/collections | New MCP tools | Temporal workflows |
@@ -5241,6 +5252,7 @@ Phase 11: Native IDE Integrations        Phase 12: Multiplayer
 | 2 *(enhancement)* | ~6 | ~2 | 1 Prisma (`Error.workspaceId`) | 0 | 0 |
 | 3 | ~8 | ~3 | 1 Prisma | 2 | 1 (`embedRepo`) |
 | 4 | ~16 | ~3 | 4 ArangoDB + 2 edge | 4 | 3 (`justifyRepo`, `justifyEntity`, `healthReport`) |
+| 4+ *(wow experience)* | ~11 | ~7 | 0 (uses existing) | 0 | 0 (enhances existing `healthReport`) |
 | 5 | ~8 | ~4 | 0 | 1 | 1 (`incrementalIndex`) |
 | 5.5 | ~26 | ~6 | 3 ArangoDB (`ledger`, `snapshots`, `ledger_summaries`) + 1 Prisma (`LedgerSnapshot`) + 1 Supabase Storage bucket (`cli_uploads`) | 3 (`revert_to_working_state`, `get_timeline`, `mark_working`) | 0 |
 | 6 | ~18 | ~4 | 2 ArangoDB (`patterns` + `rules`) | 5 (+`get_rules`, `check_rules`) | 1 (`detectPatterns`) |

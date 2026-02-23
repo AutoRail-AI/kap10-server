@@ -54,7 +54,7 @@ export async function reviewPrWorkflow(input: ReviewPrInput): Promise<void> {
       installationId: input.installationId,
       diffFiles: [],
       affectedEntities: [],
-      findings: { pattern: [], impact: [], test: [], complexity: [], dependency: [] },
+      findings: { pattern: [], impact: [], test: [], complexity: [], dependency: [], trustBoundary: [], env: [], contract: [], idempotency: [] },
       blastRadius: [],
     })
     return
@@ -67,6 +67,7 @@ export async function reviewPrWorkflow(input: ReviewPrInput): Promise<void> {
     diffFiles: diffResult.files,
     affectedEntities: diffResult.affectedEntities,
     installationId: input.installationId,
+    blastRadius: diffResult.blastRadius,
   })
 
   // Activity 3: Post review to GitHub + store in database

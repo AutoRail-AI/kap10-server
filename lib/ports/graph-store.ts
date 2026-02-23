@@ -1,4 +1,4 @@
-import type { ADRDoc, BlueprintData, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, PatternFilter, ProjectStats, RuleDoc, RuleExceptionDoc, RuleFilter, RuleHealthDoc, SearchResult, SnippetDoc, SnippetFilter, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "./types"
+import type { ADRDoc, BlueprintData, BoundedContextFinding, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, PatternFilter, ProjectStats, RuleDoc, RuleExceptionDoc, RuleFilter, RuleHealthDoc, SearchResult, SnippetDoc, SnippetFilter, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "./types"
 
 export interface IGraphStore {
   bootstrapGraphSchema(): Promise<void>
@@ -174,6 +174,10 @@ export interface IGraphStore {
   appendWorkingSnapshot(orgId: string, snapshot: WorkingSnapshot): Promise<void>
   /** Get the latest working snapshot for a branch */
   getLatestWorkingSnapshot(orgId: string, repoId: string, branch: string): Promise<WorkingSnapshot | null>
+
+  // Scale: Bounded Context Analysis
+  /** Find cross-feature mutations that indicate bounded context bleed */
+  findCrossFeatureMutations(orgId: string, repoId: string): Promise<BoundedContextFinding[]>
 
   // Shadow reindexing
   /** Delete all entities and edges for a specific index_version */

@@ -576,7 +576,7 @@ export interface PrReviewCommentRecord {
   reviewId: string
   filePath: string
   lineNumber: number
-  checkType: "pattern" | "impact" | "test" | "complexity" | "dependency"
+  checkType: "pattern" | "impact" | "test" | "complexity" | "dependency" | "trustBoundary" | "idempotency" | "env" | "contract"
   severity: "info" | "warning" | "error"
   message: string
   suggestion: string | null
@@ -600,6 +600,10 @@ export interface ReviewConfig {
     test: boolean
     complexity: boolean
     dependency: boolean
+    trustBoundary: boolean
+    idempotency: boolean
+    env: boolean
+    contract: boolean
   }
   ignorePaths: string[]
   semanticLgtmEnabled: boolean
@@ -622,6 +626,10 @@ export const DEFAULT_REVIEW_CONFIG: ReviewConfig = {
     test: true,
     complexity: true,
     dependency: true,
+    trustBoundary: true,
+    idempotency: true,
+    env: true,
+    contract: true,
   },
   ignorePaths: [],
   semanticLgtmEnabled: false,
@@ -673,6 +681,48 @@ export interface DependencyFinding {
   filePath: string
   importPath: string
   line: number
+  message: string
+}
+
+export interface TrustBoundaryFinding {
+  sourceEntity: { id: string; name: string; filePath: string }
+  sinkEntity: { id: string; name: string; filePath: string }
+  pathLength: number
+  filePath: string
+  line: number
+  message: string
+}
+
+export interface EnvFinding {
+  filePath: string
+  line: number
+  envVar: string
+  message: string
+}
+
+export interface ContractFinding {
+  changedEntity: { id: string; name: string; filePath: string }
+  affectedRoute: { name: string; kind: string; filePath: string }
+  depth: number
+  callerCount: number
+  filePath: string
+  line: number
+  message: string
+}
+
+export interface IdempotencyFinding {
+  triggerEntity: { id: string; name: string; filePath: string }
+  mutationEntity: { id: string; name: string; filePath: string }
+  filePath: string
+  line: number
+  message: string
+}
+
+export interface BoundedContextFinding {
+  sourceFeature: string
+  targetFeature: string
+  sourceEntity: { id: string; name: string; filePath: string }
+  targetEntity: { id: string; name: string; filePath: string }
   message: string
 }
 

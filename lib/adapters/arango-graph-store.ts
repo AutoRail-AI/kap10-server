@@ -1878,6 +1878,68 @@ export class ArangoGraphStore implements IGraphStore {
     return { id: _key, ...rest } as WorkingSnapshot
   }
 
+  // ── Scale: Bounded Context Analysis ─────────────────────────
+
+  async findCrossFeatureMutations(orgId: string, repoId: string): Promise<import("@/lib/ports/types").BoundedContextFinding[]> {
+    const db = await getDbAsync()
+    // Find entities that call into a different feature_tag's entities where the callee is a DB mutation
+    const cursor = await db.query(
+      `
+      LET justifications = (
+        FOR j IN justifications
+          FILTER j.org_id == @orgId AND j.repo_id == @repoId AND j.valid_to == null
+          RETURN { entity_id: j.entity_id, feature_tag: j.feature_tag }
+      )
+      LET featureMap = MERGE(FOR j IN justifications RETURN { [j.entity_id]: j.feature_tag })
+      FOR e IN calls
+        FILTER e.org_id == @orgId AND e.repo_id == @repoId
+        LET fromKey = SPLIT(e._from, "/")[1]
+        LET toKey = SPLIT(e._to, "/")[1]
+        LET fromFeature = featureMap[fromKey]
+        LET toFeature = featureMap[toKey]
+        FILTER fromFeature != null AND toFeature != null AND fromFeature != toFeature
+        LET toName = SPLIT(e._to, "/")[1]
+        FILTER REGEX_TEST(toName, "insert|update|delete|upsert|save|create|remove|destroy|write", true)
+        LIMIT 50
+        RETURN {
+          sourceFeature: fromFeature,
+          targetFeature: toFeature,
+          fromKey: fromKey,
+          toKey: toKey,
+          fromCollection: SPLIT(e._from, "/")[0],
+          toCollection: SPLIT(e._to, "/")[0]
+        }
+      `,
+      { orgId, repoId }
+    )
+    const rawResults = await cursor.all()
+
+    // Enrich with entity details
+    const findings: import("@/lib/ports/types").BoundedContextFinding[] = []
+    for (const r of rawResults as Array<{
+      sourceFeature: string
+      targetFeature: string
+      fromKey: string
+      toKey: string
+      fromCollection: string
+      toCollection: string
+    }>) {
+      const sourceEntity = await this.getEntity(orgId, r.fromKey)
+      const targetEntity = await this.getEntity(orgId, r.toKey)
+      if (!sourceEntity || !targetEntity) continue
+
+      findings.push({
+        sourceFeature: r.sourceFeature,
+        targetFeature: r.targetFeature,
+        sourceEntity: { id: sourceEntity.id, name: sourceEntity.name, filePath: sourceEntity.file_path },
+        targetEntity: { id: targetEntity.id, name: targetEntity.name, filePath: targetEntity.file_path },
+        message: `\`${sourceEntity.name}\` (feature: ${r.sourceFeature}) calls mutation \`${targetEntity.name}\` (feature: ${r.targetFeature}). This cross-feature mutation may indicate bounded context bleed.`,
+      })
+    }
+
+    return findings
+  }
+
   // ── Shadow Reindexing ─────────────────────────────────────────
 
   async deleteByIndexVersion(orgId: string, repoId: string, indexVersion: string): Promise<void> {

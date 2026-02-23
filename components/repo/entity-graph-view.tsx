@@ -177,8 +177,8 @@ export function EntityGraphView({ repoId, entityId, onClose }: EntityGraphViewPr
   const [loading, setLoading] = useState(true)
   const [selectedNode, setSelectedNode] = useState<GraphData["nodes"][number]["data"] | null>(null)
   const [depth, setDepth] = useState(2)
-  const [nodes, setNodes, onNodesChange] = useNodesState([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([] as Node[])
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([] as Edge[])
 
   const fetchGraph = useCallback(async () => {
     setLoading(true)

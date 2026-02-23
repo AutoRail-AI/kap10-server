@@ -5,18 +5,22 @@
 
 import type {
   ComplexityFinding,
+  ContractFinding,
   DependencyFinding,
+  EnvFinding,
+  IdempotencyFinding,
   ImpactFinding,
   PatternFinding,
   ReviewConfig,
   TestFinding,
+  TrustBoundaryFinding,
 } from "@/lib/ports/types"
 
 export interface ReviewComment {
   path: string
   line: number
   body: string
-  checkType: "pattern" | "impact" | "test" | "complexity" | "dependency"
+  checkType: "pattern" | "impact" | "test" | "complexity" | "dependency" | "trustBoundary" | "idempotency" | "env" | "contract"
   severity: "info" | "warning" | "error"
 }
 
@@ -39,7 +43,11 @@ export function buildReviewResult(
   complexityFindings: ComplexityFinding[],
   dependencyFindings: DependencyFinding[],
   config: ReviewConfig,
-  semanticLgtm?: { autoApprove: boolean; reason: string }
+  semanticLgtm?: { autoApprove: boolean; reason: string },
+  trustBoundaryFindings: TrustBoundaryFinding[] = [],
+  envFindings: EnvFinding[] = [],
+  contractFindings: ContractFinding[] = [],
+  idempotencyFindings: IdempotencyFinding[] = []
 ): ReviewResult {
   const comments: ReviewComment[] = []
 
@@ -95,6 +103,50 @@ export function buildReviewResult(
       body: formatDependencyComment(f),
       checkType: "dependency",
       severity: "info",
+    })
+  }
+
+  // Trust boundary findings
+  for (const f of trustBoundaryFindings) {
+    comments.push({
+      path: f.filePath,
+      line: f.line,
+      body: formatTrustBoundaryComment(f),
+      checkType: "trustBoundary",
+      severity: "error",
+    })
+  }
+
+  // Env findings
+  for (const f of envFindings) {
+    comments.push({
+      path: f.filePath,
+      line: f.line,
+      body: formatEnvComment(f),
+      checkType: "env",
+      severity: "warning",
+    })
+  }
+
+  // Contract findings
+  for (const f of contractFindings) {
+    comments.push({
+      path: f.filePath,
+      line: f.line,
+      body: formatContractComment(f),
+      checkType: "contract",
+      severity: "warning",
+    })
+  }
+
+  // Idempotency findings
+  for (const f of idempotencyFindings) {
+    comments.push({
+      path: f.filePath,
+      line: f.line,
+      body: formatIdempotencyComment(f),
+      checkType: "idempotency",
+      severity: "warning",
     })
   }
 
@@ -192,6 +244,22 @@ function formatComplexityComment(f: ComplexityFinding): string {
 
 function formatDependencyComment(f: DependencyFinding): string {
   return `ℹ️ **New Dependency**\n\n${f.message}`
+}
+
+function formatTrustBoundaryComment(f: TrustBoundaryFinding): string {
+  return `⛔ **Trust Boundary Gap**\n\n${f.message}\n\n**Source:** \`${f.sourceEntity.name}\` → **Sink:** \`${f.sinkEntity.name}\` (${f.pathLength} hops)\n\nAdd authentication/validation middleware on this path.`
+}
+
+function formatEnvComment(f: EnvFinding): string {
+  return `⚠️ **Missing Env Var in .env.example**\n\n${f.message}`
+}
+
+function formatContractComment(f: ContractFinding): string {
+  return `⚠️ **API Contract Risk**\n\n${f.message}`
+}
+
+function formatIdempotencyComment(f: IdempotencyFinding): string {
+  return `⚠️ **Idempotency Risk**\n\n${f.message}`
 }
 
 /**
