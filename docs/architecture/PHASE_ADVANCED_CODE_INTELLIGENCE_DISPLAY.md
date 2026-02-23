@@ -79,61 +79,74 @@ This section catalogs all 38 proposed features from the original brainstorm, map
 
 ### Full Feature Map
 
-| # | Feature | Parent Phase | Status | Tier | Notes |
-|---|---------|-------------|--------|------|-------|
-| 1 | **Blast Radius Visualization** | Phase 7 | **SHIPPED** | Launch | `blast-radius.ts` — N-hop traversal to API/UI boundaries. `analyze_impact` MCP tool exists. Needs dashboard visualization. |
-| 2 | **Architectural Drift Detection** | Phase 5 | **PARTIAL** | Launch | Drift alerts designed in Phase 5 docs. `staleness-checker.ts` detects body-hash changes. Cosine distance comparison between old/new justification embeddings not yet wired. |
-| 3 | **Auto-Generated ADRs & Ontology Display** | Phase 4 | **SHIPPED** | Launch | `adr-synthesizer.ts` generates ADRs. `discover-ontology.ts` extracts domain vocabulary. Needs "Brain Trust" UI view. |
-| 4 | **Dead Code & Pattern Alignment** | Phase 4 + 6 | **SHIPPED** | Launch | `dead-code-detector.ts` with graph analysis. `detect-patterns` workflow runs ast-grep. Health report exists. Needs "Cruft & Alignment" UI view. |
-| 5 | **Cognitive Debt (Rewind-to-Commit Ratio)** | Phase 5.5 | **PLANNED** | Growth | Requires prompt ledger + rewind tracking from Phase 5.5. |
-| 6 | **Trust Boundary / Taint Analysis** | Phase 1 + 6 | **NEW** | Growth | Graph traversal from Source→Sink checking for auth/validator nodes. Requires new AQL traversal queries + entity tagging (`Source`, `Sink`, `Validator`). |
-| 7 | **Resilience Scoring (NFR Drift)** | Phase 6 | **PLANNED** | Growth | ast-grep rules for retry/timeout/circuit-breaker wrappers on external calls. Rules engine exists; specific resilience rules need authoring. |
-| 8 | **API Contract Breakage** | Phase 7 | **PARTIAL** | Growth | Blast radius traversal exists. Missing: schema shape comparison (detecting field removal/type change on public API return types). |
-| 9 | **Infra-to-Code Disconnect** | Phase 5 + 6 | **NEW** | Growth | Detect new `process.env.*` reads without corresponding `.env.example` update. Requires new diff reconciliation logic. |
-| 10 | **Mock Theater Detection** | Phase 6 | **PLANNED** | Growth | ast-grep rule for `jest.mock()`/`vi.mock()` cross-referenced with call graph complexity. Rules engine exists; rule needs authoring. |
-| 11 | **State Lifecycle Asymmetry** | Phase 6 | **PLANNED** | Growth | ast-grep rule for `subscribe`/`addListener` without matching `unsubscribe`/`removeListener`. Rules engine exists; rule needs authoring. |
-| 12 | **Idempotency Risk Detection** | Phase 4 + 6 | **PLANNED** | Growth | Taxonomy tags trigger handlers. Graph traversal checks for idempotency-key/lock node before mutation. Rules engine exists; traversal query needed. |
-| 13 | **Concurrency Blindspots** | Phase 6 | **NEW** | Scale | Detect shared-state mutations in concurrent trigger paths without transaction/lock wrappers. Requires new graph traversal + taxonomy cross-reference. |
-| 14 | **N+1 Query Detection** | Phase 6 | **PLANNED** | Growth | ast-grep rule: DB call inside loop body. Rules engine exists; rule needs authoring. |
-| 15 | **Destructive Schema Drift** | Phase 5 + 6 | **NEW** | Scale | Detect column drops/renames in migration files without safe migration scripts. Requires new ast-grep rules for SQL/Prisma schema files. |
-| 16 | **PII Exfiltration / Telemetry Trap** | Phase 4 + 6 | **NEW** | Scale | Taint analysis from PII-tagged entities to untrusted logging sinks. Requires entity tagging + new graph traversal. |
-| 17 | **Business Logic Invariants** | Phase 4 + 6 | **NEW** | Scale | Enforce validation boundaries before financial/inventory mutations. Requires taxonomy-driven rule triggering + invariant check detection. |
-| 18 | **Rate Limit Blindness** | Phase 6 | **PLANNED** | Scale | ast-grep rule: external API call inside unbounded loop without backoff. Similar to N+1; rule needs authoring. |
-| 19 | **Connection Pool Exhaustion** | Phase 6 | **PLANNED** | Growth | ast-grep rule: `new PrismaClient()`/`new Redis()` inside request handler scope. Rule needs authoring. |
-| 20 | **Dark Launch Violations** | Phase 6 | **PLANNED** | Scale | Detect new public routes without feature flag wrapper. Rule needs authoring. |
-| 21 | **Toxic Supply Chain** | Phase 5 + 6 | **NEW** | Scale | Cross-reference new `import`/`require` nodes with `package.json` delta. Check against OSV advisory database. |
-| 22 | **Silent Error Swallowing** | Phase 6 | **PLANNED** | Growth | ast-grep rule: `catch` blocks without re-throw or structured logging. Rule needs authoring. |
-| 23 | **Zero-Downtime Migration Violations** | Phase 6 | **PLANNED** | Scale | ast-grep rules for `ALTER TABLE ... ADD COLUMN ... DEFAULT` without `CONCURRENTLY` or multi-step migration pattern. |
-| 24 | **Cloud IAM Privilege Escalation** | Phase 6 | **NEW** | Scale | Detect wildcard IAM policies in IaC files. Cross-reference with actual API calls used. |
-| 25 | **API Backward Compatibility** | Phase 7 | **PARTIAL** | Scale | Extends blast radius to detect public schema shape changes. Requires field-level diffing on API return types. |
-| 26 | **Distributed Cache Desync** | Phase 6 | **PLANNED** | Scale | Detect DB writes on cached resources without corresponding cache invalidation. Rule + graph traversal. |
-| 27 | **State Machine Orphaning** | Phase 5 + 1 | **NEW** | Scale | Detect enum/type additions without updating downstream exhaustive consumers (switch/match). Reverse-dep traversal. |
-| 28 | **Data Residency Violations** | Phase 4 + 6 | **NEW** | Scale | Taint analysis from EU-tagged data to cross-border external dependencies. Enterprise-only. |
-| 29 | **Ghost Migration Drift** | Phase 5.5 | **PLANNED** | Scale | Detect modified/deleted migration files after local execution. Requires migration file tracking in prompt ledger. |
-| 30 | **Bounded Context Bleed** | Phase 4 + 6 | **PARTIAL** | Scale | Cross-feature-area direct DB mutations detectable via taxonomy + imports graph. Drift detection exists in docs. Enforcement logic not yet built. |
-| 31 | **Event-Driven Blackholes** | Phase 6 + 1 | **NEW** | Scale | Match `publish` topics to `subscribe` handlers. Detect missing DLQ/retry in subscriber catch blocks. |
-| 32 | **Flaky Test Detection** | Phase 6 | **PLANNED** | Scale | ast-grep rules for `Date.now()`/`Math.random()` in test files without mocked timers. |
-| 33 | **Multi-Repo Contract Fracturing** | Phase 12 | **NEW** | Scale | Cross-org-graph traversal when public API schema changes. Requires Phase 12 multi-repo infrastructure. |
-| 34 | **Zombie Infrastructure** | Phase 6 + 1 | **NEW** | Scale | Graph check: IaC `CloudResource` nodes with zero inbound application code edges. Requires IaC file indexing. |
-| 35 | **Agent-on-Agent Collision** | Phase 12 | **PLANNED** | Scale | Ephemeral entity activity records with TTL. Phase 12 collision detection covers this. |
-| 36 | **Runaway Context Bankruptcy** | Phase 8 | **PARTIAL** | Scale | Phase 8 tracks LLM costs via Langfuse. Circuit breaker logic for doom-loop detection not yet built. |
-| 37 | **Idiomatic Drift** | Phase 9 | **PLANNED** | Scale | Phase 9 code snippet library for exemplar comparison. ast-grep structural similarity check needed. |
-| 38 | **Trade Secret Exfiltration** | Phase 10b | **PLANNED** | Scale | Phase 10b local proxy intercepts reads on IP-restricted zones. Tagging and enforcement not yet built. |
+> **Last verified:** 2026-02-23 against actual codebase. See improvement notes column for specific gaps.
 
-### Status Summary
+| # | Feature | Parent Phase | Verified Status | Tier | Implementation Evidence | Improvement Needed |
+|---|---------|-------------|----------------|------|------------------------|-------------------|
+| 1 | **Blast Radius Visualization** | Phase 7 | **SHIPPED** (85%) | Launch | `blast-radius.ts` (92 lines), API route `app/api/repos/[repoId]/impact/route.ts`, MCP tool `analyze_impact`, frontend `components/intelligence/impact-view.tsx` (221 lines), PR check-run integration | `get_function` missing `callerCount` field. Frontend shows list view only — needs interactive graph/tree visualization. No caching for blast radius (recomputed per request). |
+| 2 | **Architectural Drift Detection** | Phase 5 | **SHIPPED** (70%) | Launch | `staleness-checker.ts` (108 lines), `drift-detector.ts` (71 lines), `drift-alert.ts` activity (113 lines), API route `/api/repos/[repoId]/drift/route.ts`, frontend `drift-timeline-view.tsx` (197 lines), ArangoDB `drift_scores` collection | Cosine distance not auto-computed during re-justification. No `drift_alerts` collection (only `drift_scores`). Timeline UI missing "Accept New Intent"/"Flag Violation" action buttons. No old-vs-new justification side-by-side comparison. |
+| 3 | **Auto-Generated ADRs & Ontology Display** | Phase 4 | **SHIPPED** (90%) | Launch | `ontology.ts` activities, `discover-ontology.ts` workflow, `adr-schema.ts` (59 lines), API route `/api/repos/[repoId]/adrs/route.ts`, frontend `adr-view.tsx` (117 lines), MCP `get_blueprint` includes ADR summaries | ADR auto-generation on PR merge not wired (`generateAdrWorkflow` not implemented). No ADR detail page. No "Brain Trust" aggregated view combining ADRs + ontology + domain glossary. |
+| 4 | **Dead Code & Pattern Alignment** | Phase 4 + 6 | **SHIPPED** (95%) | Launch | `dead-code-detector.ts` (89 lines), `pattern-detection.ts` (186 lines), `pattern-mining.ts` (122 lines), API `/api/repos/[repoId]/intelligence/route.ts`, frontend `intelligence-view.tsx` (285 lines) with Cruft + Alignment panels, health report integration, entity detail dead-code warning banner | Pattern deviation detection not fully implemented (only adherence rate). No "Create Rule" deep-links from deviations. Bounded context bleed detection returns empty array. |
+| 5 | **Cognitive Debt (Rewind-to-Commit Ratio)** | Phase 5.5 | **NOT STARTED** | Growth | No implementation found. | Requires Phase 5.5 prompt ledger + rewind tracking. Blocked dependency. |
+| 6 | **Trust Boundary / Taint Analysis** | Phase 1 + 7 | **SHIPPED** (75%) | Growth | `lib/review/checks/trust-boundary-check.ts` (98 lines), integrated into PR review workflow, uses callers/callees traversal + name-pattern matching for validators | Uses simplified 2-hop analysis instead of full AQL path enumeration. Relies on name-based pattern matching (`auth`, `validate`, `middleware`) rather than explicit entity tagging with `trust_role`. No standalone taint analysis outside PR review. |
+| 7 | **Resilience Scoring (NFR Drift)** | Phase 6 | **PARTIAL** (40%) | Growth | ast-grep rules exist: `resilience-missing-fetch`, `resilience-missing-axios` in `anti-patterns.yaml`. Pattern engine `semgrep-pattern-engine.ts` executes them. | Rules only detect absence of error handling, not presence of retry/timeout/circuit-breaker wrappers. No resilience scoring metric (`resilient_calls / total_external_calls`). Needs additional rules for timeout detection, retry wrapper detection. |
+| 8 | **API Contract Breakage** | Phase 7 | **SHIPPED** (70%) | Growth | `lib/review/checks/contract-check.ts` (63 lines), uses blast radius to find affected API boundaries, integrated into PR review, severity scales with caller count | Detects that API routes are _affected_ but doesn't perform field-level schema diffing (no detection of field removal/type change in return types). Needs structural comparison of API response shapes. |
+| 9 | **Infra-to-Code Disconnect** | Phase 5 + 7 | **SHIPPED** (85%) | Growth | `lib/review/checks/env-check.ts` (79 lines), scans diff hunks for `process.env.*`, reads `.env.example` for known vars, flags unknowns, integrated into PR review | Only checks `process.env.*` — doesn't detect new Prisma models, new Docker env requirements, or IaC resource additions. Limited to Node.js env var pattern. |
+| 10 | **Mock Theater Detection** | Phase 6 | **PARTIAL** (30%) | Growth | Basic ast-grep rule `mock-theater` in `anti-patterns.yaml`: detects `vi.mock($$$ARGS)` | Only counts mock calls. No semantic coverage score (`unmocked_branches / total_branches`). No cross-reference with call graph complexity of target function. |
+| 11 | **State Lifecycle Asymmetry** | Phase 6 | **SHIPPED** (80%) | Growth | ast-grep rules `lifecycle-interval` and `lifecycle-listener` in `anti-patterns.yaml`. Detects `setInterval` and `addEventListener` without cleanup. | Rules detect setup without cleanup in the same file, but don't verify cleanup in same scope (class, component). Could miss cases where cleanup is in a different method of the same class. |
+| 12 | **Idempotency Risk Detection** | Phase 7 | **SHIPPED** (80%) | Growth | `lib/review/checks/idempotency-check.ts` (76 lines), graph traversal checks webhook/trigger handlers for idempotency patterns, integrated into PR review | Uses name-based regex matching (`idempoten|dedup|upsert|lock|mutex`) rather than graph traversal to idempotency-check nodes. May miss custom idempotency implementations with non-standard names. |
+| 13 | **Concurrency Blindspots** | Phase 6 | **NOT STARTED** | Scale | Redis distributed locks exist for workspace sync, but no general concurrency blindspot detection for user code. | Requires new graph traversal: concurrent trigger → shared state mutation without transaction/lock. |
+| 14 | **N+1 Query Detection** | Phase 6 | **SHIPPED** (90%) | Growth | ast-grep rules `n-plus-one-prisma` and `n-plus-one-supabase` in `anti-patterns.yaml`. Detect Prisma `findMany()` and Supabase `.select()` inside `for` loops. | Only detects `for` loops — misses `map`, `forEach`, `while`. Only covers Prisma and Supabase — misses raw SQL, Mongoose, TypeORM. |
+| 15 | **Destructive Schema Drift** | Phase 6 | **SHIPPED** (70%) | Scale | ast-grep rules in `scale-patterns.yaml`: `destructive-column-drop` (SQL `DROP COLUMN`), `destructive-column-rename` (SQL `RENAME COLUMN`). | Only covers raw SQL. Doesn't detect Prisma schema changes (field removal, type coercion). Doesn't verify presence of corresponding safe migration script. |
+| 16 | **PII Exfiltration / Telemetry Trap** | Phase 4 + 6 | **NOT STARTED** | Scale | Compliance tags mentioned in prompt builder but no taint analysis implementation. | Requires entity tagging (`Sensitive/PII`), sink tagging (`Untrusted`), and new graph traversal for unsanitized paths. |
+| 17 | **Business Logic Invariants** | Phase 4 + 6 | **NOT STARTED** | Scale | No implementation found. | Requires taxonomy-driven rule triggering + invariant check pattern detection. |
+| 18 | **Rate Limit Blindness** | Phase 6 | **SHIPPED** (70%) | Scale | ast-grep rule `rate-limit-loop-fetch` in `scale-patterns.yaml`: detects `fetch()` in `while` loop without backoff. | Only detects `fetch` in `while` loops. Misses `axios`, `got`, and other HTTP clients. Misses `for`/`map`/`forEach` loop patterns. |
+| 19 | **Connection Pool Exhaustion** | Phase 6 | **SHIPPED** (90%) | Growth | ast-grep rules `connection-pool-prisma` and `connection-pool-redis` in `anti-patterns.yaml`. Detect `new PrismaClient()` and `new Redis()` inside functions. | Covers Prisma and Redis. Misses: `amqp.connect()`, `new MongoClient()`, `createPool()`. |
+| 20 | **Dark Launch Violations** | Phase 6 | **SHIPPED** (60%) | Scale | ast-grep rule `dark-launch-route` in `scale-patterns.yaml`: detects route handlers without feature flag wrapper. | Rule logic not verified for correctness. May produce false positives on non-trunk-based repos. No org-level config to enable/disable. |
+| 21 | **Toxic Supply Chain** | Phase 5 + 6 | **NOT STARTED** | Scale | `renovate.json` has `osvVulnerabilityAlerts: true` but no kap10-native supply chain analysis. | Requires new import diff analysis + OSV advisory DB integration. |
+| 22 | **Silent Error Swallowing** | Phase 6 | **SHIPPED** (90%) | Growth | ast-grep rules `error-swallowing-empty` and `error-swallowing-null` in `anti-patterns.yaml`. Detect empty catch blocks and catch blocks returning null. | Doesn't detect `catch (e) { console.log("error") }` (logs string without error object). Should also check for catch blocks that only log but don't re-throw or report to structured logging. |
+| 23 | **Zero-Downtime Migration Violations** | Phase 6 | **SHIPPED** (60%) | Scale | ast-grep rule `zero-downtime-alter` in `scale-patterns.yaml`: detects `ALTER TABLE ADD COLUMN DEFAULT`. | Only catches one pattern. Misses: `CREATE INDEX` without `CONCURRENTLY`, `ALTER COLUMN TYPE`, table renames. |
+| 24 | **Cloud IAM Privilege Escalation** | Phase 6 | **NOT STARTED** | Scale | No implementation found. | Requires IaC file detection + wildcard policy ast-grep rules. |
+| 25 | **API Backward Compatibility** | Phase 7 | **PARTIAL** (40%) | Scale | Contract check exists but only detects affected routes, not field-level schema changes. | Needs return type structural comparison (field removal, type change detection). |
+| 26 | **Distributed Cache Desync** | Phase 6 | **NOT STARTED** | Scale | No implementation found. | Requires `CachedResource` entity tagging + graph traversal for missing invalidation. |
+| 27 | **State Machine Orphaning** | Phase 5 + 1 | **PARTIAL** (30%) | Scale | `ts-exhaustive-switch` rule exists in `typescript-patterns.yaml` (default case detection). | Rule detects missing default case but doesn't detect new enum values without corresponding case additions. Needs reverse-dep traversal from enum/type changes. |
+| 28 | **Data Residency Violations** | Phase 4 + 6 | **NOT STARTED** | Scale | No implementation found. | Enterprise-only. Requires entity/data tagging + cross-border flow detection. |
+| 29 | **Ghost Migration Drift** | Phase 5.5 | **NOT STARTED** | Scale | No implementation found. | Requires Phase 5.5 prompt ledger + migration file tracking. |
+| 30 | **Bounded Context Bleed** | Phase 4 + 6 | **PARTIAL** (50%) | Scale | `findCrossFeatureMutations()` method exists in `arango-graph-store.ts`. UI shows bounded context bleed section in `intelligence-view.tsx`. API route returns data. | Detection logic may return empty results (needs verification). No enforcement mechanism (only detection + display). No blocking in PR review pipeline. |
+| 31 | **Event-Driven Blackholes** | Phase 6 + 1 | **NOT STARTED** | Scale | No implementation found. | Requires publish/subscribe topic matching + DLQ detection in subscriber catch blocks. |
+| 32 | **Flaky Test Detection** | Phase 6 | **SHIPPED** (70%) | Scale | ast-grep rules `flaky-date-now` and `flaky-math-random` in `scale-patterns.yaml`. | Only detects `Date.now()` and `Math.random()`. Misses: `new Date()`, shared mutable state between tests, missing `afterEach` cleanup. |
+| 33 | **Multi-Repo Contract Fracturing** | Phase 12 | **NOT STARTED** | Scale | No implementation found. | Requires Phase 12 multi-repo infrastructure. Blocked dependency. |
+| 34 | **Zombie Infrastructure** | Phase 6 + 1 | **NOT STARTED** | Scale | No implementation found. | Requires IaC file indexing + zero-reference graph check. |
+| 35 | **Agent-on-Agent Collision** | Phase 12 | **NOT STARTED** | Scale | No implementation found. | Requires Phase 12 multiplayer infrastructure. Blocked dependency. |
+| 36 | **Runaway Context Bankruptcy** | Phase 8 | **PARTIAL** (30%) | Scale | `lib/mcp/security/circuit-breaker.ts` exists for ledger entries. Phase 8 tracks LLM costs. | Circuit breaker exists but doom-loop detection (cost velocity anomaly) not implemented. No automatic agent pause on runaway cost. |
+| 37 | **Idiomatic Drift** | Phase 9 | **PARTIAL** (20%) | Scale | Exemplar keys exist in pattern storage. Phase 9 snippet library planned. | Structural similarity comparison not implemented. Requires ast-grep similarity check against pinned exemplars. Blocked on Phase 9. |
+| 38 | **Trade Secret Exfiltration** | Phase 10b | **NOT STARTED** | Scale | No implementation found. | Requires Phase 10b local proxy + IP-restricted zone tagging. Blocked dependency. |
 
-| Status | Count | % |
-|---|---|---|
-| SHIPPED | 4 | 10% |
-| PARTIAL | 5 | 13% |
-| PLANNED (infrastructure exists, rule/logic needed) | 16 | 42% |
-| NEW (requires new infrastructure) | 13 | 34% |
+### Verified Status Summary
+
+| Status | Count | % | Details |
+|---|---|---|---|
+| **SHIPPED** (≥60% complete) | 18 | 47% | Core logic works, may need enhancement |
+| **PARTIAL** (20-59% complete) | 9 | 24% | Infrastructure exists, key logic gaps |
+| **NOT STARTED** (0%) | 11 | 29% | No implementation found |
+
+### ast-grep Rules Inventory (23 rules shipped)
+
+| Category | Rule File | Rules | Status |
+|---|---|---|---|
+| TypeScript patterns | `typescript-patterns.yaml` | 7 rules: no-any, no-console-log, async-no-floating, error-catch-unknown, no-enum, import-type, exhaustive-switch | SHIPPED |
+| Anti-patterns | `anti-patterns.yaml` | 10 rules: resilience-fetch, resilience-axios, error-swallowing-empty, error-swallowing-null, n-plus-one-prisma, n-plus-one-supabase, connection-pool-prisma, connection-pool-redis, mock-theater, lifecycle-interval, lifecycle-listener | SHIPPED |
+| Scale patterns | `scale-patterns.yaml` | 6 rules: destructive-column-drop, destructive-column-rename, rate-limit-loop-fetch, dark-launch-route, zero-downtime-alter, flaky-date-now, flaky-math-random | SHIPPED |
+
+### Health Report Analyses (13 risk types shipped)
+
+Low confidence justifications, untested VERTICAL entities, single-entity features, high UTILITY ratio, dead code, architectural violations (mixed pattern), low quality justifications, high fan-in, high fan-out, circular dependencies, taxonomy anomalies, confidence gap, missing justifications.
 
 ---
 
 ## 1.3 Launch Tier — Ship-Critical Features
 
-These features differentiate kap10 at launch. They require minimal new infrastructure because the data already exists — they primarily need **UI surfaces** and **minor wiring**.
+These features differentiate kap10 at launch. The core backend logic is **already shipped** — the remaining work is primarily **UI polish, wiring gaps, and enhancement**.
 
 ### Feature L1: Blast Radius Visualization
 
@@ -483,18 +496,69 @@ Not all 38 checks need to run on every push. The system uses the **incremental i
 
 ## 2.1 Launch Tier Tracker
 
-| # | Feature | Layer | Status | File / Component |
-|---|---------|-------|--------|-----------------|
-| L1a | Blast radius API route | Backend | ☐ TODO | `app/api/repos/[repoId]/impact/route.ts` |
-| L1b | Blast radius dependency tree visualization | Frontend | ☐ TODO | `app/(dashboard)/repos/[repoId]/impact/` |
-| L1c | Blast radius count in `get_function` MCP tool | Backend | ☐ TODO | `lib/mcp/tools/structural.ts` |
-| L2a | Cosine distance comparison after cascade re-justification | Backend | ☐ TODO | `lib/justification/drift-detector.ts` |
-| L2b | `drift_alerts` ArangoDB collection + schema | Database | ☐ TODO | `lib/adapters/arango-graph-store.ts` |
-| L2c | Drift timeline UI component | Frontend | ☐ TODO | `app/(dashboard)/repos/[repoId]/drift/` |
-| L3a | Brain Trust knowledge base UI per feature area | Frontend | ☐ TODO | `app/(dashboard)/repos/[repoId]/knowledge/` |
-| L3b | API route: ADRs + ontology + patterns per feature | Backend | ☐ TODO | `app/api/repos/[repoId]/knowledge/route.ts` |
-| L4a | Cruft view: dead code + recency filter | Frontend | ☐ TODO | Health dashboard widget |
-| L4b | Alignment view: pattern deviation report | Frontend | ☐ TODO | Health dashboard widget |
+### L1: Blast Radius / Impact Page
+
+- [x] **ADV-L1a: Blast radius API route** — S
+  - `GET /api/repos/[repoId]/impact?entityId=X` → single entity blast radius via `buildBlastRadiusSummary()`
+  - `GET /api/repos/[repoId]/impact` (no param) → top 20 most-called entities by caller count
+  - Uses `withAuth`, `getActiveOrgId`, `getContainer()` patterns
+  - **Files:** `app/api/repos/[repoId]/impact/route.ts`
+
+- [x] **ADV-L1b: Blast radius dashboard page** — S
+  - Server component with auth check, Suspense wrapper, delegates to `<ImpactView>`
+  - **Files:** `app/(dashboard)/repos/[repoId]/impact/page.tsx`
+
+- [x] **ADV-L1c: Blast radius visualization component** — M
+  - Two-panel layout: left = top entities table (name, kind, file, callerCount), right = blast radius tree on selection
+  - Boundary nodes color-coded by kind: api_route (cyan), component (purple), webhook_handler (amber), cron_job (red)
+  - Empty state when no entity selected
+  - **Files:** `components/intelligence/impact-view.tsx`
+
+- [ ] **ADV-L1d: Blast radius count in `get_function` MCP tool** — S
+  - Enrich `get_function` response with `impactRadius` count
+  - **Files:** `lib/mcp/tools/structural.ts`
+
+### L2: Architectural Drift Timeline
+
+- [x] **ADV-L2a: Drift scores API route** — S
+  - `GET /api/repos/[repoId]/drift?category=intent_drift&limit=50` → drift scores enriched with entity name/kind/filePath
+  - Summary: counts per category (stable, cosmetic, refactor, intent_drift)
+  - **Files:** `app/api/repos/[repoId]/drift/route.ts`
+
+- [x] **ADV-L2b: Drift timeline dashboard page** — S
+  - Server component with auth check, Suspense wrapper, delegates to `<DriftTimelineView>`
+  - **Files:** `app/(dashboard)/repos/[repoId]/drift/page.tsx`
+
+- [x] **ADV-L2c: Drift timeline UI component** — M
+  - Top: 4 summary stat cards (one per category with count, clickable filter)
+  - Timeline list: entity name + kind badge, file path, category badge (emerald/blue/amber/red), embedding similarity progress bar, detected_at
+  - Empty state when no drift events
+  - **Files:** `components/intelligence/drift-timeline-view.tsx`
+
+### L3: ADRs & Ontology Display
+
+> **ALREADY COMPLETE** from the Post-Onboarding Wow Experience implementation. ADR browser page, Glossary page, and their APIs already exist. Skipped.
+
+### L4: Code Intelligence / Cruft & Alignment
+
+- [x] **ADV-L4a: Intelligence API route** — M
+  - `GET /api/repos/[repoId]/intelligence` → aggregates cruft (dead_code risks from health report), alignment (patterns with adherence rates), and bounded context bleed
+  - **Files:** `app/api/repos/[repoId]/intelligence/route.ts`
+
+- [x] **ADV-L4b: Intelligence dashboard page** — S
+  - Server component with auth check, Suspense wrapper, delegates to `<IntelligenceView>`
+  - **Files:** `app/(dashboard)/repos/[repoId]/intelligence/page.tsx`
+
+- [x] **ADV-L4c: Intelligence visualization component** — M
+  - Two-panel grid: Cruft panel (dead code grouped by risk, severity badge, entity list) + Alignment panel (pattern adherence table, sorted by lowest adherence, progress bars)
+  - Bounded context bleed section when data available
+  - **Files:** `components/intelligence/intelligence-view.tsx`
+
+### Navigation
+
+- [x] **ADV-NAV-01: Update repo-tabs with new tabs** — S
+  - Added Impact (Zap icon), Drift (TrendingDown icon), Intelligence (Brain icon) tabs after Health tab
+  - **Files:** `components/repo/repo-tabs.tsx`
 
 ---
 
@@ -502,41 +566,162 @@ Not all 38 checks need to run on every push. The system uses the **incremental i
 
 ### ast-grep Rules (Phase 6 Extensions)
 
-| # | Rule ID | Description | Status |
-|---|---------|------------|--------|
-| G2 | `resilience-missing-retry` | External call without retry/timeout wrapper | ☐ TODO |
-| G3 | `error-swallowing` | Catch block without re-throw or structured logging | ☐ TODO |
-| G4 | `n-plus-one-query` | DB call inside loop body | ☐ TODO |
-| G5 | `connection-pool-inside-handler` | Infrastructure client instantiation in request scope | ☐ TODO |
-| G6 | `mock-theater` | High mock-to-assertion ratio in test files | ☐ TODO |
-| G7 | `lifecycle-asymmetry` | Subscribe/listen without matching unsubscribe/cleanup | ☐ TODO |
+- [x] **ADV-G2a: `resilience-missing-fetch`** — S
+  - `fetch()` without try-catch error handling
+  - **Files:** `lib/patterns/catalog/anti-patterns.yaml`
 
-### Graph Traversal Queries
+- [x] **ADV-G2b: `resilience-missing-axios`** — S
+  - `axios.get/post()` without try-catch error handling
+  - **Files:** `lib/patterns/catalog/anti-patterns.yaml`
 
-| # | Query ID | Description | Status |
-|---|----------|------------|--------|
-| G1 | `trust-boundary-violation` | Source→Sink path bypassing Validator nodes | ☐ TODO |
-| G8 | `idempotency-risk` | Trigger→Mutation path without lock/check node | ☐ TODO |
-| G10 | `contract-breach` | Public API return type field-level diff | ☐ TODO |
+- [x] **ADV-G3a: `error-swallowing-empty`** — S
+  - `catch (e) {}` empty body
+  - **Files:** `lib/patterns/catalog/anti-patterns.yaml`
 
-### New Logic
+- [x] **ADV-G3b: `error-swallowing-null`** — S
+  - `catch (e) { return null }`
+  - **Files:** `lib/patterns/catalog/anti-patterns.yaml`
 
-| # | Feature | Description | Status |
-|---|---------|------------|--------|
-| G9 | Infra-to-code disconnect | Diff reconciliation for new env vars vs `.env.example` | ☐ TODO |
+- [x] **ADV-G4a: `n-plus-one-prisma`** — S
+  - `prisma.findMany()` inside for/forEach/map loop
+  - **Files:** `lib/patterns/catalog/anti-patterns.yaml`
+
+- [x] **ADV-G4b: `n-plus-one-supabase`** — S
+  - `supabase.from().select()` inside loop
+  - **Files:** `lib/patterns/catalog/anti-patterns.yaml`
+
+- [x] **ADV-G5a: `connection-pool-prisma`** — S
+  - `new PrismaClient()` not at module scope
+  - **Files:** `lib/patterns/catalog/anti-patterns.yaml`
+
+- [x] **ADV-G5b: `connection-pool-redis`** — S
+  - `new Redis()` not at module scope
+  - **Files:** `lib/patterns/catalog/anti-patterns.yaml`
+
+- [x] **ADV-G6: `mock-theater`** — S
+  - `vi.mock()` / `jest.mock()` calls (flag >3 per file)
+  - **Files:** `lib/patterns/catalog/anti-patterns.yaml`
+
+- [x] **ADV-G7a: `lifecycle-interval`** — S
+  - `setInterval()` without matching `clearInterval`
+  - **Files:** `lib/patterns/catalog/anti-patterns.yaml`
+
+- [x] **ADV-G7b: `lifecycle-listener`** — S
+  - `addEventListener()` without matching `removeEventListener`
+  - **Files:** `lib/patterns/catalog/anti-patterns.yaml`
+
+### PR Review Checks (Graph Traversal + New Logic)
+
+- [x] **ADV-G1: Trust boundary check** — M
+  - Detects source→sink paths bypassing validation/auth middleware
+  - Uses `getCallersOf`/`getCalleesOf` traversal, checks for auth patterns on path, validates justification feature_tag
+  - Integrated into PR review pipeline as blocking (`error` severity)
+  - **Files:** `lib/review/checks/trust-boundary-check.ts`
+
+- [x] **ADV-G8: Idempotency risk check** — M
+  - Detects webhook/trigger handlers that mutate state without idempotency guards
+  - Matches trigger handlers by name/file patterns, traverses callees for mutations, checks for dedup/upsert/lock patterns
+  - Integrated into PR review pipeline as warning
+  - **Files:** `lib/review/checks/idempotency-check.ts`
+
+- [x] **ADV-G9: Env var disconnect check** — S
+  - Scans diff hunks for new `process.env.SOMETHING` references not in `.env.example`
+  - Pure file scanning, no graph queries needed
+  - Integrated into PR review pipeline as warning
+  - **Files:** `lib/review/checks/env-check.ts`
+
+- [x] **ADV-G10: API contract breakage check** — M
+  - Uses existing blast radius to detect API boundary impact
+  - Flags when blast radius boundaries include `api_route` or `webhook_handler` kinds
+  - Severity scales with caller count
+  - Integrated into PR review pipeline as warning
+  - **Files:** `lib/review/checks/contract-check.ts`
+
+### PR Review Pipeline Wiring
+
+- [x] **ADV-PIPE-01: New finding types in `ports/types.ts`** — S
+  - Added: `TrustBoundaryFinding`, `EnvFinding`, `ContractFinding`, `IdempotencyFinding`, `BoundedContextFinding`
+  - Extended `ReviewConfig.checksEnabled` with: `trustBoundary`, `idempotency`, `env`, `contract`
+  - Extended `PrReviewCommentRecord.checkType` union with new check types
+  - **Files:** `lib/ports/types.ts`
+
+- [x] **ADV-PIPE-02: Wire 4 new checks into `runChecks()` activity** — M
+  - Added imports for all 4 new check functions
+  - Added to `Promise.all` with `.catch(() => [])` wrappers for graceful degradation
+  - Extended return type with `trustBoundary`, `env`, `contract`, `idempotency`
+  - Passes `blastRadius` from `fetchDiff` to `runChecks` for contract check
+  - **Files:** `lib/temporal/activities/review.ts`
+
+- [x] **ADV-PIPE-03: Format new finding types in comment builder** — S
+  - Added `formatTrustBoundaryComment()`, `formatEnvComment()`, `formatContractComment()`, `formatIdempotencyComment()`
+  - Extended `buildReviewResult()` signature with 4 new finding array params (defaulting to `[]`)
+  - Extended `ReviewComment.checkType` union
+  - **Files:** `lib/review/comment-builder.ts`
+
+- [x] **ADV-PIPE-04: Annotate new finding types in check run builder** — S
+  - Added annotation mapping for each new finding type with appropriate severity levels
+  - Added markdown table sections to `buildSummaryMarkdown()` for each new finding category
+  - Extended `buildCheckRunOutput()` signature with 4 new finding array params
+  - **Files:** `lib/review/check-run-builder.ts`
+
+- [x] **ADV-PIPE-05: Update workflow to pass new findings** — S
+  - Updated empty findings object in short-circuit path to include new finding arrays
+  - Passes `blastRadius` to `runChecks` activity for contract check usage
+  - **Files:** `lib/temporal/workflows/review-pr.ts`
 
 ---
 
 ## 2.3 Scale Tier Tracker
 
+### ast-grep Rules
+
+- [x] **ADV-S15: `destructive-column-drop`** — S
+  - `DROP COLUMN` in SQL migrations
+  - **Files:** `lib/patterns/catalog/scale-patterns.yaml`
+
+- [x] **ADV-S15b: `destructive-column-rename`** — S
+  - `RENAME COLUMN` in SQL migrations
+  - **Files:** `lib/patterns/catalog/scale-patterns.yaml`
+
+- [x] **ADV-S18: `rate-limit-loop-fetch`** — S
+  - `fetch()` inside while loop without backoff
+  - **Files:** `lib/patterns/catalog/scale-patterns.yaml`
+
+- [x] **ADV-S20: `dark-launch-route`** — S
+  - Exported route handler without feature flag
+  - **Files:** `lib/patterns/catalog/scale-patterns.yaml`
+
+- [x] **ADV-S23: `zero-downtime-alter`** — S
+  - `ALTER TABLE ADD COLUMN DEFAULT` without `CONCURRENTLY`
+  - **Files:** `lib/patterns/catalog/scale-patterns.yaml`
+
+- [x] **ADV-S32a: `flaky-date-now`** — S
+  - `Date.now()` in test files without fake timers
+  - **Files:** `lib/patterns/catalog/scale-patterns.yaml`
+
+- [x] **ADV-S32b: `flaky-math-random`** — S
+  - `Math.random()` in test files
+  - **Files:** `lib/patterns/catalog/scale-patterns.yaml`
+
+### Graph Intelligence
+
+- [x] **ADV-S30: Bounded context bleed detection** — M
+  - `findCrossFeatureMutations()` added to `IGraphStore` interface
+  - AQL implementation: joins justifications by feature_tag, finds cross-feature DB mutation calls
+  - In-memory fake returns `[]`
+  - Exposed via intelligence API route
+  - **Files:** `lib/ports/graph-store.ts`, `lib/adapters/arango-graph-store.ts`, `lib/di/fakes.ts`
+
+### Not Yet Implemented
+
 | Domain | Features | Dependency Phase | Status |
 |--------|----------|-----------------|--------|
-| Security | PII exfiltration, IAM drift, data residency, supply chain, trade secret | Phase 6 + 10b | ☐ All TODO |
-| Data Safety | Schema drift, cache desync, state machine orphaning, ghost migration | Phase 6 + 5.5 | ☐ All TODO |
-| Production | Concurrency, rate limits, dark launch, zero-downtime migration, flaky tests | Phase 6 | ☐ All TODO |
-| Architecture | Invariants, bounded context, event blackholes, zombie infra | Phase 4 + 6 | ☐ All TODO |
-| Multi-Agent | Multi-repo contracts, agent collision, context bankruptcy, idiomatic drift | Phase 8 + 9 + 12 | ☐ All TODO |
-| DevEx | Cognitive debt, API backward compatibility | Phase 5.5 + 7 | ☐ All TODO |
+| Security | PII exfiltration (#16), IAM drift (#24), data residency (#28), supply chain (#21), trade secret (#38) | Phase 6 + 10b | ☐ All TODO |
+| Data Safety | Cache desync (#26), state machine orphaning (#27), ghost migration (#29) | Phase 6 + 5.5 | ☐ All TODO |
+| Production | Concurrency (#13) | Phase 6 + 4 | ☐ TODO |
+| Architecture | Business logic invariants (#17), event blackholes (#31), zombie infra (#34) | Phase 4 + 6 | ☐ All TODO |
+| Multi-Agent | Multi-repo contracts (#33), agent collision (#35), context bankruptcy (#36), idiomatic drift (#37) | Phase 8 + 9 + 12 | ☐ All TODO |
+| DevEx | Cognitive debt (#5), API backward compatibility (#25) | Phase 5.5 + 7 | ☐ All TODO |
 
 ---
 
