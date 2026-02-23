@@ -21,7 +21,10 @@ import {
 import { JustificationResultSchema, BatchJustificationResultSchema } from "@/lib/justification/schemas"
 import { buildTestContext } from "@/lib/justification/test-context-extractor"
 import { topologicalSortEntityIds } from "@/lib/justification/topological-sort"
-import { createBatches } from "@/lib/justification/dynamic-batcher"
+import { createBatches, getBatcherConfigForModel } from "@/lib/justification/dynamic-batcher"
+import { checkStaleness, computeBodyHash } from "@/lib/justification/staleness-checker"
+import { detectDeadCode } from "@/lib/justification/dead-code-detector"
+import { scoreJustification } from "@/lib/justification/quality-scorer"
 import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
 import type { GraphContext } from "@/lib/justification/schemas"
 
@@ -153,8 +156,9 @@ function buildParentAndSiblingContext(
  */
 export async function justifyBatch(
   input: JustificationInput,
-  entityIds: string[]
-): Promise<{ justifiedCount: number }> {
+  entityIds: string[],
+  calleeChangedIds: string[] = []
+): Promise<{ justifiedCount: number; changedEntityIds: string[] }> {
   const container = getContainer()
   const results: JustificationDoc[] = []
 
@@ -167,7 +171,21 @@ export async function justifyBatch(
 
   // Filter to just the entities in this batch
   const entityIdSet = new Set(entityIds)
-  const entities = allEntities.filter((e) => entityIdSet.has(e.id))
+  let entities = allEntities.filter((e) => entityIdSet.has(e.id))
+
+  // Build lookup maps early for staleness check
+  const prevJustMap = new Map<string, JustificationDoc>()
+  for (const j of previousJustifications) {
+    prevJustMap.set(j.entity_id, j)
+  }
+
+  // Staleness detection: skip unchanged entities
+  const calleeChangedSet = new Set(calleeChangedIds)
+  const { stale, fresh } = checkStaleness(entities, prevJustMap, calleeChangedSet, edges)
+  if (fresh.length > 0) {
+    heartbeat(`skipping ${fresh.length} fresh entities (unchanged since last justification)`)
+  }
+  entities = stale
 
   // Build graph contexts for this batch
   heartbeat(`building graph contexts for ${entities.length} entities`)
@@ -177,17 +195,14 @@ export async function justifyBatch(
     input.orgId
   )
 
-  // Build lookup maps
-  const prevJustMap = new Map<string, JustificationDoc>()
-  for (const j of previousJustifications) {
-    prevJustMap.set(j.entity_id, j)
-  }
-
   const entityNameMap = buildEntityNameMap(allEntities)
   const { parentJustMap, siblingMap } = buildParentAndSiblingContext(entities, allEntities, prevJustMap)
 
   const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
   const defaultModel = LLM_MODELS.standard
+
+  // Dead code detection: auto-classify entities with zero inbound references
+  const deadCodeIds = detectDeadCode(allEntities, edges)
 
   // Separate entities into heuristic-skippable and LLM-required
   const llmEntities: Array<{
@@ -208,7 +223,29 @@ export async function justifyBatch(
     const now = new Date().toISOString()
     const graphContext = graphContexts.get(entity.id)
 
-    // Step 1: Try heuristics
+    // Step 1a: Check dead code (no inbound references, not exported)
+    if (deadCodeIds.has(entity.id)) {
+      results.push({
+        id: randomUUID(),
+        org_id: input.orgId,
+        repo_id: input.repoId,
+        entity_id: entity.id,
+        taxonomy: "UTILITY",
+        confidence: 0.7,
+        business_purpose: "Potentially dead code: no inbound references detected in the call graph",
+        domain_concepts: [],
+        feature_tag: "dead_code",
+        semantic_triples: [],
+        compliance_tags: [],
+        model_tier: "heuristic",
+        valid_from: now,
+        valid_to: null,
+        created_at: now,
+      })
+      continue
+    }
+
+    // Step 1b: Try heuristics
     const heuristic = applyHeuristics(entity)
     if (heuristic) {
       results.push({
@@ -284,13 +321,15 @@ export async function justifyBatch(
     const tierEntities = byTier.get(tier)!
     const modelToUse = tierEntities[0]?.route.model ?? defaultModel
 
-    // Create token-budgeted batches
+    // Create token-budgeted batches with model-aware limits
+    const batcherConfig = getBatcherConfigForModel(modelToUse)
     const batches = createBatches(
       tierEntities.map((te) => ({
         entity: te.entity,
         graphContext: te.graphContext,
         parentJustification: te.parentJustification,
-      }))
+      })),
+      batcherConfig
     )
 
     heartbeat(`processing ${batches.length} batches for tier ${tier} (${tierEntities.length} entities)`)
@@ -422,14 +461,37 @@ export async function justifyBatch(
     }
   }
 
+  // Attach body_hash to each result for staleness detection on re-runs
+  const entityMap = new Map(entities.map((e) => [e.id, e]))
+  for (const r of results) {
+    const entity = entityMap.get(r.entity_id)
+    if (entity) {
+      ;(r as Record<string, unknown>).body_hash = computeBodyHash(entity)
+    }
+  }
+
   // Store results directly (merged storeJustifications into justifyBatch)
   if (results.length > 0) {
     heartbeat(`storing ${results.length} justifications`)
     const normalized = normalizeJustifications(results)
+
+    // Score quality of LLM-generated justifications (store as metadata)
+    for (const j of normalized) {
+      if (j.model_tier !== "heuristic") {
+        const quality = scoreJustification(j)
+        ;(j as Record<string, unknown>).quality_score = quality.score
+        if (quality.flags.length > 0) {
+          ;(j as Record<string, unknown>).quality_flags = quality.flags
+        }
+      }
+    }
+
     await container.graphStore.bulkUpsertJustifications(input.orgId, normalized)
   }
 
-  return { justifiedCount: results.length }
+  // Return IDs of entities that were re-justified (for cascading invalidation)
+  const changedEntityIds = results.map((r) => r.entity_id)
+  return { justifiedCount: results.length, changedEntityIds }
 }
 
 /** Retry a single entity that failed in a batch */
@@ -529,6 +591,42 @@ function createFallbackJustification(
     valid_from: now,
     valid_to: null,
     created_at: now,
+  }
+}
+
+/**
+ * Run bi-directional context propagation across the entity hierarchy.
+ * Enriches justifications with propagated feature tags and domain concepts
+ * from parent/child relationships.
+ */
+export async function propagateContextActivity(
+  input: JustificationInput
+): Promise<void> {
+  const { propagateContext } = require("@/lib/justification/context-propagator") as typeof import("@/lib/justification/context-propagator")
+  const container = getContainer()
+  heartbeat("propagating context across entity hierarchy")
+
+  const [allEntities, edges, justifications] = await Promise.all([
+    container.graphStore.getAllEntities(input.orgId, input.repoId),
+    container.graphStore.getAllEdges(input.orgId, input.repoId),
+    container.graphStore.getJustifications(input.orgId, input.repoId),
+  ])
+
+  if (justifications.length === 0) return
+
+  const justMap = new Map<string, JustificationDoc>()
+  for (const j of justifications) {
+    justMap.set(j.entity_id, j)
+  }
+
+  propagateContext(allEntities, edges, justMap)
+
+  // Store propagated justifications back
+  const propagated = Array.from(justMap.values()).filter(
+    (j) => (j as Record<string, unknown>).propagated_feature_tag !== undefined
+  )
+  if (propagated.length > 0) {
+    await container.graphStore.bulkUpsertJustifications(input.orgId, propagated)
   }
 }
 

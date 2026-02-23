@@ -460,6 +460,7 @@ To prevent LLM free-text drift (where the same concept gets different labels lik
 | `technology_type` | ENUM: `"Database"`, `"Cache"`, `"Queue"`, `"Auth"`, `"Logging"`, `"Monitoring"`, `"HTTP"`, `"Storage"`, `"Config"`, `"Serialization"` | Zod enum for HORIZONTAL only |
 | `tags` | **Controlled vocabulary.** Seeded from repo file paths, package.json dependencies, and framework detection. LLM picks from seed list + can add new tags. Post-processing normalizes: lowercase, singular form, alias dedup (e.g., "auth" = "authentication"). | Alias map + lowercase + singular |
 | `user_flows` | Structured object: `{ name: string, step: string, actors: string[] }`. Flow `name` is seeded from detected entry points (route handlers, API endpoints, CLI commands). | Dedup by normalized name |
+| `architectural_pattern` | ENUM: `"pure_domain"`, `"pure_infrastructure"`, `"adapter"`, `"mixed"`, `"unknown"` | Zod enum, defaults to `"unknown"` |
 
 **Feature area seeding algorithm:**
 ```
@@ -477,11 +478,22 @@ To prevent LLM free-text drift (where the same concept gets different labels lik
 You are analyzing a code entity in a {language} codebase to produce a structured justification.
 Your output MUST use the exact field names and enum values specified below.
 
+=== PROJECT CONTEXT (if available) ===
+Project: {projectName}
+Description: {projectDescription}
+Domain: {projectDomain}
+Tech stack: {techStack}
+
 === ENTITY ===
 Name: {name}
 Kind: {kind} (function | class | interface | variable | method | module)
 File: {filePath}
 Lines: {startLine}–{endLine}
+Documentation: {docComment} (extracted from JSDoc/docstring/Go doc comment)
+Async: {isAsync}
+Parameters: {parameterCount}
+Returns: {returnType}
+Complexity: {complexity} (cyclomatic, baseline=1)
 
 Source Code:
 ```{language}
@@ -513,13 +525,15 @@ Callees (what this calls, with file paths):
   {calleeName} ({calleeFile}:{calleeLine})
   ... (up to 10 callees)
 
-=== ALREADY-JUSTIFIED CALLEES (from lower processing levels) ===
-  - {calleeName}: taxonomy={calleeTaxonomy}, feature_area={calleeFeatureArea},
-    purpose="{calleePurpose}", business_value={calleeBusinessValue}
-  - {calleeName}: taxonomy={calleeTaxonomy}, feature_area={calleeFeatureArea},
-    purpose="{calleePurpose}", business_value={calleeBusinessValue}
-  ... (all justified callees — this is the hierarchical context that makes
+=== ALREADY-JUSTIFIED CALLEES (what this entity depends on) ===
+  - {calleeName} in {calleeFile} [{calleeTaxonomy}]: {calleePurpose}
+  - {calleeName} in {calleeFile} [{calleeTaxonomy}]: {calleePurpose}
+  ... (up to 8 callees — this is the hierarchical context that makes
        higher-level justifications accurate)
+
+=== ALREADY-JUSTIFIED CALLERS (what depends on this entity) ===
+  - {callerName} in {callerFile} [{callerTaxonomy}]: {callerPurpose}
+  ... (up to 5 callers — provides "why this entity matters" context)
 
 === DETECTED DESIGN PATTERNS ===
 {designPatterns}
@@ -591,6 +605,14 @@ Produce a JSON object with these EXACT fields:
 
 9. "confidence" (number): 0.0–1.0. How confident you are in this justification.
    >0.9 = very clear-cut, 0.7–0.9 = reasonably confident, <0.7 = uncertain.
+
+10. "architecturalPattern" (enum): Pick ONE from:
+    "pure_domain" | "pure_infrastructure" | "adapter" | "mixed" | "unknown"
+    - pure_domain: Only business logic, no infrastructure imports
+    - pure_infrastructure: Only infra concerns (DB, cache, queue, logging)
+    - adapter: Bridges domain and infrastructure (controllers, repositories)
+    - mixed: Contains both domain logic and infrastructure concerns (code smell)
+    - unknown: Cannot determine (default)
 ```
 
 **Token budget per entity:**
@@ -627,6 +649,9 @@ Normalization Pipeline:
 5. design_patterns merge:
    - Combine heuristic-detected patterns with any LLM-mentioned patterns
    - Dedup by pattern name (case-insensitive)
+6. architectural_pattern normalization:
+   - Validate against enum: "pure_domain" | "pure_infrastructure" | "adapter" | "mixed" | "unknown"
+   - Default to "unknown" if LLM returns invalid or missing value
 ```
 
 This normalization ensures that across 5,000 entities in a repo, "Authentication" is always "Authentication" (never "Auth", "auth-module", "AuthN", "Authentication & Security") and tags like "database" are always "database" (never "db", "Database", "data-store").
@@ -647,6 +672,8 @@ Before LLM justification, a `detectDesignPatterns` activity runs heuristic patte
 | **Decorator** | Wraps another instance of same interface, delegates + extends | `LoggingMiddleware(handler)` |
 
 **Output:** `Map<entityKey, string[]>` — each entity gets its detected patterns (may be empty). These are included in the LLM prompt AND merged into the final justification's `design_patterns` field. The LLM can confirm, reject, or add patterns not caught by heuristics.
+
+**Architectural Pattern Classification:** In addition to design patterns, the LLM now returns a structured `architecturalPattern` field (one of `pure_domain`, `pure_infrastructure`, `adapter`, `mixed`, `unknown`) as part of the justification response. This enables querying for mixed-responsibility entities (a code smell in hexagonal architecture) and generating architecture health reports. The field is stored as `architectural_pattern` on the justification document.
 
 ### Feature Aggregation
 
@@ -702,6 +729,8 @@ org_{org_id}/
   │     consumers        Array?    — feature_areas that depend on this (HORIZONTAL only)
   │     tags             Array     — ["authentication", "middleware", "security"] (normalized, lowercase)
   │     design_patterns  Array     — ["Factory", "Repository"] (merged: heuristic + LLM)
+  │     architectural_pattern String? — ENUM: "pure_domain" | "pure_infrastructure" |
+  │                                    "adapter" | "mixed" | "unknown" (default "unknown")
   │     confidence       Number    — 0.0–1.0
   │     model_used       String    — "gpt-4o-mini" | "gpt-4o" | "claude-3-5-haiku-latest"
   │     processing_level Number    — topological sort level (0 = leaf)
@@ -1838,3 +1867,4 @@ components/dashboard/sidebar.tsx   ← Blueprint + Health nav links
 | 2026-02-21 | — | Initial document created. 22 API items, 8 adapter items, 3 infrastructure items, 4 database items, 6 UI items, 15 test items. Total: **58 tracker items.** |
 | 2026-02-21 | — | **Major revision:** (1) Added Canonical Terminology table — every concept has ONE name, used everywhere. (2) Unified justification + classification into single `justifications` document (like Code Synapse). Removed `classifications` collection and `classified_as` edges. (3) Expanded prompt template: file context, class hierarchy, design patterns, side effects, canonical value seeds — 3-6K input tokens/entity (was 2K). (4) Added enum-constrained fields (`taxonomy`, `business_value`, `technology_type`) to prevent LLM free-text variance. (5) Added post-processing normalization pipeline for `feature_area` (alias + fuzzy match), `tags` (lowercase + singular + dedup), `user_flows` (dedup), `design_patterns` (merge). (6) Added canonical value seeding: `detectFeatureAreaSeed` (file paths, routes, deps) and `detectTagSeed` (file paths, package.json). (7) Added Code Synapse search enhancements to `search_by_purpose`: intent classification, query expansion, feature area scoping, heuristic boosts. (8) Renamed `get_business_context` → `get_justification` (canonical naming). (9) Added P4-TEST-08a (normalization tests). (10) New files: `normalizer.ts`, `pattern-detector.ts`, `seed-detector.ts`. Total: **59 tracker items.** |
 | 2026-02-21 | Claude | **Implementation complete (backend).** 37/59 tracker items done. All core pipeline implemented: schemas, types, DB collections, LLM adapter, model router, ontology discovery, GraphRAG context builder, topological sort, prompt builder, post-processor, test context extractor, feature aggregator, health report builder, ADR synthesizer, drift detector, 4 MCP tools, justifyRepo/discoverOntology/generateHealthReport workflows, all activities, human override API route, embed-repo chain. 12 test files (400 tests pass). Build succeeds. **Remaining:** Frontend UI (P4-UI-01..06), Dashboard API routes (P4-API-17..19, 21, 22), `.env.example` update, token usage logging, LLM response caching, justifyEntityWorkflow, E2E tests, manual verification. |
+| 2026-02-23 | Claude | **Justification pipeline quality improvements (6 phases).** (1) **Doc comment extraction**: New `lib/indexer/doc-extractor.ts` shared utility; integrated into TS, Python, Go parsers and SCIP post-pass; `doc` field now populated on entities. (2) **Callee/caller justification context**: Prompt now shows both callee purposes (up to 8) and caller purposes (up to 5) instead of bare dependency names. (3) **Function metadata**: `is_async`, `parameter_count`, `return_type`, `complexity` extracted by all parsers; complexity used for model routing (≥10 → premium) and trivial filtering (=1 && ≤5 LOC → UTILITY). (4) **Project-level context**: `extractProjectContext` reads package.json/pyproject.toml/go.mod during ontology discovery; project name, description, domain, and tech stack injected into every prompt. (5) **Import edge enrichment**: TS parser extracts `imported_symbols`, `import_type`, `is_type_only` on import edges; graph context shows imported symbols for import neighbors. (6) **Architectural pattern**: New `architecturalPattern` enum field (`pure_domain`/`pure_infrastructure`/`adapter`/`mixed`/`unknown`) in Zod schemas, stored as `architectural_pattern` on justification docs. Updated prompt template, canonical constraints, ArangoDB schema, and post-processing pipeline in this doc. |

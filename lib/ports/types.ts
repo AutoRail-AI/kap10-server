@@ -279,6 +279,8 @@ export interface JustificationDoc {
   valid_from: string
   valid_to: string | null
   created_at: string
+  /** Extensible metadata: body_hash, quality_score, quality_flags, propagated_* fields */
+  [key: string]: unknown
 }
 
 export interface FeatureAggregation {

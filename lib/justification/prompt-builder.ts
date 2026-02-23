@@ -1,6 +1,9 @@
 /**
  * Phase 4: Prompt Builder — constructs LLM prompts for entity justification
  * anchored in graph context, domain ontology, and proven dependency justifications.
+ *
+ * Uses entity-specific prompt templates for functions, classes, files, and interfaces
+ * to maximize justification quality per entity kind.
  */
 
 import type { EntityDoc, DomainOntologyDoc, JustificationDoc } from "@/lib/ports/types"
@@ -47,8 +50,231 @@ export interface PromptBuilderOptions {
   callerJustifications?: JustificationDoc[]
 }
 
+// ── Entity-Specific Section Builders ──────────────────────────────────────────
+
+function buildFunctionSection(
+  entity: EntityDoc,
+  graphContext: GraphContext,
+  maxBodyChars: number,
+  options?: PromptBuilderOptions
+): string {
+  const lines: string[] = []
+  lines.push(`## Function Under Analysis`)
+  lines.push(`- **Name**: ${entity.name}`)
+  lines.push(`- **Kind**: ${entity.kind}`)
+  lines.push(`- **File**: ${entity.file_path}`)
+  lines.push(`- **Line**: ${entity.start_line ?? "unknown"}`)
+  if (entity.signature) lines.push(`- **Signature**: ${entity.signature}`)
+  if (entity.doc) lines.push(`- **Documentation**: ${entity.doc as string}`)
+
+  // Function-specific metadata
+  if (entity.is_async) lines.push(`- **Async**: yes (uses async/await — consider I/O boundaries and error propagation)`)
+  if (entity.parameter_count != null) lines.push(`- **Parameters**: ${entity.parameter_count as number}`)
+  if (entity.return_type) lines.push(`- **Returns**: ${entity.return_type as string}`)
+  if (entity.complexity != null) {
+    const c = entity.complexity as number
+    lines.push(`- **Complexity**: ${c}${c >= 10 ? " (high — likely orchestrates multiple paths)" : c >= 5 ? " (moderate)" : ""}`)
+  }
+
+  // Call graph emphasis for functions
+  const callers = graphContext.neighbors.filter(n => n.direction === "inbound")
+  const callees = graphContext.neighbors.filter(n => n.direction === "outbound")
+
+  if (callers.length > 0 || callees.length > 0) {
+    lines.push(`\n### Call Graph`)
+    if (callees.length > 0) {
+      const calleeList = callees.slice(0, 8).map(n => `  - ${n.name} (${n.kind})${n.file_path ? ` in ${n.file_path}` : ""}`).join("\n")
+      lines.push(`**Calls (outbound dependencies):**\n${calleeList}`)
+    }
+    if (callers.length > 0) {
+      const callerList = callers.slice(0, 5).map(n => `  - ${n.name} (${n.kind})${n.file_path ? ` in ${n.file_path}` : ""}`).join("\n")
+      lines.push(`**Called by (inbound dependents):**\n${callerList}`)
+    }
+  }
+
+  if (entity.body) {
+    lines.push(`\n### Source Code\n\`\`\`\n${truncateBody(entity.body as string, maxBodyChars)}\n\`\`\``)
+  }
+
+  return lines.join("\n")
+}
+
+function buildClassSection(
+  entity: EntityDoc,
+  graphContext: GraphContext,
+  maxBodyChars: number,
+  options?: PromptBuilderOptions
+): string {
+  const lines: string[] = []
+  lines.push(`## Class Under Analysis`)
+  lines.push(`- **Name**: ${entity.name}`)
+  lines.push(`- **Kind**: ${entity.kind}`)
+  lines.push(`- **File**: ${entity.file_path}`)
+  lines.push(`- **Line**: ${entity.start_line ?? "unknown"}`)
+  if (entity.signature) lines.push(`- **Signature**: ${entity.signature}`)
+  if (entity.doc) lines.push(`- **Documentation**: ${entity.doc as string}`)
+
+  // Inheritance chain from graph edges
+  const extendsNeighbors = graphContext.neighbors.filter(n => n.direction === "outbound" && n.kind === "class")
+  const implementsNeighbors = graphContext.neighbors.filter(n => n.direction === "outbound" && n.kind === "interface")
+  if (extendsNeighbors.length > 0) {
+    lines.push(`- **Extends**: ${extendsNeighbors.map(n => n.name).join(", ")}`)
+  }
+  if (implementsNeighbors.length > 0) {
+    lines.push(`- **Implements**: ${implementsNeighbors.map(n => n.name).join(", ")}`)
+  }
+
+  // Method inventory from siblings
+  if (options?.siblingNames && options.siblingNames.length > 0) {
+    // Siblings of a class are other top-level entities; for methods, use parentJustification
+  }
+
+  // State fields and method count from metadata
+  if (entity.complexity != null) lines.push(`- **Complexity**: ${entity.complexity as number}`)
+
+  // Show methods if available from neighbor graph (children)
+  const methodNeighbors = graphContext.neighbors.filter(n =>
+    n.direction === "inbound" && (n.kind === "method" || n.kind === "function")
+  )
+  if (methodNeighbors.length > 0) {
+    const methodList = methodNeighbors.slice(0, 12).map(n => `  - ${n.name}`).join("\n")
+    lines.push(`\n### Methods (${methodNeighbors.length} total)\n${methodList}${methodNeighbors.length > 12 ? `\n  - ...and ${methodNeighbors.length - 12} more` : ""}`)
+  }
+
+  if (entity.body) {
+    lines.push(`\n### Source Code\n\`\`\`\n${truncateBody(entity.body as string, maxBodyChars)}\n\`\`\``)
+  }
+
+  return lines.join("\n")
+}
+
+function buildFileSection(
+  entity: EntityDoc,
+  graphContext: GraphContext,
+  maxBodyChars: number,
+  options?: PromptBuilderOptions
+): string {
+  const lines: string[] = []
+  lines.push(`## Module Under Analysis`)
+  lines.push(`- **Name**: ${entity.name}`)
+  lines.push(`- **Kind**: ${entity.kind}`)
+  lines.push(`- **File**: ${entity.file_path}`)
+
+  // Infer architectural layer from file path
+  const archLayer = inferArchitecturalLayer(entity.file_path)
+  if (archLayer) {
+    lines.push(`- **Architectural Layer**: ${archLayer}`)
+  }
+
+  // Export surface area from outbound connections
+  const exports = graphContext.neighbors.filter(n => n.direction === "outbound")
+  const imports = graphContext.neighbors.filter(n => n.direction === "inbound")
+
+  if (exports.length > 0) {
+    const exportList = exports.slice(0, 10).map(n => `  - ${n.name} (${n.kind})`).join("\n")
+    lines.push(`\n### Exports (${exports.length} entities)\n${exportList}${exports.length > 10 ? `\n  - ...and ${exports.length - 10} more` : ""}`)
+  }
+
+  if (imports.length > 0) {
+    lines.push(`\n### Imported by: ${imports.slice(0, 5).map(n => n.name).join(", ")}${imports.length > 5 ? ` and ${imports.length - 5} more` : ""}`)
+  }
+
+  // Detect barrel/index file
+  const isBarrel = entity.name === "index" || entity.file_path.endsWith("/index.ts") || entity.file_path.endsWith("/index.js")
+  if (isBarrel) {
+    lines.push(`\n**Note**: This is a barrel/index file — its purpose is typically re-exporting from siblings.`)
+  }
+
+  if (entity.body) {
+    lines.push(`\n### Source Code\n\`\`\`\n${truncateBody(entity.body as string, maxBodyChars)}\n\`\`\``)
+  }
+
+  return lines.join("\n")
+}
+
+function buildInterfaceSection(
+  entity: EntityDoc,
+  graphContext: GraphContext,
+  maxBodyChars: number,
+  options?: PromptBuilderOptions
+): string {
+  const lines: string[] = []
+  lines.push(`## Interface Under Analysis`)
+  lines.push(`- **Name**: ${entity.name}`)
+  lines.push(`- **Kind**: ${entity.kind}`)
+  lines.push(`- **File**: ${entity.file_path}`)
+  lines.push(`- **Line**: ${entity.start_line ?? "unknown"}`)
+  if (entity.signature) lines.push(`- **Signature**: ${entity.signature}`)
+  if (entity.doc) lines.push(`- **Documentation**: ${entity.doc as string}`)
+
+  // Implementors from inbound implements edges
+  const implementors = graphContext.neighbors.filter(n =>
+    n.direction === "inbound" && (n.kind === "class" || n.kind === "struct")
+  )
+  if (implementors.length > 0) {
+    const implList = implementors.slice(0, 8).map(n => `  - ${n.name}${n.file_path ? ` in ${n.file_path}` : ""}`).join("\n")
+    lines.push(`\n### Implementors (${implementors.length})\n${implList}`)
+  }
+
+  // Extended by
+  const extenders = graphContext.neighbors.filter(n =>
+    n.direction === "inbound" && n.kind === "interface"
+  )
+  if (extenders.length > 0) {
+    lines.push(`\n### Extended by: ${extenders.map(n => n.name).join(", ")}`)
+  }
+
+  if (entity.body) {
+    lines.push(`\n### Contract Definition\n\`\`\`\n${truncateBody(entity.body as string, maxBodyChars)}\n\`\`\``)
+  }
+
+  return lines.join("\n")
+}
+
+function buildGenericSection(
+  entity: EntityDoc,
+  graphContext: GraphContext,
+  maxBodyChars: number,
+  options?: PromptBuilderOptions
+): string {
+  const metadataLines: string[] = []
+  if (entity.is_async) metadataLines.push("- **Async**: yes")
+  if (entity.parameter_count != null) metadataLines.push(`- **Parameters**: ${entity.parameter_count as number}`)
+  if (entity.return_type) metadataLines.push(`- **Returns**: ${entity.return_type as string}`)
+  if (entity.complexity != null) metadataLines.push(`- **Complexity**: ${entity.complexity as number}`)
+
+  return `## Entity Under Analysis
+- **Name**: ${entity.name}
+- **Kind**: ${entity.kind}
+- **File**: ${entity.file_path}
+- **Line**: ${entity.start_line ?? "unknown"}
+${entity.signature ? `- **Signature**: ${entity.signature}` : ""}
+${entity.doc ? `- **Documentation**: ${entity.doc as string}` : ""}
+${metadataLines.length > 0 ? metadataLines.join("\n") : ""}
+${entity.body ? `\n### Source Code\n\`\`\`\n${truncateBody(entity.body as string, maxBodyChars)}\n\`\`\`` : ""}`
+}
+
+/** Infer architectural layer from file path patterns. */
+function inferArchitecturalLayer(filePath: string): string | null {
+  if (/\/adapters?\//i.test(filePath)) return "adapter"
+  if (/\/ports?\//i.test(filePath)) return "port (interface)"
+  if (/\/use-?cases?\//i.test(filePath)) return "domain (use case)"
+  if (/\/domain\//i.test(filePath)) return "domain"
+  if (/\/infrastructure\//i.test(filePath)) return "infrastructure"
+  if (/\/controllers?\//i.test(filePath)) return "controller"
+  if (/\/services?\//i.test(filePath)) return "service"
+  if (/\/middleware\//i.test(filePath)) return "middleware"
+  if (/\/utils?\//i.test(filePath) || /\/helpers?\//i.test(filePath)) return "utility"
+  if (/\/components?\//i.test(filePath)) return "UI component"
+  if (/\/hooks?\//i.test(filePath)) return "React hook"
+  if (/\/api\//i.test(filePath)) return "API route"
+  if (/\/lib\//i.test(filePath)) return "library"
+  return null
+}
+
 /**
  * Build a justification prompt for a single entity.
+ * Uses entity-specific templates for functions, classes, files, and interfaces.
  */
 export function buildJustificationPrompt(
   entity: EntityDoc,
@@ -75,22 +301,22 @@ export function buildJustificationPrompt(
     sections.push(`## Project Context\n${projectLines.join("\n")}`)
   }
 
-  // Section 1: Entity details
-  const metadataLines: string[] = []
-  if (entity.is_async) metadataLines.push("- **Async**: yes")
-  if (entity.parameter_count != null) metadataLines.push(`- **Parameters**: ${entity.parameter_count as number}`)
-  if (entity.return_type) metadataLines.push(`- **Returns**: ${entity.return_type as string}`)
-  if (entity.complexity != null) metadataLines.push(`- **Complexity**: ${entity.complexity as number}`)
-
-  sections.push(`## Entity Under Analysis
-- **Name**: ${entity.name}
-- **Kind**: ${entity.kind}
-- **File**: ${entity.file_path}
-- **Line**: ${entity.start_line ?? "unknown"}
-${entity.signature ? `- **Signature**: ${entity.signature}` : ""}
-${entity.doc ? `- **Documentation**: ${entity.doc as string}` : ""}
-${metadataLines.length > 0 ? metadataLines.join("\n") : ""}
-${entity.body ? `\n### Source Code\n\`\`\`\n${truncateBody(entity.body as string, maxBodyChars)}\n\`\`\`` : ""}`)
+  // Section 1: Entity details — dispatched by kind
+  const entitySection = (() => {
+    switch (entity.kind) {
+      case "function": case "method": case "decorator":
+        return buildFunctionSection(entity, graphContext, maxBodyChars, options)
+      case "class": case "struct":
+        return buildClassSection(entity, graphContext, maxBodyChars, options)
+      case "file": case "module": case "namespace":
+        return buildFileSection(entity, graphContext, maxBodyChars, options)
+      case "interface":
+        return buildInterfaceSection(entity, graphContext, maxBodyChars, options)
+      default:
+        return buildGenericSection(entity, graphContext, maxBodyChars, options)
+    }
+  })()
+  sections.push(entitySection)
 
   // Section 2: Parent context (if entity is a method inside a class)
   if (options?.parentJustification) {
@@ -108,19 +334,24 @@ Feature: ${pj.feature_tag}`)
 Other members of the same parent: ${siblings}${options.siblingNames.length > 8 ? ` and ${options.siblingNames.length - 8} more` : ""}`)
   }
 
-  // Section 4: Graph neighborhood
-  if (graphContext.neighbors.length > 0) {
-    const neighborList = graphContext.neighbors
-      .slice(0, 15)
-      .map((n) => {
-        const location = n.file_path ? ` in ${n.file_path}` : ""
-        return `  - [${n.direction}] ${n.name} (${n.kind})${location}`
-      })
-      .join("\n")
-    sections.push(`## Graph Neighborhood (${graphContext.neighbors.length} connections)
+  // Section 4: Graph neighborhood (only for generic — others embed it in their section)
+  if (entity.kind !== "function" && entity.kind !== "method" && entity.kind !== "decorator" &&
+      entity.kind !== "class" && entity.kind !== "struct" &&
+      entity.kind !== "file" && entity.kind !== "module" && entity.kind !== "namespace" &&
+      entity.kind !== "interface") {
+    if (graphContext.neighbors.length > 0) {
+      const neighborList = graphContext.neighbors
+        .slice(0, 15)
+        .map((n) => {
+          const location = n.file_path ? ` in ${n.file_path}` : ""
+          return `  - [${n.direction}] ${n.name} (${n.kind})${location}`
+        })
+        .join("\n")
+      sections.push(`## Graph Neighborhood (${graphContext.neighbors.length} connections)
 ${graphContext.subgraphSummary ?? ""}
 ${neighborList}
 ${graphContext.centrality != null ? `\nCentrality score: ${graphContext.centrality.toFixed(3)}` : ""}`)
+    }
   }
 
   // Section 5: Domain vocabulary
@@ -198,8 +429,58 @@ Focus on business value, not technical implementation details.`)
 }
 
 /**
+ * Build a compact kind-specific hint line for batch prompts.
+ */
+function buildKindHint(
+  entity: EntityDoc,
+  graphContext: GraphContext
+): string {
+  const callers = graphContext.neighbors.filter(n => n.direction === "inbound")
+  const callees = graphContext.neighbors.filter(n => n.direction === "outbound")
+
+  switch (entity.kind) {
+    case "function": case "method": case "decorator": {
+      const parts: string[] = []
+      if (entity.is_async) parts.push("async")
+      parts.push(entity.kind)
+      if (callees.length > 0) parts.push(`${callees.length} callees`)
+      if (callers.length > 0) parts.push(`${callers.length} callers`)
+      if (entity.return_type) parts.push(`returns ${entity.return_type as string}`)
+      return `Kind hint: ${parts.join(", ")}`
+    }
+    case "class": case "struct": {
+      const parts: string[] = []
+      const methods = graphContext.neighbors.filter(n => n.kind === "method" || n.kind === "function")
+      if (methods.length > 0) parts.push(`${methods.length} methods`)
+      const exts = graphContext.neighbors.filter(n => n.direction === "outbound" && n.kind === "class")
+      if (exts.length > 0) parts.push(`extends ${exts.map(n => n.name).join(", ")}`)
+      const impls = graphContext.neighbors.filter(n => n.direction === "outbound" && n.kind === "interface")
+      if (impls.length > 0) parts.push(`implements ${impls.map(n => n.name).join(", ")}`)
+      return parts.length > 0 ? `Kind hint: ${entity.kind} with ${parts.join(", ")}` : `Kind hint: ${entity.kind}`
+    }
+    case "file": case "module": case "namespace": {
+      const layer = inferArchitecturalLayer(entity.file_path)
+      const exports = graphContext.neighbors.filter(n => n.direction === "outbound")
+      const parts: string[] = [`${entity.kind} file`]
+      if (exports.length > 0) parts.push(`${exports.length} exports`)
+      if (layer) parts.push(`architectural layer: ${layer}`)
+      return `Kind hint: ${parts.join(", ")}`
+    }
+    case "interface": {
+      const impls = graphContext.neighbors.filter(n => n.direction === "inbound" && (n.kind === "class" || n.kind === "struct"))
+      return impls.length > 0
+        ? `Kind hint: interface with ${impls.length} implementors (${impls.slice(0, 3).map(n => n.name).join(", ")})`
+        : `Kind hint: interface contract`
+    }
+    default:
+      return `Kind hint: ${entity.kind}`
+  }
+}
+
+/**
  * Build a justification prompt for a batch of entities (used in dynamic batching).
- * Each entity gets a compact representation with truncated code snippets.
+ * Each entity gets a compact representation with truncated code snippets
+ * and kind-specific hint lines.
  */
 export function buildBatchJustificationPrompt(
   entities: Array<{
@@ -264,7 +545,8 @@ ${vocabEntries}`)
 - **Kind**: ${entity.kind}
 - **File**: ${entity.file_path}
 ${entity.signature ? `- **Signature**: ${entity.signature}` : ""}
-${entity.doc ? `- **Documentation**: ${entity.doc as string}` : ""}`
+${entity.doc ? `- **Documentation**: ${entity.doc as string}` : ""}
+- ${buildKindHint(entity, graphContext)}`
 
     if (truncatedBody) {
       entitySection += `\n\`\`\`\n${truncatedBody}\n\`\`\``

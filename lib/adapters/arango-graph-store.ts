@@ -1297,6 +1297,88 @@ export class ArangoGraphStore implements IGraphStore {
     return { entities, edges }
   }
 
+  async getBatchSubgraphs(
+    orgId: string,
+    entityIds: string[],
+    depth = 2
+  ): Promise<Map<string, SubgraphResult>> {
+    const result = new Map<string, SubgraphResult>()
+    if (entityIds.length === 0) return result
+
+    const db = await getDbAsync()
+    const clampedDepth = Math.min(Math.max(depth, 1), 5)
+    const CHUNK_SIZE = 50
+
+    for (let i = 0; i < entityIds.length; i += CHUNK_SIZE) {
+      const chunk = entityIds.slice(i, i + CHUNK_SIZE)
+
+      // Build all possible document IDs for each entity in the chunk
+      const entityPossibleIds = chunk.map((eid) =>
+        ALL_ENTITY_COLLECTIONS.map((c) => `${c}/${eid}`)
+      )
+
+      const cursor = await db.query(
+        `
+        FOR entityGroup IN @entityPossibleIds
+          LET startDoc = FIRST(
+            FOR sid IN entityGroup
+              LET doc = DOCUMENT(sid)
+              FILTER doc != null AND doc.org_id == @orgId
+              RETURN doc
+          )
+          FILTER startDoc != null
+          LET entityKey = startDoc._key
+          LET vertices = (
+            FOR v, e IN 1..@maxDepth ANY startDoc calls, imports, extends, implements
+              FILTER v.org_id == @orgId AND v.repo_id == startDoc.repo_id
+              LIMIT 200
+              RETURN DISTINCT v
+          )
+          LET edges = (
+            FOR v, e IN 1..@maxDepth ANY startDoc calls, imports, extends, implements
+              FILTER v.org_id == @orgId AND v.repo_id == startDoc.repo_id
+              LIMIT 500
+              RETURN DISTINCT e
+          )
+          RETURN { entityKey: entityKey, vertices: APPEND([startDoc], vertices), edges: edges }
+        `,
+        { orgId, entityPossibleIds, maxDepth: clampedDepth }
+      )
+
+      const rows = await cursor.all()
+      for (const row of rows) {
+        const { entityKey, vertices, edges: rowEdges } = row as {
+          entityKey: string
+          vertices: Array<{ _key: string; _id: string; [k: string]: unknown }>
+          edges: Array<{ _from: string; _to: string; [k: string]: unknown }>
+        }
+
+        const entities = (vertices ?? []).map((d) => {
+          const { _key, _id, ...rest } = d
+          return { id: _key, ...rest } as EntityDoc
+        })
+        const edges = (rowEdges ?? []).map((e) => ({
+          _from: e._from,
+          _to: e._to,
+          kind: (e.kind as string) ?? "calls",
+          org_id: (e.org_id as string) ?? orgId,
+          repo_id: (e.repo_id as string) ?? "",
+        })) as EdgeDoc[]
+
+        result.set(entityKey, { entities, edges })
+      }
+
+      // Fill in empty results for entities not found
+      for (const eid of chunk) {
+        if (!result.has(eid)) {
+          result.set(eid, { entities: [], edges: [] })
+        }
+      }
+    }
+
+    return result
+  }
+
   // ── Phase 4: Bulk fetch all entities/edges ─────────────────────
 
   async getAllEntities(orgId: string, repoId: string): Promise<EntityDoc[]> {

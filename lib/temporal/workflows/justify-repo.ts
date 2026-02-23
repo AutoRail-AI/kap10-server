@@ -80,15 +80,15 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
 
   try {
     // Step 1: Set status
-    wfLog("INFO", "Step 1/9: Setting status to justifying", ctx, "Step 1/9")
+    wfLog("INFO", "Step 1/10: Setting status to justifying", ctx, "Step 1/10")
     await activities.setJustifyingStatus(input)
     progress = 5
 
     // Step 2: Fetch entity/edge counts (data stays in ArangoDB)
-    wfLog("INFO", "Step 2/9: Fetching entity and edge counts", ctx, "Step 2/9")
+    wfLog("INFO", "Step 2/10: Fetching entity and edge counts", ctx, "Step 2/10")
     const { entityCount, edgeCount } = await activities.fetchEntitiesAndEdges(input)
     progress = 15
-    wfLog("INFO", "Step 2 complete", { ...ctx, entityCount, edgeCount }, "Step 2/9")
+    wfLog("INFO", "Step 2 complete", { ...ctx, entityCount, edgeCount }, "Step 2/10")
 
     if (entityCount === 0) {
       wfLog("INFO", "No entities to justify, marking done", ctx, "Complete")
@@ -97,42 +97,70 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
     }
 
     // Step 3: Load ontology (small payload, kept as return value)
-    wfLog("INFO", "Step 3/9: Loading ontology", ctx, "Step 3/9")
+    wfLog("INFO", "Step 3/10: Loading ontology", ctx, "Step 3/10")
     await activities.loadOntology(input)
     progress = 20
 
     // Step 4: Topological sort → returns entity ID arrays per level (~50KB)
-    wfLog("INFO", "Step 4/9: Topological sort", ctx, "Step 4/9")
+    wfLog("INFO", "Step 4/10: Topological sort", ctx, "Step 4/10")
     const levels = await activities.performTopologicalSort(input)
     progress = 25
-    wfLog("INFO", "Step 4 complete", { ...ctx, levelCount: levels.length }, "Step 4/9")
+    wfLog("INFO", "Step 4 complete", { ...ctx, levelCount: levels.length }, "Step 4/10")
 
-    // Step 5: Process each level bottom-up
-    wfLog("INFO", "Step 5/9: Justifying entities level-by-level", { ...ctx, levelCount: levels.length }, "Step 5/9")
+    // Step 5: Process each level bottom-up with cascading staleness tracking
+    // Large levels (100+ entities) are split into parallel chunks for 2-3x speedup
+    wfLog("INFO", "Step 5/10: Justifying entities level-by-level", { ...ctx, levelCount: levels.length }, "Step 5/10")
     let totalJustified = 0
     const levelProgressStep = 50 / Math.max(levels.length, 1)
+    let cumulativeChangedIds: string[] = []
+    const PARALLEL_CHUNK_SIZE = 100
 
     for (let i = 0; i < levels.length; i++) {
       const levelEntityIds = levels[i]!
-      wfLog("INFO", `Processing level ${i + 1}/${levels.length}`, { ...ctx, levelEntityCount: levelEntityIds.length }, `Step 5/9 (L${i + 1})`)
+      wfLog("INFO", `Processing level ${i + 1}/${levels.length}`, { ...ctx, levelEntityCount: levelEntityIds.length }, `Step 5/10 (L${i + 1})`)
 
-      const { justifiedCount } = await activities.justifyBatch(input, levelEntityIds)
-      totalJustified += justifiedCount
+      if (levelEntityIds.length <= PARALLEL_CHUNK_SIZE) {
+        // Small level — process as a single batch
+        const { justifiedCount, changedEntityIds } = await activities.justifyBatch(input, levelEntityIds, cumulativeChangedIds)
+        totalJustified += justifiedCount
+        cumulativeChangedIds = [...cumulativeChangedIds, ...changedEntityIds]
+      } else {
+        // Large level — split into parallel chunks (entities within a level have no dependencies)
+        const chunks: string[][] = []
+        for (let j = 0; j < levelEntityIds.length; j += PARALLEL_CHUNK_SIZE) {
+          chunks.push(levelEntityIds.slice(j, j + PARALLEL_CHUNK_SIZE))
+        }
+        wfLog("INFO", `Splitting level ${i + 1} into ${chunks.length} parallel chunks`, { ...ctx, chunkCount: chunks.length }, `Step 5/10 (L${i + 1})`)
+
+        const chunkResults = await Promise.all(
+          chunks.map((chunk) => activities.justifyBatch(input, chunk, cumulativeChangedIds))
+        )
+        for (const { justifiedCount, changedEntityIds } of chunkResults) {
+          totalJustified += justifiedCount
+          cumulativeChangedIds = [...cumulativeChangedIds, ...changedEntityIds]
+        }
+      }
+
       progress = Math.round(25 + (i + 1) * levelProgressStep)
     }
 
-    // Step 6: Store feature aggregations (fetches justifications from ArangoDB)
-    wfLog("INFO", "Step 6/9: Storing feature aggregations", ctx, "Step 6/9")
-    await activities.storeFeatureAggregations(input)
-    progress = 80
+    // Step 6: Bi-directional context propagation
+    wfLog("INFO", "Step 6/10: Propagating context across entity hierarchy", ctx, "Step 6/10")
+    await activities.propagateContextActivity(input)
+    progress = 78
 
-    // Step 7: Embed justifications (fetches justifications from ArangoDB)
-    wfLog("INFO", "Step 7/9: Embedding justifications", ctx, "Step 7/9")
+    // Step 7: Store feature aggregations (fetches justifications from ArangoDB)
+    wfLog("INFO", "Step 7/10: Storing feature aggregations", ctx, "Step 7/10")
+    await activities.storeFeatureAggregations(input)
+    progress = 82
+
+    // Step 8: Embed justifications (fetches justifications from ArangoDB)
+    wfLog("INFO", "Step 8/10: Embedding justifications", ctx, "Step 8/10")
     const embeddingsStored = await activities.embedJustifications(input)
     progress = 90
 
-    // Step 8: Chain to health report
-    wfLog("INFO", "Step 8/9: Starting health report workflow", ctx, "Step 8/9")
+    // Step 9: Chain to health report
+    wfLog("INFO", "Step 9/10: Starting health report workflow", ctx, "Step 9/10")
     await startChild(generateHealthReportWorkflow, {
       workflowId: `health-${input.orgId}-${input.repoId}-${workflowInfo().runId.slice(0, 8)}`,
       taskQueue: "light-llm-queue",
@@ -140,8 +168,8 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
       parentClosePolicy: ParentClosePolicy.ABANDON,
     })
 
-    // Step 9: Set ready
-    wfLog("INFO", "Step 9/9: Setting status to ready", ctx, "Step 9/9")
+    // Step 10: Set ready
+    wfLog("INFO", "Step 10/10: Setting status to ready", ctx, "Step 10/10")
     await activities.setJustifyDoneStatus(input)
     progress = 100
 

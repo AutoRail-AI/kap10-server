@@ -386,6 +386,13 @@ export class InMemoryGraphStore implements IGraphStore {
     }
     return { entities: resultEntities, edges: resultEdges as unknown as import("@/lib/ports/types").EdgeDoc[] }
   }
+  async getBatchSubgraphs(orgId: string, entityIds: string[], depth = 2): Promise<Map<string, SubgraphResult>> {
+    const result = new Map<string, SubgraphResult>()
+    for (const eid of entityIds) {
+      result.set(eid, await this.getSubgraph(orgId, eid, depth))
+    }
+    return result
+  }
   async getAllEntities(orgId: string, repoId: string): Promise<EntityDoc[]> {
     return Array.from(this.entities.values())
       .filter((e) => e.org_id === orgId && e.repo_id === repoId)

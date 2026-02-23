@@ -49,6 +49,13 @@ export async function driftEvaluationActivity(input: DriftEvaluationInput): Prom
 
   // Use LLM to evaluate if the change represents intent drift
   heartbeat("LLM drift evaluation")
+  let llmModel = "gemini-2.0-flash"
+  try {
+    const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+    llmModel = LLM_MODELS.standard
+  } catch {
+    // Fallback model if config module unavailable (e.g., in tests)
+  }
   try {
     const result = await container.llmProvider.generateObject({
       schema: {
@@ -62,7 +69,7 @@ OLD purpose: ${oldJustification.business_purpose}
 NEW purpose: ${newJustification.business_purpose}
 
 Return isDrift=true only if the fundamental intent/role has changed, not just refinements or rewording.`,
-      model: (require("@/lib/llm/config") as typeof import("@/lib/llm/config")).LLM_MODELS.standard,
+      model: llmModel,
     })
 
     if (!result.object.isDrift) return { isDrift: false }

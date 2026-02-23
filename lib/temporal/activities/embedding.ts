@@ -108,14 +108,57 @@ export async function fetchEntities(input: EmbeddingInput): Promise<EntityDoc[]>
 const MAX_BODY_CHARS = 24000 // ~6000 tokens at 4 chars/token
 
 /**
- * Transform entities into embeddable documents with formatted text + metadata.
- * Text format: "{Kind}: {name}\nFile: {filePath}\nSignature: {signature}\n\n{body}"
+ * Transform entities into embeddable documents with enriched text + metadata.
+ *
+ * Enhanced format includes justification data (purpose, domain concepts, feature tag)
+ * and graph relationships (callers/callees) when available. This enables semantic
+ * search by business meaning, not just code text.
  */
 export async function buildDocuments(
   input: EmbeddingInput,
   entities: EntityDoc[]
 ): Promise<EmbeddableDocument[]> {
   const docs: EmbeddableDocument[] = []
+  const container = getContainer()
+
+  // Fetch justifications and edges for enrichment (backward-compatible: no-op if empty)
+  let justificationMap = new Map<string, import("@/lib/ports/types").JustificationDoc>()
+  let edgeList: import("@/lib/ports/types").EdgeDoc[] = []
+  try {
+    const [justifications, edges] = await Promise.all([
+      container.graphStore.getJustifications(input.orgId, input.repoId),
+      container.graphStore.getAllEdges(input.orgId, input.repoId),
+    ])
+    justificationMap = new Map(justifications.map((j) => [j.entity_id, j]))
+    edgeList = edges
+  } catch {
+    // First index may not have justifications yet — continue without enrichment
+  }
+
+  // Build entity name lookup for caller/callee names
+  const entityNameMap = new Map<string, string>()
+  for (const e of entities) {
+    entityNameMap.set(e.id, e.name ?? "unknown")
+  }
+
+  // Build caller/callee maps from edges
+  const callersOf = new Map<string, string[]>()
+  const calleesOf = new Map<string, string[]>()
+  for (const edge of edgeList) {
+    if (edge.kind !== "calls") continue
+    const fromId = edge._from.split("/").pop()!
+    const toId = edge._to.split("/").pop()!
+
+    let callers = callersOf.get(toId)
+    if (!callers) { callers = []; callersOf.set(toId, callers) }
+    const callerName = entityNameMap.get(fromId)
+    if (callerName) callers.push(callerName)
+
+    let callees = calleesOf.get(fromId)
+    if (!callees) { callees = []; calleesOf.set(fromId, callees) }
+    const calleeName = entityNameMap.get(toId)
+    if (calleeName) callees.push(calleeName)
+  }
 
   for (const entity of entities) {
     // Skip file entities (they don't carry meaningful semantic content)
@@ -129,11 +172,31 @@ export async function buildDocuments(
     const signature = (entity.signature as string) ?? ""
     const body = (entity.body as string) ?? ""
 
-    // Build text for embedding
+    // Build enriched text for embedding
     const parts: string[] = []
     parts.push(`${kindLabel}: ${name}`)
     if (filePath) parts.push(`File: ${filePath}`)
     if (signature) parts.push(`Signature: ${signature}`)
+
+    // Enrichment from justification (if available)
+    const justification = justificationMap.get(entity.id)
+    if (justification) {
+      parts.push(`Purpose: ${justification.business_purpose}`)
+      if (justification.domain_concepts.length > 0) {
+        parts.push(`Domain: ${justification.domain_concepts.join(", ")}`)
+      }
+      parts.push(`Feature: ${justification.feature_tag}`)
+    }
+
+    // Caller/callee context
+    const callers = callersOf.get(entity.id)
+    const callees = calleesOf.get(entity.id)
+    if (callers && callers.length > 0) {
+      parts.push(`Callers: ${Array.from(new Set(callers)).slice(0, 5).join(", ")}`)
+    }
+    if (callees && callees.length > 0) {
+      parts.push(`Callees: ${Array.from(new Set(callees)).slice(0, 5).join(", ")}`)
+    }
 
     if (body) {
       const truncatedBody = body.length > MAX_BODY_CHARS

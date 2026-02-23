@@ -114,6 +114,8 @@ export interface IGraphStore {
   // Phase 4: GraphRAG — N-hop sub-graph extraction
   /** Get a sub-graph (entities + edges) within N hops of a starting entity */
   getSubgraph(orgId: string, entityId: string, depth?: number, opts?: { crossRepo?: boolean }): Promise<SubgraphResult>
+  /** Get sub-graphs for multiple entities in a single batched query (chunked at 50 per call) */
+  getBatchSubgraphs(orgId: string, entityIds: string[], depth?: number): Promise<Map<string, SubgraphResult>>
 
   // Phase 4: Bulk fetch entities + edges for a repo
   /** Get all entities for a repo */

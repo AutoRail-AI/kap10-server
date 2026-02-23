@@ -63,3 +63,17 @@ export const MODEL_COSTS: Record<string, { input: number; output: number }> = {
 }
 
 export const MODEL_COST_FALLBACK = { input: 1 / 1_000_000, output: 3 / 1_000_000 }
+
+// ── Model Limits ──────────────────────────────────────────────────────────────
+
+/** Per-model context window and max output token limits. */
+export const MODEL_LIMITS: Record<string, { contextWindow: number; maxOutput: number }> = {
+  "gemini-2.0-flash": { contextWindow: 1_048_576, maxOutput: 8192 },
+  "gemini-2.0-flash-lite": { contextWindow: 1_048_576, maxOutput: 8192 },
+  "gpt-4o-mini": { contextWindow: 128_000, maxOutput: 16_384 },
+  "gpt-4o": { contextWindow: 128_000, maxOutput: 16_384 },
+  "claude-3-haiku-20240307": { contextWindow: 200_000, maxOutput: 4096 },
+  "claude-sonnet-4-20250514": { contextWindow: 200_000, maxOutput: 8192 },
+}
+
+export const MODEL_LIMITS_FALLBACK = { contextWindow: 32_000, maxOutput: 4096 }

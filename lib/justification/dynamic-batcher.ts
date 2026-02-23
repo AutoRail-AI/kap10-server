@@ -2,8 +2,8 @@
  * Phase 4: Dynamic Batcher — packs entities into token-budgeted batches
  * for efficient LLM processing. Reduces LLM calls by 80-90%.
  *
- * Uses greedy bin-packing: estimates token usage per entity, then fills
- * batches until the budget is exceeded.
+ * Uses greedy bin-packing with dual constraints (input tokens + output tokens)
+ * to prevent truncated LLM responses.
  */
 
 import type { EntityDoc, DomainOntologyDoc, JustificationDoc } from "@/lib/ports/types"
@@ -27,19 +27,25 @@ export interface EntityBatch {
 export interface BatcherConfig {
   /** Maximum input tokens per batch (default: 70% of context window) */
   maxInputTokens: number
+  /** Maximum output tokens for the LLM response (default: 8192) */
+  maxOutputTokens: number
   /** Maximum entities per batch (default: 15) */
   maxEntitiesPerBatch: number
   /** Estimated tokens for system prompt + instructions (default: 500) */
   systemPromptTokens: number
-  /** Reserved tokens for output per entity (default: 150) */
+  /** Reserved tokens for output per entity (default: 200) */
   outputTokensPerEntity: number
+  /** Safety margin multiplier to avoid hitting limits (default: 0.85) */
+  safetyMargin: number
 }
 
 const DEFAULT_CONFIG: BatcherConfig = {
-  maxInputTokens: 7000, // ~10K context * 0.7
+  maxInputTokens: 7000,
+  maxOutputTokens: 8192,
   maxEntitiesPerBatch: 15,
   systemPromptTokens: 500,
-  outputTokensPerEntity: 150,
+  outputTokensPerEntity: 200,
+  safetyMargin: 0.85,
 }
 
 /**
@@ -85,10 +91,31 @@ export function estimateEntityTokens(entity: EntityDoc, graphContext: GraphConte
 }
 
 /**
+ * Get a BatcherConfig tuned for a specific model's limits.
+ * Uses MODEL_LIMITS from config to derive safe input/output budgets.
+ */
+export function getBatcherConfigForModel(modelName: string): BatcherConfig {
+  const { MODEL_LIMITS, MODEL_LIMITS_FALLBACK } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+  const limits = MODEL_LIMITS[modelName] ?? MODEL_LIMITS_FALLBACK
+  const safetyMargin = 0.85
+
+  return {
+    maxInputTokens: Math.floor(limits.contextWindow * 0.7),
+    maxOutputTokens: limits.maxOutput,
+    maxEntitiesPerBatch: 15,
+    systemPromptTokens: 500,
+    outputTokensPerEntity: 200,
+    safetyMargin,
+  }
+}
+
+/**
  * Create token-budgeted batches from a list of entities.
  *
- * Uses greedy packing: adds entities to the current batch until the
- * token budget would be exceeded, then starts a new batch.
+ * Uses greedy packing with dual constraints:
+ * 1. Input token budget — total prompt tokens must not exceed model context window
+ * 2. Output token budget — total expected output must not exceed model max output
+ *
  * Oversized entities (exceeding budget alone) go solo.
  */
 export function createBatches(
@@ -113,7 +140,7 @@ export function createBatches(
     const entityBudget = be.estimatedTokens + cfg.outputTokensPerEntity
 
     // If this single entity exceeds the budget, it goes solo
-    if (cfg.systemPromptTokens + entityBudget > cfg.maxInputTokens) {
+    if (cfg.systemPromptTokens + entityBudget > cfg.maxInputTokens * cfg.safetyMargin) {
       // Flush current batch first
       if (currentBatch.length > 0) {
         batches.push({ entities: currentBatch, totalEstimatedTokens: currentTokens })
@@ -124,11 +151,12 @@ export function createBatches(
       continue
     }
 
-    // Check if adding this entity would exceed the budget or max entities
-    if (
-      currentTokens + entityBudget > cfg.maxInputTokens ||
-      currentBatch.length >= cfg.maxEntitiesPerBatch
-    ) {
+    // Dual constraint check: input tokens AND output tokens
+    const wouldExceedInput = currentTokens + entityBudget > cfg.maxInputTokens * cfg.safetyMargin
+    const wouldExceedOutput = (currentBatch.length + 1) * cfg.outputTokensPerEntity > cfg.maxOutputTokens * cfg.safetyMargin
+    const wouldExceedEntities = currentBatch.length >= cfg.maxEntitiesPerBatch
+
+    if (wouldExceedInput || wouldExceedOutput || wouldExceedEntities) {
       // Flush current batch
       if (currentBatch.length > 0) {
         batches.push({ entities: currentBatch, totalEstimatedTokens: currentTokens })
