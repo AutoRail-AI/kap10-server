@@ -121,44 +121,20 @@ export async function buildDocuments(
   const docs: EmbeddableDocument[] = []
   const container = getContainer()
 
-  // Fetch justifications and edges for enrichment (backward-compatible: no-op if empty)
+  // Fetch justifications for enrichment (skip edges to reduce memory usage)
   let justificationMap = new Map<string, import("@/lib/ports/types").JustificationDoc>()
-  let edgeList: import("@/lib/ports/types").EdgeDoc[] = []
   try {
-    const [justifications, edges] = await Promise.all([
-      container.graphStore.getJustifications(input.orgId, input.repoId),
-      container.graphStore.getAllEdges(input.orgId, input.repoId),
-    ])
+    const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
     justificationMap = new Map(justifications.map((j) => [j.entity_id, j]))
-    edgeList = edges
   } catch {
     // First index may not have justifications yet — continue without enrichment
   }
 
-  // Build entity name lookup for caller/callee names
-  const entityNameMap = new Map<string, string>()
-  for (const e of entities) {
-    entityNameMap.set(e.id, e.name ?? "unknown")
-  }
-
-  // Build caller/callee maps from edges
+  // Skip edge loading for memory efficiency — caller/callee enrichment is
+  // a nice-to-have but not worth OOM-killing the worker. The semantic search
+  // quality is primarily driven by entity names, signatures, and justifications.
   const callersOf = new Map<string, string[]>()
   const calleesOf = new Map<string, string[]>()
-  for (const edge of edgeList) {
-    if (edge.kind !== "calls") continue
-    const fromId = edge._from.split("/").pop()!
-    const toId = edge._to.split("/").pop()!
-
-    let callers = callersOf.get(toId)
-    if (!callers) { callers = []; callersOf.set(toId, callers) }
-    const callerName = entityNameMap.get(fromId)
-    if (callerName) callers.push(callerName)
-
-    let callees = calleesOf.get(fromId)
-    if (!callees) { callees = []; calleesOf.set(fromId, callees) }
-    const calleeName = entityNameMap.get(toId)
-    if (calleeName) callees.push(calleeName)
-  }
 
   for (const entity of entities) {
     // Skip file entities (they don't carry meaningful semantic content)
@@ -266,7 +242,7 @@ export async function generateAndStoreEmbeds(
   const plog = createPipelineLogger(input.repoId, "embedding")
   plog.log("info", "Step 4/7", `Generating embeddings for ${documents.length} documents...`)
   const container = getContainer()
-  const batchSize = parseInt(process.env.EMBEDDING_BATCH_SIZE ?? "100", 10)
+  const batchSize = parseInt(process.env.EMBEDDING_BATCH_SIZE ?? "32", 10)
   const totalBatches = Math.ceil(documents.length / batchSize)
   let totalStored = 0
 

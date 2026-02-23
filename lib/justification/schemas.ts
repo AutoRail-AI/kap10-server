@@ -81,6 +81,14 @@ export const HealthRiskSchema = z.object({
   featureTag: z.string().optional(),
   description: z.string(),
   severity: z.enum(["low", "medium", "high"]),
+  category: z.enum(["dead_code", "architecture", "quality", "complexity", "taxonomy"]).optional(),
+  affectedCount: z.number().optional(),
+  entities: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    filePath: z.string(),
+    detail: z.string().optional(),
+  })).optional(),
 })
 export type HealthRisk = z.infer<typeof HealthRiskSchema>
 

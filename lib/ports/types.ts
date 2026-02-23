@@ -10,6 +10,7 @@ export interface EntityDoc {
   kind: string
   name: string
   file_path: string
+  index_version?: string
   [key: string]: unknown
 }
 
@@ -19,6 +20,7 @@ export interface EdgeDoc {
   org_id: string
   repo_id: string
   kind: string
+  index_version?: string
   [key: string]: unknown
 }
 
@@ -310,6 +312,9 @@ export interface HealthReportDoc {
     featureTag?: string
     description: string
     severity: "low" | "medium" | "high"
+    category?: "dead_code" | "architecture" | "quality" | "complexity" | "taxonomy"
+    affectedCount?: number
+    entities?: Array<{ id: string; name: string; filePath: string; detail?: string }>
   }>
   generated_at: string
 }

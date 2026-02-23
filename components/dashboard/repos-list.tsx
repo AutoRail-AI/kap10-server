@@ -447,18 +447,12 @@ function RepoRow({ repo }: { repo: RepoRecord }) {
             <FolderGit2 className="h-4 w-4 text-white/50" />
           </div>
           <div className="flex flex-col min-w-0">
-            {isReady ? (
-              <Link
-                href={`/repos/${repo.id}`}
-                className="truncate font-medium text-foreground hover:text-electric-cyan transition-colors"
-              >
-                {repo.name}
-              </Link>
-            ) : (
-              <span className="truncate font-medium text-muted-foreground">
-                {repo.name}
-              </span>
-            )}
+            <Link
+              href={`/repos/${repo.id}`}
+              className="truncate font-medium text-foreground hover:text-electric-cyan transition-colors"
+            >
+              {repo.name}
+            </Link>
             <span className="truncate font-mono text-xs text-white/40">
               {repo.fullName}
             </span>
@@ -517,18 +511,16 @@ function RepoRow({ repo }: { repo: RepoRecord }) {
       </td>
       <td className={`${tdBase} text-right`}>
         <div className="flex items-center justify-end gap-1">
-          {isReady && (
-            <Link href={`/repos/${repo.id}`}>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 gap-1.5 px-3 text-xs border-white/15 text-white hover:text-white hover:border-electric-cyan/50 hover:bg-electric-cyan/10"
-              >
-                Open
-                <ArrowRight className="h-3 w-3" />
-              </Button>
-            </Link>
-          )}
+          <Link href={`/repos/${repo.id}`}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1.5 px-3 text-xs border-white/15 text-white hover:text-white hover:border-electric-cyan/50 hover:bg-electric-cyan/10"
+            >
+              Open
+              <ArrowRight className="h-3 w-3" />
+            </Button>
+          </Link>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button

@@ -28,8 +28,8 @@ export async function generateHealthReportWorkflow(input: HealthReportInput): Pr
   // Step 2: Aggregate features
   const features = await activities.aggregateAndStoreFeatures(input, data)
 
-  // Step 3: Build and store health report
-  await activities.buildAndStoreHealthReport(input, data.justifications, features)
+  // Step 3: Build and store health report (now passes full data for expanded risk detection)
+  await activities.buildAndStoreHealthReport(input, data, features)
 
   // Step 4: Synthesize ADRs
   await activities.synthesizeAndStoreADRs(input, features, data.justifications)

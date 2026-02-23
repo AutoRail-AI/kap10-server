@@ -174,4 +174,8 @@ export interface IGraphStore {
   appendWorkingSnapshot(orgId: string, snapshot: WorkingSnapshot): Promise<void>
   /** Get the latest working snapshot for a branch */
   getLatestWorkingSnapshot(orgId: string, repoId: string, branch: string): Promise<WorkingSnapshot | null>
+
+  // Shadow reindexing
+  /** Delete all entities and edges for a specific index_version */
+  deleteByIndexVersion(orgId: string, repoId: string, indexVersion: string): Promise<void>
 }

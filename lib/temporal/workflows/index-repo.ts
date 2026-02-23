@@ -34,6 +34,7 @@ export interface IndexRepoInput {
   installationId: number
   cloneUrl: string
   defaultBranch: string
+  indexVersion?: string
 }
 
 /** Workflow-safe log helper (Temporal sandbox — no require/import of Node modules) */
@@ -134,6 +135,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
       fileCount,
       functionCount,
       classCount,
+      indexVersion: input.indexVersion,
     })
     progress = 95
 

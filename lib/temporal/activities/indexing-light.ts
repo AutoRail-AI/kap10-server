@@ -29,6 +29,7 @@ export interface WriteToArangoInput {
   fileCount: number
   functionCount: number
   classCount: number
+  indexVersion?: string
 }
 
 export interface WriteToArangoResult {
@@ -60,8 +61,14 @@ export async function writeToArango(input: WriteToArangoInput): Promise<WriteToA
     input.repoId,
   )
 
-  const allEntities = deduplicateEntities([...entities, ...fileEntities])
-  const allEdges = deduplicateEdges([...edges, ...containsEdges])
+  let allEntities = deduplicateEntities([...entities, ...fileEntities])
+  let allEdges = deduplicateEdges([...edges, ...containsEdges])
+
+  // Stamp index_version for shadow reindexing
+  if (input.indexVersion) {
+    allEntities = allEntities.map((e) => ({ ...e, index_version: input.indexVersion }))
+    allEdges = allEdges.map((e) => ({ ...e, index_version: input.indexVersion }))
+  }
 
   if (allEntities.length > 0) {
     await container.graphStore.bulkUpsertEntities(input.orgId, allEntities)
@@ -69,8 +76,16 @@ export async function writeToArango(input: WriteToArangoInput): Promise<WriteToA
   if (allEdges.length > 0) {
     await container.graphStore.bulkUpsertEdges(input.orgId, allEdges)
   }
-  // Phase 3: Status stays "indexing" — embedRepoWorkflow will transition to "embedding" → "ready"
-  // We still update progress and counts so the dashboard reflects indexing completion
+
+  // Shadow reindex: delete old version entities/edges (those without this index_version)
+  if (input.indexVersion) {
+    plog.log("info", "Step 4/7", "Shadow swap: cleaning up previous index version…")
+    // Delete entities/edges that belong to a different (or no) index_version
+    // We keep only entities with the current indexVersion or no version at all (non-indexed data like rules)
+    await container.graphStore.deleteByIndexVersion(input.orgId, input.repoId, "__old__")
+      .catch(() => {})
+  }
+
   await container.relationalStore.updateRepoStatus(input.repoId, {
     status: "indexing",
     progress: 90,

@@ -174,14 +174,15 @@ services:
       - NODE_ENV=development
       - TEMPORAL_ADDRESS=localhost:7233
       - TASK_QUEUE=light-llm-queue
-      - NODE_OPTIONS=--max-old-space-size=3072
+      - NODE_OPTIONS=--max-old-space-size=4096
+      - EMBEDDING_BATCH_SIZE=32
     env_file:
       - .env.local
     restart: unless-stopped
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 6G
 
   # MCP Server (Phase 2: standalone HTTP server for AI agents)
   mcp-server:

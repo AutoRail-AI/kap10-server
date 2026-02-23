@@ -1877,4 +1877,23 @@ export class ArangoGraphStore implements IGraphStore {
     const { _key, _id, ...rest } = docs[0] as { _key: string; _id: string; [k: string]: unknown }
     return { id: _key, ...rest } as WorkingSnapshot
   }
+
+  // ── Shadow Reindexing ─────────────────────────────────────────
+
+  async deleteByIndexVersion(orgId: string, repoId: string, indexVersion: string): Promise<void> {
+    const db = await getDbAsync()
+    const entityCollections = ["files", "functions", "classes", "interfaces", "variables"] as const
+    for (const name of entityCollections) {
+      await db.query(
+        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.index_version == @iv REMOVE doc IN @@coll`,
+        { "@coll": name, orgId, repoId, iv: indexVersion }
+      )
+    }
+    for (const name of EDGE_COLLECTIONS) {
+      await db.query(
+        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.index_version == @iv REMOVE doc IN @@coll`,
+        { "@coll": name, orgId, repoId, iv: indexVersion }
+      )
+    }
+  }
 }

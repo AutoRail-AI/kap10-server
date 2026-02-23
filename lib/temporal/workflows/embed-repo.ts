@@ -22,8 +22,8 @@ import { discoverOntologyWorkflow } from "./discover-ontology"
 
 const activities = proxyActivities<typeof embeddingActivities>({
   taskQueue: "light-llm-queue",
-  startToCloseTimeout: "30m",
-  heartbeatTimeout: "2m",
+  startToCloseTimeout: "60m",
+  heartbeatTimeout: "5m",
   retry: { maximumAttempts: 3 },
 })
 

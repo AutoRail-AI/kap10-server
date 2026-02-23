@@ -1,10 +1,21 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { HeartPulse, RefreshCw, DollarSign } from "lucide-react"
+import {
+  HeartPulse,
+  RefreshCw,
+  DollarSign,
+  Trash2,
+  Layers,
+  BadgeCheck,
+  Activity,
+  Tag,
+} from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { InsightCard } from "./insight-card"
+import { FIX_GUIDANCE, CATEGORY_INFO } from "@/lib/health/fix-guidance"
 import type { HealthReportDoc, TokenUsageSummary } from "@/lib/ports/types"
 
 const SEVERITY_COLORS: Record<string, string> = {
@@ -19,14 +30,51 @@ const TAXONOMY_COLORS: Record<string, string> = {
   UTILITY: "text-muted-foreground",
 }
 
+const CATEGORY_ICONS: Record<string, React.ElementType> = {
+  dead_code: Trash2,
+  architecture: Layers,
+  quality: BadgeCheck,
+  complexity: Activity,
+  taxonomy: Tag,
+}
+
+const GRADE_COLORS: Record<string, string> = {
+  A: "text-emerald-400 border-emerald-500/30 bg-emerald-500/10",
+  B: "text-blue-400 border-blue-500/30 bg-blue-500/10",
+  C: "text-amber-400 border-amber-500/30 bg-amber-500/10",
+  D: "text-orange-400 border-orange-500/30 bg-orange-500/10",
+  F: "text-red-400 border-red-500/30 bg-red-500/10",
+}
+
+function computeGrade(risks: Array<{ severity: string }>): string {
+  const high = risks.filter((r) => r.severity === "high").length
+  const medium = risks.filter((r) => r.severity === "medium").length
+  if (high >= 3) return "F"
+  if (high >= 1) return "D"
+  if (medium > 3) return "C"
+  if (medium > 0) return "B"
+  return "A"
+}
+
 function confidenceColor(confidence: number): string {
   if (confidence < 0.5) return "text-red-400"
   if (confidence < 0.8) return "text-amber-400"
   return "text-emerald-400"
 }
 
+interface InsightsResponse {
+  report: HealthReportDoc
+  summary: {
+    healthGrade: string
+    totalInsights: number
+    criticalCount: number
+    categories: Record<string, number>
+  }
+}
+
 export function HealthReportView({ repoId }: { repoId: string }) {
   const [report, setReport] = useState<HealthReportDoc | null>(null)
+  const [summary, setSummary] = useState<InsightsResponse["summary"] | null>(null)
   const [costs, setCosts] = useState<TokenUsageSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [regenerating, setRegenerating] = useState(false)
@@ -35,16 +83,28 @@ export function HealthReportView({ repoId }: { repoId: string }) {
   useEffect(() => {
     async function load() {
       try {
-        const [healthRes, costsRes] = await Promise.all([
-          fetch(`/api/repos/${repoId}/health`),
+        const [insightsRes, costsRes] = await Promise.all([
+          fetch(`/api/repos/${repoId}/health/insights`),
           fetch(`/api/repos/${repoId}/costs`),
         ])
-        if (healthRes.ok) {
-          const json = (await healthRes.json()) as { data: HealthReportDoc & { status?: string } }
+        if (insightsRes.ok) {
+          const json = (await insightsRes.json()) as { data: InsightsResponse & { status?: string } }
           if ("status" in json.data && json.data.status === "pending") {
             setPending(true)
           } else {
-            setReport(json.data)
+            setReport(json.data.report)
+            setSummary(json.data.summary)
+          }
+        } else {
+          // Fallback to basic health endpoint
+          const healthRes = await fetch(`/api/repos/${repoId}/health`)
+          if (healthRes.ok) {
+            const json = (await healthRes.json()) as { data: HealthReportDoc & { status?: string } }
+            if ("status" in json.data && json.data.status === "pending") {
+              setPending(true)
+            } else {
+              setReport(json.data)
+            }
           }
         }
         if (costsRes.ok) {
@@ -96,12 +156,35 @@ export function HealthReportView({ repoId }: { repoId: string }) {
     )
   }
 
+  const grade = summary?.healthGrade ?? computeGrade(report.risks)
+  const gradeColor = GRADE_COLORS[grade] ?? GRADE_COLORS["F"]
+
+  // Group risks by category
+  const risksByCategory = new Map<string, typeof report.risks>()
+  for (const risk of report.risks) {
+    const cat = risk.category ?? "quality"
+    if (!risksByCategory.has(cat)) risksByCategory.set(cat, [])
+    risksByCategory.get(cat)!.push(risk)
+  }
+
+  const categoryOrder = ["dead_code", "architecture", "quality", "complexity", "taxonomy"]
+
   return (
-    <div className="space-y-4">
-      {/* Stats overview */}
+    <div className="space-y-6">
+      {/* Grade Hero + Stats */}
       <div className="glass-card border-border rounded-lg border p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-grotesk text-sm font-semibold text-foreground">Overview</h3>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-4">
+            <div className={`flex items-center justify-center w-16 h-16 rounded-lg border text-3xl font-bold font-grotesk ${gradeColor}`}>
+              {grade}
+            </div>
+            <div>
+              <h3 className="font-grotesk text-sm font-semibold text-foreground">Health Grade</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {report.risks.length} insights found
+              </p>
+            </div>
+          </div>
           <Button
             size="sm"
             variant="outline"
@@ -129,47 +212,86 @@ export function HealthReportView({ repoId }: { repoId: string }) {
             </p>
           </div>
           <div>
-            <p className="text-xs text-muted-foreground">Taxonomy</p>
-            <div className="flex flex-col gap-0.5 mt-1">
-              {Object.entries(report.taxonomy_breakdown).map(([taxonomy, count]) => (
-                <div key={taxonomy} className="flex items-center gap-2 text-xs">
-                  <span className={TAXONOMY_COLORS[taxonomy] ?? "text-muted-foreground"}>
-                    {taxonomy}
-                  </span>
-                  <span className="text-muted-foreground">{count}</span>
-                </div>
-              ))}
+            <p className="text-xs text-muted-foreground">Risks</p>
+            <div className="flex items-center gap-2 mt-1">
+              {report.risks.filter((r) => r.severity === "high").length > 0 && (
+                <Badge variant="outline" className={`text-[10px] ${SEVERITY_COLORS["high"]}`}>
+                  {report.risks.filter((r) => r.severity === "high").length} high
+                </Badge>
+              )}
+              {report.risks.filter((r) => r.severity === "medium").length > 0 && (
+                <Badge variant="outline" className={`text-[10px] ${SEVERITY_COLORS["medium"]}`}>
+                  {report.risks.filter((r) => r.severity === "medium").length} medium
+                </Badge>
+              )}
+              {report.risks.filter((r) => r.severity === "low").length > 0 && (
+                <Badge variant="outline" className={`text-[10px] ${SEVERITY_COLORS["low"]}`}>
+                  {report.risks.filter((r) => r.severity === "low").length} low
+                </Badge>
+              )}
             </div>
           </div>
         </div>
+
+        {/* Taxonomy breakdown */}
+        <div className="flex gap-4 mt-4 pt-3 border-t border-border">
+          {Object.entries(report.taxonomy_breakdown).map(([taxonomy, count]) => (
+            <div key={taxonomy} className="flex items-center gap-2 text-xs">
+              <span className={TAXONOMY_COLORS[taxonomy] ?? "text-muted-foreground"}>
+                {taxonomy}
+              </span>
+              <span className="text-muted-foreground">{count}</span>
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* Risks */}
-      {report.risks.length > 0 && (
-        <div className="glass-card border-border rounded-lg border p-4 space-y-3">
-          <h3 className="font-grotesk text-sm font-semibold text-foreground">
-            Risks ({report.risks.length})
-          </h3>
-          <div className="space-y-2">
-            {report.risks.map((risk, i) => (
-              <div key={i} className="flex items-start gap-3 p-2 rounded-md bg-muted/10">
-                <Badge
-                  variant="outline"
-                  className={`text-[10px] shrink-0 ${SEVERITY_COLORS[risk.severity] ?? ""}`}
-                >
-                  {risk.severity}
-                </Badge>
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium text-foreground">{risk.riskType}</p>
-                  <p className="text-xs text-muted-foreground">{risk.description}</p>
-                  {risk.featureTag && (
-                    <span className="text-[10px] text-primary">{risk.featureTag}</span>
-                  )}
+      {/* Category sections */}
+      {report.risks.length === 0 ? (
+        <div className="glass-card border-border rounded-lg border p-6 text-center space-y-2">
+          <div className="text-emerald-400 text-3xl">✓</div>
+          <p className="text-sm font-medium text-foreground">No issues found</p>
+          <p className="text-xs text-muted-foreground">Your codebase looks healthy.</p>
+        </div>
+      ) : (
+        categoryOrder
+          .filter((cat) => risksByCategory.has(cat))
+          .map((cat) => {
+            const catRisks = risksByCategory.get(cat)!
+            const info = CATEGORY_INFO[cat]
+            const CatIcon = CATEGORY_ICONS[cat] ?? Tag
+
+            return (
+              <div key={cat} className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <CatIcon className="h-4 w-4 text-muted-foreground" />
+                  <h3 className="font-grotesk text-sm font-semibold text-foreground">
+                    {info?.label ?? cat} ({catRisks.length})
+                  </h3>
+                </div>
+                <div className="space-y-3">
+                  {catRisks.map((risk, i) => {
+                    const guidance = FIX_GUIDANCE[risk.riskType]
+                    return (
+                      <InsightCard
+                        key={`${risk.riskType}-${i}`}
+                        riskType={risk.riskType}
+                        severity={risk.severity}
+                        description={risk.description}
+                        affectedCount={risk.affectedCount}
+                        entities={risk.entities}
+                        title={guidance?.title ?? risk.riskType}
+                        icon={guidance?.icon ?? "AlertTriangle"}
+                        howToFix={guidance?.howToFix ?? "Review and address the identified issues."}
+                        ruleTemplate={guidance?.ruleTemplate}
+                        repoId={repoId}
+                      />
+                    )
+                  })}
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
+            )
+          })
       )}
 
       {/* Cost tracking */}

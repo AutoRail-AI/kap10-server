@@ -50,12 +50,19 @@ export async function aggregateAndStoreFeatures(
 
 export async function buildAndStoreHealthReport(
   input: HealthReportInput,
-  justifications: JustificationDoc[],
+  data: FetchedData,
   features: FeatureAggregation[]
 ): Promise<void> {
   const container = getContainer()
   heartbeat("building health report")
-  const report = buildHealthReport(justifications, features, input.orgId, input.repoId)
+  const report = buildHealthReport(
+    data.justifications,
+    features,
+    input.orgId,
+    input.repoId,
+    data.entities,
+    data.edges
+  )
   await container.graphStore.upsertHealthReport(input.orgId, report)
 }
 

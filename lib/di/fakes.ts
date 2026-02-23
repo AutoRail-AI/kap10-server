@@ -596,6 +596,11 @@ export class InMemoryGraphStore implements IGraphStore {
       .sort((a, b) => b.created_at.localeCompare(a.created_at))
     return snapshots[0] ?? null
   }
+
+  async deleteByIndexVersion(_orgId: string, _repoId: string, _indexVersion: string): Promise<void> {
+    this.entities = this.entities.filter((e) => e.index_version !== _indexVersion)
+    this.edges = this.edges.filter((e) => e.index_version !== _indexVersion)
+  }
 }
 
 export class InMemoryRelationalStore implements IRelationalStore {

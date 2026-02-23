@@ -34,6 +34,10 @@ export interface RepoRecord {
   localCliUploadPath?: string | null
   ephemeral?: boolean
   ephemeralExpiresAt?: Date | null
+  // Shadow reindexing
+  currentIndexVersion?: string | null
+  pendingIndexVersion?: string | null
+  reindexStatus?: string | null
 }
 
 export interface GitHubInstallationRecord {

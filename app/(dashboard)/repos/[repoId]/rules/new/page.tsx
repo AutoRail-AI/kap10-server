@@ -1,21 +1,25 @@
 "use client"
 
 import { useState } from "react"
-import { usePathname, useRouter } from "next/navigation"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 
 export default function NewRulePage() {
   const pathname = usePathname()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const repoId = pathname.match(/\/repos\/([^/]+)/)?.[1] ?? ""
 
-  const [title, setTitle] = useState("")
-  const [description, setDescription] = useState("")
-  const [type, setType] = useState("architecture")
+  // Pre-fill from query params (from InsightCard "Create Rule" links)
+  const [title, setTitle] = useState(searchParams.get("title") ?? "")
+  const [description, setDescription] = useState(searchParams.get("description") ?? "")
+  const [type, setType] = useState(searchParams.get("type") ?? "architecture")
   const [scope, setScope] = useState("repo")
-  const [enforcement, setEnforcement] = useState("suggest")
-  const [priority, setPriority] = useState(50)
+  const [enforcement, setEnforcement] = useState(searchParams.get("enforcement") ?? "suggest")
+  const [priority, setPriority] = useState(
+    searchParams.get("priority") ? Number(searchParams.get("priority")) : 50
+  )
   const [astGrepQuery, setAstGrepQuery] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState("")

@@ -1,9 +1,11 @@
 "use client"
 
-import { ArrowDownRight, ArrowUpRight, ChevronRight, FileCode, FolderOpen, Search, TerminalSquare } from "lucide-react"
+import { ArrowDownRight, ArrowUpRight, ChevronRight, FileCode, FolderOpen, Network, Search, TerminalSquare } from "lucide-react"
 import Link from "next/link"
 import { useMemo, useState } from "react"
+import { EntityGraphView } from "@/components/repo/entity-graph-view"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 
 interface TreeNode {
@@ -35,6 +37,7 @@ export function RepoDetailClient({
   const [loadingEntities, setLoadingEntities] = useState(false)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [fileFilter, setFileFilter] = useState("")
+  const [graphEntityId, setGraphEntityId] = useState<string | null>(null)
 
   const filteredTree = useMemo(() => {
     if (!fileFilter.trim()) return initialTree
@@ -221,6 +224,15 @@ export function RepoDetailClient({
                       >
                         Full detail
                       </Link>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-5 gap-1 px-1.5 text-[10px] border-white/15 text-white hover:text-white hover:border-electric-cyan/50 hover:bg-electric-cyan/10"
+                        onClick={() => setGraphEntityId(entityDetail.entity.id)}
+                      >
+                        <Network className="h-3 w-3" />
+                        Graph
+                      </Button>
                     </div>
                     <p className="font-mono text-xs text-white/40 mt-1">
                       {entityDetail.entity.file_path}
@@ -308,6 +320,15 @@ export function RepoDetailClient({
           </div>
         </div>
       </div>
+
+      {/* Graph overlay */}
+      {graphEntityId && (
+        <EntityGraphView
+          repoId={repoId}
+          entityId={graphEntityId}
+          onClose={() => setGraphEntityId(null)}
+        />
+      )}
     </div>
   )
 }

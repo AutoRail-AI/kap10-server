@@ -2618,12 +2618,43 @@ app/
 |------|-------------|
 | `get_recent_changes` | "What changed in the last push?" → changed entities with before/after + cascade status |
 
+### Shadow Reindexing (Non-Destructive)
+
+Full re-indexing now uses a **shadow index** approach: the pipeline writes to a new `index_version` while existing data remains live and queryable. Once the new index is complete, old-version data is cleaned up atomically.
+
+- `EntityDoc` and `EdgeDoc` have an optional `index_version?: string` field (in `lib/ports/types.ts`)
+- `RepoRecord` has `currentIndexVersion`, `pendingIndexVersion`, and `reindexStatus` fields
+- `POST /api/repos/[repoId]/reindex` generates a UUID `indexVersion`, passes it to the workflow, and keeps the repo `status: "ready"` during reindex
+- `writeToArango` stamps `index_version` on all entities/edges when provided
+- `IGraphStore.deleteByIndexVersion()` cleans up old-version data after the swap
+- The dashboard remains fully functional during the entire reindex process
+
+### Pipeline Tab (Repo Detail)
+
+All reindexing controls, history, and logs are consolidated into a dedicated **Pipeline** tab at `app/(dashboard)/repos/[repoId]/pipeline/page.tsx`:
+
+- **Controls:** Re-index button, Stop button, rate-limit feedback
+- **Run History:** Table of `IndexEventDoc` entries (from `getIndexEvents`) — Date, Type (Full/Incremental/Force), Duration, Files Changed, Entities Added/Updated/Deleted, Edges Repaired, SHA
+- **Logs:** Pipeline log viewer (Redis live → Supabase Storage archive)
+- **API:** `GET /api/repos/[repoId]/history/indexing` returns `IndexEventDoc[]` from graph store
+
+### Embedding OOM Prevention
+
+The embedding activity (`generateAndStoreEmbeds`) was OOM-killing the light worker (exit code 137) for repos with 700+ entities. Mitigations:
+
+- `buildDocuments` no longer loads ALL edges via `getAllEdges()` — caller/callee enrichment skipped to prevent OOM
+- Default embedding batch size reduced from 100 to 32 (`EMBEDDING_BATCH_SIZE` env var)
+- Temporal heartbeat timeout increased from 2m to 5m; `startToCloseTimeout` from 30m to 60m
+- Light worker container memory increased from 4GB to 6GB; Node.js heap from 3072MB to 4096MB
+
 ### Test
 - `pnpm test` — incremental indexer correctly diffs using entity hashes; detects renames/deletes; cascade re-justification triggers for changed dependencies
 - **Manual** — Push a commit changing 1 file → only that file re-indexed → MCP query reflects new code within 30s; Delete a function → callers get re-justified
 - **Manual** — Rename a function → old entity deleted, new entity created, callers re-justified
+- **Manual** — Full re-index while repo is "ready" → dashboard stays functional → data swaps seamlessly
 - **Temporal UI** — `incrementalIndexWorkflow` shows each file processed as a separate activity
 - `e2e` — Dashboard activity feed shows "Indexed 3 files from push abc123" with entity diff counts
+- `e2e` — Pipeline tab shows run history table with correct metrics per run
 
 ---
 

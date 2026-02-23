@@ -1,5 +1,8 @@
 /**
- * Phase 4: Human-in-the-loop justification override.
+ * Phase 4: Justification API.
+ *
+ * GET /api/entities/:entityId/justification
+ *   - Returns current justification for an entity
  *
  * PATCH /api/entities/:entityId/justification
  *   - Updates justification (bi-temporal: closes old, inserts new)
@@ -8,6 +11,7 @@
  */
 
 import { auth } from "@/lib/auth"
+import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 import { JustificationResultSchema } from "@/lib/justification/schemas"
 import { headers } from "next/headers"
@@ -15,7 +19,44 @@ import { NextResponse } from "next/server"
 import { randomUUID } from "node:crypto"
 import { logger } from "@/lib/utils/logger"
 
-const log = logger.child({ service: "justification-override" })
+const log = logger.child({ service: "justification" })
+
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ entityId: string }> }
+) {
+  const session = await auth.api.getSession({ headers: await headers() })
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  const orgId = await getActiveOrgId()
+  const { entityId } = await params
+  const container = getContainer()
+
+  const justification = await container.graphStore.getJustification(orgId, entityId)
+  if (!justification) {
+    return NextResponse.json({ data: null })
+  }
+
+  return NextResponse.json({
+    data: {
+      id: justification.id,
+      entityId: justification.entity_id,
+      taxonomy: justification.taxonomy,
+      confidence: justification.confidence,
+      businessPurpose: justification.business_purpose,
+      domainConcepts: justification.domain_concepts,
+      featureTag: justification.feature_tag,
+      semanticTriples: justification.semantic_triples,
+      complianceTags: justification.compliance_tags,
+      architecturalPattern: justification.architectural_pattern,
+      modelTier: justification.model_tier,
+      modelUsed: justification.model_used,
+      validFrom: justification.valid_from,
+    },
+  })
+}
 
 export async function PATCH(
   request: Request,
