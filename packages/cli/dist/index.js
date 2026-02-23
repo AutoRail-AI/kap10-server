@@ -1,142 +1,16 @@
 #!/usr/bin/env node
 import {
+  deviceAuthFlow,
+  getCredentials,
+  registerAuthCommand,
+  saveCredentials
+} from "./chunk-T6GFTYJX.js";
+import {
   __require
 } from "./chunk-3RG5ZIWI.js";
 
 // src/index.ts
 import { Command } from "commander";
-
-// src/commands/auth.ts
-import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
-var CONFIG_DIR = join(homedir(), ".kap10");
-var CREDENTIALS_PATH = join(CONFIG_DIR, "credentials.json");
-function getCredentials() {
-  if (!existsSync(CREDENTIALS_PATH)) return null;
-  try {
-    const content = readFileSync(CREDENTIALS_PATH, "utf-8");
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
-}
-function saveCredentials(creds) {
-  mkdirSync(CONFIG_DIR, { recursive: true });
-  writeFileSync(CREDENTIALS_PATH, JSON.stringify(creds, null, 2), { mode: 384 });
-}
-async function deviceAuthFlow(serverUrl) {
-  const res = await fetch(`${serverUrl}/api/cli/device-code`, { method: "POST" });
-  if (!res.ok) {
-    throw new Error(`Failed to start auth flow: ${res.status} ${res.statusText}`);
-  }
-  const deviceAuth = await res.json();
-  const authUrl = `${deviceAuth.verification_uri}?code=${deviceAuth.user_code}`;
-  console.log("");
-  console.log("  Open this URL in your browser:");
-  console.log(`  ${authUrl}`);
-  console.log("");
-  console.log(`  Your code: ${deviceAuth.user_code}`);
-  console.log("");
-  try {
-    const { execSync: execSync2 } = await import("child_process");
-    const platform = process.platform;
-    if (platform === "darwin") {
-      execSync2(`open "${authUrl}"`, { stdio: "ignore" });
-    } else if (platform === "linux") {
-      execSync2(`xdg-open "${authUrl}"`, { stdio: "ignore" });
-    } else if (platform === "win32") {
-      execSync2(`start "" "${authUrl}"`, { stdio: "ignore" });
-    }
-    console.log("  Browser opened. Waiting for authorization...");
-  } catch {
-    console.log("  Could not open browser. Please open the URL manually.");
-  }
-  console.log("");
-  const pollInterval = (deviceAuth.interval ?? 5) * 1e3;
-  const deadline = Date.now() + deviceAuth.expires_in * 1e3;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, pollInterval));
-    const tokenRes = await fetch(`${serverUrl}/api/cli/token`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        device_code: deviceAuth.device_code,
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code"
-      })
-    });
-    const tokenBody = await tokenRes.json();
-    if (tokenBody.error === "authorization_pending") {
-      continue;
-    }
-    if (tokenBody.error === "expired_token") {
-      throw new Error("Authorization expired. Please run the command again.");
-    }
-    if (tokenBody.error) {
-      throw new Error(`Authorization failed: ${tokenBody.error}`);
-    }
-    if (tokenBody.access_token) {
-      if (tokenBody.key_already_existed) {
-        const existing = getCredentials();
-        if (existing?.apiKey?.startsWith("kap10_sk_")) {
-          return {
-            serverUrl,
-            apiKey: existing.apiKey,
-            orgId: tokenBody.org_id,
-            orgName: tokenBody.org_name
-          };
-        }
-        console.log("  A default API key already exists for this org.");
-        console.log("  If you don't have it, create a new one in the dashboard.");
-        throw new Error("Default key already exists. Use --key to provide it manually.");
-      }
-      return {
-        serverUrl,
-        apiKey: tokenBody.access_token,
-        orgId: tokenBody.org_id,
-        orgName: tokenBody.org_name
-      };
-    }
-  }
-  throw new Error("Authorization timed out. Please try again.");
-}
-function registerAuthCommand(program2) {
-  const auth = program2.command("auth").description("Manage authentication");
-  auth.command("login").description("Authenticate with kap10 server").option("--server <url>", "Server URL", "https://app.kap10.dev").option("--key <apiKey>", "API key (skip browser login)").action(async (opts) => {
-    if (opts.key) {
-      saveCredentials({ serverUrl: opts.server, apiKey: opts.key });
-      console.log("Credentials saved.");
-      return;
-    }
-    try {
-      const creds = await deviceAuthFlow(opts.server);
-      saveCredentials(creds);
-      console.log(`Authenticated as ${creds.orgName ?? "your organization"}.`);
-      console.log("Credentials saved to ~/.kap10/credentials.json");
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
-    }
-  });
-  auth.command("logout").description("Remove stored credentials").action(() => {
-    if (existsSync(CREDENTIALS_PATH)) {
-      unlinkSync(CREDENTIALS_PATH);
-      console.log("Credentials removed.");
-    } else {
-      console.log("No credentials found.");
-    }
-  });
-  auth.command("status").description("Check authentication status").action(() => {
-    const creds = getCredentials();
-    if (creds) {
-      console.log(`Authenticated to: ${creds.serverUrl}`);
-      console.log(`Organization: ${creds.orgName ?? "unknown"}`);
-      console.log(`API Key: ${creds.apiKey.slice(0, 14)}****`);
-    } else {
-      console.log("Not authenticated. Run: kap10 auth login");
-    }
-  });
-}
 
 // src/commands/branches.ts
 import * as fs from "fs";
@@ -380,8 +254,8 @@ fi
 }
 
 // src/commands/connect.ts
-import { existsSync as existsSync5, readFileSync as readFileSync5, writeFileSync as writeFileSync3, mkdirSync as mkdirSync3 } from "fs";
-import { join as join5 } from "path";
+import { existsSync as existsSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync2, mkdirSync as mkdirSync2 } from "fs";
+import { join as join4 } from "path";
 import { execSync } from "child_process";
 function detectGitContext() {
   try {
@@ -418,20 +292,20 @@ function parseRemote(remote) {
 }
 function detectIde() {
   const cwd = process.cwd();
-  if (existsSync5(join5(cwd, ".cursor"))) return "cursor";
-  if (existsSync5(join5(cwd, ".vscode"))) return "vscode";
+  if (existsSync4(join4(cwd, ".cursor"))) return "cursor";
+  if (existsSync4(join4(cwd, ".vscode"))) return "vscode";
   return "unknown";
 }
 function writeMcpConfig(ide, serverUrl, apiKey, repoName) {
   const cwd = process.cwd();
   if (ide === "cursor") {
-    const configDir = join5(cwd, ".cursor");
-    mkdirSync3(configDir, { recursive: true });
-    const configPath = join5(configDir, "mcp.json");
+    const configDir = join4(cwd, ".cursor");
+    mkdirSync2(configDir, { recursive: true });
+    const configPath = join4(configDir, "mcp.json");
     let config = {};
-    if (existsSync5(configPath)) {
+    if (existsSync4(configPath)) {
       try {
-        config = JSON.parse(readFileSync5(configPath, "utf-8"));
+        config = JSON.parse(readFileSync4(configPath, "utf-8"));
       } catch {
       }
     }
@@ -443,16 +317,16 @@ function writeMcpConfig(ide, serverUrl, apiKey, repoName) {
       }
     };
     config.mcpServers = mcpServers;
-    writeFileSync3(configPath, JSON.stringify(config, null, 2));
+    writeFileSync2(configPath, JSON.stringify(config, null, 2));
     console.log(`  Written: .cursor/mcp.json`);
   } else if (ide === "vscode") {
-    const configDir = join5(cwd, ".vscode");
-    mkdirSync3(configDir, { recursive: true });
-    const configPath = join5(configDir, "settings.json");
+    const configDir = join4(cwd, ".vscode");
+    mkdirSync2(configDir, { recursive: true });
+    const configPath = join4(configDir, "settings.json");
     let settings = {};
-    if (existsSync5(configPath)) {
+    if (existsSync4(configPath)) {
       try {
-        settings = JSON.parse(readFileSync5(configPath, "utf-8"));
+        settings = JSON.parse(readFileSync4(configPath, "utf-8"));
       } catch {
       }
     }
@@ -464,7 +338,7 @@ function writeMcpConfig(ide, serverUrl, apiKey, repoName) {
       }
     };
     settings["mcp.servers"] = mcpServers;
-    writeFileSync3(configPath, JSON.stringify(settings, null, 2));
+    writeFileSync2(configPath, JSON.stringify(settings, null, 2));
     console.log(`  Written: .vscode/settings.json`);
   }
   console.log("");
@@ -597,15 +471,15 @@ function registerConnectCommand(program2) {
           encoding: "utf-8",
           stdio: ["pipe", "pipe", "pipe"]
         }).trim();
-        const hooksDir = join5(gitDir, "hooks");
-        mkdirSync3(hooksDir, { recursive: true });
+        const hooksDir = join4(gitDir, "hooks");
+        mkdirSync2(hooksDir, { recursive: true });
         const hookScript = `#!/bin/sh
 kap10 config verify --silent 2>/dev/null || true
 `;
         for (const hook of ["post-checkout", "post-merge"]) {
-          const hookPath = join5(hooksDir, hook);
-          if (!existsSync5(hookPath)) {
-            writeFileSync3(hookPath, hookScript, { mode: 493 });
+          const hookPath = join4(hooksDir, hook);
+          if (!existsSync4(hookPath)) {
+            writeFileSync2(hookPath, hookScript, { mode: 493 });
             console.log(`  Installed ${hook} hook for config verification.`);
           }
         }
@@ -892,17 +766,17 @@ function registerPushCommand(program2) {
 
 // src/commands/pull.ts
 import { createHash } from "crypto";
-import { writeFileSync as writeFileSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync10, existsSync as existsSync10 } from "fs";
-import { homedir as homedir3 } from "os";
-import { join as join10 } from "path";
-var KAP10_DIR = join10(homedir3(), ".kap10");
-var SNAPSHOTS_DIR = join10(KAP10_DIR, "snapshots");
-var MANIFESTS_DIR = join10(KAP10_DIR, "manifests");
+import { writeFileSync as writeFileSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync9, existsSync as existsSync9 } from "fs";
+import { homedir as homedir2 } from "os";
+import { join as join9 } from "path";
+var KAP10_DIR = join9(homedir2(), ".kap10");
+var SNAPSHOTS_DIR = join9(KAP10_DIR, "snapshots");
+var MANIFESTS_DIR = join9(KAP10_DIR, "manifests");
 function getManifest(repoId) {
-  const path11 = join10(MANIFESTS_DIR, `${repoId}.json`);
-  if (!existsSync10(path11)) return null;
+  const path11 = join9(MANIFESTS_DIR, `${repoId}.json`);
+  if (!existsSync9(path11)) return null;
   try {
-    return JSON.parse(readFileSync10(path11, "utf-8"));
+    return JSON.parse(readFileSync9(path11, "utf-8"));
   } catch {
     return null;
   }
@@ -952,10 +826,10 @@ function registerPullCommand(program2) {
       console.error(`Checksum mismatch! Expected ${checksum.slice(0, 8)}..., got ${computedChecksum.slice(0, 8)}...`);
       process.exit(1);
     }
-    mkdirSync5(SNAPSHOTS_DIR, { recursive: true });
-    mkdirSync5(MANIFESTS_DIR, { recursive: true });
-    const snapshotPath = join10(SNAPSHOTS_DIR, `${repoId}.msgpack`);
-    writeFileSync5(snapshotPath, buffer);
+    mkdirSync4(SNAPSHOTS_DIR, { recursive: true });
+    mkdirSync4(MANIFESTS_DIR, { recursive: true });
+    const snapshotPath = join9(SNAPSHOTS_DIR, `${repoId}.msgpack`);
+    writeFileSync4(snapshotPath, buffer);
     let ruleCount = 0;
     let patternCount = 0;
     let snapshotVersion = 1;
@@ -980,7 +854,7 @@ function registerPullCommand(program2) {
       pulledAt: (/* @__PURE__ */ new Date()).toISOString(),
       snapshotPath
     };
-    writeFileSync5(join10(MANIFESTS_DIR, `${repoId}.json`), JSON.stringify(manifest, null, 2));
+    writeFileSync4(join9(MANIFESTS_DIR, `${repoId}.json`), JSON.stringify(manifest, null, 2));
     const v2Info = snapshotVersion >= 2 ? `, ${ruleCount} rules, ${patternCount} patterns` : "";
     console.log(`Done! ${entityCount} entities, ${edgeCount} edges${v2Info}`);
     console.log(`Saved to ${snapshotPath}`);
@@ -1056,9 +930,9 @@ function registerRewindCommand(program2) {
 }
 
 // src/commands/serve.ts
-import { readFileSync as readFileSync12, existsSync as existsSync12, readdirSync as readdirSync2 } from "fs";
-import { homedir as homedir4 } from "os";
-import { join as join12 } from "path";
+import { readFileSync as readFileSync11, existsSync as existsSync11, readdirSync as readdirSync2 } from "fs";
+import { homedir as homedir3 } from "os";
+import { join as join11 } from "path";
 
 // src/auto-sync.ts
 var DEFAULT_TTL_HOURS = 24;
@@ -1075,9 +949,9 @@ function getStalenessInfo(repoId) {
 }
 
 // src/commands/serve.ts
-var KAP10_DIR2 = join12(homedir4(), ".kap10");
-var SNAPSHOTS_DIR2 = join12(KAP10_DIR2, "snapshots");
-var MANIFESTS_DIR2 = join12(KAP10_DIR2, "manifests");
+var KAP10_DIR2 = join11(homedir3(), ".kap10");
+var SNAPSHOTS_DIR2 = join11(KAP10_DIR2, "snapshots");
+var MANIFESTS_DIR2 = join11(KAP10_DIR2, "manifests");
 function registerServeCommand(program2) {
   program2.command("serve").description("Start local MCP server").option("--repo <repoId>", "Specific repo to serve (default: all pulled repos)").option("--prefetch", "Enable predictive context pre-fetching (default: false)").option("--no-prefetch", "Disable predictive context pre-fetching").action(async (opts) => {
     const creds = getCredentials();
@@ -1089,7 +963,7 @@ function registerServeCommand(program2) {
     if (opts.repo) {
       repoIds = [opts.repo];
     } else {
-      if (existsSync12(MANIFESTS_DIR2)) {
+      if (existsSync11(MANIFESTS_DIR2)) {
         repoIds = readdirSync2(MANIFESTS_DIR2).filter((f) => f.endsWith(".json")).map((f) => f.replace(".json", ""));
       }
     }
@@ -1122,14 +996,14 @@ function registerServeCommand(program2) {
         console.warn(`No manifest for ${repoId}, skipping`);
         continue;
       }
-      const snapshotPath = join12(SNAPSHOTS_DIR2, `${repoId}.msgpack`);
-      if (!existsSync12(snapshotPath)) {
+      const snapshotPath = join11(SNAPSHOTS_DIR2, `${repoId}.msgpack`);
+      if (!existsSync11(snapshotPath)) {
         console.warn(`Snapshot file not found for ${repoId}, skipping`);
         continue;
       }
       console.log(`Loading snapshot for ${repoId}...`);
       const { unpack } = await import("msgpackr");
-      const buffer = readFileSync12(snapshotPath);
+      const buffer = readFileSync11(snapshotPath);
       const envelope = unpack(buffer);
       localGraph.loadSnapshot(envelope);
       console.log(`Loaded ${manifest.entityCount} entities, ${manifest.edgeCount} edges`);
@@ -1436,7 +1310,10 @@ function registerWatchCommand(program2) {
 
 // src/index.ts
 var program = new Command();
-program.name("kap10").description("Local-first code intelligence CLI").version("0.1.0");
+program.name("kap10").description("Code intelligence for AI agents").version("0.1.0").option("--server <url>", "Server URL").option("--key <apiKey>", "API key (skip browser login)").option("--ide <type>", "IDE type: cursor, vscode, claude-code, windsurf").action(async (opts) => {
+  const { runSetup } = await import("./setup-3X7FHAI2.js");
+  await runSetup({ server: opts.server, key: opts.key, ide: opts.ide });
+});
 registerAuthCommand(program);
 registerBranchesCommand(program);
 registerCircuitResetCommand(program);

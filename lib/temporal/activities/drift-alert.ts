@@ -62,7 +62,7 @@ OLD purpose: ${oldJustification.business_purpose}
 NEW purpose: ${newJustification.business_purpose}
 
 Return isDrift=true only if the fundamental intent/role has changed, not just refinements or rewording.`,
-      model: process.env.LLM_DEFAULT_MODEL ?? "gpt-4o-mini",
+      model: (require("@/lib/llm/config") as typeof import("@/lib/llm/config")).LLM_MODELS.standard,
     })
 
     if (!result.object.isDrift) return { isDrift: false }

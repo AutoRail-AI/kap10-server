@@ -266,6 +266,19 @@
     85% { opacity: 1; }
     100% { transform: translateY(var(--flow-distance-y, 60px)); opacity: 0; }
   }
+
+  /* Pipeline celebration */
+  --animate-celebration-pop: celebration-pop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+
+  @keyframes celebration-pop {
+    0% { transform: scale(0.8); opacity: 0; }
+    100% { transform: scale(1); opacity: 1; }
+  }
+
+  @keyframes celebration-particle {
+    0% { transform: translate(0, 0) scale(1); opacity: 0.7; }
+    100% { transform: translate(var(--particle-x, 40px), var(--particle-y, -40px)) scale(0); opacity: 0; }
+  }
 }
 
 /* =============================================================================
@@ -373,6 +386,15 @@
     box-shadow: 0 0 40px rgba(110, 24, 179, 0.3);
   }
 
+  /* Hover shadow glows for stat cards (kap10 = cyan, platform = purple) */
+  .shadow-glow-purple {
+    box-shadow: 0 0 20px rgba(110, 24, 179, 0.2);
+  }
+
+  .shadow-glow-cyan {
+    box-shadow: 0 0 20px rgba(0, 229, 255, 0.2);
+  }
+
   /* Confidence / framing glows (see docs/brand/brand.md §6.1) */
   .glow-yellow {
     box-shadow: 0 0 15px rgba(255, 184, 0, 0.15);
@@ -408,6 +430,47 @@
   .glass-card:hover {
     background: rgba(255, 255, 255, 0.05);
     border-color: rgba(255, 255, 255, 0.15);
+  }
+
+  /* Pipeline celebration */
+  .celebration-pop {
+    animation: celebration-pop 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+
+  .celebration-particle {
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--color-emerald-500, #10b981);
+    animation: celebration-particle 1.2s ease-out both;
+    pointer-events: none;
+  }
+
+  .celebration-particle-1 {
+    top: 20%;
+    left: 30%;
+    --particle-x: -30px;
+    --particle-y: -30px;
+    animation-delay: 0.1s;
+  }
+
+  .celebration-particle-2 {
+    top: 20%;
+    right: 30%;
+    --particle-x: 30px;
+    --particle-y: -25px;
+    animation-delay: 0.2s;
+    background: var(--color-electric-cyan);
+  }
+
+  .celebration-particle-3 {
+    top: 50%;
+    left: 50%;
+    --particle-x: 0px;
+    --particle-y: -40px;
+    animation-delay: 0.3s;
+    background: var(--color-rail-purple);
   }
 
   /* Scrollbar */

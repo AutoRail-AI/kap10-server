@@ -20,6 +20,15 @@ export type SemanticTriple = z.infer<typeof SemanticTripleSchema>
 
 // ── Justification Result ────────────────────────────────────────
 
+export const ArchitecturalPatternSchema = z.enum([
+  "pure_domain",
+  "pure_infrastructure",
+  "adapter",
+  "mixed",
+  "unknown",
+])
+export type ArchitecturalPattern = z.infer<typeof ArchitecturalPatternSchema>
+
 export const JustificationResultSchema = z.object({
   taxonomy: TaxonomySchema,
   confidence: z.number().min(0).max(1),
@@ -28,6 +37,7 @@ export const JustificationResultSchema = z.object({
   featureTag: z.string(),
   semanticTriples: z.array(SemanticTripleSchema),
   complianceTags: z.array(z.string()).optional().default([]),
+  architecturalPattern: ArchitecturalPatternSchema.optional().default("unknown"),
 })
 export type JustificationResult = z.infer<typeof JustificationResultSchema>
 
@@ -120,12 +130,31 @@ export const GraphContextSchema = z.object({
       name: z.string(),
       kind: z.string(),
       direction: z.enum(["inbound", "outbound"]),
+      file_path: z.string().optional(),
     })
   ),
   centrality: z.number().optional(),
   subgraphSummary: z.string().optional(),
 })
 export type GraphContext = z.infer<typeof GraphContextSchema>
+
+// ── Batch Justification Result ──────────────────────────────────
+
+export const BatchJustificationItemSchema = z.object({
+  entityId: z.string(),
+  taxonomy: TaxonomySchema,
+  confidence: z.number().min(0).max(1),
+  businessPurpose: z.string(),
+  domainConcepts: z.array(z.string()),
+  featureTag: z.string(),
+  semanticTriples: z.array(SemanticTripleSchema),
+  complianceTags: z.array(z.string()).optional().default([]),
+  architecturalPattern: ArchitecturalPatternSchema.optional().default("unknown"),
+})
+export type BatchJustificationItem = z.infer<typeof BatchJustificationItemSchema>
+
+export const BatchJustificationResultSchema = z.array(BatchJustificationItemSchema)
+export type BatchJustificationResult = z.infer<typeof BatchJustificationResultSchema>
 
 // ── ADR (Architecture Decision Record) ──────────────────────────
 

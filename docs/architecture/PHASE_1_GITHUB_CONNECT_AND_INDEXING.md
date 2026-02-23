@@ -1243,8 +1243,8 @@ Seam 5: Repo status → readiness for Q&A
   - **Test:** Open modal → repos listed. Select 2 → Next → branch dropdowns appear. Override one branch → Connect & Index → modal closes, repos appear with chosen branches.
   - **Depends on:** P1-API-03, P1-API-04, P1-API-04b
   - **Files:** `components/dashboard/repo-picker-modal.tsx`, `components/dashboard/repos-list.tsx`
-  - **Acceptance:** Two-step modal follows glass-card design. Branch dropdowns load async. Handles empty state. Max 50 repos selectable.
-  - Notes: Done. Updated from single-step to two-step flow with branch selection.
+  - **Acceptance:** Two-step Sheet drawer (right side, 480px) follows glass-card design. Branch dropdowns load async. Handles empty state. Max 50 repos selectable. After connect, navigates to `/repos/[repoId]` for pipeline onboarding experience.
+  - Notes: Done. Updated from Dialog modal to Sheet drawer. After connect, navigates to repo detail page with pipeline onboarding console (stepper, real-time logs, analytics panel, celebration on completion).
 
 ### Repo Dashboard
 
@@ -1541,13 +1541,18 @@ app/
         page.tsx                           ← Repo detail: file tree + entity list
 components/
   dashboard/
-    repo-picker-modal.tsx                  ← Repo selection modal
+    repo-picker-modal.tsx                  ← Repo selection Sheet drawer (right side, 480px)
     repo-card.tsx                          ← Repo card with status + progress
     repository-switcher.tsx                ← Sidebar repo/scope switcher (Popover + Command)
   repo/
     repo-detail-client.tsx                 ← Combined: file tree + entity list + entity detail
+    pipeline-stepper.tsx                   ← Horizontal 5-stage pipeline stepper (new)
+    whats-happening-panel.tsx              ← Live analytics panel parsing pipeline logs (new)
+    repo-onboarding-console.tsx            ← Pipeline onboarding experience wrapper (new)
+    pipeline-log-viewer.tsx                ← Real-time console log viewer
 hooks/
   use-repo-status.ts                       ← Polling hook for indexing progress
+  use-pipeline-logs.ts                     ← Polling hook for pipeline logs
 scripts/
   copy-grammars.ts                         ← Postinstall: copy .wasm grammars to lib/indexer/grammars/
 Dockerfile.heavy-worker                    ← Multi-stage build for heavy worker (Node, Go, Python, SCIP)

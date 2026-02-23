@@ -4,8 +4,10 @@
  * Extracts functions, classes, methods, and decorators from Python files
  * when SCIP indexing is unavailable.
  */
+import { extractPythonDocstring } from "../../doc-extractor"
 import { entityHash } from "../../entity-hash"
 import type { ParsedEdge, ParsedEntity } from "../../types"
+import { MAX_BODY_LINES } from "../../types"
 import type { TreeSitterOptions } from "../types"
 
 export interface PythonParseResult {
@@ -76,9 +78,13 @@ export function parsePythonFile(opts: TreeSitterOptions): PythonParseResult {
     if (funcMatch) {
       const name = funcMatch[2]!
       const params = funcMatch[3] ?? ""
+      const isAsync = !!funcMatch[1]
+      const returnTypeMatch = trimmed.match(/\)\s*->\s*([^:]+):/)
+      const returnType = returnTypeMatch ? returnTypeMatch[1]!.trim() : undefined
 
       if (currentClass && indent > currentClassIndent) {
-        // Method
+        // Method — exclude self/cls from parameter count
+        const paramCount = countPythonParams(params)
         const sig = `${currentClass.name}.${name}(${params})`
         const entity: ParsedEntity = {
           id: entityHash(opts.repoId, opts.filePath, "method", name, sig),
@@ -89,11 +95,15 @@ export function parsePythonFile(opts: TreeSitterOptions): PythonParseResult {
           language: "python",
           signature: sig,
           parent: currentClass.name,
+          is_async: isAsync,
+          parameter_count: paramCount,
+          return_type: returnType,
         }
         entities.push(entity)
         edges.push({ from_id: entity.id, to_id: currentClass.id, kind: "member_of" })
       } else {
         // Top-level function
+        const paramCount = countPythonParams(params)
         const sig = `def ${name}(${params})`
         const entity: ParsedEntity = {
           id: entityHash(opts.repoId, opts.filePath, "function", name, sig),
@@ -103,6 +113,9 @@ export function parsePythonFile(opts: TreeSitterOptions): PythonParseResult {
           start_line: lineNum,
           language: "python",
           signature: sig,
+          is_async: isAsync,
+          parameter_count: paramCount,
+          return_type: returnType,
         }
         entities.push(entity)
       }
@@ -126,5 +139,86 @@ export function parsePythonFile(opts: TreeSitterOptions): PythonParseResult {
     }
   }
 
+  // Post-process: compute end_line and extract body for each entity
+  fillPythonEndLinesAndBodies(entities, lines)
+
   return { entities, edges }
+}
+
+/**
+ * Compute end_line for Python entities using indentation-based scoping,
+ * then extract body text.
+ */
+function fillPythonEndLinesAndBodies(entities: ParsedEntity[], lines: string[]): void {
+  if (entities.length === 0) return
+
+  for (const entity of entities) {
+    const startLine = entity.start_line
+    if (startLine == null) continue
+
+    // Decorators are single-line
+    if (entity.kind === "decorator") {
+      entity.end_line = startLine
+      entity.body = lines[startLine - 1] ?? ""
+      continue
+    }
+
+    // For classes, functions, methods: find end by indentation
+    const startIdx = startLine - 1
+    const defLine = lines[startIdx]
+    if (!defLine) continue
+
+    const baseIndent = defLine.length - defLine.trimStart().length
+    let endIdx = startIdx
+
+    for (let i = startIdx + 1; i < lines.length; i++) {
+      const line = lines[i]!
+      const trimmed = line.trim()
+
+      // Skip blank lines and comments
+      if (!trimmed || trimmed.startsWith("#")) {
+        endIdx = i
+        continue
+      }
+
+      const indent = line.length - line.trimStart().length
+      if (indent <= baseIndent) break // back to same or less indentation
+      endIdx = i
+    }
+
+    entity.end_line = endIdx + 1 // 1-based
+
+    // Extract doc comment (Python docstring)
+    if (!entity.doc) {
+      entity.doc = extractPythonDocstring(lines, startIdx)
+    }
+
+    // Extract body (capped at MAX_BODY_LINES)
+    const bodyLines = lines.slice(startIdx, Math.min(endIdx + 1, startIdx + MAX_BODY_LINES))
+    if (bodyLines.length > 0) {
+      entity.body = bodyLines.join("\n")
+      // Estimate complexity for functions and methods
+      if (entity.kind === "function" || entity.kind === "method") {
+        entity.complexity = estimatePythonComplexity(entity.body)
+      }
+    }
+  }
+}
+
+/** Count parameters excluding self/cls. */
+function countPythonParams(params: string): number {
+  if (!params.trim()) return 0
+  const parts = params.split(",").map((p) => p.trim()).filter(Boolean)
+  return parts.filter((p) => p !== "self" && p !== "cls" && !p.startsWith("*")).length
+}
+
+/** Estimate cyclomatic complexity for Python. Baseline = 1. */
+function estimatePythonComplexity(body: string): number {
+  let complexity = 1
+  const pattern = /\b(if|elif|for|while|except|and|or)\b/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(body)) !== null) {
+    complexity++
+  }
+  return complexity
 }

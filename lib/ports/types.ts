@@ -273,6 +273,7 @@ export interface JustificationDoc {
   feature_tag: string
   semantic_triples: Array<{ subject: string; predicate: string; object: string }>
   compliance_tags: string[]
+  architectural_pattern?: string
   model_tier: "heuristic" | "fast" | "standard" | "premium"
   model_used?: string
   valid_from: string
@@ -317,6 +318,14 @@ export interface DomainOntologyDoc {
   repo_id: string
   terms: Array<{ term: string; frequency: number; relatedTerms: string[] }>
   ubiquitous_language: Record<string, string>
+  /** Project name extracted from package.json / pyproject.toml / go.mod */
+  project_name?: string
+  /** Project description from manifest */
+  project_description?: string
+  /** Inferred domain (e.g., "developer tools", "e-commerce") */
+  project_domain?: string
+  /** Detected tech stack (e.g., ["Next.js", "PostgreSQL", "Redis"]) */
+  tech_stack?: string[]
   generated_at: string
 }
 

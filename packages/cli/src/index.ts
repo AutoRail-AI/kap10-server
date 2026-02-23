@@ -2,22 +2,25 @@
 /**
  * @autorail/kap10 — Local-first code intelligence CLI.
  *
+ * Default (no subcommand):
+ *   kap10                  — Full setup wizard: auth → detect IDE → git → index → MCP config
+ *
  * Commands:
- *   kap10 auth login      — Authenticate with kap10 server (RFC 8628 device flow)
- *   kap10 auth logout     — Remove stored credentials
- *   kap10 connect         — Golden path: auth + git detect + IDE config
- *   kap10 init            — Register a local repo with kap10 server
- *   kap10 promote         — Convert ephemeral sandbox to permanent repository
- *   kap10 push            — Upload local repository for indexing
- *   kap10 pull            — Download graph snapshot for a repo
- *   kap10 serve           — Start local MCP server with graph queries
- *   kap10 watch           — Watch for file changes and sync to kap10 server
- *   kap10 rewind          — Revert ledger to a previous working state
- *   kap10 timeline        — Show the prompt ledger timeline
- *   kap10 mark-working    — Mark a ledger entry as a known-good working state
- *   kap10 branches        — Show timeline branches for this repository
- *   kap10 circuit-reset   — Reset a tripped circuit breaker for an entity
- *   kap10 config verify   — Check and repair MCP configuration for IDEs
+ *   kap10 auth login       — Authenticate with kap10 server (RFC 8628 device flow)
+ *   kap10 auth logout      — Remove stored credentials
+ *   kap10 connect          — Golden path: auth + git detect + IDE config
+ *   kap10 init             — Register a local repo with kap10 server
+ *   kap10 promote          — Convert ephemeral sandbox to permanent repository
+ *   kap10 push             — Upload local repository for indexing
+ *   kap10 pull             — Download graph snapshot for a repo
+ *   kap10 serve            — Start local MCP server with graph queries
+ *   kap10 watch            — Watch for file changes and sync to kap10 server
+ *   kap10 rewind           — Revert ledger to a previous working state
+ *   kap10 timeline         — Show the prompt ledger timeline
+ *   kap10 mark-working     — Mark a ledger entry as a known-good working state
+ *   kap10 branches         — Show timeline branches for this repository
+ *   kap10 circuit-reset    — Reset a tripped circuit breaker for an entity
+ *   kap10 config verify    — Check and repair MCP configuration for IDEs
  *   kap10 config install-hooks — Install git hooks for auto-verification
  */
 
@@ -41,8 +44,15 @@ const program = new Command()
 
 program
   .name("kap10")
-  .description("Local-first code intelligence CLI")
+  .description("Code intelligence for AI agents")
   .version("0.1.0")
+  .option("--server <url>", "Server URL")
+  .option("--key <apiKey>", "API key (skip browser login)")
+  .option("--ide <type>", "IDE type: cursor, vscode, claude-code, windsurf")
+  .action(async (opts: { server?: string; key?: string; ide?: string }) => {
+    const { runSetup } = await import("./commands/setup.js")
+    await runSetup({ server: opts.server, key: opts.key, ide: opts.ide })
+  })
 
 registerAuthCommand(program)
 registerBranchesCommand(program)

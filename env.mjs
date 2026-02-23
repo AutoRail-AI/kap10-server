@@ -58,9 +58,14 @@ export const env = createEnv({
     SENTRY_DSN: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
 
     // ── LLM (Phase 4 — Business Justification) ────────────────────
+    // Primary provider: Google Gemini. Model config in lib/llm/config.ts.
+    GEMINI_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),
     ANTHROPIC_API_KEY: z.string().optional(),
-    LLM_DEFAULT_MODEL: z.string().optional().default("gpt-4o-mini"),
+    // Per-tier model overrides (optional — defaults in lib/llm/config.ts)
+    LLM_MODEL_FAST: z.string().optional(),
+    LLM_MODEL_STANDARD: z.string().optional(),
+    LLM_MODEL_PREMIUM: z.string().optional(),
 
     // ── Embedding (Phase 3 — Semantic Search) ──────────────────────
     EMBEDDING_MODEL_NAME: z.string().optional().default("nomic-ai/nomic-embed-text-v1.5"),
@@ -194,9 +199,12 @@ export const env = createEnv({
     // Sentry
     SENTRY_DSN: process.env.SENTRY_DSN,
     // LLM
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-    LLM_DEFAULT_MODEL: process.env.LLM_DEFAULT_MODEL,
+    LLM_MODEL_FAST: process.env.LLM_MODEL_FAST,
+    LLM_MODEL_STANDARD: process.env.LLM_MODEL_STANDARD,
+    LLM_MODEL_PREMIUM: process.env.LLM_MODEL_PREMIUM,
     // Embedding
     EMBEDDING_MODEL_NAME: process.env.EMBEDDING_MODEL_NAME,
     EMBEDDING_DIMENSIONS: process.env.EMBEDDING_DIMENSIONS,

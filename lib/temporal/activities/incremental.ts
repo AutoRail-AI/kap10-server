@@ -12,6 +12,7 @@ import { clearCallerCountCache } from "@/lib/indexer/centrality"
 import { withQuarantine } from "@/lib/indexer/quarantine"
 import { entityHash } from "@/lib/indexer/entity-hash"
 import type { ChangedFile, EntityDiff, EntityDoc, EdgeDoc, IndexEventDoc } from "@/lib/ports/types"
+import { LLM_MODELS } from "@/lib/llm/config"
 
 export interface PullAndDiffInput {
   orgId: string
@@ -337,7 +338,7 @@ Provide a brief business purpose.`
           parse: (v: unknown) => v as { business_purpose: string; taxonomy: string; confidence: number },
         },
         prompt,
-        model: process.env.LLM_DEFAULT_MODEL ?? "gpt-4o-mini",
+        model: LLM_MODELS.standard,
       })
 
       // Update justification in graph store
@@ -354,7 +355,7 @@ Provide a brief business purpose.`
         semantic_triples: [],
         compliance_tags: [],
         model_tier: "fast" as const,
-        model_used: process.env.LLM_DEFAULT_MODEL ?? "gpt-4o-mini",
+        model_used: LLM_MODELS.standard,
         valid_from: new Date().toISOString(),
         valid_to: null,
         created_at: new Date().toISOString(),

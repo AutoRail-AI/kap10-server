@@ -24,7 +24,20 @@ export interface ParsedEntity {
   doc?: string
   /** Parent entity name (e.g., class name for a method) */
   parent?: string
+  /** Source code body (truncated to MAX_BODY_LINES lines at extraction time) */
+  body?: string
+  /** Whether the function/method is async */
+  is_async?: boolean
+  /** Number of parameters (excludes self/cls in Python) */
+  parameter_count?: number
+  /** Return type annotation (if available) */
+  return_type?: string
+  /** Cyclomatic complexity estimate (baseline = 1) */
+  complexity?: number
 }
+
+/** Maximum number of source lines to store per entity body */
+export const MAX_BODY_LINES = 500
 
 export type EntityKind =
   | "file"
@@ -46,6 +59,8 @@ export interface ParsedEdge {
   from_id: string
   to_id: string
   kind: EdgeKind
+  /** Extra metadata (e.g., imported_symbols for import edges) */
+  [key: string]: unknown
 }
 
 export type EdgeKind =

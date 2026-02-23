@@ -26,6 +26,7 @@ import * as antiPattern from "@/lib/temporal/activities/anti-pattern"
 import * as review from "@/lib/temporal/activities/review"
 import * as incremental from "@/lib/temporal/activities/incremental"
 import * as patternDetection from "@/lib/temporal/activities/pattern-detection"
+import * as pipelineLogs from "@/lib/temporal/activities/pipeline-logs"
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233"
 const TASK_QUEUE = "light-llm-queue"
@@ -83,6 +84,8 @@ async function createWorkerWithRetry(): Promise<Worker> {
           ...workspaceCleanup,
           // Onboarding
           ...onboarding,
+          // Pipeline logging
+          ...pipelineLogs,
         },
       })
       return worker

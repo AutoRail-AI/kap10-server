@@ -5,6 +5,7 @@
  */
 
 import { getContainer } from "@/lib/di/container"
+import { LLM_MODELS } from "@/lib/llm/config"
 
 interface AntiPatternInput {
   orgId: string
@@ -66,7 +67,7 @@ Generate a concise anti-pattern rule with name, description, pattern (code patte
 
   try {
     const { object: rule, usage } = await container.llmProvider.generateObject<AntiPatternRule>({
-      model: "gpt-4o-mini",
+      model: LLM_MODELS.standard,
       prompt,
       schema: AntiPatternRuleSchema,
     })
@@ -99,7 +100,7 @@ Generate a concise anti-pattern rule with name, description, pattern (code patte
       id: crypto.randomUUID(),
       org_id: input.orgId,
       repo_id: input.repoId,
-      model: "gpt-4o-mini",
+      model: LLM_MODELS.standard,
       input_tokens: usage.inputTokens,
       output_tokens: usage.outputTokens,
       activity: "anti-pattern-synthesis",

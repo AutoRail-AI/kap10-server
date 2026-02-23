@@ -1,9 +1,10 @@
+import { Activity, Database, FileCode, Shield } from "lucide-react"
 import { headers } from "next/headers"
-import Link from "next/link"
 import { Suspense } from "react"
-import { ArrowRight, FileCode, FolderGit2, GitBranch, Layers, Plus, Settings } from "lucide-react"
-import { QuickActionCard, RepoRowCompact, StatCard } from "@/components/dashboard/overview-stats"
-import { Card, CardContent } from "@/components/ui/card"
+import { CliHero } from "@/components/dashboard/cli-hero"
+import { OverviewAddRepoCard } from "@/components/dashboard/overview-add-repo-card"
+import { OverviewRepoCard } from "@/components/dashboard/overview-repo-card"
+import { StatCard } from "@/components/dashboard/overview-stats"
 import { Skeleton } from "@/components/ui/skeleton"
 import { auth, listOrganizations } from "@/lib/auth"
 import { getContainer } from "@/lib/di/container"
@@ -12,106 +13,93 @@ async function OverviewContent() {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session) return null
 
-  let organizations: { id: string }[] = []
+  let organizations: { id: string; name: string }[] = []
   try {
     organizations = await listOrganizations(await headers())
   } catch {
     organizations = []
   }
 
-  const activeOrgId = organizations[0]?.id
+  const activeOrg = organizations[0]
+  const activeOrgId = activeOrg?.id
+  const activeOrgName = activeOrg?.name ?? "your organization"
   if (!activeOrgId) {
-    throw new Error("No active organization found. Every user should have an auto-provisioned organization.")
+    throw new Error(
+      "No active organization found. Every user should have an auto-provisioned organization."
+    )
   }
 
   const container = getContainer()
-  const [repos, installations] = await Promise.all([
+  const [repos, activeRules, detectedPatterns] = await Promise.all([
     container.relationalStore.getRepos(activeOrgId),
-    container.relationalStore.getInstallations(activeOrgId),
+    container.graphStore
+      .queryRules(activeOrgId, { orgId: activeOrgId, status: "active" })
+      .catch(() => []),
+    container.graphStore
+      .queryPatterns(activeOrgId, { orgId: activeOrgId })
+      .catch(() => []),
   ])
 
-  const totalFiles = repos.reduce((sum: number, r) => sum + (r.fileCount ?? 0), 0)
-  const totalEntities = repos.reduce((sum: number, r) => sum + (r.functionCount ?? 0) + (r.classCount ?? 0), 0)
-  const totalConnections = installations.length
-  const recentRepos = repos.slice(0, 5)
+  const installHref = `/api/github/install?orgId=${encodeURIComponent(activeOrgId)}`
+
+  // Calculate aggregated stats
+  const totalFiles = repos.reduce((sum, r) => sum + (r.fileCount ?? 0), 0)
+  const totalEntities = repos.reduce(
+    (sum, r) => sum + (r.functionCount ?? 0) + (r.classCount ?? 0),
+    0
+  )
 
   return (
     <>
-      {/* Stats grid */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label="Repositories"
-          value={repos.length}
-          detail={`${repos.filter((r) => r.status === "ready").length} indexed`}
-          icon={FolderGit2}
-        />
-        <StatCard
-          label="Files Indexed"
-          value={totalFiles.toLocaleString()}
-          detail="Across all repos"
-          icon={FileCode}
-        />
-        <StatCard
-          label="Entities"
-          value={totalEntities.toLocaleString()}
-          detail="Functions & classes"
-          icon={Layers}
-        />
-        <StatCard
-          label="Connections"
-          value={totalConnections}
-          detail={`GitHub ${totalConnections === 1 ? "account" : "accounts"}`}
-          icon={GitBranch}
-        />
-      </div>
-
-      {/* Two-column layout */}
-      <div className="grid gap-6 lg:grid-cols-3">
-        {/* Recent Repositories */}
-        <Card className="glass-card border-border lg:col-span-2">
-          <CardContent className="pt-6">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="font-grotesk text-sm font-semibold text-foreground">Recent Repositories</h2>
-              <Link href="/repos" className="text-xs text-electric-cyan hover:underline flex items-center gap-1">
-                View all <ArrowRight className="h-3 w-3" />
-              </Link>
-            </div>
-            {recentRepos.length > 0 ? (
-              <div className="-mx-3 divide-y divide-border">
-                {recentRepos.map((repo) => (
-                  <RepoRowCompact key={repo.id} repo={repo} />
-                ))}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground py-4 text-center">
-                No repositories yet. Connect GitHub to get started.
-              </p>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Quick Actions */}
-        <div className="space-y-3">
-          <h2 className="font-grotesk text-sm font-semibold text-foreground">Quick Actions</h2>
-          <QuickActionCard
-            icon={Plus}
-            title="Add Repository"
-            description="Connect repos from GitHub"
-            href="/repos"
+      {/* Platform Intelligence Stats */}
+      <div className="space-y-4">
+        <h2 className="font-grotesk text-sm font-semibold text-foreground">
+          Platform Usage
+        </h2>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            label="Repositories"
+            value={repos.length}
+            detail={`${repos.filter((r) => r.status === "ready").length} Active`}
+            icon={Database}
           />
-          <QuickActionCard
-            icon={GitBranch}
-            title="Manage Connections"
-            description="GitHub accounts & orgs"
-            href="/settings/connections"
+          <StatCard
+            label="Code Intelligence"
+            value={totalEntities.toLocaleString()}
+            detail="Functions & Classes Indexed"
+            icon={FileCode}
           />
-          <QuickActionCard
-            icon={Settings}
-            title="Org Settings"
-            description="Members & configuration"
-            href="/settings"
+          <StatCard
+            label="Governance"
+            value={activeRules.length}
+            detail="Active Rules"
+            icon={Shield}
+          />
+          <StatCard
+            label="Intelligence"
+            value={detectedPatterns.length}
+            detail="Patterns Detected"
+            icon={Activity}
           />
         </div>
+      </div>
+
+      {/* Active State: Connected Repositories */}
+      <div className="space-y-4">
+        <h2 className="font-grotesk text-sm font-semibold text-foreground">
+          Repositories in {activeOrgName}
+        </h2>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+          {repos.map((repo) => (
+            <OverviewRepoCard key={repo.id} repo={repo} />
+          ))}
+        </div>
+      </div>
+
+      {/* Onboarding Zone: CLI & Connect UI */}
+      <div className="grid gap-6 lg:grid-cols-2">
+        <CliHero />
+        <OverviewAddRepoCard installHref={installHref} orgName={activeOrgName} />
       </div>
     </>
   )
@@ -119,13 +107,7 @@ async function OverviewContent() {
 
 export default async function OverviewPage() {
   return (
-    <div className="space-y-6 py-6 animate-fade-in">
-      <div className="space-y-1">
-        <h1 className="font-grotesk text-lg font-semibold text-foreground">Overview</h1>
-        <p className="text-sm text-foreground mt-0.5">
-          Your code intelligence platform at a glance.
-        </p>
-      </div>
+    <div className="space-y-6 py-6 animate-fade-in bg-[#0A0A0F]">
       <Suspense fallback={<Skeleton className="h-[400px] w-full" />}>
         <OverviewContent />
       </Suspense>

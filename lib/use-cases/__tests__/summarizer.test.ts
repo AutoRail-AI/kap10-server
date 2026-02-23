@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { MockLLMProvider } from "@/lib/di/fakes"
+import { LLM_MODELS } from "@/lib/llm/config"
 import { summarizeLedger } from "../summarizer"
 
 describe("summarizeLedger", () => {
@@ -42,7 +43,7 @@ describe("summarizeLedger", () => {
 
     expect(spy).toHaveBeenCalledOnce()
     const callArgs = spy.mock.calls[0]![0]
-    expect(callArgs.model).toBe("claude-sonnet-4-20250514")
+    expect(callArgs.model).toBe(LLM_MODELS.standard)
     expect(callArgs.prompt).toContain("PR #7")
     expect(callArgs.prompt).toContain("fix/bug-123")
     expect(callArgs.prompt).toContain("main")

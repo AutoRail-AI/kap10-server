@@ -867,6 +867,39 @@ First-time experience — the bridge from landing page to app:
 - Terminal panel showing real-time indexing progress with `animate-breathing-glow`
 - Completion: green glow (`glow-success-pulse`) on the dashboard
 
+### 7.X Pipeline Onboarding Console
+
+Enterprise-grade pipeline experience shown on `/repos/[repoId]` while a repository is being indexed.
+
+**Layout:**
+```
+┌─────────────────────────────────────────────────┐
+│ Breadcrumb + Repo Name                          │
+├─────────────────────────────────────────────────┤
+│ Pipeline Stepper (5 stages, horizontal)         │
+│ [Clone] → [Index] → [Embed] → [Analyze] → [Ready] │
+├──────────────────────┬──────────────────────────┤
+│ Real-Time Console    │ What's Happening Panel    │
+│ (PipelineLogViewer)  │ (live analytics)          │
+├──────────────────────┴──────────────────────────┤
+│ Completion → Celebration + "View Blueprint" CTA  │
+└─────────────────────────────────────────────────┘
+```
+
+**Components:**
+- `PipelineStepper` — Horizontal 5-stage stepper. Active: `border-electric-cyan` + pulse. Completed: `bg-emerald-500` + check. Error: `border-destructive`. `font-grotesk` labels.
+- `WhatsHappeningPanel` — Glass-card with live metrics (phase, duration, files, entities, edges) parsed from pipeline log messages. Values in `text-electric-cyan font-mono`.
+- `RepoOnboardingConsole` — Client wrapper composing stepper + log viewer + analytics. Error state with retry button. Celebration animation on completion (`celebration-pop` keyframe + particle effects).
+- `PipelineLogViewer` — Reused. Auto-scroll, copy, download, color-coded by level.
+
+**Repo Addition Flow:**
+1. "Add Repository" → Sheet drawer opens from right (480px wide)
+2. Step 1: Select repos (checkboxes), Step 2: Branch selection
+3. "Connect & Index" → navigates to `/repos/[repoId]`
+4. Pipeline stepper advances through stages in real-time
+5. On completion: celebration banner + "View Codebase Blueprint" CTA
+6. CTA refreshes to load full ready-state repo detail
+
 ---
 
 ## Part VIII: Quality Standards

@@ -3,13 +3,17 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { getContainer } from "@/lib/di/container"
+import { extractDocComment } from "@/lib/indexer/doc-extractor"
 import { entityHash } from "@/lib/indexer/entity-hash"
 import { createFileEntity } from "@/lib/indexer/languages/generic"
 import { getPluginForExtension, getPluginsForExtensions, initializeRegistry } from "@/lib/indexer/languages/registry"
 import { detectWorkspaceRoots } from "@/lib/indexer/monorepo"
 import { detectLanguages, scanWorkspace } from "@/lib/indexer/scanner"
 import type { ParsedEdge, ParsedEntity } from "@/lib/indexer/types"
+import { MAX_BODY_LINES } from "@/lib/indexer/types"
 import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
+import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
+import { logger } from "@/lib/utils/logger"
 
 export interface PrepareWorkspaceInput {
   orgId: string
@@ -29,6 +33,10 @@ export interface PrepareWorkspaceResult {
 }
 
 export async function prepareWorkspace(input: PrepareWorkspaceInput): Promise<PrepareWorkspaceResult> {
+  const log = logger.child({ service: "indexing-heavy", organizationId: input.orgId, repoId: input.repoId })
+  const plog = createPipelineLogger(input.repoId, "indexing")
+  log.info("Preparing workspace", { cloneUrl: input.cloneUrl, defaultBranch: input.defaultBranch, provider: input.provider ?? "github" })
+  plog.log("info", "Step 1/7", "Cloning repository and scanning workspace...")
   const container = getContainer()
   const workspacePath = `/data/workspaces/${input.orgId}/${input.repoId}`
 
@@ -52,8 +60,7 @@ export async function prepareWorkspace(input: PrepareWorkspaceInput): Promise<Pr
       const { execFileSync } = require("node:child_process") as typeof import("node:child_process")
       lastSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: workspacePath, encoding: "utf-8" }).trim()
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.warn(`[prepareWorkspace] Failed to read HEAD SHA: ${message}`)
+      log.warn("Failed to read HEAD SHA", { errorMessage: error instanceof Error ? error.message : String(error) })
     }
   }
 
@@ -67,6 +74,8 @@ export async function prepareWorkspace(input: PrepareWorkspaceInput): Promise<Pr
   const workspaceInfo = detectWorkspaceRoots(workspacePath)
   const workspaceRoots = workspaceInfo.roots
 
+  log.info("Workspace prepared", { workspacePath, languages, rootCount: workspaceRoots.length, lastSha })
+  plog.log("info", "Step 1/7", `Workspace ready — detected languages: ${languages.join(", ") || "none"}`, { fileCount: files.length })
   return { workspacePath, languages, workspaceRoots, lastSha }
 }
 
@@ -128,6 +137,10 @@ export interface RunSCIPResult {
 }
 
 export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPResult> {
+  const log = logger.child({ service: "indexing-heavy", organizationId: input.orgId, repoId: input.repoId })
+  const plog = createPipelineLogger(input.repoId, "indexing")
+  log.info("Starting SCIP indexers", { languages: input.languages })
+  plog.log("info", "Step 2/7", `Running SCIP indexers for: ${input.languages.join(", ")}`)
   await initializeRegistry()
 
   const allEntities: ParsedEntity[] = []
@@ -154,11 +167,16 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPResult> {
       allEdges.push(...result.edges)
       allCoveredFiles.push(...result.coveredFiles)
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.warn(`[runSCIP] Plugin ${plugin.id} failed: ${message}`)
+      log.warn(`SCIP plugin ${plugin.id} failed`, { pluginId: plugin.id, errorMessage: error instanceof Error ? error.message : String(error) })
     }
   }
 
+  // Post-pass: fill body for SCIP-extracted entities that have start_line/end_line but no body
+  heartbeat("filling source bodies for SCIP entities")
+  fillBodiesFromSource(allEntities, input.workspacePath)
+
+  log.info("SCIP indexing complete", { entityCount: allEntities.length, edgeCount: allEdges.length, coveredFiles: allCoveredFiles.length })
+  plog.log("info", "Step 2/7", `SCIP complete — found ${allEntities.length} entities, ${allEdges.length} edges`)
   return {
     entities: toEntityDocs(allEntities, input.orgId, input.repoId),
     edges: toEdgeDocs(allEdges, input.orgId, input.repoId),
@@ -179,6 +197,10 @@ export interface ParseRestResult {
 }
 
 export async function parseRest(input: ParseRestInput): Promise<ParseRestResult> {
+  const log = logger.child({ service: "indexing-heavy", organizationId: input.orgId, repoId: input.repoId })
+  const plog = createPipelineLogger(input.repoId, "indexing")
+  log.info("Parsing uncovered files", { coveredFileCount: input.coveredFiles.length })
+  plog.log("info", "Step 3/7", "Parsing remaining files with tree-sitter fallback...")
   await initializeRegistry()
 
   const files = await scanWorkspace(input.workspacePath)
@@ -219,8 +241,7 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestResult>
         allEdges.push({ from_id: fileId, to_id: entity.id, kind: "contains" })
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.warn(`[parseRest] Failed to parse ${file.relativePath}: ${message}`)
+      log.warn(`Failed to parse ${file.relativePath}`, { filePath: file.relativePath, errorMessage: error instanceof Error ? error.message : String(error) })
     }
 
     processed++
@@ -229,10 +250,53 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestResult>
     }
   }
 
+  log.info("File parsing complete", { entityCount: allEntities.length, edgeCount: allEdges.length, uncoveredFiles: uncoveredFiles.length })
+  plog.log("info", "Step 3/7", `Parsing complete — ${allEntities.length} entities from ${uncoveredFiles.length} uncovered files`)
   return {
     extraEntities: toEntityDocs(allEntities, input.orgId, input.repoId),
     extraEdges: toEdgeDocs(allEdges, input.orgId, input.repoId),
   }
+}
+
+/**
+ * Fill body for entities that have start_line/end_line but no body.
+ * Reads source files from disk and extracts the relevant lines.
+ * Used as a post-pass for SCIP-extracted entities.
+ */
+function fillBodiesFromSource(entities: ParsedEntity[], workspacePath: string): void {
+  // Group entities by file_path to avoid reading the same file multiple times
+  const byFile = new Map<string, ParsedEntity[]>()
+  for (const entity of entities) {
+    if (entity.body || !entity.start_line || !entity.file_path) continue
+    const existing = byFile.get(entity.file_path)
+    if (existing) {
+      existing.push(entity)
+    } else {
+      byFile.set(entity.file_path, [entity])
+    }
+  }
+
+  byFile.forEach((fileEntities, filePath) => {
+    try {
+      const content = readFileSync(join(workspacePath, filePath), "utf-8")
+      const lines = content.split("\n")
+
+      for (const entity of fileEntities) {
+        const startIdx = (entity.start_line ?? 1) - 1
+        const endIdx = entity.end_line ? entity.end_line - 1 : startIdx
+        const bodyLines = lines.slice(startIdx, Math.min(endIdx + 1, startIdx + MAX_BODY_LINES))
+        if (bodyLines.length > 0) {
+          entity.body = bodyLines.join("\n")
+        }
+        // Extract doc comment if not already set
+        if (!entity.doc) {
+          entity.doc = extractDocComment(lines, startIdx, entity.language)
+        }
+      }
+    } catch {
+      // File might not exist on disk (generated files, etc.) — skip silently
+    }
+  })
 }
 
 /** Convert ParsedEntity[] to EntityDoc[] (domain type → port type) */
@@ -251,16 +315,25 @@ function toEntityDocs(entities: ParsedEntity[], orgId: string, repoId: string): 
     exported: e.exported,
     doc: e.doc,
     parent: e.parent,
+    body: e.body,
+    is_async: e.is_async,
+    parameter_count: e.parameter_count,
+    return_type: e.return_type,
+    complexity: e.complexity,
   }))
 }
 
 /** Convert ParsedEdge[] to EdgeDoc[] (domain type → port type) */
 function toEdgeDocs(edges: ParsedEdge[], orgId: string, repoId: string): EdgeDoc[] {
-  return edges.map((e) => ({
-    _from: e.from_id,
-    _to: e.to_id,
-    org_id: orgId,
-    repo_id: repoId,
-    kind: e.kind,
-  }))
+  return edges.map((e) => {
+    const { from_id, to_id, kind, ...metadata } = e
+    return {
+      _from: from_id,
+      _to: to_id,
+      org_id: orgId,
+      repo_id: repoId,
+      kind,
+      ...metadata,
+    }
+  })
 }

@@ -4,13 +4,13 @@ import { GitBranch, Info } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
 import {
   Select,
   SelectContent,
@@ -34,7 +34,7 @@ interface RepoWithBranch {
   branch: string
 }
 
-export function RepoPickerModal({
+export function RepoPickerSheet({
   open,
   onOpenChange,
   onConnect,
@@ -171,106 +171,108 @@ export function RepoPickerModal({
   const anyBranchLoading = selectedRepos.some((r) => branchState.get(r.id)?.loading)
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="glass-panel border-border max-h-[80vh] max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="font-grotesk text-foreground">
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-[480px] sm:max-w-[480px] flex flex-col glass-panel border-border">
+        <SheetHeader>
+          <SheetTitle className="font-grotesk text-foreground">
             {step === 1 ? "Add repositories" : "Choose branches"}
-          </DialogTitle>
-          <DialogDescription className="text-muted-foreground text-sm">
+          </SheetTitle>
+          <SheetDescription className="text-muted-foreground text-sm">
             {step === 1
               ? "Select repositories to connect and index."
               : "Pick the branch to index for each repository."}
-          </DialogDescription>
-        </DialogHeader>
+          </SheetDescription>
+        </SheetHeader>
 
-        {step === 1 ? (
-          <div className="max-h-[40vh] overflow-y-auto space-y-2 py-2">
-            {loading ? (
-              <div className="flex items-center justify-center py-8">
-                <Spinner className="h-6 w-6 text-primary" />
-              </div>
-            ) : repos.length === 0 ? (
-              <p className="text-muted-foreground text-sm py-4 text-center">
-                No repositories available to add.
-              </p>
-            ) : (
-              repos.map((r) => (
-                <label
-                  key={r.id}
-                  className="flex items-center gap-3 rounded-md border border-border p-2 cursor-pointer hover:bg-muted/50"
-                >
-                  <input
-                    type="checkbox"
-                    checked={selected.has(r.id)}
-                    onChange={() => toggle(r.id)}
-                    aria-label={`Select ${r.fullName}`}
-                    className="h-4 w-4 rounded border-border"
-                  />
-                  <span className="font-sans text-sm text-foreground truncate flex-1">
-                    {r.fullName}
-                  </span>
-                  {r.language && (
-                    <span className="text-muted-foreground text-xs">{r.language}</span>
-                  )}
-                </label>
-              ))
-            )}
-          </div>
-        ) : (
-          <div className="space-y-4 py-2">
-            <div className="flex gap-2 rounded-md border border-border bg-muted/30 p-3">
-              <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
-              <p className="text-xs text-muted-foreground">
-                <span className="font-semibold text-foreground">
-                  Choose the right branch for each repository.
-                </span>{" "}
-                Kap10 indexes the selected branch to build your code intelligence graph
-                — accurate function maps, dependency analysis, and AI suggestions depend
-                on indexing the branch with your team&apos;s latest working code. For
-                most teams this is <code className="font-mono">main</code> or{" "}
-                <code className="font-mono">develop</code>.
-              </p>
-            </div>
-            <div className="max-h-[35vh] overflow-y-auto space-y-3">
-              {selectedRepos.map((repo) => {
-                const state = branchState.get(repo.id)
-                return (
-                  <div
-                    key={repo.id}
-                    className="flex items-center gap-3 rounded-md border border-border p-2"
+        <div className="flex-1 overflow-hidden">
+          {step === 1 ? (
+            <div className="h-full overflow-y-auto space-y-2 py-2">
+              {loading ? (
+                <div className="flex items-center justify-center py-8">
+                  <Spinner className="h-6 w-6 text-primary" />
+                </div>
+              ) : repos.length === 0 ? (
+                <p className="text-muted-foreground text-sm py-4 text-center">
+                  No repositories available to add.
+                </p>
+              ) : (
+                repos.map((r) => (
+                  <label
+                    key={r.id}
+                    className="flex items-center gap-3 rounded-md border border-border p-2 cursor-pointer hover:bg-muted/50"
                   >
+                    <input
+                      type="checkbox"
+                      checked={selected.has(r.id)}
+                      onChange={() => toggle(r.id)}
+                      aria-label={`Select ${r.fullName}`}
+                      className="h-4 w-4 rounded border-border"
+                    />
                     <span className="font-sans text-sm text-foreground truncate flex-1">
-                      {repo.fullName}
+                      {r.fullName}
                     </span>
-                    {state?.loading ? (
-                      <Spinner className="h-4 w-4 text-muted-foreground" />
-                    ) : (
-                      <Select
-                        value={state?.selectedBranch ?? repo.defaultBranch}
-                        onValueChange={(val) => handleBranchChange(repo.id, val)}
-                      >
-                        <SelectTrigger className="h-8 w-[180px] text-xs">
-                          <GitBranch className="mr-1.5 h-3 w-3 text-muted-foreground" />
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(state?.branches ?? [repo.defaultBranch]).map((b) => (
-                            <SelectItem key={b} value={b} className="text-xs">
-                              {b}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                    {r.language && (
+                      <span className="text-muted-foreground text-xs">{r.language}</span>
                     )}
-                  </div>
-                )
-              })}
+                  </label>
+                ))
+              )}
             </div>
-          </div>
-        )}
+          ) : (
+            <div className="space-y-4 py-2">
+              <div className="flex gap-2 rounded-md border border-border bg-muted/30 p-3">
+                <Info className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
+                <p className="text-xs text-muted-foreground">
+                  <span className="font-semibold text-foreground">
+                    Choose the right branch for each repository.
+                  </span>{" "}
+                  Kap10 indexes the selected branch to build your code intelligence graph
+                  — accurate function maps, dependency analysis, and AI suggestions depend
+                  on indexing the branch with your team&apos;s latest working code. For
+                  most teams this is <code className="font-mono">main</code> or{" "}
+                  <code className="font-mono">develop</code>.
+                </p>
+              </div>
+              <div className="overflow-y-auto space-y-3">
+                {selectedRepos.map((repo) => {
+                  const state = branchState.get(repo.id)
+                  return (
+                    <div
+                      key={repo.id}
+                      className="flex items-center gap-3 rounded-md border border-border p-2"
+                    >
+                      <span className="font-sans text-sm text-foreground truncate flex-1">
+                        {repo.fullName}
+                      </span>
+                      {state?.loading ? (
+                        <Spinner className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <Select
+                          value={state?.selectedBranch ?? repo.defaultBranch}
+                          onValueChange={(val) => handleBranchChange(repo.id, val)}
+                        >
+                          <SelectTrigger className="h-8 w-[180px] text-xs">
+                            <GitBranch className="mr-1.5 h-3 w-3 text-muted-foreground" />
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(state?.branches ?? [repo.defaultBranch]).map((b) => (
+                              <SelectItem key={b} value={b} className="text-xs">
+                                {b}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
 
-        <DialogFooter>
+        <SheetFooter>
           {step === 1 ? (
             <>
               <Button size="sm" variant="outline" onClick={() => onOpenChange(false)}>
@@ -307,8 +309,8 @@ export function RepoPickerModal({
               </Button>
             </>
           )}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   )
 }

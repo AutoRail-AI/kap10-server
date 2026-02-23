@@ -25,19 +25,32 @@ export async function buildGraphContexts(
     const neighbors = subgraph.entities
       .filter((e) => e.id !== entity.id)
       .map((e) => {
-        const direction = subgraph.edges.some(
+        // Find the connecting edge to determine direction and metadata
+        const outEdge = subgraph.edges.find(
           (edge) =>
             edge._from.endsWith(`/${entity.id}`) &&
             edge._to.endsWith(`/${e.id}`)
         )
-          ? ("outbound" as const)
-          : ("inbound" as const)
+        const direction = outEdge ? ("outbound" as const) : ("inbound" as const)
+
+        // Include imported_symbols from import edges if available
+        const connectingEdge = outEdge ?? subgraph.edges.find(
+          (edge) =>
+            edge._from.endsWith(`/${e.id}`) &&
+            edge._to.endsWith(`/${entity.id}`)
+        )
+        const importedSymbols = connectingEdge?.kind === "imports"
+          ? (connectingEdge.imported_symbols as string[] | undefined)
+          : undefined
 
         return {
           id: e.id,
-          name: e.name,
+          name: importedSymbols && importedSymbols.length > 0
+            ? `${e.name} (imports: ${importedSymbols.join(", ")})`
+            : e.name,
           kind: e.kind,
           direction,
+          file_path: e.file_path,
         }
       })
 
@@ -82,7 +95,7 @@ export function computeApproxCentrality(
  */
 export function summarizeSubgraph(
   entity: EntityDoc,
-  neighbors: Array<{ id: string; name: string; kind: string; direction: string }>
+  neighbors: Array<{ id: string; name: string; kind: string; direction: string; file_path?: string }>
 ): string {
   const inbound = neighbors.filter((n) => n.direction === "inbound")
   const outbound = neighbors.filter((n) => n.direction === "outbound")

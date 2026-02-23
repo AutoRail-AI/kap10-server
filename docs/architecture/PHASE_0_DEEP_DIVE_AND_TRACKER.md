@@ -798,32 +798,37 @@ Seam 5: ArangoDB
 ### Dashboard Shell
 
 - [x] **`app/(dashboard)/layout.tsx` — Authenticated dashboard layout** — M
-  - Sidebar: `DashboardNav` (Repos, Search disabled, Settings), `UserProfileMenu` (bottom — identity/org switching)
-  - `RepositorySwitcher` removed from sidebar — repos are managed from the dashboard page, not the sidebar. Will be replaced by a workspace selector in a future phase.
-  - `UserProfileMenu` (bottom-left): avatar + context label → DropdownMenu: email header, organization switcher (no "Personal Account" item), Settings/Help, Upgrade, dark/light toggle (next-themes), Sign Out
-  - `DashboardAccountProvider`: wraps dashboard with `AccountProvider` so org hooks only run when authenticated
-  - `AccountProvider`: organization context (always has active org — no "personal" mode), persisted via Better Auth `setActive`, self-heals by auto-activating first org if none active
-  - `ThemeProvider` (next-themes): `defaultTheme="dark"`, `attribute="class"`, wired into root `<Providers>`
-  - **Design principle:** Identity = bottom-left (UserProfileMenu). Repo management on dashboard pages.
-  - Uses design system: `bg-background`, `glass-panel`, `font-grotesk`, `bg-rail-fade` avatars
-  - **Test:** Manual/E2E: log in → sidebar with nav + profile menu. Toggle theme, sign out.
-  - **Files:** `app/(dashboard)/layout.tsx`, `components/dashboard/repository-switcher.tsx`, `components/dashboard/dashboard-nav.tsx`, `components/dashboard/user-profile-menu.tsx`, `components/dashboard/dashboard-account-provider.tsx`, `components/providers/account-context.tsx`
-  - Notes: Implemented 2026-02-17. Updated 2026-02-18: RepositorySwitcher (top-left) + UserProfileMenu (bottom-left). Decoupled identity from resource context. Auto-provisioned org on signup removes welcome screen.
+  - **Header:** Resend-style fixed top bar (`h-14`, `bg-[#0A0A0F]`, `border-b border-white/10`). Left: kap10 logo (links to `/`). Right: "Docs" link (external).
+  - **Sidebar:** `w-56`, `bg-[#0A0A0F]`, `border-r border-white/10`. Contains `DashboardNav` (Overview, Repositories, Search) + dynamic **Recents** section (top 5 most recently updated repos for active org, fetched server-side) + `UserProfileMenu` (bottom).
+  - **Nav items:** `text-[13px] font-medium`, inactive: `text-white/60 hover:bg-white/5`, active: `bg-white/[0.08] text-white` with 2px Electric Cyan left indicator. Active icons use `text-[#00E5FF]`. Search shows `⌘K` hint on hover.
+  - `UserProfileMenu` (bottom-left): avatar + context label → DropdownMenu: email header, organization switcher, Settings/Help, Upgrade, dark/light toggle (next-themes), Sign Out.
+  - `DashboardAccountProvider`: wraps dashboard with `AccountProvider` so org hooks only run when authenticated.
+  - `AccountProvider`: organization context (always has active org — no "personal" mode), persisted via Better Auth `setActive`, self-heals by auto-activating first org if none active.
+  - **Files:** `app/(dashboard)/layout.tsx`, `components/dashboard/dashboard-header.tsx`, `components/dashboard/dashboard-nav.tsx`, `components/dashboard/user-profile-menu.tsx`, `components/dashboard/dashboard-account-provider.tsx`, `components/providers/account-context.tsx`
+  - Notes: Implemented 2026-02-17. Overhauled 2026-02-22: Resend-style header + Void Black sidebar with Electric Cyan active states + dynamic Recents section. RepositorySwitcher removed. GlobalSearch removed from sidebar (⌘K shortcut on Search nav item instead).
 
-- [x] **`app/(dashboard)/page.tsx` — Dashboard home (repos list)** — M
-  - Server component: fetches repos for active org via relational store; empty state when zero repos
-  - **Test:** Zero repos → empty state; CTA disabled with tooltip.
-  - Notes: Implemented 2026-02-17.
+- [x] **`app/(dashboard)/page.tsx` — Dashboard overview** — M
+  - **Layout order:** (1) Platform Usage stats grid → (2) CLI Hero → (3) Repository grid + Add Repo card.
+  - **Platform Usage:** 4-column `StatCard` grid showing Repositories (count + active), Code Intelligence (functions & classes indexed), Governance (active rules from graph store), Intelligence (detected patterns from graph store). Cards use `glass-card`, `hover:shadow-glow-cyan`, Electric Cyan metric values.
+  - **CLI Hero:** `CliHero` component — terminal panel (`bg-[#0e0e14]`) with `npx @autorail/kap10 connect`, copy button (Electric Cyan flash on success), "Terminal-First Experience" heading, muted subtext about offline/local-first capability.
+  - **Repository grid:** `grid-cols-1 md:grid-cols-2 lg:grid-cols-4`. `OverviewRepoCard` (repo name, fullName, status dot, file count or sync age) + `OverviewAddRepoCard` (dashed-border card with "Connect Repository" button).
+  - **Data:** Server component fetches repos, active rules (`queryRules`), and detected patterns (`queryPatterns`) for the active org.
+  - **Files:** `app/(dashboard)/page.tsx`, `components/dashboard/cli-hero.tsx`, `components/dashboard/overview-stats.tsx`, `components/dashboard/overview-repo-card.tsx`, `components/dashboard/overview-add-repo-card.tsx`
+  - Notes: Implemented 2026-02-17. Overhauled 2026-02-22: replaced flat repos list with Platform Usage stats + CLI hero + repo grid layout.
 
 - [x] **Empty state component** — S
   - `components/dashboard/empty-state-repos.tsx`: icon (Lucide), "No repositories connected", "Connect GitHub" CTA links to `/api/github/install?orgId=xxx`
   - **Test:** Manual; button links to install route with active org ID.
-  - Notes: Implemented 2026-02-17. Updated 2026-02-20: uses `useAccountContext()` to get `activeOrgId` and build install href dynamically; `activeOrgId` is always a string (no null state), button is always enabled.
+  - Notes: Implemented 2026-02-17. Updated 2026-02-20: uses `useAccountContext()` to get `activeOrgId` and build install href dynamically.
 
-- [x] **`app/(dashboard)/repos/page.tsx` — Repository management page** — S
-  - List repos for active org; same empty state as dashboard home
-  - **Test:** /repos shows empty state.
-  - Notes: Implemented 2026-02-17.
+- [x] **`app/(dashboard)/repos/page.tsx` — Repository management page** — M
+  - **Tabular view:** GitHub-style data table with sortable columns (Repository, Status, Branch, Files, Entities, Last Sync, MCP, Actions).
+  - **Toolbar:** Search input (real-time filter by name/fullName) + GitHub account/org filter dropdown (auto-derived from repo owners, appears when multiple orgs connected) + "Add Org" button (links to `/settings/connections`) + "Add Repository" button (opens repo picker).
+  - **Pagination:** 20 repos per page, previous/next controls, total count with filtered indicator.
+  - **Row features:** Status dot with label + inline retry for error states, branch info with `GitBranch` icon, live MCP session count per repo, visible "Open →" button (outline style, always white text), kebab menu (Copy ID, Onboarding PR, Remove Repository).
+  - **Sorting:** Click column headers to toggle sort direction (Repository name, Status, Last Sync).
+  - **Files:** `app/(dashboard)/repos/page.tsx`, `components/dashboard/repos-list.tsx`
+  - Notes: Implemented 2026-02-17. Overhauled 2026-02-22: replaced card grid with paginated tabular view, added search/filter/sort, multiple GitHub org support, "Add Org" action.
 
 - [x] **`app/(dashboard)/settings/page.tsx` — Org settings** — M
   - Org name, members (read-only from Better Auth), danger zone (placeholder)
@@ -990,3 +995,4 @@ Testing & Verification ──────────────────┘
 | 2026-02-20 | — | **Phase 1 enhancements backported to Phase 0 tracker.** (1) `IGitHost` port: added `listBranches()` method for branch selection during repo import (P1-ADAPT-14). (2) `empty-state-repos.tsx`: uses `useAccountContext()` to get `activeOrgId`, builds install href dynamically with `orgId` query param; button disabled when no org active. (3) `prisma.config.ts`: loads `.env.local` first (Next.js convention), appends `search_path=kap10,public` to DB URL (Prisma 7 workaround). (4) Install route (`/api/github/install`): requires explicit `orgId` param, validates org membership, stores state as `{ orgId }` object with 10-min TTL. (5) Callback route (`/api/github/callback`): `parseStatePayload` handles both object and string state defensively. (6) Branch selection: two-step repo picker modal (select repos → choose branch per repo), `GET /api/repos/available/branches` endpoint, `POST /api/repos` accepts per-repo branch overrides. See PHASE_1 doc for full details. |
 | 2026-02-20 | — | **Remove "personal" context + user-driven repo selection.** (1) Removed `contextType: "personal" \| "organization"` from `AccountProvider`; `activeOrgId` is now `string` (never null). Self-healing: auto-activates first org if none active. (2) Removed "Personal Account" item from `UserProfileMenu`; renamed "Context" label to "Organization". (3) `getActiveOrgId()` now returns `Promise<string>` and throws if no org found. (4) Server pages throw errors instead of silently redirecting when org is missing. (5) `databaseHooks.user.create.after` retries with randomized slug on conflict. (6) **Repos no longer auto-added on GitHub installation.** Callback (`/api/github/callback`) only creates the installation record — repos are added exclusively via user selection in the repo picker modal (`POST /api/repos`). (7) Webhook `installation_repositories` event handler removed — repos are only added when user explicitly requests them. Files: `lib/auth/auth.ts`, `components/providers/account-context.tsx`, `components/dashboard/user-profile-menu.tsx`, `components/dashboard/repository-switcher.tsx`, `components/dashboard/empty-state-repos.tsx`, `lib/api/get-active-org.ts`, `app/(dashboard)/page.tsx`, `app/(dashboard)/settings/page.tsx`, `app/(dashboard)/settings/connections/page.tsx`, `app/(dashboard)/repos/[repoId]/page.tsx`, `app/api/github/callback/route.ts`, `app/api/webhooks/github/route.ts`. |
 | 2026-02-20 | — | **Remove RepositorySwitcher from sidebar + Docker DNS fix.** (1) Removed `RepositorySwitcher` from `app/(dashboard)/layout.tsx` sidebar — repos are managed from the dashboard page, not the sidebar. Will be replaced by a workspace selector in a future phase. (2) Added `dns: [8.8.8.8, 8.8.4.4]` to both `temporal-worker-heavy` and `temporal-worker-light` services in `docker-compose.yml` to fix "Can't reach database server" errors when light worker activities (`writeToArango`, `updateRepoError`) attempt to connect to cloud Supabase from inside Docker containers. The root cause was Docker's default DNS resolver failing to resolve external hostnames like `db.*.supabase.co`. Files: `app/(dashboard)/layout.tsx`, `docker-compose.yml`. |
+| 2026-02-22 | — | **Dashboard overhaul: Resend-style header + Industrial Glass sidebar + Overview revamp + Tabular repos.** (1) **Layout:** Added `DashboardHeader` (fixed top bar: logo + Docs link). Sidebar redesigned: Void Black `bg-[#0A0A0F]`, `border-r border-white/10`, nav items with Electric Cyan active indicator + dynamic Recents section (top 5 repos fetched server-side). `UserProfileMenu` remains at sidebar bottom with org switcher. `GlobalSearch` removed from sidebar. (2) **Overview page:** Three-section layout: Platform Usage stats grid (4 cards: Repositories, Code Intelligence, Governance, Intelligence — pulling real data from relational + graph stores), CLI Hero terminal panel (`npx @autorail/kap10 connect` with copy button), and org-scoped repository grid with Add Repo card. (3) **Repos page:** Replaced card grid with GitHub-style paginated data table (20/page). Columns: Repository, Status, Branch, Files, Entities, Last Sync, MCP sessions, Actions (Open button + kebab). Added toolbar: search input, GitHub account/org filter dropdown, "Add Org" button, "Add Repository" button. Sorting on Repository/Status/Last Sync. (4) **New files:** `dashboard-header.tsx`, `cli-hero.tsx`, `overview-repo-card.tsx`, `overview-add-repo-card.tsx`. **Removed:** `header-user-menu.tsx`, `workspace-switcher.tsx`, `onboarding-command-center.tsx`. **Updated:** `dashboard-nav.tsx`, `repos-list.tsx`, `overview-stats.tsx`, layout.tsx, page.tsx, repos/page.tsx. (5) **Docs:** Created `docs/CLI_USER_GUIDE.md` (user-facing CLI documentation). |

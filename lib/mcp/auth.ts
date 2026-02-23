@@ -13,6 +13,7 @@
 import { createHmac, timingSafeEqual } from "crypto"
 import type { ICacheStore } from "@/lib/ports/cache-store"
 import type { IRelationalStore } from "@/lib/ports/relational-store"
+import { logger } from "@/lib/utils/logger"
 
 export interface McpAuthContext {
   authMode: "oauth" | "api_key"
@@ -143,9 +144,11 @@ export async function authenticateMcpRequest(
   cacheStore: ICacheStore,
   relationalStore: IRelationalStore
 ): Promise<McpAuthContext | AuthError> {
+  const log = logger.child({ service: "mcp-auth" })
   const mcpServerUrl = process.env.MCP_SERVER_URL ?? "https://mcp.kap10.dev"
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    log.warn("Missing or invalid Authorization header")
     return {
       status: 401,
       message: "Missing or invalid Authorization header",
@@ -157,11 +160,23 @@ export async function authenticateMcpRequest(
 
   // Mode B: API Key
   if (token.startsWith(API_KEY_PREFIX)) {
-    return authenticateApiKey(token, cacheStore, relationalStore)
+    const result = await authenticateApiKey(token, cacheStore, relationalStore)
+    if (isAuthError(result)) {
+      log.warn("API key auth failed", { errorMessage: result.message })
+    } else {
+      log.info("API key auth succeeded", { organizationId: result.orgId, repoId: result.repoId, apiKeyId: result.apiKeyId })
+    }
+    return result
   }
 
   // Mode A: OAuth JWT
-  return authenticateJwt(token)
+  const result = authenticateJwt(token)
+  if (isAuthError(result)) {
+    log.warn("JWT auth failed", { errorMessage: result.message })
+  } else {
+    log.info("JWT auth succeeded", { userId: result.userId, organizationId: result.orgId })
+  }
+  return result
 }
 
 async function authenticateApiKey(

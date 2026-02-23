@@ -27,7 +27,8 @@ export async function synthesizeADRs(
   repoId: string
 ): Promise<ADRDoc[]> {
   const adrs: ADRDoc[] = []
-  const defaultModel = process.env.LLM_DEFAULT_MODEL ?? "gpt-4o-mini"
+  const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+  const defaultModel = LLM_MODELS.standard
 
   // Only synthesize ADRs for features with 3+ entities (meaningful features)
   const significantFeatures = features.filter((f) => f.entity_count >= 3)

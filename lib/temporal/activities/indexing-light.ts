@@ -1,6 +1,8 @@
 import { getContainer } from "@/lib/di/container"
 import { edgeHash, entityHash } from "@/lib/indexer/entity-hash"
 import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
+import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
+import { logger } from "@/lib/utils/logger"
 
 /** Map singular entity kind → plural ArangoDB collection name. */
 const KIND_TO_COLLECTION: Record<string, string> = {
@@ -38,7 +40,14 @@ export interface WriteToArangoResult {
 }
 
 export async function writeToArango(input: WriteToArangoInput): Promise<WriteToArangoResult> {
+  const log = logger.child({ service: "indexing-light", organizationId: input.orgId, repoId: input.repoId })
+  const plog = createPipelineLogger(input.repoId, "indexing")
+  log.info("Writing to ArangoDB", { entityCount: input.entities.length, edgeCount: input.edges.length })
+  plog.log("info", "Step 4/7", `Writing ${input.entities.length} entities and ${input.edges.length} edges to graph store...`)
   const container = getContainer()
+
+  // Ensure all ArangoDB collections exist (idempotent — covers orgs created before new collections were added)
+  await container.graphStore.bootstrapGraphSchema()
 
   // Apply deterministic hashing to entities and edges
   const entities = applyEntityHashing(input.entities, input.repoId)
@@ -70,6 +79,14 @@ export async function writeToArango(input: WriteToArangoInput): Promise<WriteToA
     classCount: input.classCount,
     errorMessage: null,
   })
+  plog.log("info", "Step 4/7", `Graph store write complete — ${allEntities.length} entities, ${allEdges.length} edges stored`)
+  log.info("ArangoDB write complete", {
+    entitiesWritten: allEntities.length,
+    edgesWritten: allEdges.length,
+    fileCount: input.fileCount,
+    functionCount: input.functionCount,
+    classCount: input.classCount,
+  })
   return {
     entitiesWritten: allEntities.length,
     edgesWritten: allEdges.length,
@@ -85,6 +102,7 @@ export interface DeleteRepoDataInput {
 }
 
 export async function updateRepoError(repoId: string, errorMessage: string): Promise<void> {
+  logger.error("Indexing failed", undefined, { service: "indexing", repoId, errorMessage })
   const container = getContainer()
   await container.relationalStore.updateRepoStatus(repoId, { status: "error", errorMessage })
 }

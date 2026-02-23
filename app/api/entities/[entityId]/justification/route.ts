@@ -13,6 +13,9 @@ import { JustificationResultSchema } from "@/lib/justification/schemas"
 import { headers } from "next/headers"
 import { NextResponse } from "next/server"
 import { randomUUID } from "node:crypto"
+import { logger } from "@/lib/utils/logger"
+
+const log = logger.child({ service: "justification-override" })
 
 export async function PATCH(
   request: Request,
@@ -21,9 +24,11 @@ export async function PATCH(
   try {
     const session = await auth.api.getSession({ headers: await headers() })
     if (!session) {
+      log.warn("PATCH /api/entities/[entityId]/justification — unauthorized")
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
+    const userId = session.user.id
     const { entityId } = await params
     const body = (await request.json()) as {
       orgId: string
@@ -35,14 +40,19 @@ export async function PATCH(
     }
 
     if (!body.orgId) {
+      log.warn("PATCH justification — missing orgId", { userId, entityId })
       return NextResponse.json({ error: "orgId is required" }, { status: 400 })
     }
+
+    const ctx = { userId, organizationId: body.orgId, entityId }
+    log.info("Overriding justification", ctx)
 
     const container = getContainer()
 
     // Fetch current justification
     const existing = await container.graphStore.getJustification(body.orgId, entityId)
     if (!existing) {
+      log.warn("No existing justification found", ctx)
       return NextResponse.json(
         { error: "No existing justification found for this entity" },
         { status: 404 }
@@ -94,6 +104,7 @@ export async function PATCH(
       }]
     )
 
+    log.info("Justification overridden", { userId, organizationId: body.orgId, entityId, newTaxonomy: updated.taxonomy })
     return NextResponse.json({
       success: true,
       justification: {
@@ -106,8 +117,8 @@ export async function PATCH(
       },
     })
   } catch (error: unknown) {
+    log.error("Justification override failed", error instanceof Error ? error : undefined)
     const message = error instanceof Error ? error.message : String(error)
-    console.error("[justification-override] Error:", message)
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }

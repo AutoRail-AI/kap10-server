@@ -9,14 +9,8 @@
 
 import { heartbeat } from "@temporalio/activity"
 import { getContainer } from "@/lib/di/container"
-
-/** Lazily create a PrismaClient with the DATABASE_URL from env */
-function getPrisma() {
-  const { PrismaClient } = require("@prisma/client") as typeof import("@prisma/client")
-  return new PrismaClient({
-    datasourceUrl: process.env.DATABASE_URL,
-  })
-}
+import { getPrisma } from "@/lib/db/prisma"
+import { logger } from "@/lib/utils/logger"
 
 export interface UploadInput {
   orgId: string
@@ -34,6 +28,8 @@ export async function uploadToStorage(input: UploadInput): Promise<{
   storagePath: string
   sizeBytes: number
 }> {
+  const log = logger.child({ service: "graph-upload", organizationId: input.orgId, repoId: input.repoId })
+  log.info("Uploading graph snapshot to storage", { sizeBytes: input.buffer.length, entityCount: input.entityCount, edgeCount: input.edgeCount })
   const { supabase } = require("@/lib/db") as typeof import("@/lib/db")
 
   const bucketName = process.env.GRAPH_SNAPSHOT_BUCKET ?? "graph-snapshots"
@@ -56,33 +52,29 @@ export async function uploadToStorage(input: UploadInput): Promise<{
   // Upsert snapshot metadata via Prisma
   const prisma = getPrisma()
 
-  try {
-    await prisma.graphSnapshotMeta.upsert({
-      where: { repoId: input.repoId },
-      create: {
-        orgId: input.orgId,
-        repoId: input.repoId,
-        status: "available",
-        checksum: input.checksum,
-        storagePath,
-        sizeBytes: input.buffer.length,
-        entityCount: input.entityCount,
-        edgeCount: input.edgeCount,
-        generatedAt: new Date(),
-      },
-      update: {
-        status: "available",
-        checksum: input.checksum,
-        storagePath,
-        sizeBytes: input.buffer.length,
-        entityCount: input.entityCount,
-        edgeCount: input.edgeCount,
-        generatedAt: new Date(),
-      },
-    })
-  } finally {
-    await prisma.$disconnect()
-  }
+  await prisma.graphSnapshotMeta.upsert({
+    where: { repoId: input.repoId },
+    create: {
+      orgId: input.orgId,
+      repoId: input.repoId,
+      status: "available",
+      checksum: input.checksum,
+      storagePath,
+      sizeBytes: input.buffer.length,
+      entityCount: input.entityCount,
+      edgeCount: input.edgeCount,
+      generatedAt: new Date(),
+    },
+    update: {
+      status: "available",
+      checksum: input.checksum,
+      storagePath,
+      sizeBytes: input.buffer.length,
+      entityCount: input.entityCount,
+      edgeCount: input.edgeCount,
+      generatedAt: new Date(),
+    },
+  })
 
   return { storagePath, sizeBytes: input.buffer.length }
 }
@@ -95,23 +87,21 @@ export async function updateSnapshotStatus(input: {
   repoId: string
   status: "generating" | "available" | "failed"
 }): Promise<void> {
+  const log = logger.child({ service: "graph-upload", organizationId: input.orgId, repoId: input.repoId })
+  log.info("Updating snapshot status", { snapshotStatus: input.status })
   const prisma = getPrisma()
 
-  try {
-    await prisma.graphSnapshotMeta.upsert({
-      where: { repoId: input.repoId },
-      create: {
-        orgId: input.orgId,
-        repoId: input.repoId,
-        status: input.status,
-      },
-      update: {
-        status: input.status,
-      },
-    })
-  } finally {
-    await prisma.$disconnect()
-  }
+  await prisma.graphSnapshotMeta.upsert({
+    where: { repoId: input.repoId },
+    create: {
+      orgId: input.orgId,
+      repoId: input.repoId,
+      status: input.status,
+    },
+    update: {
+      status: input.status,
+    },
+  })
 }
 
 /**

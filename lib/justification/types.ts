@@ -26,6 +26,7 @@ export interface JustificationDoc {
   feature_tag: string
   semantic_triples: SemanticTriple[]
   compliance_tags: string[]
+  architectural_pattern?: string
   model_tier: ModelTier
   model_used?: string
   valid_from: string
@@ -74,6 +75,10 @@ export interface DomainOntologyDoc {
     relatedTerms: string[]
   }>
   ubiquitous_language: Record<string, string>
+  project_name?: string
+  project_description?: string
+  project_domain?: string
+  tech_stack?: string[]
   generated_at: string
 }
 

@@ -34,29 +34,27 @@ async function ReposContent() {
     )
   }
 
-  const githubAccounts = installations.map((i) => `@${i.accountLogin}`).join(", ")
+  const githubAccounts = installations.map((i) => ({
+    login: i.accountLogin,
+    type: i.accountType,
+  }))
 
   return (
     <>
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div className="space-y-1">
           <h1 className="font-grotesk text-lg font-semibold text-foreground">
             Repositories
           </h1>
-          <p className="text-sm text-foreground mt-0.5">
+          <p className="text-sm text-muted-foreground mt-0.5">
             Connect and manage your repositories for code intelligence.
-            {githubAccounts && (
-              <span className="ml-1.5 text-muted-foreground">
-                (GitHub: {githubAccounts})
-              </span>
-            )}
           </p>
         </div>
       </div>
       <ReposList
         repos={repos}
         hasInstallation={installations.length > 0}
-        githubAccountLogin={installations[0]?.accountLogin ?? null}
+        githubAccounts={githubAccounts}
         installHref={`/api/github/install?orgId=${encodeURIComponent(activeOrgId)}`}
       />
     </>

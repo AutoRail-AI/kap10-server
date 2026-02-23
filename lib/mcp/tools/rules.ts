@@ -3,6 +3,7 @@
  */
 
 import type { Container } from "@/lib/di/container"
+import { LLM_MODELS } from "@/lib/llm/config"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
 import { resolveRules } from "@/lib/rules/resolver"
@@ -283,7 +284,7 @@ export async function handleDraftArchitectureRule(
     })
 
     const result = await container.llmProvider.generateObject({
-      model: "claude-sonnet-4-20250514",
+      model: LLM_MODELS.standard,
       prompt: `Generate an architecture rule for the following requirement:
 "${args.description}"
 

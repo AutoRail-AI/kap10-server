@@ -130,6 +130,7 @@ export const POST = withAuth(async (req: NextRequest) => {
 
   return successResponse({
     repos: await container.relationalStore.getRepos(orgId),
+    created,
     indexingStarted: created.some((c) => c.status === "indexing"),
   })
 })

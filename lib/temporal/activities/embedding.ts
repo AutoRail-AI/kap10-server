@@ -15,6 +15,8 @@
 import { heartbeat } from "@temporalio/activity"
 import { getContainer } from "@/lib/di/container"
 import type { EntityDoc } from "@/lib/ports/types"
+import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
+import { logger } from "@/lib/utils/logger"
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
@@ -40,6 +42,8 @@ export interface EmbeddableDocument {
 // ── Status Activities ─────────────────────────────────────────────────────────
 
 export async function setEmbeddingStatus(input: EmbeddingInput): Promise<void> {
+  const log = logger.child({ service: "embedding", organizationId: input.orgId, repoId: input.repoId })
+  log.info("Setting repo status to embedding")
   const container = getContainer()
   await container.relationalStore.updateRepoStatus(input.repoId, {
     status: "embedding",
@@ -48,6 +52,8 @@ export async function setEmbeddingStatus(input: EmbeddingInput): Promise<void> {
 }
 
 export async function setReadyStatus(input: EmbeddingInput & { lastIndexedSha?: string }): Promise<void> {
+  const log = logger.child({ service: "embedding", organizationId: input.orgId, repoId: input.repoId })
+  log.info("Setting repo status to ready")
   const container = getContainer()
   await container.relationalStore.updateRepoStatus(input.repoId, {
     status: "ready",
@@ -61,6 +67,7 @@ export async function setEmbedFailedStatus(
   repoId: string,
   errorMessage: string
 ): Promise<void> {
+  logger.error("Embedding failed", undefined, { service: "embedding", repoId, errorMessage })
   const container = getContainer()
   await container.relationalStore.updateRepoStatus(repoId, {
     status: "embed_failed",
@@ -71,7 +78,10 @@ export async function setEmbedFailedStatus(
 // ── fetchEntities ─────────────────────────────────────────────────────────────
 
 export async function fetchEntities(input: EmbeddingInput): Promise<EntityDoc[]> {
+  const log = logger.child({ service: "embedding", organizationId: input.orgId, repoId: input.repoId })
+  const plog = createPipelineLogger(input.repoId, "embedding")
   const container = getContainer()
+  plog.log("info", "Step 2/7", "Fetching entities from graph store...")
 
   // Get all file paths for the repo, then get all entities per file
   const filePaths = await container.graphStore.getFilePaths(input.orgId, input.repoId)
@@ -86,6 +96,8 @@ export async function fetchEntities(input: EmbeddingInput): Promise<EntityDoc[]>
     allEntities.push(...entities)
   }
 
+  log.info("Fetched entities for embedding", { fileCount: filePaths.length, entityCount: allEntities.length })
+  plog.log("info", "Step 2/7", `Fetched ${allEntities.length} entities from ${filePaths.length} files`)
   heartbeat(`Fetched ${allEntities.length} entities`)
   return allEntities
 }
@@ -181,8 +193,15 @@ export async function generateAndStoreEmbeds(
   input: EmbeddingInput,
   documents: EmbeddableDocument[]
 ): Promise<{ embeddingsStored: number }> {
-  if (documents.length === 0) return { embeddingsStored: 0 }
+  const log = logger.child({ service: "embedding", organizationId: input.orgId, repoId: input.repoId })
+  if (documents.length === 0) {
+    log.info("No documents to embed, skipping")
+    return { embeddingsStored: 0 }
+  }
 
+  log.info("Starting embedding generation", { documentCount: documents.length })
+  const plog = createPipelineLogger(input.repoId, "embedding")
+  plog.log("info", "Step 4/7", `Generating embeddings for ${documents.length} documents...`)
   const container = getContainer()
   const batchSize = parseInt(process.env.EMBEDDING_BATCH_SIZE ?? "100", 10)
   const totalBatches = Math.ceil(documents.length / batchSize)
@@ -199,6 +218,11 @@ export async function generateAndStoreEmbeds(
     try {
       embeddings = await container.vectorSearch.embed(texts)
     } catch (err: unknown) {
+      log.warn("Batch embed failed, retrying with half batch size", {
+        batchIndex,
+        batchSize: batch.length,
+        errorMessage: err instanceof Error ? err.message : String(err),
+      })
       // On OOM or batch failure, retry with half batch size
       const halfSize = Math.ceil(batch.length / 2)
       const firstHalf = batch.slice(0, halfSize)
@@ -218,6 +242,7 @@ export async function generateAndStoreEmbeds(
     await container.vectorSearch.upsert(ids, embeddings, metadata)
 
     totalStored += batch.length
+    plog.log("info", "Step 4/7", `Embedding batch ${batchIndex + 1}/${totalBatches} complete (${totalStored}/${documents.length})`)
 
     // Report progress via heartbeat
     const progress = Math.round(((batchIndex + 1) / totalBatches) * 100)
@@ -230,6 +255,7 @@ export async function generateAndStoreEmbeds(
     })
   }
 
+  log.info("Embedding generation complete", { embeddingsStored: totalStored })
   return { embeddingsStored: totalStored }
 }
 

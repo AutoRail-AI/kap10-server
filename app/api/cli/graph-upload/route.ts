@@ -10,6 +10,9 @@ import { getContainer } from "@/lib/di/container"
 import { headers } from "next/headers"
 import { NextResponse } from "next/server"
 import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
+import { logger } from "@/lib/utils/logger"
+
+const log = logger.child({ service: "graph-upload" })
 
 interface GraphUploadBody {
   repoId: string
@@ -21,28 +24,36 @@ interface GraphUploadBody {
 export async function POST(request: Request) {
   const session = await auth.api.getSession({ headers: await headers() })
   if (!session) {
+    log.warn("POST /api/cli/graph-upload — unauthorized")
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
   }
 
+  const userId = session.user.id
   const orgId = await getActiveOrgId()
   if (!orgId) {
+    log.warn("POST /api/cli/graph-upload — no active org", { userId })
     return NextResponse.json({ error: "No active organization" }, { status: 400 })
   }
 
   const body = (await request.json()) as GraphUploadBody
 
   if (!body.repoId || !Array.isArray(body.entities) || !Array.isArray(body.edges)) {
+    log.warn("POST /api/cli/graph-upload — invalid body", { userId, organizationId: orgId })
     return NextResponse.json(
       { error: "repoId, entities[], and edges[] are required" },
       { status: 400 }
     )
   }
 
+  const ctx = { userId, organizationId: orgId, repoId: body.repoId }
+  log.info("Graph upload started", { ...ctx, entityCount: body.entities.length, edgeCount: body.edges.length })
+
   const container = getContainer()
 
   // Validate repo ownership
   const repo = await container.relationalStore.getRepo(orgId, body.repoId)
   if (!repo) {
+    log.warn("Graph upload — repo not found", ctx)
     return NextResponse.json({ error: "Repository not found" }, { status: 404 })
   }
 
@@ -91,8 +102,9 @@ export async function POST(request: Request) {
       workflowFn: "embedRepo",
       args: [{ orgId, repoId: body.repoId }],
     })
+    log.info("Embedding workflow triggered", ctx)
   } catch {
-    // Best-effort embedding trigger
+    log.warn("Embedding workflow trigger failed (best-effort)", ctx)
   }
 
   // Update repo stats
@@ -103,6 +115,7 @@ export async function POST(request: Request) {
     classCount: body.entities.filter((e) => e.kind === "class").length,
   })
 
+  log.info("Graph upload complete", { ...ctx, entitiesUpserted: body.entities.length, edgesUpserted: body.edges.length })
   return NextResponse.json({
     status: "uploaded",
     entitiesUpserted: body.entities.length,

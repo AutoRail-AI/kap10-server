@@ -3,6 +3,7 @@
  */
 
 import type { ILLMProvider } from "@/lib/ports/llm-provider"
+import { LLM_MODELS } from "@/lib/llm/config"
 import { z } from "zod"
 
 const SummarySchema = z.object({
@@ -22,7 +23,7 @@ export async function summarizeLedger(
   const promptList = input.prompts.slice(0, 20).map((p, i) => `${i + 1}. ${p}`).join("\n")
 
   const result = await llm.generateObject({
-    model: "claude-sonnet-4-20250514",
+    model: LLM_MODELS.standard,
     schema: SummarySchema,
     prompt: `Summarize the following AI coding session for a merge narrative.
 

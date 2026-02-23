@@ -4,6 +4,14 @@ vi.mock("@temporalio/activity", () => ({
   heartbeat: vi.fn(),
 }))
 
+vi.mock("@/lib/llm/config", () => ({
+  LLM_MODELS: { fast: "test-fast", standard: "test-standard", premium: "test-premium" },
+  LLM_PROVIDER: "google",
+  getLLMApiKey: () => "test-key",
+  MODEL_COSTS: {},
+  MODEL_COST_FALLBACK: { input: 0, output: 0 },
+}))
+
 import { createTestContainer, type Container } from "@/lib/di/container"
 import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
 
@@ -52,47 +60,48 @@ describe("justification activities", () => {
     vi.restoreAllMocks()
   })
 
-  it("stores justifications in graph store", async () => {
-    const { storeJustifications } = await import("../justification")
+  it("fetchEntitiesAndEdges returns counts only", async () => {
+    // Seed some entities and edges in the fake graph store
+    await container.graphStore.upsertEntity("org-1", {
+      id: "e-1", org_id: "org-1", repo_id: "repo-1",
+      kind: "function", name: "test", file_path: "a.ts",
+    })
 
-    const justifications = [{
-      id: "j-1",
-      org_id: "org-1",
-      repo_id: "repo-1",
-      entity_id: "e-1",
-      taxonomy: "VERTICAL" as const,
-      confidence: 0.85,
-      business_purpose: "Test",
-      domain_concepts: ["test"],
-      feature_tag: "test_feature",
-      semantic_triples: [],
-      compliance_tags: [],
-      model_tier: "standard" as const,
-      valid_from: "2026-01-01",
-      valid_to: null,
-      created_at: "2026-01-01",
-    }]
+    const { fetchEntitiesAndEdges } = await import("../justification")
+    const result = await fetchEntitiesAndEdges({ orgId: "org-1", repoId: "repo-1" })
 
-    await storeJustifications({ orgId: "org-1", repoId: "repo-1" }, justifications)
-
-    const stored = await container.graphStore.getJustification("org-1", "e-1")
-    expect(stored).toBeDefined()
-    expect(stored!.taxonomy).toBe("VERTICAL")
+    expect(result).toHaveProperty("entityCount")
+    expect(result).toHaveProperty("edgeCount")
+    expect(typeof result.entityCount).toBe("number")
+    expect(typeof result.edgeCount).toBe("number")
+    // Should NOT have entities or edges arrays
+    expect(result).not.toHaveProperty("entities")
+    expect(result).not.toHaveProperty("edges")
   })
 
-  it("performs topological sort", async () => {
+  it("performTopologicalSort returns string[][] (ID arrays)", async () => {
+    // Seed entities and edges
+    await container.graphStore.upsertEntity("o", {
+      id: "a", org_id: "o", repo_id: "r", kind: "function", name: "a", file_path: "a.ts",
+    })
+    await container.graphStore.upsertEntity("o", {
+      id: "b", org_id: "o", repo_id: "r", kind: "function", name: "b", file_path: "b.ts",
+    })
+    await container.graphStore.upsertEdge("o", {
+      _from: "functions/a", _to: "functions/b", kind: "calls", org_id: "o", repo_id: "r",
+    })
+
     const { performTopologicalSort } = await import("../justification")
+    const levels = await performTopologicalSort({ orgId: "o", repoId: "r" })
 
-    const entities: EntityDoc[] = [
-      { id: "a", org_id: "o", repo_id: "r", kind: "function", name: "a", file_path: "a.ts" },
-      { id: "b", org_id: "o", repo_id: "r", kind: "function", name: "b", file_path: "b.ts" },
-    ]
-    const edges: EdgeDoc[] = [
-      { _from: "functions/a", _to: "functions/b", kind: "calls", org_id: "o", repo_id: "r" },
-    ]
-
-    const levels = await performTopologicalSort(entities, edges)
     expect(levels).toHaveLength(2)
-    expect(levels[0]![0]!.id).toBe("b") // leaf first
+    // Should return string IDs, not EntityDoc objects
+    expect(typeof levels[0]![0]).toBe("string")
+    expect(levels[0]![0]).toBe("b") // leaf first
+    expect(levels[1]![0]).toBe("a")
   })
+
+  // Note: justifyBatch is not unit-tested here because it uses require("@/lib/llm/config")
+  // which can't resolve path aliases in vitest's Node require(). It is tested
+  // via the workflow-level mock tests in justify-entity.test.ts and justify-repo workflow.
 })

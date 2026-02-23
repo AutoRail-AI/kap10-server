@@ -32,6 +32,7 @@
     "coupling-graph": "npx madge --extensions js,jsx,ts,tsx,css,md,mdx ./ --exclude '.next|tailwind.config.js|reset.d.ts|prettier.config.js|postcss.config.js|playwright.config.ts|next.config.js|next-env.d.ts|instrumentation.ts|e2e/|README.md|.storybook/|.eslintrc.js' --image graph.svg"
   },
   "dependencies": {
+    "@ai-sdk/google": "^3.0.30",
     "@ai-sdk/openai": "^3.0.30",
     "@ast-grep/napi": "^0.40.5",
     "@better-fetch/fetch": "^1.1.21",
@@ -71,6 +72,7 @@
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.95.3",
     "@t3-oss/env-nextjs": "^0.13.10",
+    "@tanstack/react-table": "^8.21.3",
     "@temporalio/activity": "^1.14.1",
     "@temporalio/client": "^1.14.1",
     "@temporalio/worker": "^1.14.1",
@@ -186,6 +188,11 @@
   },
   "engines": {
     "node": ">=20.9.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "sharp"
+    ]
   },
   "packageManager": "pnpm@10.0.0"
 }

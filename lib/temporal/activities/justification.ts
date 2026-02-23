@@ -1,19 +1,29 @@
 /**
  * Phase 4: Justification activities — the core pipeline activities
  * for classifying entities with business justifications.
+ *
+ * Activities are self-sufficient: they fetch data from ArangoDB directly
+ * to avoid exceeding Temporal's 4MB gRPC payload limit.
  */
 
 import { heartbeat } from "@temporalio/activity"
 import { randomUUID } from "node:crypto"
 import { getContainer } from "@/lib/di/container"
+import { logger } from "@/lib/utils/logger"
 import { buildGraphContexts } from "@/lib/justification/graph-context-builder"
 import { applyHeuristics, routeModel } from "@/lib/justification/model-router"
 import { normalizeJustifications, deduplicateFeatures } from "@/lib/justification/post-processor"
-import { buildJustificationPrompt } from "@/lib/justification/prompt-builder"
-import { JustificationResultSchema } from "@/lib/justification/schemas"
+import {
+  buildJustificationPrompt,
+  buildBatchJustificationPrompt,
+  JUSTIFICATION_SYSTEM_PROMPT,
+} from "@/lib/justification/prompt-builder"
+import { JustificationResultSchema, BatchJustificationResultSchema } from "@/lib/justification/schemas"
 import { buildTestContext } from "@/lib/justification/test-context-extractor"
-import { topologicalSortEntities } from "@/lib/justification/topological-sort"
-import type { DomainOntologyDoc, EdgeDoc, EntityDoc, JustificationDoc } from "@/lib/ports/types"
+import { topologicalSortEntityIds } from "@/lib/justification/topological-sort"
+import { createBatches } from "@/lib/justification/dynamic-batcher"
+import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
+import type { GraphContext } from "@/lib/justification/schemas"
 
 export interface JustificationInput {
   orgId: string
@@ -21,43 +31,143 @@ export interface JustificationInput {
 }
 
 export async function setJustifyingStatus(input: JustificationInput): Promise<void> {
+  const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
+  log.info("Setting repo status to justifying")
   const container = getContainer()
   await container.relationalStore.updateRepoStatus(input.repoId, {
     status: "justifying",
   })
 }
 
+/**
+ * Fetch entities and edges for validation/logging, but only return counts.
+ * The actual data stays in ArangoDB — downstream activities fetch it themselves.
+ */
 export async function fetchEntitiesAndEdges(
   input: JustificationInput
-): Promise<{ entities: EntityDoc[]; edges: EdgeDoc[] }> {
+): Promise<{ entityCount: number; edgeCount: number }> {
+  const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
   const container = getContainer()
   heartbeat("fetching entities and edges")
   const entities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
   const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
-  return { entities, edges }
+  log.info("Fetched entities and edges for justification", { entityCount: entities.length, edgeCount: edges.length })
+  return { entityCount: entities.length, edgeCount: edges.length }
 }
 
 export async function loadOntology(
   input: JustificationInput
-): Promise<DomainOntologyDoc | null> {
+): Promise<import("@/lib/ports/types").DomainOntologyDoc | null> {
   const container = getContainer()
   return container.graphStore.getDomainOntology(input.orgId, input.repoId)
 }
 
 /**
- * Justify a batch of entities at a specific topological level.
- * Uses model router for tier selection, builds prompts with graph context,
- * and calls LLM for non-heuristic entities.
+ * Perform topological sort by fetching entities/edges from ArangoDB.
+ * Returns string[][] (entity ID arrays per level) to keep payload small.
+ */
+export async function performTopologicalSort(
+  input: JustificationInput
+): Promise<string[][]> {
+  heartbeat("performing topological sort")
+  const container = getContainer()
+  const entities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
+  const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
+  return topologicalSortEntityIds(entities, edges)
+}
+
+/**
+ * Build a lookup map from entity ID → human-readable name with file path.
+ */
+function buildEntityNameMap(entities: EntityDoc[]): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const e of entities) {
+    const name = e.name
+    const path = e.file_path
+    map.set(e.id, path ? `${name} in ${path}` : name)
+  }
+  return map
+}
+
+/**
+ * Build parent justification and sibling name maps for context propagation.
+ */
+function buildParentAndSiblingContext(
+  entities: EntityDoc[],
+  allEntities: EntityDoc[],
+  prevJustMap: Map<string, JustificationDoc>
+): {
+  parentJustMap: Map<string, JustificationDoc>
+  siblingMap: Map<string, string[]>
+} {
+  const parentJustMap = new Map<string, JustificationDoc>()
+  const siblingMap = new Map<string, string[]>()
+
+  // Group all entities by parent name for sibling lookup
+  const byParent = new Map<string, EntityDoc[]>()
+  for (const e of allEntities) {
+    const parent = e.parent as string | undefined
+    if (parent) {
+      const existing = byParent.get(parent)
+      if (existing) {
+        existing.push(e)
+      } else {
+        byParent.set(parent, [e])
+      }
+    }
+  }
+
+  for (const entity of entities) {
+    const parentName = entity.parent as string | undefined
+    if (!parentName) continue
+
+    // Find parent entity's justification
+    const parentEntity = allEntities.find(
+      (e) => e.name === parentName && (e.kind === "class" || e.kind === "struct" || e.kind === "interface")
+    )
+    if (parentEntity) {
+      const parentJust = prevJustMap.get(parentEntity.id)
+      if (parentJust) {
+        parentJustMap.set(entity.id, parentJust)
+      }
+    }
+
+    // Get sibling names (other entities with same parent, excluding self)
+    const siblings = byParent.get(parentName)
+    if (siblings && siblings.length > 1) {
+      siblingMap.set(
+        entity.id,
+        siblings.filter((s) => s.id !== entity.id).map((s) => s.name)
+      )
+    }
+  }
+
+  return { parentJustMap, siblingMap }
+}
+
+/**
+ * Justify a batch of entities by their IDs.
+ * Fetches all needed data (entities, edges, ontology, previous justifications)
+ * from ArangoDB internally. Uses dynamic batching to minimize LLM calls.
+ * Stores results directly before returning a count.
  */
 export async function justifyBatch(
   input: JustificationInput,
-  entities: EntityDoc[],
-  edges: EdgeDoc[],
-  ontology: DomainOntologyDoc | null,
-  previousJustifications: JustificationDoc[]
-): Promise<JustificationDoc[]> {
+  entityIds: string[]
+): Promise<{ justifiedCount: number }> {
   const container = getContainer()
   const results: JustificationDoc[] = []
+
+  // Fetch all data needed for this batch from ArangoDB
+  heartbeat(`fetching data for ${entityIds.length} entities`)
+  const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
+  const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
+  const ontology = await container.graphStore.getDomainOntology(input.orgId, input.repoId)
+  const previousJustifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
+
+  // Filter to just the entities in this batch
+  const entityIdSet = new Set(entityIds)
+  const entities = allEntities.filter((e) => entityIdSet.has(e.id))
 
   // Build graph contexts for this batch
   heartbeat(`building graph contexts for ${entities.length} entities`)
@@ -67,17 +177,33 @@ export async function justifyBatch(
     input.orgId
   )
 
-  // Build a lookup for previous justifications by entity_id
+  // Build lookup maps
   const prevJustMap = new Map<string, JustificationDoc>()
   for (const j of previousJustifications) {
     prevJustMap.set(j.entity_id, j)
   }
 
-  const defaultModel = process.env.LLM_DEFAULT_MODEL ?? "gpt-4o-mini"
+  const entityNameMap = buildEntityNameMap(allEntities)
+  const { parentJustMap, siblingMap } = buildParentAndSiblingContext(entities, allEntities, prevJustMap)
+
+  const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+  const defaultModel = LLM_MODELS.standard
+
+  // Separate entities into heuristic-skippable and LLM-required
+  const llmEntities: Array<{
+    entity: EntityDoc
+    graphContext: GraphContext
+    testContext: import("@/lib/justification/types").TestContext | undefined
+    depJustifications: JustificationDoc[]
+    callerJustifications: JustificationDoc[]
+    route: import("@/lib/justification/schemas").ModelRoute
+    parentJustification?: JustificationDoc
+    siblingNames?: string[]
+  }> = []
 
   for (let i = 0; i < entities.length; i++) {
     const entity = entities[i]!
-    heartbeat(`justifying entity ${i + 1}/${entities.length}: ${entity.name}`)
+    heartbeat(`processing entity ${i + 1}/${entities.length}: ${entity.name}`)
 
     const now = new Date().toISOString()
     const graphContext = graphContexts.get(entity.id)
@@ -111,108 +237,324 @@ export async function justifyBatch(
     })
 
     // Step 3: Build test context
-    const testContext = buildTestContext(entity.id, entities, edges)
+    const testContext = buildTestContext(entity.id, allEntities, edges)
 
-    // Step 4: Gather dependency justifications
-    const depJustifications: JustificationDoc[] = []
+    // Step 4: Gather dependency justifications (split by direction)
+    const calleeJustifications: JustificationDoc[] = []
+    const callerJustifications: JustificationDoc[] = []
     if (graphContext) {
       for (const neighbor of graphContext.neighbors) {
-        if (neighbor.direction === "outbound") {
-          const j = prevJustMap.get(neighbor.id)
-          if (j) depJustifications.push(j)
+        const j = prevJustMap.get(neighbor.id)
+        if (j) {
+          if (neighbor.direction === "outbound") {
+            calleeJustifications.push(j)
+          } else {
+            callerJustifications.push(j)
+          }
         }
       }
     }
 
-    // Step 5: Build prompt and call LLM
-    const prompt = buildJustificationPrompt(
+    llmEntities.push({
       entity,
-      graphContext ?? { entityId: entity.id, neighbors: [] },
-      ontology,
-      depJustifications,
-      testContext
-    )
+      graphContext: graphContext ?? { entityId: entity.id, neighbors: [] },
+      testContext,
+      depJustifications: calleeJustifications,
+      callerJustifications,
+      route,
+      parentJustification: parentJustMap.get(entity.id),
+      siblingNames: siblingMap.get(entity.id),
+    })
+  }
 
-    try {
-      const modelToUse = route.model ?? defaultModel
-      const llmResult = await container.llmProvider.generateObject({
-        model: modelToUse,
-        schema: JustificationResultSchema,
-        prompt,
-        temperature: 0.1,
-      })
-
-      results.push({
-        id: randomUUID(),
-        org_id: input.orgId,
-        repo_id: input.repoId,
-        entity_id: entity.id,
-        taxonomy: llmResult.object.taxonomy,
-        confidence: llmResult.object.confidence,
-        business_purpose: llmResult.object.businessPurpose,
-        domain_concepts: llmResult.object.domainConcepts,
-        feature_tag: llmResult.object.featureTag,
-        semantic_triples: llmResult.object.semanticTriples,
-        compliance_tags: llmResult.object.complianceTags ?? [],
-        model_tier: route.tier,
-        model_used: modelToUse,
-        valid_from: now,
-        valid_to: null,
-        created_at: now,
-      })
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error)
-      console.warn(`[justifyBatch] LLM failed for ${entity.name}: ${message}`)
-      // Fallback: mark as UTILITY with low confidence
-      results.push({
-        id: randomUUID(),
-        org_id: input.orgId,
-        repo_id: input.repoId,
-        entity_id: entity.id,
-        taxonomy: "UTILITY",
-        confidence: 0.3,
-        business_purpose: `Classification failed: ${message}`,
-        domain_concepts: [],
-        feature_tag: "unclassified",
-        semantic_triples: [],
-        compliance_tags: [],
-        model_tier: route.tier,
-        model_used: route.model,
-        valid_from: now,
-        valid_to: null,
-        created_at: now,
-      })
+  // Dynamic batching for LLM entities
+  // Group by model tier for batching (don't mix premium with fast)
+  const byTier = new Map<string, typeof llmEntities>()
+  for (const item of llmEntities) {
+    const tier = item.route.tier
+    const existing = byTier.get(tier)
+    if (existing) {
+      existing.push(item)
+    } else {
+      byTier.set(tier, [item])
     }
   }
 
-  return results
+  for (const tier of Array.from(byTier.keys())) {
+    const tierEntities = byTier.get(tier)!
+    const modelToUse = tierEntities[0]?.route.model ?? defaultModel
+
+    // Create token-budgeted batches
+    const batches = createBatches(
+      tierEntities.map((te) => ({
+        entity: te.entity,
+        graphContext: te.graphContext,
+        parentJustification: te.parentJustification,
+      }))
+    )
+
+    heartbeat(`processing ${batches.length} batches for tier ${tier} (${tierEntities.length} entities)`)
+
+    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
+      const batch = batches[batchIdx]!
+      heartbeat(`LLM batch ${batchIdx + 1}/${batches.length} (${batch.entities.length} entities, tier: ${tier})`)
+
+      const now = new Date().toISOString()
+
+      if (batch.entities.length === 1) {
+        // Single entity — use individual prompt (richer context)
+        const be = batch.entities[0]!
+        const teInfo = tierEntities.find((te) => te.entity.id === be.entity.id)!
+
+        const prompt = buildJustificationPrompt(
+          be.entity,
+          be.graphContext,
+          ontology,
+          teInfo.depJustifications,
+          teInfo.testContext,
+          {
+            entityNameMap,
+            parentJustification: teInfo.parentJustification,
+            siblingNames: teInfo.siblingNames,
+            modelTier: tier === "premium" ? "premium" : tier === "fast" ? "fast" : "standard",
+            callerJustifications: teInfo.callerJustifications,
+          }
+        )
+
+        try {
+          const llmResult = await container.llmProvider.generateObject({
+            model: modelToUse,
+            schema: JustificationResultSchema,
+            prompt,
+            system: JUSTIFICATION_SYSTEM_PROMPT,
+            temperature: 0.1,
+          })
+
+          results.push({
+            id: randomUUID(),
+            org_id: input.orgId,
+            repo_id: input.repoId,
+            entity_id: be.entity.id,
+            taxonomy: llmResult.object.taxonomy,
+            confidence: llmResult.object.confidence,
+            business_purpose: llmResult.object.businessPurpose,
+            domain_concepts: llmResult.object.domainConcepts,
+            feature_tag: llmResult.object.featureTag,
+            semantic_triples: llmResult.object.semanticTriples,
+            compliance_tags: llmResult.object.complianceTags ?? [],
+            architectural_pattern: llmResult.object.architecturalPattern,
+            model_tier: tier as JustificationDoc["model_tier"],
+            model_used: modelToUse,
+            valid_from: now,
+            valid_to: null,
+            created_at: now,
+          })
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error)
+          console.warn(`[justifyBatch] LLM failed for ${be.entity.name}: ${message}`)
+          results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
+        }
+      } else {
+        // Multi-entity batch — use batch prompt
+        const batchPrompt = buildBatchJustificationPrompt(
+          batch.entities.map((be) => {
+            const teInfo = tierEntities.find((te) => te.entity.id === be.entity.id)
+            return {
+              entity: be.entity,
+              graphContext: be.graphContext,
+              parentJustification: be.parentJustification,
+              calleeJustifications: teInfo?.depJustifications,
+            }
+          }),
+          ontology,
+          entityNameMap
+        )
+
+        try {
+          const llmResult = await container.llmProvider.generateObject({
+            model: modelToUse,
+            schema: BatchJustificationResultSchema,
+            prompt: batchPrompt,
+            system: JUSTIFICATION_SYSTEM_PROMPT,
+            temperature: 0.1,
+          })
+
+          // Match results to entities
+          const batchResults = llmResult.object
+          for (const be of batch.entities) {
+            const match = batchResults.find((r) => r.entityId === be.entity.id)
+            if (match) {
+              results.push({
+                id: randomUUID(),
+                org_id: input.orgId,
+                repo_id: input.repoId,
+                entity_id: be.entity.id,
+                taxonomy: match.taxonomy,
+                confidence: match.confidence,
+                business_purpose: match.businessPurpose,
+                domain_concepts: match.domainConcepts,
+                feature_tag: match.featureTag,
+                semantic_triples: match.semanticTriples,
+                compliance_tags: match.complianceTags ?? [],
+                architectural_pattern: match.architecturalPattern,
+                model_tier: tier as JustificationDoc["model_tier"],
+                model_used: modelToUse,
+                valid_from: now,
+                valid_to: null,
+                created_at: now,
+              })
+            } else {
+              // Entity not found in batch response — retry individually
+              console.warn(`[justifyBatch] Entity ${be.entity.name} missing from batch response, retrying individually`)
+              await retrySingleEntity(container, input, be, ontology, tierEntities, entityNameMap, prevJustMap, modelToUse, tier, results, now)
+            }
+          }
+        } catch (error: unknown) {
+          // Batch failed — retry each entity individually
+          const message = error instanceof Error ? error.message : String(error)
+          console.warn(`[justifyBatch] Batch LLM failed (${batch.entities.length} entities): ${message}. Retrying individually.`)
+
+          for (const be of batch.entities) {
+            await retrySingleEntity(container, input, be, ontology, tierEntities, entityNameMap, prevJustMap, modelToUse, tier, results, now)
+          }
+        }
+      }
+    }
+  }
+
+  // Store results directly (merged storeJustifications into justifyBatch)
+  if (results.length > 0) {
+    heartbeat(`storing ${results.length} justifications`)
+    const normalized = normalizeJustifications(results)
+    await container.graphStore.bulkUpsertJustifications(input.orgId, normalized)
+  }
+
+  return { justifiedCount: results.length }
 }
 
-export async function storeJustifications(
+/** Retry a single entity that failed in a batch */
+async function retrySingleEntity(
+  container: ReturnType<typeof getContainer>,
   input: JustificationInput,
-  justifications: JustificationDoc[]
+  be: { entity: EntityDoc; graphContext: GraphContext; parentJustification?: JustificationDoc },
+  ontology: import("@/lib/ports/types").DomainOntologyDoc | null,
+  tierEntities: Array<{
+    entity: EntityDoc
+    depJustifications: JustificationDoc[]
+    callerJustifications: JustificationDoc[]
+    testContext: import("@/lib/justification/types").TestContext | undefined
+    siblingNames?: string[]
+    parentJustification?: JustificationDoc
+  }>,
+  entityNameMap: Map<string, string>,
+  prevJustMap: Map<string, JustificationDoc>,
+  modelToUse: string,
+  tier: string,
+  results: JustificationDoc[],
+  now: string
 ): Promise<void> {
-  const container = getContainer()
-  heartbeat(`storing ${justifications.length} justifications`)
-  const normalized = normalizeJustifications(justifications)
-  await container.graphStore.bulkUpsertJustifications(input.orgId, normalized)
+  const teInfo = tierEntities.find((te) => te.entity.id === be.entity.id)
+  const prompt = buildJustificationPrompt(
+    be.entity,
+    be.graphContext,
+    ontology,
+    teInfo?.depJustifications ?? [],
+    teInfo?.testContext,
+    {
+      entityNameMap,
+      parentJustification: be.parentJustification,
+      siblingNames: teInfo?.siblingNames,
+      callerJustifications: teInfo?.callerJustifications,
+    }
+  )
+
+  try {
+    const llmResult = await container.llmProvider.generateObject({
+      model: modelToUse,
+      schema: JustificationResultSchema,
+      prompt,
+      system: JUSTIFICATION_SYSTEM_PROMPT,
+      temperature: 0.1,
+    })
+
+    results.push({
+      id: randomUUID(),
+      org_id: input.orgId,
+      repo_id: input.repoId,
+      entity_id: be.entity.id,
+      taxonomy: llmResult.object.taxonomy,
+      confidence: llmResult.object.confidence,
+      business_purpose: llmResult.object.businessPurpose,
+      domain_concepts: llmResult.object.domainConcepts,
+      feature_tag: llmResult.object.featureTag,
+      semantic_triples: llmResult.object.semanticTriples,
+      compliance_tags: llmResult.object.complianceTags ?? [],
+      architectural_pattern: llmResult.object.architecturalPattern,
+      model_tier: tier as JustificationDoc["model_tier"],
+      model_used: modelToUse,
+      valid_from: now,
+      valid_to: null,
+      created_at: now,
+    })
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn(`[justifyBatch] Individual retry failed for ${be.entity.name}: ${message}`)
+    results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
+  }
 }
 
-export async function storeFeatureAggregations(
+/** Create a fallback justification when LLM fails */
+function createFallbackJustification(
   input: JustificationInput,
-  justifications: JustificationDoc[]
+  entityId: string,
+  tier: string,
+  model: string | undefined,
+  errorMessage: string,
+  now: string
+): JustificationDoc {
+  return {
+    id: randomUUID(),
+    org_id: input.orgId,
+    repo_id: input.repoId,
+    entity_id: entityId,
+    taxonomy: "UTILITY",
+    confidence: 0.3,
+    business_purpose: `Classification failed: ${errorMessage}`,
+    domain_concepts: [],
+    feature_tag: "unclassified",
+    semantic_triples: [],
+    compliance_tags: [],
+    model_tier: tier as JustificationDoc["model_tier"],
+    model_used: model,
+    valid_from: now,
+    valid_to: null,
+    created_at: now,
+  }
+}
+
+/**
+ * Compute and store feature aggregations.
+ * Fetches all justifications from ArangoDB internally.
+ */
+export async function storeFeatureAggregations(
+  input: JustificationInput
 ): Promise<void> {
   const container = getContainer()
   heartbeat("computing feature aggregations")
+  const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
   const features = deduplicateFeatures(justifications, input.orgId, input.repoId)
   await container.graphStore.bulkUpsertFeatureAggregations(input.orgId, features)
 }
 
+/**
+ * Embed all justifications for a repo.
+ * Fetches justifications from ArangoDB internally.
+ */
 export async function embedJustifications(
-  input: JustificationInput,
-  justifications: JustificationDoc[]
+  input: JustificationInput
 ): Promise<number> {
   const container = getContainer()
+  const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
   heartbeat(`embedding ${justifications.length} justifications`)
 
   if (justifications.length === 0) return 0
@@ -239,6 +581,8 @@ export async function embedJustifications(
 }
 
 export async function setJustifyDoneStatus(input: JustificationInput): Promise<void> {
+  const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
+  log.info("Justification complete, setting repo status to ready")
   const container = getContainer()
   await container.relationalStore.updateRepoStatus(input.repoId, {
     status: "ready",
@@ -249,17 +593,10 @@ export async function setJustifyFailedStatus(
   repoId: string,
   errorMessage: string
 ): Promise<void> {
+  logger.error("Justification failed", undefined, { service: "justification", repoId, errorMessage })
   const container = getContainer()
   await container.relationalStore.updateRepoStatus(repoId, {
     status: "justify_failed",
     errorMessage,
   })
-}
-
-export async function performTopologicalSort(
-  entities: EntityDoc[],
-  edges: EdgeDoc[]
-): Promise<EntityDoc[][]> {
-  heartbeat("performing topological sort")
-  return topologicalSortEntities(entities, edges)
 }

@@ -1,6 +1,6 @@
 # Phase 5.6 — CLI-First Zero-Friction Onboarding
 
-> **Phase Feature Statement:** _"I run `npx @autorail/kap10 connect` in my project, it opens a browser to authenticate, detects my repo, and auto-configures MCP for my IDE — zero copy-paste, zero dashboard clicks."_
+> **Phase Feature Statement:** _"I run `npx @autorail/kap10` in my project, it authenticates me, detects my IDE, connects my GitHub repos, analyzes my code, and configures MCP — zero copy-paste, zero dashboard clicks."_
 >
 > **Prerequisites:** [Phase 2 — Hosted MCP Server](./PHASE_2_HOSTED_MCP_SERVER.md) (MCP tools, auth, API keys)
 >
@@ -15,7 +15,8 @@
   - [2.1 Org-Level API Keys](#21-org-level-api-keys)
   - [2.2 RFC 8628 Device Authorization Flow](#22-rfc-8628-device-authorization-flow)
   - [2.3 CLI Connect Command](#23-cli-connect-command)
-  - [2.4 UI Changes](#24-ui-changes)
+  - [2.4 Magic Default Command (Setup Wizard)](#24-magic-default-command-setup-wizard)
+  - [2.5 UI Changes](#25-ui-changes)
 - [3. New Endpoints](#3-new-endpoints)
 - [4. Database Changes](#4-database-changes)
 - [5. Files Changed](#5-files-changed)
@@ -130,7 +131,99 @@ kap10 connect [--server <url>] [--key <apiKey>] [--ide <type>]
 }
 ```
 
-### 2.4 UI Changes
+### 2.4 Magic Default Command (Setup Wizard)
+
+Running `npx @autorail/kap10` with no subcommand now launches a full interactive setup wizard. This replaces the previous behavior (showing help text) with the onboarding golden path.
+
+```
+$ npx @autorail/kap10
+
+  kap10  Code intelligence for AI agents
+
+  ● Authenticating...
+    ✓ Authenticated as Jaswanth's Organization
+
+  ● Detecting coding agent...
+    ✓ Detected Cursor
+
+  ● Detecting repository...
+    ✓ GitHub repo: jaswanth/kap10-server (main)
+
+  ● Checking kap10...
+    This repo isn't on kap10 yet.
+
+  ● GitHub connection...
+    ? Install kap10 GitHub App to connect your repos? › (Y/n)
+    Opening browser to install kap10 GitHub App...
+    Waiting for GitHub App installation... ⠋
+    ✓ GitHub App installed for jaswanth
+
+  ● Repository setup...
+    ? Select repos to analyze:
+    ❯ ◉ jaswanth/kap10-server (TypeScript, private)
+      ○ jaswanth/other-repo (Python)
+    ✓ Added 1 repo(s) — indexing started
+
+  ● Analyzing repository...
+    ⠋ Indexing... 72%
+    ✓ Analysis complete — 150 files, 1,234 functions, 89 classes
+
+  ● Configuring Cursor...
+    ✓ Written: .cursor/mcp.json
+    ✓ Installed git hooks
+
+  ✓ Ready! Your AI agent now has access to your codebase graph.
+
+    Logs: .kap10/logs/setup-2026-02-23.log
+```
+
+**Nine-step flow:**
+
+| Step | What | Smart behavior |
+|------|------|----------------|
+| 1. Auth | Device code flow or API key | Skip if already authenticated |
+| 2. IDE detect | Auto-detect or interactive prompt | Checks env vars, process ancestry, directory markers |
+| 3. Git detect | Parse remote, classify host | Distinguishes GitHub/GitLab/Bitbucket/other |
+| 4. Repo check | Look up on kap10 | Skip to MCP config if already indexed |
+| 5a. GitHub flow | Install app → select repos → trigger indexing | Only for github.com repos |
+| 5b. Local flow | Init → upload zip → trigger indexing | For non-GitHub or no-remote repos |
+| 6. Poll indexing | Progress spinner with status | Exponential backoff polling |
+| 7. MCP config | Write IDE-specific config files | Cursor, VS Code, Windsurf, Claude Code |
+| 8. Git hooks | Install post-checkout/post-merge | Append-safe, non-blocking |
+| 9. Done | Summary + log path | All details in `.kap10/logs/` |
+
+**IDE detection priority chain:**
+
+1. `CURSOR_TRACE_ID` env → Cursor
+2. `CLAUDE_CODE` env or process ancestry → Claude Code
+3. `TERM_PROGRAM=vscode` with Cursor paths → Cursor
+4. `.cursor/` directory → Cursor
+5. `.windsurf/` directory → Windsurf
+6. `TERM_PROGRAM=vscode` → VS Code
+7. `.vscode/` directory → VS Code
+8. Interactive prompt with `prompts` library (Cursor, Claude Code, VS Code, Windsurf)
+
+**GitHub App installation from CLI:**
+
+The CLI initiates a browser-based GitHub App install that doesn't require a web session:
+
+1. CLI calls `POST /api/cli/github/install` with API key auth
+2. Server creates a state token with `cliPollToken` in Redis
+3. CLI opens browser to `https://github.com/apps/kap10-dev/installations/new?state=xxx`
+4. User installs GitHub App on GitHub
+5. GitHub redirects to `/api/github/callback` which processes the installation
+6. Callback detects `cliPollToken` in state → signals completion via Redis
+7. CLI polls `GET /api/cli/github/install/poll?token=xxx` and detects completion
+
+The callback supports both web (session auth) and CLI (state-token auth) flows. For CLI flows, the orgId is trusted from the state token (which was created by an authenticated API key request).
+
+**Logging:** All API calls and responses are logged to `.kap10/logs/setup-{date}.log`. On any error, the CLI prints the log path for debugging.
+
+**Options:** `npx @autorail/kap10 [--server <url>] [--key <apiKey>] [--ide <type>]`
+
+**Existing `connect` command preserved:** `kap10 connect` still works as before for users who prefer the explicit subcommand.
+
+### 2.5 UI Changes
 
 The Connect to IDE page (`/repos/{id}/connect`) now has:
 
@@ -149,8 +242,14 @@ This preserves the full manual path for users who prefer copy-paste while steeri
 | `POST` | `/api/cli/token` | None (public) | Poll for approval, exchange for API key |
 | `GET` | `/api/cli/context` | API key (Bearer) | Look up repo by git remote URL |
 | `GET` | `/cli/authorize` | Session (cookie) | Browser page to approve CLI auth |
+| `GET` | `/api/cli/github/installations` | API key (Bearer) | List GitHub App installations for the org |
+| `POST` | `/api/cli/github/install` | API key (Bearer) | Initiate GitHub App installation (returns install URL + poll token) |
+| `GET` | `/api/cli/github/install/poll` | API key (Bearer) | Poll GitHub App installation status |
+| `GET` | `/api/cli/github/repos` | API key (Bearer) | List available GitHub repos from installations |
+| `POST` | `/api/cli/repos` | API key (Bearer) | Add repos and trigger indexing workflows |
+| `GET` | `/api/cli/repos/[repoId]/status` | API key (Bearer) | Poll repo indexing status and progress |
 
-**Public path configuration:** `/api/cli` prefix added to `proxy.ts` public paths. The device-code and token endpoints must be unauthenticated (the CLI doesn't have credentials yet). The context endpoint uses API key auth validated inside the handler.
+**Public path configuration:** `/api/cli` prefix added to `proxy.ts` public paths. The device-code and token endpoints must be unauthenticated (the CLI doesn't have credentials yet). All other CLI endpoints use API key auth validated inside their handlers via `authenticateMcpRequest`.
 
 ---
 
@@ -183,12 +282,19 @@ ALTER TABLE kap10.api_keys ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT false;
 | `lib/di/fakes.ts` | In-memory store matches new interface |
 | `lib/mcp/auth.ts` | Handle null `repoId` → `undefined` in auth context |
 
-### API Routes (new)
+### API Routes (new + modified)
 | File | Change |
 |------|--------|
 | `app/api/cli/device-code/route.ts` | **New** — RFC 8628 device code generation |
 | `app/api/cli/token/route.ts` | **New** — Token exchange + default key provisioning |
 | `app/api/cli/context/route.ts` | **New** — Git remote → repo lookup |
+| `app/api/cli/github/installations/route.ts` | **New** — List GitHub installations (API key auth) |
+| `app/api/cli/github/install/route.ts` | **New** — Initiate GitHub App install from CLI |
+| `app/api/cli/github/install/poll/route.ts` | **New** — Poll GitHub App installation status |
+| `app/api/cli/github/repos/route.ts` | **New** — List available GitHub repos (API key auth) |
+| `app/api/cli/repos/route.ts` | **New** — Add repos + trigger indexing (API key auth) |
+| `app/api/cli/repos/[repoId]/status/route.ts` | **New** — Poll indexing status |
+| `app/api/github/callback/route.ts` | **Modified** — Dual-mode: web (session) + CLI (state-token) flows |
 
 ### UI (new + modified)
 | File | Change |
@@ -204,8 +310,13 @@ ALTER TABLE kap10.api_keys ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT false;
 | File | Change |
 |------|--------|
 | `packages/cli/src/commands/auth.ts` | Rewritten with device auth flow |
-| `packages/cli/src/commands/connect.ts` | **New** — Golden path command |
-| `packages/cli/src/index.ts` | Register `connect` command |
+| `packages/cli/src/commands/connect.ts` | **New** — Golden path command (explicit subcommand) |
+| `packages/cli/src/commands/setup.ts` | **New** — Magic default command (full onboarding wizard) |
+| `packages/cli/src/utils/ui.ts` | **New** — Branded terminal output (colors, sections, spinners) |
+| `packages/cli/src/utils/log.ts` | **New** — File logger to `.kap10/logs/` |
+| `packages/cli/src/utils/detect.ts` | **New** — Git host + IDE detection (auto-detect + prompt) |
+| `packages/cli/src/index.ts` | Default action → `runSetup()`, register all commands |
+| `packages/cli/package.json` | Added `picocolors`, `ora`, `prompts` dependencies |
 
 ### Infrastructure
 | File | Change |
@@ -618,3 +729,4 @@ Edge Cases:
 | 2026-02-21 | — | Initial document created. CLI-First Zero-Friction Onboarding: Device Auth Flow, org-level API keys, `kap10 connect` golden path command, IDE auto-detection. |
 | 2026-02-21 | — | Added Section 7 "Advanced Architectural Enhancements": Decentralized AST Extraction (local MapReduce), Ephemeral Sandbox Mode, Self-Healing MCP Configuration. Section 8 tracker: 4 implementation items (P5.6-ADV-01..04), 3 test items (P5.6-TEST-ADV-01..03). |
 | 2026-02-21 | — | Added Dirty State Overlay (in-memory uncommitted context via Redis). New: P5.6-ADV-05 (dirty buffer MCP tool + overlay merge), P5.6-TEST-ADV-03 (dirty state tests), renumbered self-healing config test to P5.6-TEST-ADV-04. Total advanced tracker items: **10** (5 impl + 4 test + 1 renumbered). |
+| 2026-02-23 | — | Magic default command: `npx @autorail/kap10` now runs full setup wizard (auth → IDE detect → GitHub flow → indexing → MCP config). Added 6 new CLI API endpoints for GitHub App install, repo listing, repo addition, and indexing status. Modified callback to support CLI-initiated GitHub installs. Added interactive IDE prompt, branded terminal output (picocolors, ora, prompts), and file logging to `.kap10/logs/`. |

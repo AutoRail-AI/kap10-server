@@ -1151,6 +1151,7 @@ export class ArangoGraphStore implements IGraphStore {
   async upsertDomainOntology(orgId: string, ontology: DomainOntologyDoc): Promise<void> {
     const db = await getDbAsync()
     const col = db.collection("domain_ontologies")
+    try { await col.create() } catch { /* already exists */ }
     await col.save(
       { _key: ontology.id, ...ontology, org_id: ontology.org_id ?? orgId },
       { overwriteMode: "update" }
@@ -1385,12 +1386,7 @@ export class ArangoGraphStore implements IGraphStore {
     )
     const rows = await cursor.all() as Array<{ model: string; input_tokens: number; output_tokens: number }>
 
-    const MODEL_COSTS: Record<string, { input: number; output: number }> = {
-      "gpt-4o-mini": { input: 0.15 / 1_000_000, output: 0.6 / 1_000_000 },
-      "gpt-4o": { input: 2.5 / 1_000_000, output: 10 / 1_000_000 },
-      "claude-3-haiku-20240307": { input: 0.25 / 1_000_000, output: 1.25 / 1_000_000 },
-      "claude-sonnet-4-20250514": { input: 3 / 1_000_000, output: 15 / 1_000_000 },
-    }
+    const { MODEL_COSTS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
 
     let totalInput = 0
     let totalOutput = 0
@@ -1398,7 +1394,8 @@ export class ArangoGraphStore implements IGraphStore {
     const byModel: Record<string, { input_tokens: number; output_tokens: number; cost_usd: number }> = {}
 
     for (const row of rows) {
-      const costs = MODEL_COSTS[row.model] ?? { input: 1 / 1_000_000, output: 3 / 1_000_000 }
+      const { MODEL_COST_FALLBACK } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+      const costs = MODEL_COSTS[row.model] ?? MODEL_COST_FALLBACK
       const cost = row.input_tokens * costs.input + row.output_tokens * costs.output
       totalInput += row.input_tokens
       totalOutput += row.output_tokens

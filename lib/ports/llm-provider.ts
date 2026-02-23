@@ -5,6 +5,7 @@ export interface ILLMProvider {
     model: string
     schema: { parse: (v: unknown) => T }
     prompt: string
+    system?: string
     context?: OrgContext
     temperature?: number
   }): Promise<{ object: T; usage: TokenUsage }>

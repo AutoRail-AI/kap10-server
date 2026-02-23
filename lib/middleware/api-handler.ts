@@ -16,18 +16,34 @@ type ApiHandler<T = any> = (
 
 export function withAuth(handler: ApiHandler) {
   return async (req: NextRequest): Promise<NextResponse> => {
+    const start = Date.now()
+    const method = req.method
+    const path = req.nextUrl.pathname
+
     try {
       const session = await auth.api.getSession({ headers: await headers() })
       if (!session) {
+        logger.warn("Unauthorized request", { service: "api", method, path })
         return errorResponse("Unauthorized", 401)
       }
 
-      return handler(req, {
-        session,
-        userId: session.user.id,
-      })
+      const userId = session.user.id
+      logger.info(`${method} ${path}`, { service: "api", userId, method, path })
+
+      const response = await handler(req, { session, userId })
+
+      const durationMs = Date.now() - start
+      const status = response.status
+      if (status >= 400) {
+        logger.warn(`${method} ${path} → ${status}`, { service: "api", userId, method, path, status, durationMs })
+      } else {
+        logger.info(`${method} ${path} → ${status}`, { service: "api", userId, method, path, status, durationMs })
+      }
+
+      return response
     } catch (error) {
-      logger.error("API handler error", error)
+      const durationMs = Date.now() - start
+      logger.error(`${method} ${path} → error`, error, { service: "api", method, path, durationMs })
       return handleError(error)
     }
   }
@@ -35,15 +51,34 @@ export function withAuth(handler: ApiHandler) {
 
 export function withOptionalAuth(handler: ApiHandler) {
   return async (req: NextRequest): Promise<NextResponse> => {
+    const start = Date.now()
+    const method = req.method
+    const path = req.nextUrl.pathname
+
     try {
       const session = await auth.api.getSession({ headers: await headers() })
-      return handler(req, {
+      const userId = session?.user.id || ""
+
+      logger.info(`${method} ${path}`, { service: "api", userId: userId || "anonymous", method, path })
+
+      const response = await handler(req, {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         session: session || null as any,
-        userId: session?.user.id || "",
+        userId,
       })
+
+      const durationMs = Date.now() - start
+      const status = response.status
+      if (status >= 400) {
+        logger.warn(`${method} ${path} → ${status}`, { service: "api", userId: userId || "anonymous", method, path, status, durationMs })
+      } else {
+        logger.info(`${method} ${path} → ${status}`, { service: "api", userId: userId || "anonymous", method, path, status, durationMs })
+      }
+
+      return response
     } catch (error) {
-      logger.error("API handler error", error)
+      const durationMs = Date.now() - start
+      logger.error(`${method} ${path} → error`, error, { service: "api", method, path, durationMs })
       return handleError(error)
     }
   }
@@ -58,10 +93,9 @@ function handleError(error: unknown): NextResponse {
   }
 
   if (error instanceof Error) {
-    logger.error("Unhandled error", error)
+    logger.error("Unhandled error", error, { service: "api" })
     return serverErrorResponse(error.message)
   }
 
   return serverErrorResponse("Unknown error occurred")
 }
-

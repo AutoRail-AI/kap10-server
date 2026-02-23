@@ -992,7 +992,9 @@ model DeletionLog {
 - Personal organization **auto-provisioned on signup** via Better Auth `databaseHooks` (no welcome screen). Users land directly on the dashboard. GitHub callback strictly requires `orgId` in state — never auto-creates organizations.
 - **Multiple GitHub connections per organization:** An organization can connect to multiple GitHub accounts and organizations. Each connection is a separate `github_installations` row. Available repos are aggregated across all connections.
 - **GitHub connections management:** `/settings/connections` page for viewing, adding, and removing GitHub connections. API: `GET /api/github/connections`, `DELETE /api/github/connections`.
-- Dashboard shell with sidebar: `DashboardNav` (Repos, Search, Settings), `UserProfileMenu` (bottom — organization switching, theme toggle, sign out). `RepositorySwitcher` removed — repos are managed from the dashboard page. Will be replaced by a workspace selector in a future phase.
+- Dashboard shell: Resend-style fixed header (logo + Docs) + Void Black sidebar (`w-56`, `bg-[#0A0A0F]`, `border-white/10`) with `DashboardNav` (Overview, Repositories, Search) + dynamic Recents section (top 5 recently updated repos) + `UserProfileMenu` (bottom — organization switching, theme toggle, sign out). Active nav items use Electric Cyan 2px left indicator.
+- Overview page: Platform Usage stats grid (4 cards pulling real data from relational + graph stores) → CLI Hero terminal (`npx @autorail/kap10 connect`) → Org-scoped repository grid with Add Repo card.
+- Repos page: GitHub-style paginated data table (20/page) with search, GitHub account/org filter, sorting, branch info, MCP session count, inline Open button, "Add Org" action.
 - `AccountProvider`: dashboard-only context for organization context switching (only loads on authenticated dashboard routes)
 - `ThemeProvider` (next-themes): dark/light mode toggle (default: dark)
 - **Ports & Adapters foundation:** All 11 port interfaces defined (`lib/ports/`), production adapters wired (`lib/adapters/`), DI container factory (`lib/di/container.ts`) with `createProductionContainer()` + `createTestContainer()`
@@ -1122,20 +1124,24 @@ prisma/
 docker-compose.yml                 ← Add arangodb + temporal services
 app/
   (dashboard)/
-    layout.tsx                     ← Authenticated dashboard shell (sidebar + UserProfileMenu)
-    page.tsx                       ← Welcome screen (no org) or repos list
-    repos/page.tsx                 ← Repository management
-    settings/page.tsx              ← Org settings (redirects to / if no org)
+    layout.tsx                     ← Dashboard shell: header + sidebar (nav + recents + user profile) + main content
+    page.tsx                       ← Overview: Platform Usage stats + CLI Hero + repo grid
+    repos/page.tsx                 ← Repository management: paginated table with search/filter/sort
+    settings/page.tsx              ← Org settings (name, members, danger zone)
   api/
     github/callback/route.ts       ← GitHub App callback (attaches installation to existing organization)
     github/connections/route.ts    ← GET (list connections), DELETE (remove connection)
 components/
   dashboard/
-    repository-switcher.tsx        ← Sidebar top-left: repo/scope navigation (Command-based search)
-    user-profile-menu.tsx          ← Sidebar bottom-left: identity/account switcher dropdown
-    dashboard-nav.tsx              ← Sidebar navigation (Repos, Search, Settings)
+    dashboard-header.tsx           ← Fixed top bar: logo + Docs link
+    dashboard-nav.tsx              ← Sidebar navigation (Overview, Repositories, Search) + Recents
+    user-profile-menu.tsx          ← Sidebar bottom: identity/org switcher dropdown
+    overview-stats.tsx             ← StatCard component for Platform Usage grid
+    cli-hero.tsx                   ← Terminal panel with CLI command + copy
+    overview-repo-card.tsx         ← Compact repo card for overview grid
+    overview-add-repo-card.tsx     ← Dashed "Connect Repository" card
+    repos-list.tsx                 ← Paginated table: search, filter, sort, branch, MCP, actions
     empty-state-repos.tsx          ← Empty state: no repos connected, CTA to connect GitHub
-    github-connections-list.tsx    ← Manage GitHub connections (add, remove)
     dashboard-account-provider.tsx ← Dashboard-only AccountProvider wrapper
   providers/
     account-context.tsx            ← AccountProvider (organization context switching)
