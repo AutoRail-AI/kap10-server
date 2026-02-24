@@ -37,12 +37,12 @@ const logActivities = proxyActivities<typeof pipelineLogs>({
 })
 
 /**
- * Number of files to process per activity invocation. Kept small to prevent
- * OOM on the light worker — the ONNX embedding model (~500MB) + entity data
- * + inference tensors must fit within the container memory limit (6GB).
- * 10 files ≈ 17 entities ≈ 2 embedding sub-batches — safe headroom.
+ * Number of files to process per activity invocation. Kept small so each
+ * activity completes quickly (good for heartbeats) and limits peak memory.
+ * ONNX model (~500MB base) + inference (~200MB per doc at 512 tokens).
+ * 5 files ≈ 8-10 entities — finishes in ~30s, well under heartbeat timeout.
  */
-const FILES_PER_BATCH = 10
+const FILES_PER_BATCH = 5
 
 export const getEmbedProgressQuery = defineQuery<number>("getEmbedProgress")
 
@@ -156,12 +156,23 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
     })
     progress = 100
 
-    wfLog("INFO", "Embedding workflow complete", { ...ctx, embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount }, "Complete")
-    logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
+    // Await final log calls so they complete before the workflow finishes.
+    // Fire-and-forget causes "Activity not found on completion" warnings.
+    await logActivities.appendPipelineLog({
+      timestamp: new Date().toISOString(),
+      level: "info",
+      phase: "embedding",
+      step: "Complete",
+      message: "Embedding workflow complete",
+      meta: { embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount, repoId: input.repoId },
+    })
+    await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId })
+    console.log(`[${new Date().toISOString()}] [INFO ] [wf:embed-repo] [${input.orgId}/${input.repoId}] Embedding workflow complete ${JSON.stringify({ embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount })}`)
     return { embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     wfLog("ERROR", "Embedding workflow failed", { ...ctx, errorMessage: message }, "Error")
+    // Best-effort archive on failure — don't block the error throw
     logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
     await activities.setEmbedFailedStatus(input.repoId, message)
     throw err

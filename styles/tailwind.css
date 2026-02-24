@@ -411,6 +411,25 @@
     animation: success-glow-pulse 3s ease-in-out infinite;
   }
 
+  /* Hover glow utilities — use on interactive elements instead of solid bg fills */
+  .hover-glow-cyan {
+    transition: all 0.2s ease;
+  }
+  .hover-glow-cyan:hover {
+    color: var(--color-electric-cyan);
+    box-shadow: 0 0 12px rgba(0, 229, 255, 0.15);
+    border-color: rgba(0, 229, 255, 0.3);
+  }
+
+  .hover-glow-purple {
+    transition: all 0.2s ease;
+  }
+  .hover-glow-purple:hover {
+    color: #FAFAFA;
+    box-shadow: 0 0 12px rgba(110, 24, 179, 0.2);
+    border-color: rgba(110, 24, 179, 0.4);
+  }
+
   /* Industrial Glass — Hard Glass material (brand.md §9) */
   .glass-panel {
     background: rgba(255, 255, 255, 0.03);

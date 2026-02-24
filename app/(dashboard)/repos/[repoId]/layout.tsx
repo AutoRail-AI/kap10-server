@@ -9,7 +9,6 @@ import {
   RefreshCw,
   Shield,
 } from "lucide-react"
-import { headers } from "next/headers"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
@@ -17,12 +16,15 @@ import { McpStatus } from "@/components/repo/mcp-status"
 import { RepoTabs } from "@/components/repo/repo-tabs"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { getActiveOrgId } from "@/lib/api/get-active-org"
-import { auth } from "@/lib/auth"
+import { getActiveOrgId, getSessionCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 
+/**
+ * Fast repo header — only needs the repo record (single DB call).
+ * Renders breadcrumb, status, tabs immediately. Telemetry chips load async.
+ */
 async function RepoHeader({ repoId }: { repoId: string }) {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) return null
 
   const orgId = await getActiveOrgId()
@@ -53,48 +55,6 @@ async function RepoHeader({ repoId }: { repoId: string }) {
     )
   }
 
-  const [projectStats, activeRules, patterns] = await Promise.all([
-    container.graphStore.getProjectStats(orgId, repoId).catch(() => null),
-    container.graphStore
-      .queryRules(orgId, { orgId, repoId, status: "active", limit: 100 })
-      .catch(() => []),
-    container.graphStore
-      .queryPatterns(orgId, { orgId, repoId, limit: 100 })
-      .catch(() => []),
-  ])
-
-  let snapshot: {
-    status: string
-    sizeBytes: number
-    edgeCount: number
-    snapshotVersion?: number
-  } | null = null
-  try {
-    const { getPrisma } = require("@/lib/db/prisma") as typeof import("@/lib/db/prisma")
-    const prisma = getPrisma()
-    const meta = await prisma.graphSnapshotMeta.findUnique({
-      where: { repoId },
-    })
-    if (meta) {
-      snapshot = {
-        status: meta.status,
-        sizeBytes: meta.sizeBytes,
-        edgeCount: meta.edgeCount,
-        snapshotVersion: (meta as Record<string, unknown>).snapshotVersion as
-          | number
-          | undefined,
-      }
-    }
-  } catch {
-    // non-critical
-  }
-
-  const totalEntities =
-    (projectStats?.functions ?? 0) +
-    (projectStats?.classes ?? 0) +
-    (projectStats?.interfaces ?? 0) +
-    (projectStats?.variables ?? 0)
-
   const syncAge = repo.lastIndexedAt
     ? Math.round(
         (Date.now() - new Date(repo.lastIndexedAt).getTime()) / 3_600_000
@@ -104,7 +64,7 @@ async function RepoHeader({ repoId }: { repoId: string }) {
 
   return (
     <div className="space-y-4 border-b border-white/10 pb-0">
-      {/* Breadcrumb + Actions */}
+      {/* Breadcrumb + Actions — renders immediately */}
       <div className="flex flex-col gap-3 px-6 pt-6 md:flex-row md:items-center md:justify-between">
         <div className="space-y-1">
           <nav className="flex items-center gap-1.5 text-sm">
@@ -139,14 +99,9 @@ async function RepoHeader({ repoId }: { repoId: string }) {
         </div>
         <div className="flex items-center gap-2">
           <McpStatus repoId={repoId} />
-          {snapshot?.status === "available" && (
-            <div className="flex items-center gap-1.5 rounded-md border border-emerald-400/30 bg-emerald-400/5 px-2.5 py-1">
-              <Download className="h-3.5 w-3.5 text-emerald-400" />
-              <span className="font-mono text-xs text-emerald-400 tabular-nums">
-                {(snapshot.sizeBytes / 1024).toFixed(0)}KB
-              </span>
-            </div>
-          )}
+          <Suspense fallback={null}>
+            <SnapshotBadge repoId={repoId} />
+          </Suspense>
           <Link href={`/repos/${repoId}/connect`}>
             <Button
               size="sm"
@@ -159,34 +114,101 @@ async function RepoHeader({ repoId }: { repoId: string }) {
         </div>
       </div>
 
-      {/* Telemetry Chips */}
-      <div className="grid gap-2 grid-cols-3 sm:grid-cols-5 px-6">
-        <TelemetryChip icon={FileCode} label="Files" value={repo.fileCount ?? 0} />
-        <TelemetryChip icon={Layers} label="Entities" value={totalEntities} />
-        <TelemetryChip icon={Shield} label="Rules" value={activeRules.length} />
-        <TelemetryChip icon={Fingerprint} label="Patterns" value={patterns.length} />
-        <TelemetryChip
-          icon={GitBranch}
-          label={repo.defaultBranch ?? "main"}
-          value={
-            syncAge !== null
-              ? syncAge < 1
-                ? "Just now"
-                : syncAge < 24
-                  ? `${syncAge}h ago`
-                  : `${Math.floor(syncAge / 24)}d ago`
-              : "—"
-          }
-          mono
-        />
-      </div>
+      {/* Telemetry Chips — loaded async, doesn't block tabs or page content */}
+      <Suspense fallback={<TelemetryChipsSkeleton />}>
+        <TelemetryChips repoId={repoId} orgId={orgId} repo={repo} syncAge={syncAge} />
+      </Suspense>
 
-      {/* Tabs */}
+      {/* Tabs — renders immediately */}
       <div className="px-6">
         <RepoTabs repoId={repoId} />
       </div>
     </div>
   )
+}
+
+/** Async component that loads stats, rules, patterns for telemetry chips.
+ *  Uses cross-request cached queries (60s TTL) to avoid hitting ArangoDB on every navigation. */
+async function TelemetryChips({
+  repoId,
+  orgId,
+  repo,
+  syncAge,
+}: {
+  repoId: string
+  orgId: string
+  repo: { fileCount?: number | null; defaultBranch: string | null }
+  syncAge: number | null
+}) {
+  const { getProjectStatsCached, getActiveRulesCached, getPatternsCached } = require("@/lib/api/cached-queries") as typeof import("@/lib/api/cached-queries")
+  const [projectStats, activeRules, patterns] = await Promise.all([
+    getProjectStatsCached(orgId, repoId),
+    getActiveRulesCached(orgId, repoId),
+    getPatternsCached(orgId, repoId),
+  ])
+
+  const totalEntities =
+    (projectStats?.functions ?? 0) +
+    (projectStats?.classes ?? 0) +
+    (projectStats?.interfaces ?? 0) +
+    (projectStats?.variables ?? 0)
+
+  return (
+    <div className="grid gap-2 grid-cols-3 sm:grid-cols-5 px-6">
+      <TelemetryChip icon={FileCode} label="Files" value={repo.fileCount ?? 0} />
+      <TelemetryChip icon={Layers} label="Entities" value={totalEntities} />
+      <TelemetryChip icon={Shield} label="Rules" value={activeRules.length} />
+      <TelemetryChip icon={Fingerprint} label="Patterns" value={patterns.length} />
+      <TelemetryChip
+        icon={GitBranch}
+        label={repo.defaultBranch ?? "main"}
+        value={
+          syncAge !== null
+            ? syncAge < 1
+              ? "Just now"
+              : syncAge < 24
+                ? `${syncAge}h ago`
+                : `${Math.floor(syncAge / 24)}d ago`
+            : "—"
+        }
+        mono
+      />
+    </div>
+  )
+}
+
+function TelemetryChipsSkeleton() {
+  return (
+    <div className="grid gap-2 grid-cols-3 sm:grid-cols-5 px-6">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <Skeleton key={i} className="h-8 w-full" />
+      ))}
+    </div>
+  )
+}
+
+/** Async component for snapshot download badge. */
+async function SnapshotBadge({ repoId }: { repoId: string }) {
+  try {
+    const { getPrisma } = require("@/lib/db/prisma") as typeof import("@/lib/db/prisma")
+    const prisma = getPrisma()
+    const meta = await prisma.graphSnapshotMeta.findUnique({
+      where: { repoId },
+    })
+    if (meta?.status === "available") {
+      return (
+        <div className="flex items-center gap-1.5 rounded-md border border-emerald-400/30 bg-emerald-400/5 px-2.5 py-1">
+          <Download className="h-3.5 w-3.5 text-emerald-400" />
+          <span className="font-mono text-xs text-emerald-400 tabular-nums">
+            {(meta.sizeBytes / 1024).toFixed(0)}KB
+          </span>
+        </div>
+      )
+    }
+  } catch {
+    // non-critical
+  }
+  return null
 }
 
 function StatusPill({ status }: { status: string }) {

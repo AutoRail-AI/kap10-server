@@ -38,6 +38,7 @@ export const JustificationResultSchema = z.object({
   semanticTriples: z.array(SemanticTripleSchema),
   complianceTags: z.array(z.string()).optional().default([]),
   architecturalPattern: ArchitecturalPatternSchema.optional().default("unknown"),
+  reasoning: z.string().describe("2-3 sentence chain-of-evidence explaining your classification choices"),
 })
 export type JustificationResult = z.infer<typeof JustificationResultSchema>
 
@@ -158,6 +159,7 @@ export const BatchJustificationItemSchema = z.object({
   semanticTriples: z.array(SemanticTripleSchema),
   complianceTags: z.array(z.string()).optional().default([]),
   architecturalPattern: ArchitecturalPatternSchema.optional().default("unknown"),
+  reasoning: z.string().describe("2-3 sentence chain-of-evidence explaining your classification choices"),
 })
 export type BatchJustificationItem = z.infer<typeof BatchJustificationItemSchema>
 

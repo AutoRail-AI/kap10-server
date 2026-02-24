@@ -130,20 +130,21 @@ export async function PATCH(
     // Store (bulkUpsertJustifications handles bi-temporal closing)
     await container.graphStore.bulkUpsertJustifications(body.orgId, [updated])
 
-    // Re-embed
-    const text = `${updated.taxonomy}: ${updated.business_purpose}. Concepts: ${updated.domain_concepts.join(", ")}. Feature: ${updated.feature_tag}`
-    const embeddings = await container.vectorSearch.embed([text])
-    await container.vectorSearch.upsert(
-      [`just_${entityId}`],
-      embeddings,
-      [{
+    // Re-embed into dedicated justification_embeddings table
+    if (container.vectorSearch.upsertJustificationEmbeddings) {
+      const entity = await container.graphStore.getEntity(body.orgId, entityId)
+      const text = `${updated.taxonomy}: ${updated.business_purpose}. Concepts: ${updated.domain_concepts.join(", ")}. Feature: ${updated.feature_tag}`
+      const embeddings = await container.vectorSearch.embed([text])
+      await container.vectorSearch.upsertJustificationEmbeddings(embeddings, [{
         orgId: updated.org_id,
         repoId: updated.repo_id,
         entityId,
+        entityName: entity?.name ?? updated.feature_tag,
         taxonomy: updated.taxonomy,
         featureTag: updated.feature_tag,
-      }]
-    )
+        businessPurpose: updated.business_purpose,
+      }])
+    }
 
     log.info("Justification overridden", { userId, organizationId: body.orgId, entityId, newTaxonomy: updated.taxonomy })
     return NextResponse.json({

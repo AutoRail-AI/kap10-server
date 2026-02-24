@@ -1,25 +1,18 @@
 import { Activity, Database, FileCode, Shield } from "lucide-react"
-import { headers } from "next/headers"
 import { Suspense } from "react"
 import { CliHero } from "@/components/dashboard/cli-hero"
 import { OverviewAddRepoCard } from "@/components/dashboard/overview-add-repo-card"
 import { OverviewRepoCard } from "@/components/dashboard/overview-repo-card"
 import { StatCard } from "@/components/dashboard/overview-stats"
 import { Skeleton } from "@/components/ui/skeleton"
-import { auth, listOrganizations } from "@/lib/auth"
+import { getSessionCached, getOrgsCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 
 async function OverviewContent() {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) return null
 
-  let organizations: { id: string; name: string }[] = []
-  try {
-    organizations = await listOrganizations(await headers())
-  } catch {
-    organizations = []
-  }
-
+  const organizations = await getOrgsCached()
   const activeOrg = organizations[0]
   const activeOrgId = activeOrg?.id
   const activeOrgName = activeOrg?.name ?? "your organization"

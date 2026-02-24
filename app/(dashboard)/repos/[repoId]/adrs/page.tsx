@@ -1,16 +1,15 @@
-import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 import { Suspense } from "react"
 import { AdrView } from "@/components/adrs/adr-view"
 import { Skeleton } from "@/components/ui/skeleton"
-import { auth } from "@/lib/auth"
+import { getSessionCached } from "@/lib/api/get-active-org"
 
 export default async function AdrsPage({
   params,
 }: {
   params: Promise<{ repoId: string }>
 }) {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) redirect("/login")
 
   const { repoId } = await params

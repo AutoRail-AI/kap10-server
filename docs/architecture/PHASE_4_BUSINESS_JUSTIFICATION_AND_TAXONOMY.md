@@ -405,41 +405,65 @@ Output: Map<number, string[]>  (level → entityIds)
 
 **Queue assignment:** `topoSort` runs on `heavy-compute-queue` because it loads the entire entity set and call graph into memory (potentially 50K+ entities for large repos). All LLM activities run on `light-llm-queue`.
 
+### LLM Provider Selection
+
+The justification pipeline supports **multiple LLM providers**, selected via the `LLM_PROVIDER` env var. All configuration lives in `lib/llm/config.ts`. Provider selection routes through the DI container — `ILLMProvider` is the port, with `VercelAIProvider` (cloud APIs) and `OllamaProvider` (local inference) as adapters.
+
+| Provider | `LLM_PROVIDER` | Free RPM | Cost/1M tokens (in/out) | Notes |
+|----------|----------------|----------|-------------------------|-------|
+| **Google Gemini** | `google` (default) | 15 | $0.10 / $0.40 | Best quality-to-cost. Free tier has strict rate limits. |
+| **OpenAI** | `openai` | 500 | $0.15 / $0.60 | 33x the RPM. Better for batch workloads. |
+| **Anthropic** | `anthropic` | 50 | $0.25 / $1.25 | Good quality. Moderate rate limits. |
+| **Ollama** | `ollama` | Unlimited | $0 (local GPU) | Runs on your machine. No API keys. Best for dev/testing. |
+
+**Ollama setup:** `brew install ollama && ollama serve && ollama pull qwen3:8b`. Uses Ollama's OpenAI-compatible `/v1/chat/completions` endpoint via `@ai-sdk/openai`. Supports structured JSON output (`response_format`), tool calling, and streaming. See [DEV_SETUP.md §8.5](../DEV_SETUP.md#85-ollama-setup-optional--local-llm-inference) for full instructions.
+
+**Default Ollama models:** `qwen3:8b` (fast/standard tiers), `qwen3-coder` (premium tier). Override per-tier via `LLM_MODEL_FAST`, `LLM_MODEL_STANDARD`, `LLM_MODEL_PREMIUM` env vars.
+
+### Rate Limiting & Retry
+
+Two layers protect against 429 "Resource exhausted" errors:
+
+1. **Proactive rate limiter** (`lib/llm/rate-limiter.ts`): Sliding-window limiter tracks requests (RPM) and tokens (TPM) over 60s. `waitForSlot()` blocks until a slot is available. Configured via `LLM_RPM_LIMIT` (default: 15) and `LLM_TPM_LIMIT` (default: 1M). Set to 0 for unlimited (automatic for Ollama).
+
+2. **Retry with exponential backoff** (`VercelAIProvider.retryWithBackoff()`): On 429 errors, retries up to `LLM_RETRY_MAX_ATTEMPTS` (default: 5) with exponential delay + jitter. Respects `retry-after` headers when present. Non-429 errors propagate immediately.
+
+3. **Activity-level cooldown** (`justification.ts`): When a batch LLM call gets 429'd, the activity waits 30 seconds (with heartbeat) before retrying entities individually with 4-second delays between each call.
+
 ### LLM Model Routing
 
-Entity complexity determines which model processes it. Routing is deterministic (no randomness) for reproducibility:
+Entity complexity determines which model tier processes it. Routing is deterministic (no randomness) for reproducibility. The actual model used depends on `LLM_PROVIDER`:
 
 ```
-Complexity Routing:
+Complexity Routing (→ tier → model depends on provider):
 
-SIMPLE (→ gpt-4o-mini, ~$0.15/1M tokens):
+FAST tier (simple entities):
   - Callees count: 0–3
   - Code body: <50 lines
   - Kind: function, variable, constant
   - No domain-specific terms in name (e.g., formatDate, slugify, chunk)
 
-COMPLEX (→ gpt-4o, ~$2.50/1M tokens):
+STANDARD tier (most entities):
+  - Default for entities not matching fast or premium criteria
+
+PREMIUM tier (complex entities):
   - Callees count: >3
   - Code body: >50 lines
   - Kind: class, module, entry point
   - Domain-specific terms in name or file path (e.g., checkout, billing, payment)
   - Is a VERTICAL candidate (based on callers-to-callees ratio)
-
-FALLBACK (→ claude-3-5-haiku, ~$0.25/1M tokens):
-  - Used when primary model (OpenAI) returns an error (rate limit, 500, timeout)
-  - Automatic retry with fallback model (no user intervention needed)
 ```
 
-**Cost model (per-repo estimates):**
+**Cost model (per-repo estimates, using Google Gemini):**
 
 | Repo size | Entity count | Simple entities | Complex entities | Estimated cost |
 |-----------|-------------|-----------------|------------------|----------------|
-| Small (100 files) | ~500 | ~400 (80%) | ~100 (20%) | ~$0.10 |
-| Medium (1K files) | ~5,000 | ~3,500 (70%) | ~1,500 (30%) | ~$1.50 |
-| Large (5K files) | ~25,000 | ~17,500 (70%) | ~7,500 (30%) | ~$8.00 |
-| Monorepo (10K+ files) | ~50,000 | ~35,000 (70%) | ~15,000 (30%) | ~$16.00 |
+| Small (100 files) | ~500 | ~400 (80%) | ~100 (20%) | ~$0.05 |
+| Medium (1K files) | ~5,000 | ~3,500 (70%) | ~1,500 (30%) | ~$0.50 |
+| Large (5K files) | ~25,000 | ~17,500 (70%) | ~7,500 (30%) | ~$2.50 |
+| Monorepo (10K+ files) | ~50,000 | ~35,000 (70%) | ~15,000 (30%) | ~$5.00 |
 
-These costs are per-full-justification-run. Phase 5's incremental re-justification only processes changed entities and their immediate callers (~2–20 entities per push), costing fractions of a cent.
+With **Ollama**, all costs are $0. These estimates are per-full-justification-run. Phase 5's incremental re-justification only processes changed entities and their immediate callers (~2–20 entities per push), costing fractions of a cent.
 
 ### Prompt Construction
 
@@ -793,28 +817,59 @@ Justification Embedding (Phase 4):  embed("Validates that a shopping cart total 
                                            ← purpose + business_value + tags concatenated
 ```
 
-These are stored in a separate pgvector table `kap10.justification_embeddings` to avoid conflating code semantics with business semantics. The `search_by_purpose` MCP tool queries this table instead of `entity_embeddings`.
+These are stored in a **separate pgvector table** `kap10.justification_embeddings` to avoid conflating code semantics with business semantics. The `search_by_purpose` MCP tool queries this table directly via `IVectorSearch.searchJustificationEmbeddings()` — no prefix hacks or mixed-table filtering.
 
-**Schema:**
+**Schema** (migration: `20260224000000_phase4_justification_embeddings.sql`):
 
-```
+```sql
 Table: kap10.justification_embeddings
-Columns: id (UUID PK), org_id, repo_id, entity_key,
-         purpose_text TEXT,           ← the concatenated text that was embedded
-         embedding vector(768),
-         created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ
-Unique: (repo_id, entity_key)
-Index: HNSW on embedding vector_cosine_ops (m=16, ef_construction=64)
+Columns:
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid()
+  org_id           TEXT NOT NULL
+  repo_id          TEXT NOT NULL REFERENCES kap10.repos(id) ON DELETE CASCADE
+  entity_id        TEXT NOT NULL          -- ArangoDB entity ID
+  entity_name      TEXT NOT NULL          -- resolved from entity graph
+  taxonomy         TEXT NOT NULL          -- VERTICAL / HORIZONTAL / UTILITY
+  feature_tag      TEXT NOT NULL          -- business swimlane
+  business_purpose TEXT NOT NULL          -- plain-English purpose text
+  model_version    TEXT NOT NULL DEFAULT 'nomic-v1.5-768'
+  embedding        vector(768)
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+
+Unique: (repo_id, entity_id, model_version)   -- version-aware idempotent upsert
+Indexes:
+  HNSW on embedding vector_cosine_ops (m=16, ef_construction=64)
+  (org_id, repo_id)                            -- tenant scoping
+  (taxonomy)                                   -- taxonomy filter
+  (feature_tag)                                -- feature filter
 ```
 
-**Embedding text construction:**
+**Port interface** (`IVectorSearch`):
+- `upsertJustificationEmbeddings(embeddings, metadata)` — writes to `justification_embeddings` with ON CONFLICT upsert
+- `searchJustificationEmbeddings(embedding, topK, { orgId, repoId, taxonomy? })` — cosine similarity search with taxonomy filter
+- `deleteJustificationEmbeddings(repoId)` — cleanup on re-justification
+
+**Embedding text construction** (in `embedJustifications` activity):
 ```typescript
-function buildJustificationEmbeddingText(j: Justification): string {
-  const parts = [j.purpose, j.businessValue];
-  if (j.featureArea) parts.push(j.featureArea);
-  if (j.tags.length) parts.push(j.tags.join(" "));
-  return parts.join(". ");
-}
+// Rich text combining all business context for maximum retrieval quality
+const text = `${j.taxonomy}: ${j.business_purpose}. Concepts: ${j.domain_concepts.join(", ")}. Feature: ${j.feature_tag}`
+```
+
+**Data flow**:
+```
+embedJustifications activity
+  → graphStore.getJustifications()          (ArangoDB: taxonomy, purpose, concepts, feature_tag)
+  → graphStore.getAllEntities()              (ArangoDB: resolve entity_id → entity name)
+  → vectorSearch.embed(texts)               (ONNX nomic-embed-text-v1.5, local CPU)
+  → vectorSearch.upsertJustificationEmbeddings(embeddings, metadata)
+                                            (pgvector: justification_embeddings table)
+
+search_by_purpose MCP tool
+  → vectorSearch.embedQuery(query)          (query encoding with "search_query:" prefix)
+  → vectorSearch.searchJustificationEmbeddings(embedding, topK, { orgId, repoId, taxonomy? })
+                                            (pgvector: cosine similarity + taxonomy filter)
+  → returns typed results with entityId, entityName, taxonomy, featureTag, businessPurpose, score
 ```
 
 ---
@@ -825,7 +880,7 @@ function buildJustificationEmbeddingText(j: Justification): string {
 
 | # | Failure Scenario | Probability | Impact | Detection | Recovery Strategy |
 |---|-----------------|-------------|--------|-----------|-------------------|
-| 1 | **OpenAI API rate limit** during batch justification | High (at scale) | Level processing pauses. Entities in that batch unjustified. | HTTP 429 from OpenAI. Vercel AI SDK throws `APICallError`. | Temporal activity retries with exponential backoff (initial: 5s, max: 60s, factor: 2). After 3 retries on OpenAI, automatic fallback to `claude-3-5-haiku` for that entity. Rate limit budget: cap at 500 RPM (OpenAI Tier 2) with semaphore. |
+| 1 | **LLM API rate limit** during batch justification | High (at scale) | Level processing pauses. Entities in that batch unjustified. | HTTP 429 from provider. Vercel AI SDK throws `APICallError`. | Three-layer protection: (1) Proactive sliding-window rate limiter (`lib/llm/rate-limiter.ts`, default 15 RPM for Gemini free tier) blocks before sending requests. (2) `VercelAIProvider.retryWithBackoff()` retries up to 5× with exponential delay + jitter on 429. (3) Activity-level cooldown: 30s pause + 4s delay between individual retries when batch fails with 429. Alternatively, use `LLM_PROVIDER=ollama` for unlimited local inference. |
 | 2 | **OpenAI API 500/502/503** — transient server error | Medium | Single entity justification fails. | Non-429 error from Vercel AI SDK. | Retry 3 times with 10s backoff. If still failing: fallback to Anthropic. If both fail: mark entity as `justification_failed` (nullable fields in ArangoDB), log to `token_usage_log` with `cost_usd: 0` and `error` field. Continue processing remaining entities. |
 | 3 | **LLM returns invalid justification** — structured output fails Zod validation | Low (Vercel AI SDK handles this) | Single entity gets garbage justification. | `generateObject` throws `ZodError` or `JSONParseError`. | Vercel AI SDK automatically retries with a corrective prompt ("Your response didn't match the expected schema. Here are the errors: ..."). Up to 3 auto-retries. If still invalid: mark entity as `justification_failed`. |
 | 4 | **Topological sort OOM** on large repos (50K+ entities) | Low–Medium | `topoSort` activity crashes. Workflow fails. | Temporal activity timeout (heartbeat stops). OOM kill signal. | `topoSort` runs on `heavy-compute-queue` with 4 GB memory. For repos exceeding memory: stream edges from ArangoDB in batches (cursor-based) instead of loading all into memory. Fallback: process entities in file-path order (lose hierarchical context but avoid OOM). |
@@ -2081,6 +2136,242 @@ Implemented in `ArangoGraphStore` with chunked AQL (50 IDs per chunk). Fake impl
 
 ---
 
+## Justification Quality Overhaul & Entity Browsing (Post-Wow)
+
+A comprehensive overhaul addressing quality gaps that compromised the richness of code intelligence. The core problem: aggressive heuristic skipping (~40% of entities never saw an LLM), truncated source code, and a degraded ad-hoc prompt in `cascadeReJustify` produced hollow justifications during incremental indexing. Additionally, entity data was invisible to users — no browsing UI, and the detail API silently dropped justification fields.
+
+### Overhaul 1: Source Code Extraction — 500 → 3000 Lines
+
+**Problem:** `MAX_BODY_LINES = 500` meant large functions/classes were truncated at extraction time. The LLM never saw the full implementation, degrading classification accuracy for complex entities.
+
+**Why 3000:** Matches the upper bound of what modern LLMs can reason about in a single entity context. Most entities are well under 100 lines — the limit only matters for genuinely large files/classes. The tradeoff (slightly larger ArangoDB documents) is negligible compared to the quality improvement.
+
+**Files:** `lib/indexer/types.ts`
+
+### Overhaul 2: Prompt-Level Truncation — 3x-4x Increase
+
+**Problem:** Even when full source code was stored, the prompt builder aggressively truncated before sending to the LLM. Standard tier sent only 3000 chars (~850 tokens) — barely enough for a medium function. Modern LLMs have 40K-1M token context windows; we were using <1% of available capacity.
+
+**Solution:** Increased per-tier body truncation limits:
+
+| Tier | Before | After | ~Tokens |
+|------|--------|-------|---------|
+| Fast | 1,500 chars | 4,000 chars | ~1,100 |
+| Standard | 3,000 chars | 8,000 chars | ~2,300 |
+| Premium | 4,000 chars | 12,000 chars | ~3,400 |
+
+Also increased batch prompt per-entity body from 10 lines to 30 lines.
+
+**Files:** `lib/justification/prompt-builder.ts`
+
+### Overhaul 3: Heuristic Skip → Heuristic Hint (Zero-Skip Policy)
+
+**Problem:** `applyHeuristics()` in `model-router.ts` auto-classified ~40% of entities (test files, config files, getters, setters, type-only, constructors, error classes, DTOs) without LLM involvement. This produced:
+- No `domain_concepts` (always empty array)
+- No `semantic_triples` (always empty array)
+- No `compliance_tags` (always empty)
+- Generic `business_purpose` from template strings
+- No `architectural_pattern`
+
+These "heuristic" entities appeared hollow in search results, entity browsing, and MCP tool responses.
+
+**Solution:** Paradigm shift from heuristic-skip to heuristic-hint:
+1. Renamed `applyHeuristics()` → `computeHeuristicHint()` (deprecated wrapper kept for backward compat)
+2. Same static analysis logic runs, but returns a **hint** — not a classification
+3. Hint is passed as context to the LLM via a new "Preliminary Analysis (Static)" prompt section
+4. LLM can agree or override based on source code analysis
+5. All entities go through the LLM pipeline — zero exceptions
+
+New type: `HeuristicHint = { taxonomy: string; featureTag: string; reason: string } | null`
+
+New prompt section injected when a hint exists:
+```
+## Preliminary Analysis (Static)
+Static analysis suggests this entity is [taxonomy] in the [featureTag] area because: [reason].
+Use these observations as starting points but override based on your source code analysis.
+```
+
+Dead code entities also get a hint: "This entity has zero inbound references and may be dead code."
+
+**Why not keep skipping for trivial entities:** Even a simple getter can have domain significance (e.g., `getAuthToken()` is VERTICAL/authentication, not UTILITY/data-access). The LLM can confirm heuristic suggestions in <100ms for simple cases while catching the exceptions that matter.
+
+**Files:** `lib/justification/model-router.ts`, `lib/temporal/activities/justification.ts`, `lib/justification/prompt-builder.ts`
+
+### Overhaul 4: `cascadeReJustify` — Full Pipeline Integration
+
+**Problem:** `cascadeReJustify` in `incremental.ts` used a degraded ad-hoc prompt during incremental indexing:
+- No graph context (callers/callees/neighbors)
+- No parent/sibling context
+- No heuristic hints
+- No test context
+- No dependency justifications
+- No structured output schema (`JustificationResultSchema`)
+- No quality scoring or body hashing
+- Produced empty `domain_concepts`, `feature_tag`, `semantic_triples`, `compliance_tags`
+
+Every incremental reindex produced hollow justifications for affected entities, creating a widening quality gap over time.
+
+**Solution:** Replaced the ad-hoc prompt with the full justification pipeline:
+1. Load all entities, edges, ontology, previous justifications (same data as `justifyBatch`)
+2. Build graph contexts via `buildGraphContexts`
+3. Build parent/sibling context
+4. Compute heuristic hint (hint-only, no skip)
+5. Build test context
+6. Gather dependency justifications
+7. Use `buildJustificationPrompt` for the prompt
+8. Use `JustificationResultSchema` for structured output
+9. Run `computeBodyHash` and `scoreJustification`
+10. Store via `bulkUpsertJustifications` — all fields populated
+11. Re-embed with enriched text (Overhaul 5)
+
+Import additions: `buildGraphContexts`, `buildJustificationPrompt`, `JUSTIFICATION_SYSTEM_PROMPT`, `JustificationResultSchema`, `computeHeuristicHint`, `computeBodyHash`, `scoreJustification`, `normalizeJustifications`, `buildTestContext`, `detectDeadCode`
+
+**Files:** `lib/temporal/activities/incremental.ts`
+
+### Overhaul 5: Enriched Justification Embeddings
+
+**Problem:** Justification embeddings contained only ~30 tokens of metadata:
+```
+VERTICAL: Handles user registration. Concepts: user_management. Feature: user_registration
+```
+This was too thin for meaningful semantic search. Queries like "user registration with email verification" couldn't match because the embedding lacked entity context.
+
+**Solution:** Enriched embedding text to ~150-200 tokens per entity:
+```
+Function: createUser
+File: src/api/users.ts
+Taxonomy: VERTICAL
+Purpose: Handles new user registration with email verification and welcome email dispatch.
+Concepts: user_management, registration, email_verification
+Feature: user_registration
+Signature: async function createUser(data: CreateUserInput): Promise<User>
+<first 500 chars of source body>
+```
+
+Implementation:
+- Entity metadata: `kind`, `name`, `file_path`, `signature`
+- Justification fields: `taxonomy`, `business_purpose`, `domain_concepts`, `feature_tag`
+- Source code: first 500 chars of `body`
+- Total capped at 1500 chars per entity
+
+Applied in both `embedJustifications` (full pipeline) and `cascadeReJustify` (incremental re-embed).
+
+**Files:** `lib/temporal/activities/justification.ts`, `lib/temporal/activities/incremental.ts`
+
+### Overhaul 6: Entity Detail API — Return Justification
+
+**Problem:** The entity detail API (`GET /api/repos/{repoId}/entities/{entityId}`) fetched the justification from ArangoDB but only extracted the `quality_score` — it never returned taxonomy, purpose, featureTag, domainConcepts, semanticTriples, complianceTags, or architecturalPattern to the client.
+
+**Solution:** Added `justification` field to the API response:
+```typescript
+justification: {
+  taxonomy, confidence, businessPurpose, domainConcepts,
+  featureTag, semanticTriples, complianceTags,
+  architecturalPattern, modelTier, modelUsed
+}
+```
+
+**Files:** `app/api/repos/[repoId]/entities/[entityId]/route.ts`
+
+### Overhaul 7: Entity Listing API + Graph Store Join
+
+**Problem:** No way to list entities with their justification data. The existing entities route required a `?file=` param and returned raw entities without justification context.
+
+**Solution:** Three-layer implementation:
+
+**7a. Graph Store Interface** — New `getEntitiesWithJustifications` method:
+```typescript
+getEntitiesWithJustifications(orgId, repoId, opts?: {
+  kind?, taxonomy?, featureTag?, search?, offset?, limit?
+}): Promise<{ entities: Array<EntityDoc & { justification?: JustificationDoc }>; total: number }>
+```
+
+**7b. ArangoDB Implementation** — Single AQL query with:
+- `UNION` across all 5 entity collections (files, functions, classes, interfaces, variables)
+- `LEFT JOIN` with justifications collection (`valid_to == null` for current version)
+- Dynamic filters: `kind`, `taxonomy` (via justification), `featureTag` (via justification), `search` (LIKE on entity name)
+- `LIMIT/OFFSET` for pagination, `COLLECT WITH COUNT` for total
+
+**7c. Entity Listing Route** — `GET /api/repos/{repoId}/entities` now supports two modes:
+- With `?file=` param: existing behavior (entities by file path)
+- Without `?file=`: paginated entity list with justification summaries
+- Query params: `kind`, `taxonomy`, `featureTag`, `search`, `page` (default 1), `limit` (default 50, max 200)
+
+**Files:** `lib/ports/graph-store.ts`, `lib/adapters/arango-graph-store.ts`, `lib/di/fakes.ts`, `app/api/repos/[repoId]/entities/route.ts`
+
+### Overhaul 8: Entity Browsing Page
+
+**Problem:** No UI for browsing entities. Users had no way to see which entities were classified, explore by taxonomy, or verify justification quality.
+
+**Solution:** New entity browsing page at `/repos/{repoId}/entities`:
+
+**Layout:**
+- **3 stat cards** (top): VERTICAL count (cyan), HORIZONTAL count (purple), UTILITY count (amber). Clickable to filter by taxonomy.
+- **Filters row**: Search input + Kind dropdown (function, class, method, interface, etc.)
+- **Glass-card table**: Name, Kind badge, File path, Taxonomy badge, Confidence %, Feature tag badge, Business purpose (truncated 80 chars)
+- **Pagination**: Page navigation at bottom
+- Click row → navigate to `/repos/{repoId}/entities/{entityId}`
+- Empty state: "No entities found. Run indexing and justification first."
+
+**Tab integration:** Added "Entities" tab (Layers icon) to `repo-tabs.tsx` between Code and Blueprint.
+
+**New files:**
+- `app/(dashboard)/repos/[repoId]/entities/page.tsx` — Server component with auth check
+- `components/entity/entity-browse-view.tsx` — Client component with full browsing UI
+
+**Modified files:**
+- `components/repo/repo-tabs.tsx` — Added Entities tab
+
+### Overhaul 9: `reasoning` Field + Enriched Call Graph Context
+
+**Problem:** Code-synapse captures a `reasoning` field — the LLM's chain-of-evidence explaining WHY it chose a taxonomy, feature tag, and business purpose. This was missing from our pipeline. Additionally, the function prompt's call graph section showed bare callee/caller names without their already-known business purposes, missing an opportunity for more cohesive context.
+
+**Solution — Reasoning field:**
+1. Added `reasoning` as a required string field to both `JustificationResultSchema` and `BatchJustificationItemSchema` in `schemas.ts`
+2. Added `reasoning` to prompt instructions (both single-entity and batch) — LLM must explain its classification choices with 2-3 sentences referencing code patterns, naming conventions, or architectural signals
+3. Stored `reasoning` in all 3 result push sites in `justifyBatch`, in `retrySingleEntity`, and in `cascadeReJustify`
+4. Fallback justifications include reasoning about the failure: `"LLM call failed: {error}"`
+5. Added reasoning to enriched embedding text (~50-100 additional tokens per entity) in both `embedJustifications` and `cascadeReJustify` re-embed
+6. Entity detail API returns `reasoning` field
+
+**Why reasoning matters:**
+- **Trust**: Users can read the reasoning and verify the LLM's logic
+- **Debuggability**: When a justification looks wrong, reasoning shows what the LLM was thinking
+- **Quality scoring**: Reasoning quality correlates with justification quality
+- **MCP context**: AI coding agents can read reasoning to understand architectural decisions
+- **Embeddings**: Reasoning text enriches semantic search with domain-specific analysis
+
+**Solution — Enriched call graph context:**
+Added `depJustificationMap` to `buildFunctionSection` — when dependency justifications are available, the function's call graph section shows purposes inline:
+```
+**Calls (outbound dependencies):**
+  - createUser (function) in src/api/users.ts — "Handles new user registration with email verification"
+```
+
+This makes the function-specific prompt section more cohesive by showing callee/caller purposes right where they're relevant, rather than only in the separate Dependency Context section.
+
+**Files:** `lib/justification/schemas.ts`, `lib/justification/prompt-builder.ts`, `lib/temporal/activities/justification.ts`, `lib/temporal/activities/incremental.ts`, `app/api/repos/[repoId]/entities/[entityId]/route.ts`
+
+### Files Summary
+
+| Change Type | File | What Changed |
+|-------------|------|-------------|
+| Modified | `lib/indexer/types.ts` | `MAX_BODY_LINES` 500 → 3000 |
+| Modified | `lib/justification/prompt-builder.ts` | Truncation limits 3-4x increase, `heuristicHint`/`isDeadCode` params, preliminary analysis section |
+| Modified | `lib/justification/model-router.ts` | `applyHeuristics` → `computeHeuristicHint`, `HeuristicHint` type export |
+| Modified | `lib/temporal/activities/justification.ts` | Zero-skip policy, enriched embeddings |
+| Modified | `lib/temporal/activities/incremental.ts` | `cascadeReJustify` full pipeline rewrite |
+| Modified | `app/api/repos/[repoId]/entities/[entityId]/route.ts` | Return justification in response |
+| Modified | `app/api/repos/[repoId]/entities/route.ts` | Dual-mode: file-based + paginated listing |
+| Modified | `lib/ports/graph-store.ts` | `getEntitiesWithJustifications` interface method |
+| Modified | `lib/adapters/arango-graph-store.ts` | AQL join implementation |
+| Modified | `lib/di/fakes.ts` | In-memory stub |
+| Modified | `components/repo/repo-tabs.tsx` | Entities tab |
+| **New** | `app/(dashboard)/repos/[repoId]/entities/page.tsx` | Entity browse page |
+| **New** | `components/entity/entity-browse-view.tsx` | Entity browse client component |
+
+---
+
 ## Revision Log
 
 | Date | Author | Change |
@@ -2091,3 +2382,6 @@ Implemented in `ArangoGraphStore` with chunked AQL (50 IDs per chunk). Fake impl
 | 2026-02-23 | Claude | **Pipeline intelligence improvements (8 phases).** (1) Dual-constraint batching with per-model output token limits — eliminates truncated LLM responses. (2) Entity-specific prompt templates — function/class/file/interface each get specialized context sections. (3) Batched subgraph queries — 10-50x faster graph context via single AQL per chunk. (4) Content-hash staleness detection — 60-80% fewer LLM calls on re-justification via body_hash + cascading invalidation. (5) Richer embedding text — justification purpose/domain/callers/callees in embedding text for semantic search. (6) Dead code detection (graph-based, no LLM) + quality scoring heuristics. (7) Bi-directional context propagation — 3-pass bottom-up/top-down/re-aggregate for coherent hierarchy. (8) Parallel level processing — large topo levels split into 100-entity chunks via Promise.all(). New files: `staleness-checker.ts`, `dead-code-detector.ts`, `quality-scorer.ts`, `context-propagator.ts`. Workflow now 10 steps. 83/83 justification tests pass. Build succeeds. |
 | 2026-02-23 | Claude | **Justification pipeline quality improvements (6 phases).** (1) **Doc comment extraction**: New `lib/indexer/doc-extractor.ts` shared utility; integrated into TS, Python, Go parsers and SCIP post-pass; `doc` field now populated on entities. (2) **Callee/caller justification context**: Prompt now shows both callee purposes (up to 8) and caller purposes (up to 5) instead of bare dependency names. (3) **Function metadata**: `is_async`, `parameter_count`, `return_type`, `complexity` extracted by all parsers; complexity used for model routing (≥10 → premium) and trivial filtering (=1 && ≤5 LOC → UTILITY). (4) **Project-level context**: `extractProjectContext` reads package.json/pyproject.toml/go.mod during ontology discovery; project name, description, domain, and tech stack injected into every prompt. (5) **Import edge enrichment**: TS parser extracts `imported_symbols`, `import_type`, `is_type_only` on import edges; graph context shows imported symbols for import neighbors. (6) **Architectural pattern**: New `architecturalPattern` enum field (`pure_domain`/`pure_infrastructure`/`adapter`/`mixed`/`unknown`) in Zod schemas, stored as `architectural_pattern` on justification docs. Updated prompt template, canonical constraints, ArangoDB schema, and post-processing pipeline in this doc. |
 | 2026-02-23 | Claude | **Post-Onboarding "Wow" Experience — surface hidden intelligence.** See [PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](./PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md) for full details. Phase 4 changes: (1) **Health report expanded 4→13 risk types**: `buildHealthReport()` now accepts optional `entities`/`edges` params; 9 new graph-based risk detectors added (dead_code, architectural_violation, low_quality_justification, high_fan_in, high_fan_out, circular_dependency, taxonomy_anomaly, confidence_gap, missing_justification). Each risk now carries optional `category`, `affectedCount`, and `entities[]` fields. (2) **HealthRiskSchema extended** in `schemas.ts` and `HealthReportDoc` in `types.ts`. (3) **Activity/workflow updated**: `buildAndStoreHealthReport()` now receives full `FetchedData` (entities + edges) instead of just justifications; `generate-health-report.ts` workflow call site updated. (4) **Health insights API** (`/api/repos/{repoId}/health/insights`) runs live expanded analysis with health grade (A-F). (5) **Redesigned health report UI** with grade hero, category sections (Dead Code/Architecture/Quality/Complexity/Taxonomy), expandable InsightCards with fix guidance and one-click rule creation. (6) **ADR browser** page + API (`/api/repos/{repoId}/adrs`, `/repos/{repoId}/adrs`). (7) **Domain glossary** page + API (`/api/repos/{repoId}/glossary`, `/repos/{repoId}/glossary`) with searchable ubiquitous language table and term cloud. (8) **Enhanced entity detail**: quality score badge, architectural pattern badge, dead code warning, propagated context display. (9) **Overview page redesign**: hero stats (grade, entities, features, insights), top 3 insights, domain intelligence, quick navigation. New files: 12. Modified files: 8. |
+| 2026-02-24 | Claude | **Pipeline hardening: quality scoring, semantic cascading, tag dedup, backoff (7 changes).** (1) **Quality scorer: reasoning validation** — checks length ≥80, not a copy of businessPurpose, must reference code signals. (2) **Confidence/taxonomy alignment** — flags low-confidence VERTICAL (risky), high-confidence UTILITY with no concepts (suspicious), VERTICAL with <2 concepts. (3) **Architectural pattern cross-check** — flags pure_domain with no domain concepts. (4) **MCP tools return reasoning** — `get_business_context` and `analyze_impact` now expose reasoning + architecturalPattern. (5) **Quality-based re-justification** — entities with quality_score < 0.4 or fallback_justification flag always re-justified regardless of body hash. (6) **Semantic cascading** — extracts normalized keywords (taxonomy + feature_tag + domain_concepts + purpose words) and computes Jaccard similarity; only cascades if similarity < 0.75 (meaning actually changed, not just rephrased). (7) **Feature tag deduplication** — Levenshtein distance clustering merges similar tags (e.g., "user_auth" + "user_authentication" → canonical). (8) **Exponential backoff** — batch LLM failures retry 3x with 2s/8s/30s delays before falling to individual retries. Modified files: 6. 909 tests pass. |
+| 2026-02-24 | Claude | **`reasoning` field + enriched call graph context.** (1) Added `reasoning` as required string field to `JustificationResultSchema` and `BatchJustificationItemSchema`. (2) Updated prompt instructions (single + batch) to require chain-of-evidence reasoning. (3) Stored reasoning in all result push sites (justifyBatch single/batch/retry, cascadeReJustify, fallback). (4) Added reasoning to enriched embeddings (~50-100 extra tokens). (5) Entity detail API returns reasoning field. (6) Function prompt call graph section now shows callee/caller purposes inline via `depJustificationMap`. Modified files: 6. |
+| 2026-02-24 | Claude | **Justification quality overhaul & entity browsing (8 changes).** (1) `MAX_BODY_LINES` 500→3000 — large entities no longer truncated at extraction. (2) Prompt truncation limits 3-4x increase (fast: 4K, standard: 8K, premium: 12K chars). (3) **Zero-skip policy** — `applyHeuristics` → `computeHeuristicHint`; all entities go to LLM with hints as context, no heuristic short-circuit. (4) `cascadeReJustify` rewritten with full pipeline (graph contexts, structured output, quality scoring) — eliminates hollow incremental justifications. (5) Justification embeddings enriched from ~30 to ~150-200 tokens (entity name, kind, file, signature, source snippet). (6) Entity detail API returns full justification (taxonomy, purpose, concepts, triples, compliance, pattern). (7) New `getEntitiesWithJustifications` graph store method with AQL UNION + LEFT JOIN across 5 collections. (8) Entity browsing page (`/repos/{repoId}/entities`) with taxonomy stat cards, filterable table, pagination. New files: 2. Modified files: 11. Build passes. |

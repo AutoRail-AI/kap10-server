@@ -2,15 +2,23 @@
 
 import { useEffect, useState } from "react"
 import { Radio } from "lucide-react"
+import { useVisibility } from "@/hooks/use-visibility"
 
 interface McpStatusProps {
   repoId: string
 }
 
+/** MCP session count poll — 60s interval, pauses when tab hidden. */
+const POLL_INTERVAL_MS = 60_000
+
 export function McpStatus({ repoId }: McpStatusProps) {
   const [activeSessions, setActiveSessions] = useState(0)
+  const visible = useVisibility()
 
   useEffect(() => {
+    // Pause when tab is hidden
+    if (!visible) return
+
     let mounted = true
 
     async function fetchStatus() {
@@ -26,13 +34,13 @@ export function McpStatus({ repoId }: McpStatusProps) {
     }
 
     fetchStatus()
-    const interval = setInterval(fetchStatus, 30000) // Refresh every 30s
+    const interval = setInterval(fetchStatus, POLL_INTERVAL_MS)
 
     return () => {
       mounted = false
       clearInterval(interval)
     }
-  }, [repoId])
+  }, [repoId, visible])
 
   return (
     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">

@@ -73,6 +73,14 @@ export async function discoverOntologyWorkflow(input: DiscoverOntologyInput): Pr
     parentClosePolicy: ParentClosePolicy.ABANDON,
   })
 
-  wfLog("INFO", "Ontology discovery workflow complete", ctx, "Complete")
-  logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
+  await logActivities.appendPipelineLog({
+    timestamp: new Date().toISOString(),
+    level: "info",
+    phase: "ontology",
+    step: "Complete",
+    message: "Ontology discovery workflow complete",
+    meta: { repoId: input.repoId },
+  })
+  await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId })
+  console.log(`[${new Date().toISOString()}] [INFO ] [wf:discover-ontology] [${input.orgId}/${input.repoId}] Ontology discovery workflow complete`)
 }

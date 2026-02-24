@@ -2629,13 +2629,31 @@ All reindexing controls, history, and logs are consolidated into a dedicated **P
 
 ### Embedding OOM Prevention
 
-The embedding pipeline was redesigned to avoid serializing large payloads through Temporal:
+The embedding pipeline was redesigned with strict memory safety to eliminate OOM kills (exit code 137). Root cause: ONNX attention matrices scale O(n²) with sequence length — a 6000-token doc uses ~1.7GB per attention layer, causing multi-GB WASM allocations.
 
-- **Chunked file batches**: `embedRepoWorkflow` fetches lightweight file paths (`string[]`), then fans out to `processAndEmbedBatch` which processes 50 files at a time — fetching entities, building documents, generating embeddings, and storing in pgvector all inside the worker. Only file paths and entity keys cross Temporal's data converter.
-- `buildDocuments` no longer loads ALL edges via `getAllEdges()` — caller/callee enrichment skipped to prevent OOM
-- Default embedding batch size reduced from 100 to 32 (`EMBEDDING_BATCH_SIZE` env var)
-- Temporal heartbeat timeout increased from 2m to 5m; `startToCloseTimeout` from 30m to 60m
-- Light worker container memory increased from 4GB to 6GB; Node.js heap from 3072MB to 4096MB
+**Architecture (memory-safe):**
+- **Single-doc ONNX inference**: Never batch multiple docs through ONNX — each entity embedded individually to cap peak WASM memory at ~200MB
+- **512-token truncation**: `truncation: true, max_length: 512` on every `pipe()` call limits attention to `12 × 512² × 4B = 12MB/layer`
+- **`MAX_BODY_CHARS=2000`**: Text pre-truncated before tokenization (~500 tokens)
+- **Tensor disposal**: `output.dispose()` after every `tolist()` to free WASM memory immediately
+- **WASM single-thread**: `env.backends.onnx.wasm.numThreads = 1` reduces memory pressure
+- **`FILES_PER_BATCH=5`**: Small activity payloads, fast heartbeats
+- **File fallback embeddings**: Files with no code entities (configs, text files) get a file-level embedding (path + name) so every indexed file is searchable
+
+**Payload design:**
+- `embedRepoWorkflow` fetches lightweight file paths (`string[]`), fans out to `processAndEmbedBatch` with 5 files per activity
+- Each activity is self-sufficient: fetches entities, builds documents, embeds one-at-a-time, stores in pgvector
+- Only file paths and entity keys cross Temporal's data converter (~5KB per activity)
+
+**Container config:**
+- Light worker container: 6GB memory limit, `--max-old-space-size=4096 --expose-gc`
+- `EMBEDDING_MAX_TOKENS=512` (env var, configurable)
+- Heartbeat timeout: 5m; `startToCloseTimeout`: 60m
+
+**Memory safety in justification pipeline:**
+- `embedJustifications()` processes in chunks of 20 with GC between chunks
+- `justifyBatch()` frees intermediate arrays and calls GC between LLM batches
+- Fire-and-forget log activities `await`ed before workflow completion to prevent "Activity not found" warnings
 
 ### Temporal Payload Optimization (All Pipelines)
 
@@ -2644,7 +2662,7 @@ All Temporal workflows follow a "keep heavy data in the worker" principle to avo
 | Pipeline | Before | After | Max Temporal Payload |
 |----------|--------|-------|---------------------|
 | **Indexing** | Full `EntityDoc[]`/`EdgeDoc[]` arrays through workflow (25MB+) | `runSCIP`/`parseRest` write directly to ArangoDB via `writeEntitiesToGraph` helper, return only counts | ~1KB |
-| **Embedding** | All entities → all documents → all embeddings through workflow | File path chunks (50 per batch), each `processAndEmbedBatch` self-sufficient | ~5KB |
+| **Embedding** | All entities → all documents → all embeddings through workflow | File path chunks (5 per batch), each `processAndEmbedBatch` self-sufficient, single-doc ONNX inference with 512-token truncation | ~5KB |
 | **Ontology** | Full entities returned → passed to LLM → passed to store | Single `discoverAndStoreOntology` activity does everything | ~100B |
 | **Health Report** | Full entities/edges/justifications passed to 3 activities (4× serialization) | Each activity self-sufficient — fetches own data from ArangoDB | ~100B |
 | **Graph Export** | Full compact entity/edge/rule/pattern arrays through workflow | `queryAndSerializeCompactGraph` returns only compressed buffer | Buffer size |

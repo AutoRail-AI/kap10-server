@@ -37,7 +37,7 @@ export interface ParsedEntity {
 }
 
 /** Maximum number of source lines to store per entity body */
-export const MAX_BODY_LINES = 500
+export const MAX_BODY_LINES = 3000
 
 export type EntityKind =
   | "file"

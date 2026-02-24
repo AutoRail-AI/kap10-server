@@ -4,6 +4,7 @@
  */
 
 import { heartbeat } from "@temporalio/activity"
+import { randomUUID } from "node:crypto"
 import { getContainer } from "@/lib/di/container"
 import { writeEntitiesToGraph } from "@/lib/temporal/activities/graph-writer"
 import { diffEntitySets } from "@/lib/indexer/incremental"
@@ -12,7 +13,19 @@ import { buildCascadeQueue } from "@/lib/indexer/cascade"
 import { clearCallerCountCache } from "@/lib/indexer/centrality"
 import { withQuarantine } from "@/lib/indexer/quarantine"
 import { entityHash } from "@/lib/indexer/entity-hash"
-import type { ChangedFile, EntityDiff, EntityDoc, EdgeDoc, IndexEventDoc } from "@/lib/ports/types"
+import { buildGraphContexts } from "@/lib/justification/graph-context-builder"
+import {
+  buildJustificationPrompt,
+  JUSTIFICATION_SYSTEM_PROMPT,
+} from "@/lib/justification/prompt-builder"
+import { JustificationResultSchema } from "@/lib/justification/schemas"
+import { computeHeuristicHint } from "@/lib/justification/model-router"
+import { computeBodyHash } from "@/lib/justification/staleness-checker"
+import { scoreJustification } from "@/lib/justification/quality-scorer"
+import { normalizeJustifications } from "@/lib/justification/post-processor"
+import { buildTestContext } from "@/lib/justification/test-context-extractor"
+import { detectDeadCode } from "@/lib/justification/dead-code-detector"
+import type { ChangedFile, EntityDiff, EntityDoc, EdgeDoc, IndexEventDoc, JustificationDoc } from "@/lib/ports/types"
 import { LLM_MODELS } from "@/lib/llm/config"
 
 export interface PullAndDiffInput {
@@ -342,64 +355,211 @@ export async function cascadeReJustify(input: CascadeReJustifyInput): Promise<Ca
     return { cascadeStatus: "skipped", cascadeEntities: 0 }
   }
 
-  heartbeat(`re-justifying ${allKeys.length} entities`)
+  heartbeat(`re-justifying ${allKeys.length} entities via full pipeline`)
 
-  // Re-justify each entity using the justification workflow
-  for (const entityKey of allKeys) {
+  // Load all data needed for full justification pipeline
+  const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
+  const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
+  const ontology = await container.graphStore.getDomainOntology(input.orgId, input.repoId)
+  const previousJustifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
+
+  const prevJustMap = new Map<string, JustificationDoc>()
+  for (const j of previousJustifications) {
+    prevJustMap.set(j.entity_id, j)
+  }
+
+  // Build entity map and name map
+  const entityMap = new Map(allEntities.map((e) => [e.id, e]))
+  const entityNameMap = new Map<string, string>()
+  for (const e of allEntities) {
+    entityNameMap.set(e.id, e.file_path ? `${e.name} in ${e.file_path}` : e.name)
+  }
+
+  // Build parent/sibling context
+  const byParent = new Map<string, EntityDoc[]>()
+  for (const e of allEntities) {
+    const parent = e.parent as string | undefined
+    if (parent) {
+      const existing = byParent.get(parent)
+      if (existing) existing.push(e)
+      else byParent.set(parent, [e])
+    }
+  }
+
+  // Dead code detection
+  const deadCodeIds = detectDeadCode(allEntities, edges)
+
+  // Filter to entities in the cascade queue
+  const cascadeEntities = allKeys
+    .map((key) => entityMap.get(key))
+    .filter((e): e is EntityDoc => e != null)
+
+  // Build graph contexts
+  const graphContexts = await buildGraphContexts(cascadeEntities, container.graphStore, input.orgId)
+
+  const results: JustificationDoc[] = []
+  const defaultModel = LLM_MODELS.standard
+
+  for (let i = 0; i < cascadeEntities.length; i++) {
+    const entity = cascadeEntities[i]!
+    heartbeat(`cascade justifying ${i + 1}/${cascadeEntities.length}: ${entity.name}`)
+
     try {
-      const entity = await container.graphStore.getEntity(input.orgId, entityKey)
-      if (!entity) continue
+      const graphContext = graphContexts.get(entity.id) ?? { entityId: entity.id, neighbors: [] }
 
-      // Get context for re-justification
-      const subgraph = await container.graphStore.getSubgraph(input.orgId, entityKey, 1)
-      const context = {
-        entity,
-        callers: subgraph.entities.filter((e) => e.id !== entityKey),
-        edges: subgraph.edges,
+      // Compute heuristic hint (context for LLM, not a skip)
+      const heuristicHint = computeHeuristicHint(entity)
+      const isDeadCode = deadCodeIds.has(entity.id)
+
+      // Build test context
+      const testContext = buildTestContext(entity.id, allEntities, edges)
+
+      // Parent justification
+      const parentName = entity.parent as string | undefined
+      let parentJustification: JustificationDoc | undefined
+      let siblingNames: string[] | undefined
+      if (parentName) {
+        const parentEntity = allEntities.find(
+          (e) => e.name === parentName && (e.kind === "class" || e.kind === "struct" || e.kind === "interface")
+        )
+        if (parentEntity) parentJustification = prevJustMap.get(parentEntity.id)
+        const siblings = byParent.get(parentName)
+        if (siblings && siblings.length > 1) {
+          siblingNames = siblings.filter((s) => s.id !== entity.id).map((s) => s.name)
+        }
       }
 
-      // Use LLM for re-justification
-      const prompt = `Re-evaluate the business purpose of this code entity after a change:
-Name: ${entity.name}
-Kind: ${entity.kind}
-File: ${entity.file_path}
-Connected entities: ${context.callers.map((c) => c.name).join(", ")}
+      // Gather dependency justifications
+      const calleeJustifications: JustificationDoc[] = []
+      const callerJustifications: JustificationDoc[] = []
+      for (const neighbor of graphContext.neighbors) {
+        const j = prevJustMap.get(neighbor.id)
+        if (j) {
+          if (neighbor.direction === "outbound") calleeJustifications.push(j)
+          else callerJustifications.push(j)
+        }
+      }
 
-Provide a brief business purpose.`
+      // Build full prompt
+      const prompt = buildJustificationPrompt(
+        entity,
+        graphContext,
+        ontology,
+        calleeJustifications,
+        testContext,
+        {
+          entityNameMap,
+          parentJustification,
+          siblingNames,
+          callerJustifications,
+          heuristicHint: heuristicHint ? { taxonomy: heuristicHint.taxonomy, featureTag: heuristicHint.featureTag, reason: heuristicHint.reason } : undefined,
+          isDeadCode,
+        }
+      )
 
-      const result = await container.llmProvider.generateObject({
-        schema: {
-          parse: (v: unknown) => v as { business_purpose: string; taxonomy: string; confidence: number },
-        },
+      const llmResult = await container.llmProvider.generateObject({
+        model: defaultModel,
+        schema: JustificationResultSchema,
         prompt,
-        model: LLM_MODELS.standard,
+        system: JUSTIFICATION_SYSTEM_PROMPT,
+        temperature: 0.1,
       })
 
-      // Update justification in graph store
-      const justification = {
-        id: `just-${entityKey}-${Date.now()}`,
+      const now = new Date().toISOString()
+      const justification: JustificationDoc = {
+        id: randomUUID(),
         org_id: input.orgId,
         repo_id: input.repoId,
-        entity_id: entityKey,
-        taxonomy: (result.object.taxonomy as "VERTICAL" | "HORIZONTAL" | "UTILITY") || "UTILITY",
-        confidence: result.object.confidence || 0.5,
-        business_purpose: result.object.business_purpose || "",
-        domain_concepts: [],
-        feature_tag: "",
-        semantic_triples: [],
-        compliance_tags: [],
-        model_tier: "fast" as const,
-        model_used: LLM_MODELS.standard,
-        valid_from: new Date().toISOString(),
+        entity_id: entity.id,
+        taxonomy: llmResult.object.taxonomy,
+        confidence: llmResult.object.confidence,
+        business_purpose: llmResult.object.businessPurpose,
+        domain_concepts: llmResult.object.domainConcepts,
+        feature_tag: llmResult.object.featureTag,
+        semantic_triples: llmResult.object.semanticTriples,
+        compliance_tags: llmResult.object.complianceTags ?? [],
+        architectural_pattern: llmResult.object.architecturalPattern,
+        model_tier: "standard",
+        model_used: defaultModel,
+        valid_from: now,
         valid_to: null,
-        created_at: new Date().toISOString(),
+        created_at: now,
+      }
+      ;(justification as Record<string, unknown>).reasoning = llmResult.object.reasoning
+
+      // Attach body_hash for staleness detection
+      ;(justification as Record<string, unknown>).body_hash = computeBodyHash(entity)
+
+      // Score quality
+      const quality = scoreJustification(justification)
+      ;(justification as Record<string, unknown>).quality_score = quality.score
+      if (quality.flags.length > 0) {
+        ;(justification as Record<string, unknown>).quality_flags = quality.flags
       }
 
-      await container.graphStore.bulkUpsertJustifications(input.orgId, [justification])
-      heartbeat(`justified ${entityKey}`)
+      results.push(justification)
+      heartbeat(`justified ${entity.name}`)
     } catch (error: unknown) {
       // Log and continue — don't fail the whole cascade for one entity
-      console.error(`Cascade re-justify failed for ${entityKey}:`, error instanceof Error ? error.message : String(error))
+      console.error(`Cascade re-justify failed for ${entity.name}:`, error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  // Store all results at once
+  if (results.length > 0) {
+    const normalized = normalizeJustifications(results)
+    await container.graphStore.bulkUpsertJustifications(input.orgId, normalized)
+  }
+
+  // Re-embed justifications into dedicated justification_embeddings table
+  if (container.vectorSearch.upsertJustificationEmbeddings) {
+    try {
+      heartbeat("re-embedding justifications")
+      const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
+      const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
+      const entityMap = new Map(allEntities.map((e) => [e.id, e]))
+
+      // Only re-embed the entities we just re-justified
+      const reJustifiedSet = new Set(allKeys)
+      const toEmbed = justifications.filter((j) => reJustifiedSet.has(j.entity_id))
+
+      if (toEmbed.length > 0) {
+        const texts = toEmbed.map((j) => {
+          const entity = entityMap.get(j.entity_id)
+          const parts: string[] = []
+          if (entity) {
+            parts.push(`${entity.kind}: ${entity.name}`)
+            parts.push(`File: ${entity.file_path}`)
+          }
+          parts.push(`Taxonomy: ${j.taxonomy}`)
+          parts.push(`Purpose: ${j.business_purpose}`)
+          if (j.domain_concepts.length > 0) parts.push(`Concepts: ${j.domain_concepts.join(", ")}`)
+          parts.push(`Feature: ${j.feature_tag}`)
+          if ((j as Record<string, unknown>).reasoning) parts.push(`Reasoning: ${String((j as Record<string, unknown>).reasoning)}`)
+          if (entity?.signature) parts.push(`Signature: ${String(entity.signature)}`)
+          if (entity?.body) parts.push(String(entity.body).slice(0, 500))
+          const text = parts.join("\n")
+          return text.length > 1500 ? text.slice(0, 1500) : text
+        })
+        const embeddings = await container.vectorSearch.embed(texts)
+        const metadata = toEmbed.map((j) => {
+          const entity = entityMap.get(j.entity_id)
+          return {
+            orgId: j.org_id,
+            repoId: j.repo_id,
+            entityId: j.entity_id,
+            entityName: entity?.name ?? j.feature_tag,
+            taxonomy: j.taxonomy,
+            featureTag: j.feature_tag,
+            businessPurpose: j.business_purpose,
+          }
+        })
+        await container.vectorSearch.upsertJustificationEmbeddings(embeddings, metadata)
+        heartbeat(`re-embedded ${toEmbed.length} justifications`)
+      }
+    } catch (error: unknown) {
+      // Non-fatal — embeddings can be rebuilt on next full justification run
+      console.error("Cascade re-embed failed:", error instanceof Error ? error.message : String(error))
     }
   }
 

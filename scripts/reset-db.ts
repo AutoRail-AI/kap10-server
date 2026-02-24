@@ -6,12 +6,9 @@
  * Requires: SUPABASE_DB_URL in .env.local (or DATABASE_URL).
  */
 
-import { config } from "dotenv"
-import { Pool } from "pg"
-import path from "node:path"
+import "./load-env"
 
-config({ path: path.resolve(process.cwd(), ".env.local"), quiet: true })
-config({ path: path.resolve(process.cwd(), ".env"), quiet: true })
+import { Pool } from "pg"
 
 function getDbUrl(): string | undefined {
   return process.env.SUPABASE_DB_URL ?? process.env.DATABASE_URL

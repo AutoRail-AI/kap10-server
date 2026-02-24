@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
+import { useVisibility } from "./use-visibility"
 
 export interface PipelineLogEntry {
   timestamp: string
@@ -17,6 +18,14 @@ interface UsePipelineLogsResult {
   source: "live" | "archived" | "none"
 }
 
+const POLL_INTERVAL_MS = 4_000
+
+/**
+ * Polls pipeline logs while enabled.
+ * Pauses automatically when the browser tab is hidden.
+ * Prefer `useRepoEvents` (SSE) for active pipelines — this hook
+ * serves as a fallback for archived/terminal-state logs.
+ */
 export function usePipelineLogs(
   repoId: string,
   enabled: boolean
@@ -25,6 +34,7 @@ export function usePipelineLogs(
   const [loading, setLoading] = useState(true)
   const [source, setSource] = useState<"live" | "archived" | "none">("none")
   const stoppedRef = useRef(false)
+  const visible = useVisibility()
 
   const fetchLogs = useCallback(async () => {
     try {
@@ -51,6 +61,9 @@ export function usePipelineLogs(
 
   useEffect(() => {
     if (!enabled) return
+    // Pause when tab is hidden
+    if (!visible) return
+
     stoppedRef.current = false
     setLoading(true)
     fetchLogs()
@@ -61,10 +74,10 @@ export function usePipelineLogs(
         return
       }
       fetchLogs()
-    }, 4000)
+    }, POLL_INTERVAL_MS)
 
     return () => clearInterval(interval)
-  }, [repoId, enabled, fetchLogs])
+  }, [repoId, enabled, visible, fetchLogs])
 
   return { logs, loading, source }
 }

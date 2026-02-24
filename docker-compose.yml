@@ -125,7 +125,10 @@ services:
       - TEMPORAL_ADDRESS=temporal:7233
       - ARANGODB_URL=http://arangodb:8529
     env_file:
-      - .env.local
+      - path: .env
+        required: false
+      - path: .env.local
+        required: false
     depends_on:
       redis:
         condition: service_healthy
@@ -152,7 +155,10 @@ services:
       - TASK_QUEUE=heavy-compute-queue
       - NODE_OPTIONS=--max-old-space-size=6144
     env_file:
-      - .env.local
+      - path: .env
+        required: false
+      - path: .env.local
+        required: false
     volumes:
       - workspaces:/data/workspaces
     restart: unless-stopped
@@ -174,10 +180,13 @@ services:
       - NODE_ENV=development
       - TEMPORAL_ADDRESS=localhost:7233
       - TASK_QUEUE=light-llm-queue
-      - NODE_OPTIONS=--max-old-space-size=3072 --expose-gc
-      - EMBEDDING_BATCH_SIZE=8
+      - NODE_OPTIONS=--max-old-space-size=4096 --expose-gc
+      - EMBEDDING_MAX_TOKENS=512
     env_file:
-      - .env.local
+      - path: .env
+        required: false
+      - path: .env.local
+        required: false
     restart: unless-stopped
     deploy:
       resources:
@@ -200,7 +209,10 @@ services:
       - REDIS_URL=redis://redis:6379
       - ARANGODB_URL=http://arangodb:8529
     env_file:
-      - .env.local
+      - path: .env
+        required: false
+      - path: .env.local
+        required: false
     depends_on:
       redis:
         condition: service_healthy

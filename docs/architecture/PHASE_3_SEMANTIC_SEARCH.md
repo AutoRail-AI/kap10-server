@@ -443,7 +443,7 @@ ON kap10.entity_embeddings (repo_id, entity_key);
 | # | Failure | Detection | Recovery | Impact |
 |---|---------|-----------|----------|--------|
 | 1 | **Model load failure** — `@xenova/transformers` fails to download or load `nomic-embed-text-v1.5` ONNX model on first run | Activity throws `ModelLoadError` | Temporal retries activity (3 retries, 30s backoff). Model is cached after first successful load in `~/.cache/huggingface`. Worker restart re-downloads if cache is corrupted. | First embed is ~30s slower (model download). Subsequent embeds use cached model. |
-| 2 | **OOM during embedding** — Large entity batch causes Node.js heap exhaustion | Process crash → Temporal activity timeout | Temporal retries from last heartbeat. Reduce batch size on retry (100 → 50 → 25 entities per batch). Adaptive batch sizing based on entity body length. | Temporary delay. Automatic recovery via reduced batch size. |
+| 2 | **OOM during embedding** — ONNX WASM attention matrices scale O(n²) with sequence length | Exit code 137 (OOM kill) → Temporal activity timeout | Prevented by design: single-doc inference with 512-token truncation caps WASM peak at ~200MB. `output.dispose()` frees tensors. `MAX_BODY_CHARS=2000` pre-truncates text. If OOM still occurs, reduce `EMBEDDING_MAX_TOKENS`. | Should not occur with current design. If it does, worker auto-restarts and Temporal retries. |
 | 3 | **pgvector insert failure** — Supabase connection pool exhausted or transaction timeout | `PGVectorStore.add()` throws `ConnectionError` or `TimeoutError` | Temporal retries activity. Exponential backoff (1s, 2s, 4s). Connection pool has max 10 connections. If sustained, circuit breaker opens (fail-fast for 60s). | Embeddings delayed but not lost — entities are re-fetched and re-embedded on retry. |
 | 4 | **ArangoDB fulltext query timeout** — Complex fulltext query exceeds 5s timeout | Query timeout error from `arangojs` | Hybrid search degrades gracefully: return semantic-only results with a `_meta.degraded: true` flag. Log warning for monitoring. | User gets semantic results only. Keyword results omitted. UX is degraded but functional. |
 | 5 | **Stale embeddings after re-index** — Entities deleted in ArangoDB but embeddings remain in pgvector | Orphaned rows detected by `deleteOrphanedEmbeddings` step | The `embedRepoWorkflow` always runs `deleteOrphanedEmbeddings` as its final activity. This compares current ArangoDB entity keys against pgvector entity keys and deletes orphans. | Search may briefly return stale results during the re-embed window. Acceptable — eventual consistency. |
@@ -504,26 +504,44 @@ RUN node -e "const { pipeline } = require('@xenova/transformers'); pipeline('fea
 
 | Operation | Target | Bottleneck | Mitigation |
 |-----------|--------|------------|------------|
-| **Single entity embedding** | <20ms | ONNX inference on CPU | Batch embeddings (amortize model load). nomic-embed-text-v1.5 is optimized for CPU inference via ONNX. |
-| **Batch embedding (100 entities)** | <2s | Sequential inference in `@xenova/transformers` | Process batches in parallel across Temporal activity executions (fan-out pattern). Each activity handles one batch. |
-| **Full repo embedding (5K entities)** | <3 min | Total inference time + pgvector insert | 50 batches × 2s = 100s inference + 50 × 200ms insert = 10s. Well within budget. |
-| **Full repo embedding (50K entities — large monorepo)** | <15 min | Total inference + insert at scale | 500 batches. Consider parallelizing across multiple activity executions (Temporal fan-out). |
+| **Single entity embedding** | <50ms | ONNX inference on CPU | Single-doc inference with 512-token truncation. nomic-embed-text-v1.5 optimized for CPU via ONNX. |
+| **Batch embedding (10 entities)** | <500ms | Sequential single-doc inference in `@xenova/transformers` | Each entity embedded individually to prevent ONNX WASM OOM. |
+| **Full repo embedding (5K entities)** | <5 min | Total inference time + pgvector insert | ~500 entities per activity × 10 activities. Each activity processes 5 files. |
+| **Full repo embedding (50K entities — large monorepo)** | <30 min | Total inference + insert at scale | Fan-out across Temporal activities with 5 files per batch. |
 | **Semantic search (pgvector)** | <100ms | pgvector ANN search + SQL overhead | HNSW index. For repos <100K entities, exact search is <50ms. |
 | **Keyword search (ArangoDB)** | <50ms | Fulltext index query | ArangoDB fulltext index already optimized in Phase 2. |
 | **Hybrid search (full pipeline)** | <300ms | Serial: embed query + pgvector + ArangoDB + RRF + graph enrichment | Parallelize pgvector and ArangoDB queries (Promise.all). Graph enrichment batches N-hop lookups. |
-| **Query embedding** | <50ms | Single-vector inference | Trivial — one forward pass of the embedding model. |
+| **Query embedding** | <50ms | Single-vector inference with 512-token truncation | Trivial — one forward pass of the embedding model. |
 | **Dashboard search (E2E)** | <500ms | API route + hybrid search + JSON serialization | Client-side debounce (300ms) prevents excessive queries during typing. Server cache (Redis) for repeated queries. |
 
-### Memory Budget
+### Memory Budget (OOM-safe design)
+
+ONNX attention matrices scale **O(n²)** with sequence length. At 8192 tokens, a single inference allocates ~1.7GB per attention layer. To prevent OOM (exit code 137), the embedding pipeline enforces strict memory bounds:
 
 | Component | Memory | Notes |
 |-----------|--------|-------|
 | nomic-embed-text-v1.5 ONNX model (loaded) | ~500 MB | Loaded once per worker process, shared across all embedding operations |
-| Batch of 100 entity Documents (in-memory) | ~5-20 MB | Depends on entity body sizes. Freed after each batch. |
-| 100 embedding vectors (768-dim, float32) | ~0.3 MB | Trivial |
-| pgvector connection pool | ~10 MB | 10 connections × ~1 MB each |
+| Single-doc ONNX inference (512 tokens) | ~200 MB peak | Attention: `12 × 512² × 4B = 12MB/layer`. Freed after each doc via `output.dispose()`. |
+| Entity document text | ~2 KB | `MAX_BODY_CHARS=2000` (~500 tokens). Tokenizer truncates to `EMBEDDING_MAX_TOKENS=512`. |
+| pgvector connection pool | ~10 MB | 5 connections × ~1 MB each |
+| Worker base overhead | ~300 MB | Node.js + Temporal SDK + WASM runtime |
 
-**Total light-llm-queue worker memory (Phase 3):** ~600 MB baseline + ~20 MB per batch. The worker should have at least 1 GB allocated (already established in Phase 0).
+**Total light-llm-queue worker memory (Phase 3):** ~1 GB baseline + ~200 MB peak during inference. Container limit: 6 GB (generous headroom).
+
+**Key memory safety rules:**
+1. **Single-doc inference** — never batch multiple docs through ONNX (quadratic attention memory)
+2. **512-token truncation** — `truncation: true, max_length: 512` on every `pipe()` call
+3. **Tensor disposal** — `output.dispose()` after every `tolist()` extraction
+4. **WASM single-thread** — `env.backends.onnx.wasm.numThreads = 1`
+5. **Explicit GC** — `global.gc()` every 5 docs and between activity batches
+6. **File fallback** — files with no code entities get a file-level embedding (path + name)
+
+**Embedding env vars:**
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `EMBEDDING_MAX_TOKENS` | `512` | Max tokens per ONNX inference call |
+| `EMBEDDING_DIMENSIONS` | `768` | Target dimensions (Matryoshka truncation) |
+| `EMBEDDING_MODEL_NAME` | `nomic-ai/nomic-embed-text-v1.5` | ONNX model |
 
 **Supabase storage:** Each embedding row is ~3.1 KB (768 float32 values = 3072 bytes + metadata ~100 bytes). A 10K-entity repo requires ~31 MB of pgvector storage. A 50K-entity repo requires ~155 MB. Supabase Pro plans include 8 GB of database storage — this comfortably supports hundreds of repos.
 
@@ -559,16 +577,27 @@ Phase 3 establishes the semantic search foundation that Phase 4 (Business Justif
 
 | Phase 3 artifact | Phase 4 usage |
 |-----------------|---------------|
-| **Entity embeddings (pgvector)** | Phase 4's `justifyRepoWorkflow` uses embeddings to find semantically related entities when building context for LLM justification. Instead of sending raw code to the LLM, it retrieves the top-5 similar entities as additional context ("here are related functions — what does this one do in the bigger picture?"). |
-| **Hybrid search pipeline** | Phase 4's `search_by_purpose` MCP tool is a thin wrapper around Phase 3's hybrid search with an additional LLM re-ranking step. The pipeline is reused as-is. |
-| **IVectorSearch port** | Phase 4's justification pipeline calls `vectorSearch.search()` to find semantically similar entities for context enrichment. No new port methods needed. |
-| **LlamaIndex PGVectorStore** | Phase 4 does not add new vector data — it consumes the existing embeddings. The store is read-only from Phase 4's perspective. |
-| **nomic-embed-text model** | Phase 4 may embed LLM-generated justification text for future retrieval ("find entities with similar business purpose"). This reuses the same model and pipeline — no new embedding infrastructure. |
+| **Entity embeddings (pgvector)** | Phase 4's `justifyRepoWorkflow` uses entity embeddings to find semantically related entities when building context for LLM justification. The `buildEmbeddableDocuments()` function also enriches entity embedding text with justification context (purpose, domain concepts, feature tag) when justifications are available from a previous run. |
+| **Hybrid search pipeline** | Phase 3's hybrid search (`semantic_search` MCP tool) queries `entity_embeddings` only. Phase 4 adds a separate `search_by_purpose` MCP tool that queries the dedicated `justification_embeddings` table via `searchJustificationEmbeddings()`. These are independent search paths — no shared filtering logic. |
+| **IVectorSearch port** | Phase 4 extends the port with 3 optional methods: `upsertJustificationEmbeddings()`, `searchJustificationEmbeddings()`, `deleteJustificationEmbeddings()`. These target the dedicated `kap10.justification_embeddings` table. The Phase 3 methods (`upsert`, `search`, `getEmbedding`, `deleteOrphaned`) remain unchanged and continue to target `kap10.entity_embeddings`. |
+| **nomic-embed-text model** | Phase 4 reuses the same local ONNX embedding model for justification text. Same `embed()` method, same memory-safe single-doc processing. The model is shared — only the storage destination differs. |
+
+### Phase 3 / Phase 4 Table Separation
+
+**Critical design decision:** Entity embeddings and justification embeddings are stored in **separate pgvector tables** to avoid conflating code semantics with business semantics:
+
+| Aspect | `entity_embeddings` (Phase 3) | `justification_embeddings` (Phase 4) |
+|--------|-------------------------------|--------------------------------------|
+| **What's embedded** | Entity code (name + signature + body) | Business context (taxonomy + purpose + concepts + feature) |
+| **Key column** | `entity_key` (SCIP entity ID) | `entity_id` (ArangoDB entity ID) |
+| **Metadata columns** | `entity_type`, `entity_name`, `file_path`, `text_content` | `entity_name`, `taxonomy`, `feature_tag`, `business_purpose` |
+| **Searched by** | `semantic_search`, `find_similar` MCP tools | `search_by_purpose` MCP tool |
+| **Unique constraint** | `(repo_id, entity_key, model_version)` | `(repo_id, entity_id, model_version)` |
 
 ### What Phase 3 Must NOT Do (to avoid Phase 4 rework)
 
-1. **Do not embed justification text in Phase 3.** Justifications don't exist yet — they're created in Phase 4. Phase 3 embeds entity code only. Phase 4 may add a second embedding column or a separate table for justification embeddings.
-2. **Do not add taxonomy fields to `entity_embeddings`.** The `entityType` metadata field stores the SCIP-derived kind (function, class, interface). Phase 4's VERTICAL/HORIZONTAL/UTILITY classification is a separate concept stored in ArangoDB, not pgvector.
+1. **Entity embeddings table is for code entities only.** Phase 4 justification embeddings go in the dedicated `justification_embeddings` table — never mixed into `entity_embeddings`.
+2. **Do not add taxonomy fields to `entity_embeddings`.** The `entityType` metadata field stores the SCIP-derived kind (function, class, interface). Phase 4's VERTICAL/HORIZONTAL/UTILITY classification lives in `justification_embeddings.taxonomy`.
 3. **Do not couple the embedding pipeline to any specific LLM.** Phase 3 uses local embeddings only. Phase 4 introduces Vercel AI SDK for LLM calls — these must be independent. The `IVectorSearch` port and `ILLMProvider` port are separate interfaces.
 
 ### Schema Forward-Compatibility
@@ -593,7 +622,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 ### Environment & Configuration
 
 - [x] **P3-INFRA-01: Add embedding model env vars to `env.mjs`** — S
-  - New variables: `EMBEDDING_MODEL_NAME` (default: `"nomic-ai/nomic-embed-text-v1.5"`), `EMBEDDING_DIMENSIONS` (default: `768`), `EMBEDDING_BATCH_SIZE` (default: `100`)
+  - New variables: `EMBEDDING_MODEL_NAME` (default: `"nomic-ai/nomic-embed-text-v1.5"`), `EMBEDDING_DIMENSIONS` (default: `768`), `EMBEDDING_MAX_TOKENS` (default: `512`)
   - All optional with defaults — no breaking change to existing deployments
   - **Test:** `pnpm build` succeeds. Embedding pipeline uses defaults when vars are absent.
   - **Depends on:** Nothing
@@ -758,15 +787,16 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - **Files:** `lib/temporal/activities/embedding.ts`
   - Notes: _____
 
-- [x] **P3-API-04: Create `generateEmbeds` activity** — L
-  - Batch entities into groups of `EMBEDDING_BATCH_SIZE` (default 100)
-  - For each batch: call `vectorSearch.embed(texts)` → receive vectors
-  - Report progress via Temporal heartbeat: `{ batchIndex, totalBatches, entitiesProcessed, totalEntities }`
-  - On OOM or batch failure: reduce batch size by half and retry the failed batch
-  - **Test:** 100 entities → 1 batch → 100 vectors returned. 250 entities → 3 batches → heartbeat called 3 times. Batch failure → retried with half batch size.
+- [x] **P3-API-04: Create `processAndEmbedBatch` activity** — L
+  - Process 5 files per activity invocation (`FILES_PER_BATCH=5`)
+  - For each file: fetch entities → build docs (MAX_BODY_CHARS=2000) → embed one-at-a-time (512-token truncation) → store in pgvector
+  - Files with no code entities get a file-level fallback embedding (path + name) — ensures every file is searchable
+  - Report progress via Temporal heartbeat with RSS memory info
+  - `output.dispose()` after each ONNX inference, `global.gc()` every 5 docs
+  - **Test:** 10 files with 5 entities → 5 embeddings stored. Files with only `file` kind → 1 fallback embedding. OOM impossible with 512-token truncation.
   - **Depends on:** P3-ADAPT-01, P3-API-03
-  - **Files:** `lib/temporal/activities/embedding.ts`
-  - **Acceptance:** All entities embedded. Heartbeat reports accurate progress. Adaptive batch sizing handles OOM.
+  - **Files:** `lib/temporal/activities/embedding.ts`, `lib/adapters/llamaindex-vector-search.ts`
+  - **Acceptance:** All files get at least one embedding. No OOM under any repo size. Heartbeat includes RSS.
   - Notes: _____
 
 - [x] **P3-API-05: Create `storeInPGVector` activity** — M

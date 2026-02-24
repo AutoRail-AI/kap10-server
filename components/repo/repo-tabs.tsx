@@ -12,6 +12,7 @@ import {
   GitPullRequest,
   HeartPulse,
   History,
+  Layers,
   LayoutGrid,
   Settings2,
   Shield,
@@ -23,6 +24,7 @@ import { usePathname } from "next/navigation"
 
 const tabs = [
   { label: "Code", href: "", icon: Code },
+  { label: "Entities", href: "/entities", icon: Layers },
   { label: "Blueprint", href: "/blueprint", icon: LayoutGrid },
   { label: "Patterns", href: "/patterns", icon: Fingerprint },
   { label: "Rules", href: "/rules", icon: Shield },

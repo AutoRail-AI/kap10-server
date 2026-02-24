@@ -21,8 +21,12 @@ export const POST = withAuth(async (req: NextRequest) => {
   if (!repo) {
     return errorResponse("Repo not found", 404)
   }
-  if (repo.status !== "indexing") {
-    return errorResponse("Repo is not currently indexing", 400)
+  const stopAllowed = ["indexing", "embedding", "justifying", "ontology", "pending"]
+  if (!stopAllowed.includes(repo.status)) {
+    return errorResponse(
+      `Cannot stop: repo is in '${repo.status}' state. Only active pipeline states can be stopped.`,
+      400
+    )
   }
 
   const workflowId = repo.workflowId ?? `index-${orgId}-${repoId}`

@@ -30,12 +30,16 @@ RUN pnpm prisma generate
 # The model is cached at ~/.cache/huggingface/ inside the image layer
 RUN node -e " \
   async function main() { \
-    const { pipeline } = await import('@xenova/transformers'); \
+    const { pipeline, env } = await import('@xenova/transformers'); \
+    env.backends.onnx.wasm.numThreads = 1; \
     const p = await pipeline('feature-extraction', 'nomic-ai/nomic-embed-text-v1.5'); \
-    const result = await p('warm-up test', { pooling: 'mean', normalize: true }); \
+    const result = await p('warm-up test', { pooling: 'mean', normalize: true, truncation: true, max_length: 512 }); \
     console.log('Model pre-downloaded. Output dims:', result.dims); \
   } \
   main().catch(e => { console.warn('Model pre-download skipped:', e.message); process.exit(0); }); \
 " || true
+
+# ONNX WASM config: single thread reduces memory pressure
+ENV ONNX_WASM_NUM_THREADS=1
 
 CMD ["pnpm", "temporal:worker:light"]

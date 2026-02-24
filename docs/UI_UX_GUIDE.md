@@ -932,6 +932,26 @@ Enterprise-grade pipeline experience shown on `/repos/[repoId]` while a reposito
 - ❌ Rail Purple for body text (WCAG fail — use Cloud White)
 - ❌ Rail Purple (`text-primary`) for status labels or badges — contrast fails on Void Black. Use `text-warning` (#FFB800) for in-progress states, `text-electric-cyan` for active/intelligence states.
 - **Rule: When Rail Purple is used as a background (`bg-primary`, `bg-rail-fade`), text inside MUST be white (`text-white` or `text-primary-foreground`).** Purple background + purple text = invisible. Purple background + white text = readable.
+
+**Hover Interaction Color Rules (Strict):**
+
+Electric Cyan and Rail Purple are used as **glow** effects on hover — never as solid fills. The glow pattern uses `box-shadow` + `border` (matching `.glow-cyan` / `.glow-yellow` from `styles/tailwind.css`), not `background-color`.
+
+| Context | Hover Effect | Hover Text | Example |
+|---------|-------------|------------|---------|
+| **Prominent text links** (nav, table links) | None (text-only) | `hover:text-electric-cyan` | Nav items, repo name links |
+| **Action buttons** (copy, download, secondary) | Cyan glow: use `.hover-glow-cyan` utility class | Text auto-turns `electric-cyan` | Copy, Download buttons |
+| **Primary CTA buttons** | `bg-rail-fade` (solid gradient, no hover glow needed) | `text-white` (always) | "Add Repository", "Connect to IDE" |
+| **Ghost icon buttons** | `hover:bg-white/5` (subtle tint only) | `hover:text-white` | Kebab menu, expand/collapse |
+| **Cards / panels** | Cyan glow: `hover:shadow-glow-cyan` or purple glow: `hover:shadow-glow-purple` | Text unchanged | Stat cards, repo cards |
+| **Status pills** (in-progress) | Warning glow: `border-warning/30 bg-warning/5` | `text-warning` | Indexing, Embedding, Analyzing |
+
+**Key principles:**
+- **Glow, don't fill.** Hover highlights use `box-shadow` glow + thin `border` — never solid `background-color` fills. Fills make elements look flat and obscure text. Glows add depth while keeping text readable.
+- **Cyan glow** = action affordance. Use the `.hover-glow-cyan` utility class (defined in `styles/tailwind.css`). On hover: text turns Electric Cyan, 12px cyan box-shadow, border becomes `rgba(0,229,255,0.3)`. Apply to secondary buttons (copy, download), interactive cards. Element must have `border border-transparent` for the border transition to work.
+- **Purple glow** = structural emphasis. Use the `.hover-glow-purple` utility class. On hover: text turns Cloud White, 12px purple box-shadow, border becomes `rgba(110,24,179,0.4)`. Apply to stat cards, panels, and less prominent interactive elements.
+- **Yellow glow** = in-progress states. Applied via `border-warning/30 bg-warning/5` (the `glow-yellow` pattern).
+- **Never:** Solid cyan or purple background fills on interactive elements. Never `bg-electric-cyan` or `bg-primary` as hover states — they obliterate text contrast.
 - ❌ Muted primary content text (descriptions, body, table content)
 - ❌ Light backgrounds anywhere
 - ❌ Cyan-to-purple gradient blending

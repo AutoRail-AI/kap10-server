@@ -49,10 +49,12 @@ describe("Phase 4 Schemas", () => {
           { subject: "PaymentService", predicate: "processes", object: "transactions" },
         ],
         complianceTags: ["PCI-DSS"],
+        reasoning: "The function name and signature indicate payment processing. It calls the Stripe API and validates amounts, confirming VERTICAL classification in the payment domain.",
       })
       expect(result.taxonomy).toBe("VERTICAL")
       expect(result.confidence).toBe(0.85)
       expect(result.complianceTags).toEqual(["PCI-DSS"])
+      expect(result.reasoning).toContain("payment processing")
     })
 
     it("defaults complianceTags to empty array", () => {
@@ -63,6 +65,7 @@ describe("Phase 4 Schemas", () => {
         domainConcepts: [],
         featureTag: "testing",
         semanticTriples: [],
+        reasoning: "Simple test utility helper based on naming convention and file location in __tests__ directory.",
       })
       expect(result.complianceTags).toEqual([])
     })
@@ -76,6 +79,7 @@ describe("Phase 4 Schemas", () => {
           domainConcepts: [],
           featureTag: "x",
           semanticTriples: [],
+          reasoning: "test",
         })
       ).toThrow()
     })

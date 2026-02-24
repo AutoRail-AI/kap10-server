@@ -14,6 +14,7 @@ Step-by-step guide to run the full Kap10 platform on your machine: infrastructur
 6. [Run infrastructure](#6-run-infrastructure)
 7. [Run the application](#7-run-the-application)
 8. [Run Temporal workers (optional)](#8-run-temporal-workers-optional)
+8.5. [Ollama setup (optional — local LLM inference)](#85-ollama-setup-optional--local-llm-inference)
 9. [Verify everything works](#9-verify-everything-works)
 10. [Troubleshooting](#10-troubleshooting)
 
@@ -261,6 +262,104 @@ This starts `temporal-worker-heavy` and `temporal-worker-light` in addition to t
 
 ---
 
+## 8.5 Ollama setup (optional — local LLM inference)
+
+Ollama enables **free, unlimited local LLM inference** for the justification pipeline (Phase 4). It runs natively on macOS — **not** through Docker — and uses your Mac's Metal GPU for acceleration.
+
+### 8.5.1 Install Ollama
+
+```bash
+brew install ollama
+```
+
+### 8.5.2 Start the server
+
+```bash
+ollama serve
+```
+
+This starts the Ollama API on `http://localhost:11434`. Leave this running in a terminal.
+
+### 8.5.3 Pull models
+
+In a **separate terminal**, pull the models you need:
+
+```bash
+# Standard model — good for most justification tasks (~5GB, needs ~6GB RAM)
+ollama pull qwen3:8b
+
+# Premium model — better quality for complex entities (~18GB, needs ~20GB RAM)
+ollama pull qwen3-coder
+
+# Embedding model (if you want local embeddings too)
+ollama pull nomic-embed-text
+```
+
+**Recommended models for justification:**
+
+| Model | Size | Context | Best for |
+|-------|------|---------|----------|
+| `qwen3:8b` | 5.2GB | 40K | Default — fast, good structured output |
+| `qwen3-coder` | 18GB | 256K | Premium tier — best code understanding |
+
+**Note:** Qwen3 models support **structured JSON output** (via Ollama's OpenAI-compatible `response_format`), **tool calling**, and **thinking mode**. The Vercel AI SDK's `generateObject()` works through the OpenAI-compatible `/v1/chat/completions` endpoint.
+
+### 8.5.4 Configure environment
+
+Set in `.env.local`:
+
+```bash
+LLM_PROVIDER=ollama
+# OLLAMA_BASE_URL=http://localhost:11434/v1   # default, only change if non-standard
+```
+
+No API keys needed. Rate limiting is automatically disabled (local = unlimited).
+
+### 8.5.5 Verify Ollama is working
+
+```bash
+# Check available models
+curl http://localhost:11434/v1/models
+
+# Test structured output
+curl -X POST http://localhost:11434/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3:8b",
+    "messages": [{"role": "user", "content": "Return JSON: {\"name\": \"test\", \"value\": 42}"}],
+    "response_format": {"type": "json_object"}
+  }'
+```
+
+### 8.5.6 Run justification with Ollama
+
+```bash
+# Terminal 1: ollama serve (already running)
+# Terminal 2: infrastructure
+docker compose up -d
+
+# Terminal 3: light worker with Ollama
+LLM_PROVIDER=ollama pnpm temporal:worker:light
+
+# Terminal 4: app
+pnpm dev
+```
+
+Then trigger indexing on a repo — the justification phase will use Ollama instead of Gemini.
+
+### 8.5.7 Provider comparison
+
+| Provider | Setup | Rate Limits | Cost | Quality |
+|----------|-------|-------------|------|---------|
+| **Google Gemini** (default) | `GEMINI_API_KEY` | 15 RPM free tier | Free tier, then ~$0.10/1M input | Excellent |
+| **Ollama (qwen3:8b)** | `brew install ollama` | Unlimited | $0 (runs on your GPU) | Good |
+| **Ollama (qwen3-coder)** | Same | Unlimited | $0 | Very good for code |
+| **OpenAI** | `OPENAI_API_KEY` | 500 RPM free | ~$0.15/1M input | Excellent |
+
+For heavy batch workloads (full-repo justification), Ollama or OpenAI are better choices than Gemini's free tier due to rate limits.
+
+---
+
 ## 9. Verify everything works
 
 | Check | How |
@@ -317,6 +416,19 @@ GitHub cannot send webhooks to `localhost`. Either:
 
 - Start infrastructure: `docker compose up -d`.
 - Check `ARANGODB_URL=http://localhost:8529` and that nothing else is using port 8529.
+
+### Ollama: "Connection refused" or model not found
+
+- Ensure `ollama serve` is running in a terminal.
+- Verify the model is pulled: `ollama list` should show `qwen3:8b` (or whichever model you configured).
+- Check the endpoint: `curl http://localhost:11434/v1/models` should return a JSON list.
+- If using a non-default port, set `OLLAMA_BASE_URL` in `.env.local`.
+
+### Gemini 429 "Resource exhausted" errors
+
+- This means you hit Gemini's free-tier rate limit (15 RPM). The provider now retries with exponential backoff automatically.
+- To reduce pressure: lower `LLM_RPM_LIMIT` (e.g. `LLM_RPM_LIMIT=10` for a safety margin), or switch to Ollama (`LLM_PROVIDER=ollama`) for unlimited local inference.
+- For large repos, consider using OpenAI (`LLM_PROVIDER=openai`) which has 500 RPM on the free tier.
 
 ---
 

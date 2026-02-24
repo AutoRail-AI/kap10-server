@@ -599,6 +599,37 @@ export class InMemoryGraphStore implements IGraphStore {
     return snapshots[0] ?? null
   }
 
+  async getEntitiesWithJustifications(
+    orgId: string,
+    repoId: string,
+    opts?: { kind?: string; taxonomy?: string; featureTag?: string; search?: string; offset?: number; limit?: number }
+  ): Promise<{ entities: Array<EntityDoc & { justification?: JustificationDoc }>; total: number }> {
+    let entities = Array.from(this.entities.values())
+      .filter((e) => e.org_id === orgId && e.repo_id === repoId)
+    if (opts?.kind) entities = entities.filter((e) => e.kind === opts.kind)
+    if (opts?.search) {
+      const q = opts.search.toLowerCase()
+      entities = entities.filter((e) => e.name.toLowerCase().includes(q))
+    }
+
+    // Join with justifications
+    let joined = entities.map((e) => {
+      const j = Array.from(this.justifications.values()).find(
+        (j) => j.org_id === orgId && j.entity_id === e.id && j.valid_to === null
+      )
+      return { ...e, justification: j } as EntityDoc & { justification?: JustificationDoc }
+    })
+
+    if (opts?.taxonomy) joined = joined.filter((e) => e.justification?.taxonomy === opts.taxonomy)
+    if (opts?.featureTag) joined = joined.filter((e) => e.justification?.feature_tag === opts.featureTag)
+
+    const total = joined.length
+    const offset = opts?.offset ?? 0
+    const limit = Math.min(opts?.limit ?? 50, 200)
+    const paged = joined.slice(offset, offset + limit)
+    return { entities: paged, total }
+  }
+
   async findCrossFeatureMutations(_orgId: string, _repoId: string): Promise<import("@/lib/ports/types").BoundedContextFinding[]> {
     return []
   }
@@ -1040,6 +1071,10 @@ export class FakeGitHost implements IGitHost {
 
 export class InMemoryVectorSearch implements IVectorSearch {
   private store = new Map<string, { embedding: number[]; metadata: Record<string, unknown> }>()
+  private justificationStore = new Map<string, {
+    embedding: number[]
+    meta: import("@/lib/ports/vector-search").JustificationEmbeddingMeta
+  }>()
 
   /**
    * Deterministic pseudo-embedding: hash text → normalized 768-dim vector.
@@ -1090,6 +1125,55 @@ export class InMemoryVectorSearch implements IVectorSearch {
     Array.from(this.store.entries()).forEach(([key, value]) => {
       if (value.metadata.repoId === repoId && !keySet.has(key)) {
         this.store.delete(key)
+        deleted++
+      }
+    })
+    return deleted
+  }
+
+  async upsertJustificationEmbeddings(
+    embeddings: number[][],
+    metadata: import("@/lib/ports/vector-search").JustificationEmbeddingMeta[]
+  ): Promise<void> {
+    for (let i = 0; i < embeddings.length; i++) {
+      const meta = metadata[i]!
+      const key = `${meta.repoId}:${meta.entityId}`
+      this.justificationStore.set(key, { embedding: embeddings[i]!, meta })
+    }
+  }
+
+  async searchJustificationEmbeddings(
+    embedding: number[],
+    topK: number,
+    filter: { orgId: string; repoId: string; taxonomy?: string }
+  ): Promise<import("@/lib/ports/vector-search").JustificationSearchResult[]> {
+    const results: import("@/lib/ports/vector-search").JustificationSearchResult[] = []
+
+    this.justificationStore.forEach((value) => {
+      if (value.meta.orgId !== filter.orgId) return
+      if (value.meta.repoId !== filter.repoId) return
+      if (filter.taxonomy && value.meta.taxonomy !== filter.taxonomy) return
+
+      const score = this.cosineSimilarity(embedding, value.embedding)
+      results.push({
+        entityId: value.meta.entityId,
+        entityName: value.meta.entityName,
+        taxonomy: value.meta.taxonomy,
+        featureTag: value.meta.featureTag,
+        businessPurpose: value.meta.businessPurpose,
+        score,
+      })
+    })
+
+    results.sort((a, b) => b.score - a.score)
+    return results.slice(0, topK)
+  }
+
+  async deleteJustificationEmbeddings(repoId: string): Promise<number> {
+    let deleted = 0
+    Array.from(this.justificationStore.entries()).forEach(([key, value]) => {
+      if (value.meta.repoId === repoId) {
+        this.justificationStore.delete(key)
         deleted++
       }
     })

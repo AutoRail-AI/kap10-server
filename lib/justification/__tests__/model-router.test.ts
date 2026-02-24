@@ -62,9 +62,9 @@ describe("applyHeuristics", () => {
 })
 
 describe("routeModel", () => {
-  it("routes test files to heuristic tier", () => {
+  it("routes test files to standard tier (zero-skip policy)", () => {
     const route = routeModel(makeEntity({ file_path: "src/__tests__/foo.test.ts" }))
-    expect(route.tier).toBe("heuristic")
+    expect(route.tier).toBe("standard")
   })
 
   it("routes high-centrality entities to premium", () => {

@@ -166,12 +166,24 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     })
 
     progress = 100
-    wfLog("INFO", "Indexing workflow complete", { ...ctx, fileCount, functionCount, classCount }, "Complete")
-    logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
+    // Await final log calls so they complete before the workflow finishes.
+    // Fire-and-forget causes "Activity not found on completion" warnings
+    // because the workflow ends before the activity can report back.
+    await logActivities.appendPipelineLog({
+      timestamp: new Date().toISOString(),
+      level: "info",
+      phase: "indexing",
+      step: "Complete",
+      message: "Indexing workflow complete",
+      meta: { fileCount, functionCount, classCount, repoId: input.repoId },
+    })
+    await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId })
+    console.log(`[${new Date().toISOString()}] [INFO ] [wf:index-repo] [${input.orgId}/${input.repoId}] Indexing workflow complete ${JSON.stringify({ fileCount, functionCount, classCount })}`)
     return result
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     wfLog("ERROR", "Indexing workflow failed", { ...ctx, errorMessage: message }, "Error")
+    // Best-effort archive on failure — don't block the error throw
     logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
     await lightActivities.updateRepoError(input.repoId, message)
     throw err

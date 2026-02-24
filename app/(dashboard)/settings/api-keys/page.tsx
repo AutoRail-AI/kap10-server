@@ -1,14 +1,10 @@
-import { headers } from "next/headers"
 import { redirect } from "next/navigation"
-import { Key } from "lucide-react"
-import { Badge } from "@/components/ui/badge"
-import { auth } from "@/lib/auth"
-import { getActiveOrgId } from "@/lib/api/get-active-org"
+import { getActiveOrgId, getSessionCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 import { ApiKeysSettings } from "./api-keys-settings"
 
 export default async function ApiKeysPage() {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) redirect("/login")
 
   let orgId: string

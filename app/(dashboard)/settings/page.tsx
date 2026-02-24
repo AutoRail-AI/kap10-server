@@ -1,20 +1,13 @@
-import { headers } from "next/headers"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
-import { auth, listOrganizations } from "@/lib/auth"
+import { getSessionCached, getOrgsCached } from "@/lib/api/get-active-org"
 
 export default async function SettingsGeneralPage() {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) return null
 
-  let organizations: { id: string; name: string; slug: string }[] = []
-  try {
-    organizations = await listOrganizations(await headers())
-  } catch {
-    organizations = []
-  }
-
+  const organizations = await getOrgsCached()
   const activeOrg = organizations[0]
   if (!activeOrg) {
     throw new Error("No active organization found. Every user should have an auto-provisioned organization.")

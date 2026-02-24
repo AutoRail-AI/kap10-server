@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react"
 import { ChevronDown, ChevronRight, Copy, Download, Terminal } from "lucide-react"
-import { Button } from "@/components/ui/button"
 import { usePipelineLogs } from "@/hooks/use-pipeline-logs"
 import type { PipelineLogEntry } from "@/hooks/use-pipeline-logs"
 
@@ -79,21 +78,22 @@ export function PipelineLogViewer({ repoId, status }: PipelineLogViewerProps) {
         <>
           {/* Action bar */}
           <div className="flex items-center gap-1.5 px-4 py-1.5 border-t border-border bg-muted/5">
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-6 px-2 text-[10px] text-muted-foreground hover:text-foreground"
+            <button
+              type="button"
+              aria-label="Copy all logs"
+              className="hover-glow-cyan inline-flex items-center h-7 px-2.5 text-[10px] font-medium text-muted-foreground rounded-md border border-white/10 bg-white/6"
               onClick={handleCopy}
             >
-              <Copy className="h-3 w-3 mr-1" />
+              <Copy className="h-3 w-3 mr-1.5" />
               {copied ? "Copied" : "Copy All"}
-            </Button>
+            </button>
             <a
               href={`/api/repos/${repoId}/logs/download`}
               download
-              className="inline-flex items-center h-6 px-2 text-[10px] text-muted-foreground hover:text-foreground rounded-md hover:bg-accent transition-colors"
+              aria-label="Download logs"
+              className="hover-glow-cyan inline-flex items-center h-7 px-2.5 text-[10px] font-medium text-muted-foreground rounded-md border border-white/10 bg-white/6"
             >
-              <Download className="h-3 w-3 mr-1" />
+              <Download className="h-3 w-3 mr-1.5" />
               Download
             </a>
           </div>

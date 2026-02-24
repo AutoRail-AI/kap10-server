@@ -7,6 +7,9 @@
  * Connection retries with exponential backoff when Temporal server is not ready.
  */
 
+// Load .env.local / .env before any imports that read process.env at module scope.
+import "./load-env"
+
 import { NativeConnection, Worker } from "@temporalio/worker"
 import path from "node:path"
 import * as indexingLight from "@/lib/temporal/activities/indexing-light"
@@ -104,10 +107,27 @@ async function createWorkerWithRetry(): Promise<Worker> {
   }
 }
 
+function logMemory(): void {
+  const mem = process.memoryUsage()
+  const mb = (bytes: number) => `${Math.round(bytes / 1024 / 1024)}MB`
+  console.log(
+    `[memory] heap: ${mb(mem.heapUsed)}/${mb(mem.heapTotal)}, rss: ${mb(mem.rss)}, external: ${mb(mem.external)}, arrayBuffers: ${mb(mem.arrayBuffers)}`
+  )
+}
+
 async function main(): Promise<void> {
   const worker = await createWorkerWithRetry()
   console.log(`Light LLM worker started, task queue: ${TASK_QUEUE}. Waiting for tasks...`)
-  await worker.run()
+
+  // Log memory every 30s to track for OOM debugging
+  const memInterval = setInterval(logMemory, 30_000)
+  logMemory()
+
+  try {
+    await worker.run()
+  } finally {
+    clearInterval(memInterval)
+  }
 }
 
 main().catch((err: unknown) => {

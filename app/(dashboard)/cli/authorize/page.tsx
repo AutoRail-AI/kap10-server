@@ -1,7 +1,5 @@
-import { headers } from "next/headers"
 import { redirect } from "next/navigation"
-import { auth, listOrganizations } from "@/lib/auth"
-import { getActiveOrgId } from "@/lib/api/get-active-org"
+import { getActiveOrgId, getOrgsCached, getSessionCached } from "@/lib/api/get-active-org"
 import { CliAuthorizeForm } from "./cli-authorize-form"
 
 export default async function CliAuthorizePage({
@@ -9,15 +7,14 @@ export default async function CliAuthorizePage({
 }: {
   searchParams: Promise<{ code?: string }>
 }) {
-  const reqHeaders = await headers()
-  const session = await auth.api.getSession({ headers: reqHeaders })
+  const session = await getSessionCached()
   if (!session) redirect("/login?callbackUrl=/cli/authorize")
 
   let orgId: string
   let orgName: string
   try {
     orgId = await getActiveOrgId()
-    const memberOrgs = await listOrganizations(reqHeaders)
+    const memberOrgs = await getOrgsCached()
     orgName = memberOrgs.find((o) => o.id === orgId)?.name ?? "your organization"
   } catch {
     redirect("/")

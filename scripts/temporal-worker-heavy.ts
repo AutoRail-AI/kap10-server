@@ -7,6 +7,9 @@
  * Connection retries with exponential backoff when Temporal server is not ready.
  */
 
+// Load .env.local / .env before any imports that read process.env at module scope.
+import "./load-env"
+
 import { NativeConnection, Worker } from "@temporalio/worker"
 import path from "node:path"
 import * as indexingHeavy from "@/lib/temporal/activities/indexing-heavy"

@@ -178,8 +178,16 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
     await activities.setJustifyDoneStatus(input)
     progress = 100
 
-    wfLog("INFO", "Justification workflow complete", { ...ctx, entitiesJustified: totalJustified, embeddingsStored }, "Complete")
-    logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
+    await logActivities.appendPipelineLog({
+      timestamp: new Date().toISOString(),
+      level: "info",
+      phase: "justifying",
+      step: "Complete",
+      message: "Justification workflow complete",
+      meta: { entitiesJustified: totalJustified, embeddingsStored, repoId: input.repoId },
+    })
+    await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId })
+    console.log(`[${new Date().toISOString()}] [INFO ] [wf:justify-repo] [${input.orgId}/${input.repoId}] Justification workflow complete ${JSON.stringify({ entitiesJustified: totalJustified, embeddingsStored })}`)
     return {
       entitiesJustified: totalJustified,
       embeddingsStored,
@@ -187,6 +195,7 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     wfLog("ERROR", "Justification workflow failed", { ...ctx, errorMessage: message }, "Error")
+    // Best-effort archive on failure — don't block the error throw
     logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
     await activities.setJustifyFailedStatus(input.repoId, message)
     throw err

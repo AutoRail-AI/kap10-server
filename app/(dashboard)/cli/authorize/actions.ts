@@ -1,8 +1,6 @@
 "use server"
 
-import { headers } from "next/headers"
-import { auth, listOrganizations } from "@/lib/auth"
-import { getActiveOrgId } from "@/lib/api/get-active-org"
+import { getActiveOrgId, getOrgsCached, getSessionCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 
 interface AuthorizeResult {
@@ -11,8 +9,7 @@ interface AuthorizeResult {
 }
 
 export async function authorizeDevice(userCode: string): Promise<AuthorizeResult> {
-  const reqHeaders = await headers()
-  const session = await auth.api.getSession({ headers: reqHeaders })
+  const session = await getSessionCached()
   if (!session) {
     return { success: false, error: "Not authenticated" }
   }
@@ -27,7 +24,7 @@ export async function authorizeDevice(userCode: string): Promise<AuthorizeResult
   // Get org name
   let orgName = ""
   try {
-    const memberOrgs = await listOrganizations(reqHeaders)
+    const memberOrgs = await getOrgsCached()
     orgName = memberOrgs.find((o) => o.id === orgId)?.name ?? ""
   } catch {
     // Non-critical — continue without org name

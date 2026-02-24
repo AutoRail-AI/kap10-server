@@ -1,11 +1,9 @@
 import { ChevronRight } from "lucide-react"
-import { headers } from "next/headers"
 import Link from "next/link"
 import { notFound, redirect } from "next/navigation"
 import { ConnectIde } from "@/components/repo/connect-ide"
 import { LocalSetupInstructions } from "@/components/repo/local-setup-instructions"
-import { auth } from "@/lib/auth"
-import { getActiveOrgId } from "@/lib/api/get-active-org"
+import { getActiveOrgId, getSessionCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 
 export default async function ConnectIdePage({
@@ -13,7 +11,7 @@ export default async function ConnectIdePage({
 }: {
   params: Promise<{ repoId: string }>
 }) {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) redirect("/login")
 
   const { repoId } = await params

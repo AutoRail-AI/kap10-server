@@ -179,6 +179,13 @@ export interface IGraphStore {
   /** Find cross-feature mutations that indicate bounded context bleed */
   findCrossFeatureMutations(orgId: string, repoId: string): Promise<BoundedContextFinding[]>
 
+  // Entity browsing with joined justifications
+  /** Get paginated entities with their current justifications */
+  getEntitiesWithJustifications(orgId: string, repoId: string, opts?: {
+    kind?: string; taxonomy?: string; featureTag?: string;
+    search?: string; offset?: number; limit?: number;
+  }): Promise<{ entities: Array<EntityDoc & { justification?: JustificationDoc }>; total: number }>
+
   // Shadow reindexing
   /** Delete all entities and edges for a specific index_version */
   deleteByIndexVersion(orgId: string, repoId: string, indexVersion: string): Promise<void>

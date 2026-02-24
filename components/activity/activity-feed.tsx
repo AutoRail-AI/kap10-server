@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
+import { useVisibility } from "@/hooks/use-visibility"
 import { Skeleton } from "@/components/ui/skeleton"
 import { IndexEventCard } from "./index-event-card"
 import { Progress } from "@/components/ui/progress"
@@ -28,9 +29,15 @@ interface ActivityData {
   repo: { id: string; name: string; status: string; lastIndexedAt: string | null; lastIndexedSha: string | null }
 }
 
+/** Active polling: 5s. Idle (no in-flight work): 30s. */
+const ACTIVE_INTERVAL_MS = 5_000
+const IDLE_INTERVAL_MS = 30_000
+
 export function ActivityFeed({ repoId }: { repoId: string }) {
   const [data, setData] = useState<ActivityData | null>(null)
   const [loading, setLoading] = useState(true)
+  const visible = useVisibility()
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchActivity = useCallback(async () => {
     try {
@@ -47,10 +54,29 @@ export function ActivityFeed({ repoId }: { repoId: string }) {
   }, [repoId])
 
   useEffect(() => {
+    // Pause when tab is hidden
+    if (!visible) {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
+      return
+    }
+
+    // Initial fetch
     fetchActivity()
-    const interval = setInterval(fetchActivity, 5000)
-    return () => clearInterval(interval)
-  }, [fetchActivity])
+
+    // Progressive interval: fast when pipeline active, slow when idle
+    const interval = data?.inFlightStatus ? ACTIVE_INTERVAL_MS : IDLE_INTERVAL_MS
+    intervalRef.current = setInterval(fetchActivity, interval)
+
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
+    }
+  }, [fetchActivity, visible, data?.inFlightStatus !== null])
 
   if (loading) {
     return (

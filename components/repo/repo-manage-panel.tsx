@@ -41,8 +41,8 @@ export function RepoManagePanel({
         setConfirmOpen(false)
         return
       }
-      // Success — navigate to the repo page which will show the onboarding console
-      router.refresh()
+      // Success — navigate to the pipeline page to see live progress
+      router.push(`/repos/${repoId}/pipeline`)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {

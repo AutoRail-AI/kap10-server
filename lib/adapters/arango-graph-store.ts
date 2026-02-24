@@ -888,49 +888,49 @@ export class ArangoGraphStore implements IGraphStore {
 
   async getProjectStats(orgId: string, repoId: string): Promise<ProjectStats> {
     const db = await getDbAsync()
-    const bindVars = { orgId, repoId }
 
-    // Count entities per collection
-    const countQueries = ["files", "functions", "classes", "interfaces", "variables"].map(
-      async (collName) => {
-        const cursor = await db.query(
-          `RETURN LENGTH(FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId RETURN 1)`,
-          { ...bindVars, "@coll": collName }
-        )
-        const result = await cursor.all()
-        return { collection: collName, count: (result[0] as number) || 0 }
-      }
-    )
-
-    // Language distribution from files collection
-    const langCursor = await db.query(
+    // Single AQL query replaces 5 separate COUNT queries + 1 language query.
+    // Each sub-query still uses the idx_{coll}_org_repo persistent index.
+    const cursor = await db.query(
       `
-      FOR doc IN files
-        FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.language != null
-        COLLECT lang = doc.language WITH COUNT INTO cnt
-        RETURN { language: lang, count: cnt }
+      LET f = LENGTH(FOR d IN files FILTER d.org_id == @orgId AND d.repo_id == @repoId RETURN 1)
+      LET fn = LENGTH(FOR d IN functions FILTER d.org_id == @orgId AND d.repo_id == @repoId RETURN 1)
+      LET cl = LENGTH(FOR d IN classes FILTER d.org_id == @orgId AND d.repo_id == @repoId RETURN 1)
+      LET ifc = LENGTH(FOR d IN interfaces FILTER d.org_id == @orgId AND d.repo_id == @repoId RETURN 1)
+      LET v = LENGTH(FOR d IN variables FILTER d.org_id == @orgId AND d.repo_id == @repoId RETURN 1)
+      LET langs = (
+        FOR doc IN files
+          FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.language != null
+          COLLECT lang = doc.language WITH COUNT INTO cnt
+          RETURN { language: lang, count: cnt }
+      )
+      RETURN { files: f, functions: fn, classes: cl, interfaces: ifc, variables: v, langs }
       `,
-      bindVars
+      { orgId, repoId }
     )
-    const langDocs = await langCursor.all()
 
-    const counts = await Promise.all(countQueries)
-    const countMap: Record<string, number> = {}
-    for (const c of counts) {
-      countMap[c.collection] = c.count
-    }
+    const result = (await cursor.all())[0] as {
+      files: number
+      functions: number
+      classes: number
+      interfaces: number
+      variables: number
+      langs: Array<{ language: string; count: number }>
+    } | undefined
 
     const languages: Record<string, number> = {}
-    for (const ld of langDocs as { language: string; count: number }[]) {
-      languages[ld.language] = ld.count
+    if (result?.langs) {
+      for (const ld of result.langs) {
+        languages[ld.language] = ld.count
+      }
     }
 
     return {
-      files: countMap["files"] ?? 0,
-      functions: countMap["functions"] ?? 0,
-      classes: countMap["classes"] ?? 0,
-      interfaces: countMap["interfaces"] ?? 0,
-      variables: countMap["variables"] ?? 0,
+      files: result?.files ?? 0,
+      functions: result?.functions ?? 0,
+      classes: result?.classes ?? 0,
+      interfaces: result?.interfaces ?? 0,
+      variables: result?.variables ?? 0,
       languages,
     }
   }
@@ -1951,6 +1951,135 @@ export class ArangoGraphStore implements IGraphStore {
     }
 
     return findings
+  }
+
+  // ── Entity Browsing with Justifications ─────────────────────────
+
+  async getEntitiesWithJustifications(
+    orgId: string,
+    repoId: string,
+    opts?: {
+      kind?: string
+      taxonomy?: string
+      featureTag?: string
+      search?: string
+      offset?: number
+      limit?: number
+    }
+  ): Promise<{ entities: Array<import("@/lib/ports/types").EntityDoc & { justification?: import("@/lib/ports/types").JustificationDoc }>; total: number }> {
+    const db = await getDbAsync()
+    const offset = opts?.offset ?? 0
+    const limit = Math.min(opts?.limit ?? 50, 200)
+
+    // Map kind filter to collection(s)
+    const collections = opts?.kind
+      ? [KIND_TO_COLLECTION[opts.kind] ?? "functions"].filter(Boolean)
+      : [...ALL_ENTITY_COLLECTIONS]
+
+    // Unique collections
+    const uniqueCollections = Array.from(new Set(collections))
+
+    // Build per-collection filters
+    const entityFilters: string[] = ["doc.org_id == @orgId", "doc.repo_id == @repoId"]
+    const bindVars: Record<string, unknown> = { orgId, repoId, offset, limit }
+
+    if (opts?.search) {
+      entityFilters.push("CONTAINS(LOWER(doc.name), LOWER(@search))")
+      bindVars.search = opts.search
+    }
+
+    // Build UNION of all entity collections
+    const unionParts = uniqueCollections.map((coll, i) => {
+      const collVar = `@coll${i}`
+      bindVars[`coll${i}`] = coll
+      return `(FOR doc IN @@coll${i} FILTER ${entityFilters.join(" AND ")} RETURN doc)`
+    })
+
+    // Build justification filter
+    const justFilters: string[] = []
+    if (opts?.taxonomy) {
+      justFilters.push("j.taxonomy == @taxonomy")
+      bindVars.taxonomy = opts.taxonomy
+    }
+    if (opts?.featureTag) {
+      justFilters.push("j.feature_tag == @featureTag")
+      bindVars.featureTag = opts.featureTag
+    }
+    const justFilterClause = justFilters.length > 0
+      ? `FILTER ${justFilters.join(" AND ")}`
+      : ""
+
+    // If taxonomy/featureTag filters are present, we need to filter via justification JOIN
+    const needsJustFilter = opts?.taxonomy || opts?.featureTag
+
+    const query = needsJustFilter
+      ? `
+        LET allEntities = UNION(${unionParts.join(", ")})
+        LET joined = (
+          FOR e IN allEntities
+            LET j = FIRST(
+              FOR jd IN justifications
+                FILTER jd.org_id == @orgId AND jd.entity_id == e._key AND jd.valid_to == null
+                ${justFilterClause}
+                RETURN jd
+            )
+            FILTER j != null
+            RETURN MERGE(e, { _justification: j })
+        )
+        LET total = LENGTH(joined)
+        LET paged = (
+          FOR item IN joined
+            SORT item.name ASC
+            LIMIT @offset, @limit
+            RETURN item
+        )
+        RETURN { items: paged, total: total }
+      `
+      : `
+        LET allEntities = UNION(${unionParts.join(", ")})
+        LET total = LENGTH(allEntities)
+        LET paged = (
+          FOR e IN allEntities
+            SORT e.name ASC
+            LIMIT @offset, @limit
+            LET j = FIRST(
+              FOR jd IN justifications
+                FILTER jd.org_id == @orgId AND jd.entity_id == e._key AND jd.valid_to == null
+                RETURN jd
+            )
+            RETURN MERGE(e, { _justification: j })
+        )
+        RETURN { items: paged, total: total }
+      `
+
+    const cursor = await db.query(query, bindVars)
+    const results = await cursor.all()
+    const result = results[0] as { items: Array<Record<string, unknown>>; total: number } | undefined
+
+    if (!result) return { entities: [], total: 0 }
+
+    const entities = result.items.map((item) => {
+      const { _key, _id, _justification, ...rest } = item as {
+        _key: string
+        _id: string
+        _justification?: Record<string, unknown>
+        [k: string]: unknown
+      }
+      const entity = { id: _key, ...rest } as import("@/lib/ports/types").EntityDoc & {
+        justification?: import("@/lib/ports/types").JustificationDoc
+      }
+      if (_justification) {
+        const { _key: jKey, _id: jId, ...jRest } = _justification as {
+          _key: string
+          _id: string
+          [k: string]: unknown
+        }
+        entity.justification = { id: jKey, ...jRest } as import("@/lib/ports/types").JustificationDoc
+      }
+      return entity
+    })
+
+    return { entities, total: result.total }
   }
 
   // ── Shadow Reindexing ─────────────────────────────────────────

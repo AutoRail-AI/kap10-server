@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation"
 import { useEffect, useRef, useState } from "react"
-import { ArrowRight, RefreshCw } from "lucide-react"
+import { ArrowRight, RefreshCw, Square } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { PipelineStepper } from "@/components/repo/pipeline-stepper"
@@ -10,6 +10,7 @@ import { PipelineLogViewer } from "@/components/repo/pipeline-log-viewer"
 import { WhatsHappeningPanel } from "@/components/repo/whats-happening-panel"
 import { useRepoStatus } from "@/hooks/use-repo-status"
 import { usePipelineLogs } from "@/hooks/use-pipeline-logs"
+import { useRepoEvents } from "@/hooks/use-repo-events"
 
 interface RepoOnboardingConsoleProps {
   repoId: string
@@ -31,14 +32,25 @@ export function RepoOnboardingConsole({
   errorMessage,
 }: RepoOnboardingConsoleProps) {
   const router = useRouter()
-  const { status, progress, indexingStartedAt } = useRepoStatus(repoId, initialStatus, initialProgress)
+  const { status, progress, setStatus, indexingStartedAt } = useRepoStatus(repoId, initialStatus, initialProgress)
   const isActive = ["indexing", "embedding", "justifying", "ontology", "pending"].includes(status)
   const isError = ERROR_STATUSES.includes(status)
   const isReady = status === "ready"
   const { logs } = usePipelineLogs(repoId, isActive || isError || isReady)
   const [retrying, setRetrying] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [showCelebration, setShowCelebration] = useState(false)
   const prevStatusRef = useRef(initialStatus)
+
+  // SSE for real-time updates during active pipeline
+  const { status: sseStatus, logs: sseLogs } = useRepoEvents(repoId, { enabled: isActive })
+
+  // Sync SSE status into local state
+  useEffect(() => {
+    if (sseStatus) {
+      setStatus(sseStatus.status)
+    }
+  }, [sseStatus, setStatus])
 
   // Detect transition to ready
   useEffect(() => {
@@ -48,22 +60,58 @@ export function RepoOnboardingConsole({
     prevStatusRef.current = status
   }, [status])
 
+  const handleStop = async () => {
+    if (stopping) return
+    setStopping(true)
+    try {
+      const res = await fetch(`/api/repos/${repoId}/stop`, { method: "POST" })
+      if (res.ok) {
+        setStatus("error")
+      }
+    } finally {
+      setStopping(false)
+    }
+  }
+
   const handleRetry = async () => {
     setRetrying(true)
     try {
-      await fetch(`/api/repos/${repoId}/retry`, { method: "POST" })
-      router.refresh()
+      const res = await fetch(`/api/repos/${repoId}/retry`, { method: "POST" })
+      if (res.ok) {
+        setStatus("indexing")
+      }
     } finally {
       setRetrying(false)
     }
   }
 
   const handleViewBlueprint = () => {
-    router.refresh()
+    // Navigate to the repo page — layout re-renders with ready status
+    router.push(`/repos/${repoId}`)
   }
 
   return (
     <div className="space-y-4">
+      {/* Stop button when processing */}
+      {isActive && (
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 gap-1.5 text-xs border-destructive/30 text-destructive hover:bg-destructive/10"
+            onClick={handleStop}
+            disabled={stopping}
+          >
+            {stopping ? (
+              <Spinner className="h-3 w-3" />
+            ) : (
+              <Square className="h-3 w-3" />
+            )}
+            Stop Pipeline
+          </Button>
+        </div>
+      )}
+
       {/* Pipeline Stepper */}
       <PipelineStepper status={status} progress={progress} />
 

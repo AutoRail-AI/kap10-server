@@ -1,14 +1,13 @@
-import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 import { HealthReportView } from "@/components/health/health-report-view"
-import { auth } from "@/lib/auth"
+import { getSessionCached } from "@/lib/api/get-active-org"
 
 export default async function HealthPage({
   params,
 }: {
   params: Promise<{ repoId: string }>
 }) {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) redirect("/login")
 
   const { repoId } = await params

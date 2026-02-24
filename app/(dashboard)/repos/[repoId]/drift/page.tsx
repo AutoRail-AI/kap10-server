@@ -1,14 +1,13 @@
-import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 import { DriftTimelineView } from "@/components/intelligence/drift-timeline-view"
-import { auth } from "@/lib/auth"
+import { getSessionCached } from "@/lib/api/get-active-org"
 
 export default async function DriftPage({
   params,
 }: {
   params: Promise<{ repoId: string }>
 }) {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) redirect("/login")
 
   const { repoId } = await params

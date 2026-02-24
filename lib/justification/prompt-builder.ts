@@ -48,15 +48,24 @@ export interface PromptBuilderOptions {
   modelTier?: "fast" | "standard" | "premium"
   /** Justifications from entities that depend on this entity (callers/inbound) */
   callerJustifications?: JustificationDoc[]
+  /** Heuristic hint from static analysis — passed as context to LLM, not used to skip */
+  heuristicHint?: { taxonomy: string; featureTag: string; reason: string }
+  /** Whether this entity has zero inbound references (potential dead code) */
+  isDeadCode?: boolean
 }
 
 // ── Entity-Specific Section Builders ──────────────────────────────────────────
+
+interface FunctionSectionOptions extends PromptBuilderOptions {
+  /** Map of entity ID → business purpose for inline callee/caller context */
+  depJustificationMap?: Map<string, string>
+}
 
 function buildFunctionSection(
   entity: EntityDoc,
   graphContext: GraphContext,
   maxBodyChars: number,
-  options?: PromptBuilderOptions
+  options?: FunctionSectionOptions
 ): string {
   const lines: string[] = []
   lines.push(`## Function Under Analysis`)
@@ -81,13 +90,26 @@ function buildFunctionSection(
   const callees = graphContext.neighbors.filter(n => n.direction === "outbound")
 
   if (callers.length > 0 || callees.length > 0) {
+    const depMap = options?.depJustificationMap
     lines.push(`\n### Call Graph`)
     if (callees.length > 0) {
-      const calleeList = callees.slice(0, 8).map(n => `  - ${n.name} (${n.kind})${n.file_path ? ` in ${n.file_path}` : ""}`).join("\n")
+      const calleeList = callees.slice(0, 8).map(n => {
+        const purpose = depMap?.get(n.id)
+        const loc = n.file_path ? ` in ${n.file_path}` : ""
+        return purpose
+          ? `  - ${n.name} (${n.kind})${loc} — "${purpose}"`
+          : `  - ${n.name} (${n.kind})${loc}`
+      }).join("\n")
       lines.push(`**Calls (outbound dependencies):**\n${calleeList}`)
     }
     if (callers.length > 0) {
-      const callerList = callers.slice(0, 5).map(n => `  - ${n.name} (${n.kind})${n.file_path ? ` in ${n.file_path}` : ""}`).join("\n")
+      const callerList = callers.slice(0, 5).map(n => {
+        const purpose = depMap?.get(n.id)
+        const loc = n.file_path ? ` in ${n.file_path}` : ""
+        return purpose
+          ? `  - ${n.name} (${n.kind})${loc} — "${purpose}"`
+          : `  - ${n.name} (${n.kind})${loc}`
+      }).join("\n")
       lines.push(`**Called by (inbound dependents):**\n${callerList}`)
     }
   }
@@ -287,9 +309,9 @@ export function buildJustificationPrompt(
   const sections: string[] = []
 
   // Determine body truncation limit based on model tier
-  const maxBodyChars = options?.modelTier === "fast" ? 1500
-    : options?.modelTier === "premium" ? 4000
-    : 3000
+  const maxBodyChars = options?.modelTier === "fast" ? 4000
+    : options?.modelTier === "premium" ? 12000
+    : 8000
 
   // Section 0: Project context (if available from ontology)
   if (ontology && (ontology.project_name || ontology.project_description)) {
@@ -301,11 +323,35 @@ export function buildJustificationPrompt(
     sections.push(`## Project Context\n${projectLines.join("\n")}`)
   }
 
+  // Section 0.5: Preliminary analysis hints (from static analysis)
+  if (options?.heuristicHint || options?.isDeadCode) {
+    const hintLines: string[] = []
+    if (options.heuristicHint) {
+      hintLines.push(`Static analysis suggests this entity is **${options.heuristicHint.taxonomy}** in the **${options.heuristicHint.featureTag}** area because: ${options.heuristicHint.reason}.`)
+    }
+    if (options.isDeadCode) {
+      hintLines.push(`This entity has zero inbound references and may be dead code.`)
+    }
+    hintLines.push(`Use these observations as starting points but override based on your source code analysis.`)
+    sections.push(`## Preliminary Analysis (Static)\n${hintLines.join("\n")}`)
+  }
+
+  // Build a lookup map from entity ID → business purpose for inline call graph context
+  const depJustificationMap = new Map<string, string>()
+  for (const j of dependencyJustifications) {
+    depJustificationMap.set(j.entity_id, j.business_purpose)
+  }
+  if (options?.callerJustifications) {
+    for (const j of options.callerJustifications) {
+      depJustificationMap.set(j.entity_id, j.business_purpose)
+    }
+  }
+
   // Section 1: Entity details — dispatched by kind
   const entitySection = (() => {
     switch (entity.kind) {
       case "function": case "method": case "decorator":
-        return buildFunctionSection(entity, graphContext, maxBodyChars, options)
+        return buildFunctionSection(entity, graphContext, maxBodyChars, { ...options, depJustificationMap })
       case "class": case "struct":
         return buildClassSection(entity, graphContext, maxBodyChars, options)
       case "file": case "module": case "namespace":
@@ -422,6 +468,7 @@ Respond with a JSON object containing:
 - "semanticTriples": array of { "subject", "predicate", "object" } triples that capture the entity's relationships (e.g., { "subject": "OrderService", "predicate": "validates", "object": "payment_amount" })
 - "complianceTags": array of compliance/regulatory tags if applicable (e.g., ["PCI-DSS", "GDPR"])
 - "architecturalPattern": one of "pure_domain", "pure_infrastructure", "adapter", "mixed", "unknown"
+- "reasoning": 2-3 sentence chain-of-evidence explaining WHY you chose this taxonomy, feature tag, and business purpose. Reference specific code patterns, naming conventions, or architectural signals that led to your decision.
 
 Focus on business value, not technical implementation details.`)
 
@@ -488,6 +535,8 @@ export function buildBatchJustificationPrompt(
     graphContext: GraphContext
     parentJustification?: JustificationDoc
     calleeJustifications?: JustificationDoc[]
+    heuristicHint?: { taxonomy: string; featureTag: string; reason: string }
+    isDeadCode?: boolean
   }>,
   ontology: DomainOntologyDoc | null,
   entityNameMap?: Map<string, string>
@@ -506,7 +555,8 @@ Respond with a JSON array of objects, one per entity, in the same order. Each ob
 - "featureTag": short snake_case feature area tag
 - "semanticTriples": array of { "subject", "predicate", "object" }
 - "complianceTags": array of compliance tags (or empty array)
-- "architecturalPattern": one of "pure_domain", "pure_infrastructure", "adapter", "mixed", "unknown"`)
+- "architecturalPattern": one of "pure_domain", "pure_infrastructure", "adapter", "mixed", "unknown"
+- "reasoning": 2-3 sentence chain-of-evidence explaining WHY you chose this taxonomy, feature tag, and business purpose. Reference specific code patterns, naming conventions, or architectural signals.`)
 
   // Project context (shared across batch)
   if (ontology && (ontology.project_name || ontology.project_description)) {
@@ -533,11 +583,11 @@ ${vocabEntries}`)
 
   // Each entity as a compact section
   for (let i = 0; i < entities.length; i++) {
-    const { entity, graphContext, parentJustification, calleeJustifications } = entities[i]!
+    const { entity, graphContext, parentJustification, calleeJustifications, heuristicHint, isDeadCode } = entities[i]!
     const body = entity.body as string | undefined
-    // Truncate body to ~10 lines for batch mode
+    // Truncate body to ~30 lines for batch mode
     const truncatedBody = body
-      ? body.split("\n").slice(0, 10).join("\n") + (body.split("\n").length > 10 ? "\n// ..." : "")
+      ? body.split("\n").slice(0, 30).join("\n") + (body.split("\n").length > 30 ? "\n// ..." : "")
       : null
 
     let entitySection = `## Entity ${i + 1} (ID: ${entity.id})
@@ -547,6 +597,13 @@ ${vocabEntries}`)
 ${entity.signature ? `- **Signature**: ${entity.signature}` : ""}
 ${entity.doc ? `- **Documentation**: ${entity.doc as string}` : ""}
 - ${buildKindHint(entity, graphContext)}`
+
+    if (heuristicHint) {
+      entitySection += `\n- **Static hint**: ${heuristicHint.taxonomy} / ${heuristicHint.featureTag} (${heuristicHint.reason})`
+    }
+    if (isDeadCode) {
+      entitySection += `\n- **Warning**: Zero inbound references — potential dead code`
+    }
 
     if (truncatedBody) {
       entitySection += `\n\`\`\`\n${truncatedBody}\n\`\`\``

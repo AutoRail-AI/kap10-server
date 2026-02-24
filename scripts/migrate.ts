@@ -7,14 +7,11 @@
  * Requires: SUPABASE_DB_URL in .env.local (or DATABASE_URL).
  */
 
-import { config } from "dotenv"
+import "./load-env"
+
 import { Pool } from "pg"
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
-
-// Load .env.local first (Next.js convention), then .env
-config({ path: path.resolve(process.cwd(), ".env.local"), quiet: true })
-config({ path: path.resolve(process.cwd(), ".env"), quiet: true })
 
 const MIGRATIONS_DIR = path.join(process.cwd(), "supabase", "migrations")
 const MIGRATION_TABLE = "schema_migrations"

@@ -83,6 +83,8 @@ export async function handleGetBusinessContext(
       featureTag: justification.feature_tag,
       semanticTriples: justification.semantic_triples,
       complianceTags: justification.compliance_tags,
+      architecturalPattern: (justification as Record<string, unknown>).architectural_pattern ?? null,
+      reasoning: (justification as Record<string, unknown>).reasoning ?? null,
       modelTier: justification.model_tier,
     },
   })
@@ -129,29 +131,48 @@ export async function handleSearchByPurpose(
 
   const limit = Math.min(Math.max(args.limit ?? 10, 1), 30)
 
-  // Embed the query
+  // Embed the query using query-optimized encoding
   const embedFn = container.vectorSearch.embedQuery
     ? container.vectorSearch.embedQuery.bind(container.vectorSearch)
     : async (text: string) => (await container.vectorSearch.embed([text]))[0]!
   const queryEmbedding = await embedFn(args.query)
 
-  // Search with filters
+  // Use dedicated justification search if available (queries justification_embeddings table)
+  if (container.vectorSearch.searchJustificationEmbeddings) {
+    const results = await container.vectorSearch.searchJustificationEmbeddings(
+      queryEmbedding,
+      limit,
+      { orgId: ctx.orgId, repoId, taxonomy: args.taxonomy }
+    )
+
+    return formatToolResponse({
+      query: args.query,
+      taxonomy: args.taxonomy ?? "any",
+      results: results.map((r) => ({
+        entityId: r.entityId,
+        entityName: r.entityName,
+        score: Math.round(r.score * 1000) / 1000,
+        taxonomy: r.taxonomy,
+        featureTag: r.featureTag,
+        businessPurpose: r.businessPurpose,
+      })),
+      count: results.length,
+    })
+  }
+
+  // Fallback: search entity_embeddings (pre-migration compatibility)
   const results = await container.vectorSearch.search(queryEmbedding, limit * 2, {
     orgId: ctx.orgId,
     repoId,
   })
 
-  // Filter by taxonomy if specified and by justification prefix
-  let filtered = results.filter((r) => r.id.startsWith("just_"))
-  if (args.taxonomy) {
-    filtered = filtered.filter((r) => (r.metadata?.taxonomy as string) === args.taxonomy)
-  }
-
-  const topResults = filtered.slice(0, limit).map((r) => ({
-    entityId: (r.metadata?.entityId as string) ?? r.id.replace("just_", ""),
+  const topResults = results.slice(0, limit).map((r) => ({
+    entityId: r.id,
+    entityName: (r.metadata?.entityName as string) ?? r.id,
     score: Math.round(r.score * 1000) / 1000,
-    taxonomy: r.metadata?.taxonomy,
-    featureTag: r.metadata?.featureTag,
+    taxonomy: (r.metadata?.entityType as string) ?? "unknown",
+    featureTag: "",
+    businessPurpose: "",
   }))
 
   return formatToolResponse({
@@ -230,6 +251,7 @@ export async function handleAnalyzeImpact(
           confidence: justification?.confidence ?? 0,
           businessPurpose: justification?.business_purpose ?? "no justification",
           featureTag: justification?.feature_tag ?? "unknown",
+          reasoning: justification ? ((justification as Record<string, unknown>).reasoning ?? null) : null,
         }
       })
   )

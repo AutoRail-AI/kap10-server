@@ -1,16 +1,13 @@
 import { FileCode, HeartPulse, LayoutGrid, BookOpen, BookText } from "lucide-react"
-import { headers } from "next/headers"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
 import { RepoDetailClient } from "@/components/repo/repo-detail-client"
 import { RepoOnboardingConsole } from "@/components/repo/repo-onboarding-console"
 import { Skeleton } from "@/components/ui/skeleton"
-import { getActiveOrgId } from "@/lib/api/get-active-org"
-import { auth } from "@/lib/auth"
+import { getActiveOrgId, getSessionCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 import { buildFileTree } from "@/lib/utils/file-tree-builder"
-import { detectDeadCode } from "@/lib/justification/dead-code-detector"
 
 const GRADE_COLORS: Record<string, string> = {
   A: "text-emerald-400 border-emerald-500/30 bg-emerald-500/10",
@@ -37,7 +34,7 @@ function computeGrade(risks: Array<{ severity: string }>): string {
 }
 
 async function CodeTabContent({ repoId }: { repoId: string }) {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) return null
 
   const orgId = await getActiveOrgId()
@@ -58,14 +55,14 @@ async function CodeTabContent({ repoId }: { repoId: string }) {
     )
   }
 
-  const [paths, projectStats, healthReport, features, ontology, entities, edges] = await Promise.all([
+  // Load lightweight data only — no getAllEntities/getAllEdges (those are 10K+ items).
+  // Entity counts come from projectStats; dead code count comes from healthReport (pre-computed).
+  const [paths, projectStats, healthReport, features, ontology] = await Promise.all([
     container.graphStore.getFilePaths(orgId, repoId),
     container.graphStore.getProjectStats(orgId, repoId).catch(() => null),
     container.graphStore.getHealthReport(orgId, repoId).catch(() => null),
     container.graphStore.getFeatureAggregations(orgId, repoId).catch(() => []),
     container.graphStore.getDomainOntology(orgId, repoId).catch(() => null),
-    container.graphStore.getAllEntities(orgId, repoId).catch(() => []),
-    container.graphStore.getAllEdges(orgId, repoId).catch(() => []),
   ])
 
   const tree = buildFileTree(paths)
@@ -77,11 +74,9 @@ async function CodeTabContent({ repoId }: { repoId: string }) {
     : []
   const totalLangFiles = topLanguages.reduce((s: number, [, c]) => s + c, 0)
 
-  // Compute overview data
+  // Use pre-computed stats — no need to load full entity/edge arrays
+  const totalEntities = (projectStats?.functions ?? 0) + (projectStats?.classes ?? 0) + (projectStats?.interfaces ?? 0) + (projectStats?.variables ?? 0)
   const grade = healthReport ? computeGrade(healthReport.risks) : null
-  const deadCodeCount = entities.length > 0 && edges.length > 0
-    ? detectDeadCode(entities, edges).size
-    : 0
 
   const topInsights = healthReport
     ? [...healthReport.risks]
@@ -124,7 +119,7 @@ async function CodeTabContent({ repoId }: { repoId: string }) {
             Entities Analyzed
           </p>
           <p className="text-2xl font-bold font-mono text-foreground tabular-nums">
-            {entities.length.toLocaleString()}
+            {totalEntities.toLocaleString()}
           </p>
           <p className="text-[10px] text-white/30 mt-0.5">functions, classes, methods</p>
         </div>

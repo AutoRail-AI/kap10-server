@@ -92,6 +92,70 @@ export function scoreJustification(justification: JustificationDoc): QualityScor
     flags.push("fallback_justification")
   }
 
+  // ── Reasoning field validation ──────────────────────────────────
+  const reasoning = (justification as Record<string, unknown>).reasoning as string | undefined
+  if (!reasoning || reasoning.length === 0) {
+    score -= 0.15
+    flags.push("missing_reasoning")
+  } else {
+    // Too short reasoning — should be 2-3 sentences with evidence
+    if (reasoning.length < 80) {
+      score -= 0.15
+      flags.push("short_reasoning")
+    }
+
+    // Reasoning is just a copy of businessPurpose (no additional insight)
+    const normalizedReasoning = reasoning.toLowerCase().trim()
+    const normalizedPurpose = purpose.trim()
+    if (normalizedReasoning === normalizedPurpose ||
+        normalizedPurpose.length > 20 && normalizedReasoning.includes(normalizedPurpose)) {
+      score -= 0.15
+      flags.push("reasoning_copies_purpose")
+    }
+
+    // Reasoning should reference concrete code signals (not be abstract hand-waving)
+    const CODE_SIGNAL_PATTERNS = [
+      /\bnam(e|ing|ed)\b/i, /\bpattern\b/i, /\bsignat/i, /\bimport/i,
+      /\bcall(s|ed|ing)?\b/i, /\breturn/i, /\bimplement/i, /\bextend/i,
+      /\bfile\b/i, /\bmodule\b/i, /\bclass\b/i, /\bfunction\b/i,
+      /\binterface\b/i, /\bmethod\b/i, /\bparam/i, /\basync\b/i,
+      /\bdependen/i, /\binherit/i, /\bexport/i, /\btest/i,
+    ]
+    const hasCodeSignal = CODE_SIGNAL_PATTERNS.some((p) => p.test(reasoning))
+    if (!hasCodeSignal) {
+      score -= 0.1
+      flags.push("reasoning_no_code_signals")
+    }
+  }
+
+  // ── Confidence / Taxonomy alignment ─────────────────────────────
+  // Low confidence on business-critical taxonomy = risky classification
+  if (justification.confidence < 0.5 && justification.taxonomy === "VERTICAL") {
+    score -= 0.15
+    flags.push("low_confidence_vertical")
+  }
+
+  // Suspiciously high confidence with UTILITY + no domain concepts
+  // (likely a misclassification — important code classified as UTILITY)
+  if (justification.confidence >= 0.9 && justification.taxonomy === "UTILITY" &&
+      justification.domain_concepts.length === 0) {
+    score -= 0.1
+    flags.push("high_confidence_utility_no_concepts")
+  }
+
+  // Too few domain concepts for VERTICAL entities (should have meaningful domain terms)
+  if (justification.taxonomy === "VERTICAL" && justification.domain_concepts.length < 2) {
+    score -= 0.1
+    flags.push("vertical_few_concepts")
+  }
+
+  // ── Architectural pattern cross-check ───────────────────────────
+  const archPattern = justification.architectural_pattern as string | undefined
+  if (archPattern === "pure_domain" && justification.domain_concepts.length === 0) {
+    score -= 0.1
+    flags.push("pure_domain_no_concepts")
+  }
+
   return {
     score: Math.max(0, Math.round(score * 100) / 100),
     flags,

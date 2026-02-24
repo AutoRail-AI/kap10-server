@@ -1,17 +1,15 @@
-import { headers } from "next/headers"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
 import { ChevronRight } from "lucide-react"
 import { EntityDetail } from "@/components/entity/entity-detail"
 import { Skeleton } from "@/components/ui/skeleton"
-import { getActiveOrgId } from "@/lib/api/get-active-org"
-import { auth } from "@/lib/auth"
+import { getActiveOrgId, getSessionCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 import { scoreJustification } from "@/lib/justification/quality-scorer"
 
 async function EntityContent({ repoId, entityId }: { repoId: string; entityId: string }) {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) return null
   const orgId = await getActiveOrgId()
   const container = getContainer()

@@ -1,22 +1,15 @@
-import { headers } from "next/headers"
 import { Suspense } from "react"
 import { EmptyStateRepos } from "@/components/dashboard/empty-state-repos"
 import { ReposList } from "@/components/dashboard/repos-list"
 import { Skeleton } from "@/components/ui/skeleton"
-import { auth, listOrganizations } from "@/lib/auth"
+import { getSessionCached, getOrgsCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 
 async function ReposContent() {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) return null
 
-  let organizations: { id: string }[] = []
-  try {
-    organizations = await listOrganizations(await headers())
-  } catch {
-    return <EmptyStateRepos />
-  }
-
+  const organizations = await getOrgsCached()
   const activeOrgId = organizations[0]?.id
   if (!activeOrgId) {
     throw new Error("No active organization found. Every user should have an auto-provisioned organization.")

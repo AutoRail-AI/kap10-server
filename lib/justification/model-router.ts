@@ -1,12 +1,12 @@
 /**
  * Phase 4: Model Router — multi-tier routing for justification LLM calls.
  *
- * Tier 1 (heuristic): Skip LLM entirely for obvious cases (~40% of entities).
- * Tier 2 (fast):      Small/fast model for straightforward entities.
- * Tier 3 (standard):  Default model for most entities.
- * Tier 4 (premium):   Premium model for high-centrality, complex entities.
+ * All entities go to LLM — heuristics provide hints, not skip signals.
+ * Tier 1 (fast):      Small/fast model for straightforward entities.
+ * Tier 2 (standard):  Default model for most entities.
+ * Tier 3 (premium):   Premium model for high-centrality, complex entities.
  *
- * Estimated cost savings: ~60% vs sending everything to premium.
+ * Safety patterns route to premium tier.
  */
 
 import type { EntityDoc } from "@/lib/ports/types"
@@ -72,16 +72,25 @@ function getEntityLineCount(entity: EntityDoc): number | null {
   return null
 }
 
+/** @deprecated Use computeHeuristicHint instead */
+export function applyHeuristics(entity: EntityDoc): HeuristicResult | null {
+  return computeHeuristicHint(entity)
+}
+
+/** Type for heuristic hints passed as context to LLM prompts */
+export type HeuristicHint = { taxonomy: string; featureTag: string; reason: string } | null
+
 /**
- * Apply heuristics to skip LLM for obvious classifications.
- * Returns null if LLM is needed.
+ * Compute a heuristic hint for an entity based on static analysis.
+ * Returns a hint object with suggested taxonomy/featureTag, or null if no pattern matches.
+ * The hint is passed as context to the LLM — it does NOT skip LLM classification.
  *
  * Order of checks:
- * 1. Safety rules (override — force LLM for auth/security entities)
+ * 1. Safety rules (return null — no hint, let LLM classify freely)
  * 2. File-level heuristics (test files, config files, barrel files)
  * 3. Entity-level heuristics (getters, setters, constructors, DTOs, etc.)
  */
-export function applyHeuristics(entity: EntityDoc): HeuristicResult | null {
+export function computeHeuristicHint(entity: EntityDoc): HeuristicResult | null {
   const filePath = entity.file_path ?? ""
   const kind = entity.kind ?? ""
   const name = entity.name ?? ""
@@ -266,18 +275,21 @@ export function applyHeuristics(entity: EntityDoc): HeuristicResult | null {
 
 /**
  * Route an entity to the appropriate model tier.
+ * All entities go to LLM — no heuristic short-circuit.
  * Takes optional centrality score for premium routing.
  */
 export function routeModel(
   entity: EntityDoc,
   opts?: { centrality?: number; hasComplexDependencies?: boolean }
 ): ModelRoute {
-  // Check heuristics first
-  const heuristic = applyHeuristics(entity)
-  if (heuristic) {
+  // Safety patterns always go to premium
+  const filePath = entity.file_path ?? ""
+  const name = entity.name ?? ""
+  if (isSafetyRelevant(name, filePath)) {
     return {
-      tier: "heuristic" as ModelTier,
-      reason: heuristic.reason,
+      tier: "premium" as ModelTier,
+      model: LLM_MODELS.premium,
+      reason: "safety-relevant entity (auth/security)",
     }
   }
 

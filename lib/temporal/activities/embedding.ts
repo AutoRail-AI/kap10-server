@@ -44,8 +44,13 @@ export interface EmbeddableDocument {
 
 // ── Helpers (pure functions, not activities) ──────────────────────────────────
 
-/** Max tokens for entity body before truncation. */
-const MAX_BODY_CHARS = 24000 // ~6000 tokens at 4 chars/token
+/**
+ * Max chars for entity body before truncation.
+ * 2000 chars ≈ 500 tokens. Combined with EMBEDDING_MAX_TOKENS=512 tokenizer
+ * truncation in the adapter, this ensures ONNX never processes sequences
+ * long enough to cause quadratic attention memory blowup.
+ */
+const MAX_BODY_CHARS = 2000
 
 function formatKindLabel(kind: string): string {
   switch (kind) {
@@ -145,38 +150,26 @@ async function loadJustificationMap(
 }
 
 /**
- * Embed a set of documents and store in pgvector, processing in sub-batches
- * of EMBEDDING_BATCH_SIZE (default 8). Kept small to prevent OOM — the ONNX
- * model allocates ~100MB of intermediate tensors per document in the batch.
+ * Embed a set of documents and store in pgvector.
+ * The adapter processes one doc at a time with token truncation (O(n²)-safe).
+ * We chunk into small DB-upsert batches of UPSERT_BATCH_SIZE for heartbeats.
  */
 async function embedAndStore(
   container: Container,
   docs: EmbeddableDocument[],
   log: ReturnType<typeof logger.child>,
 ): Promise<number> {
-  const batchSize = parseInt(process.env.EMBEDDING_BATCH_SIZE ?? "8", 10)
-  const totalBatches = Math.ceil(docs.length / batchSize)
+  const upsertBatchSize = 10
+  const totalBatches = Math.ceil(docs.length / upsertBatchSize)
   let totalStored = 0
 
   for (let i = 0; i < totalBatches; i++) {
-    const start = i * batchSize
-    const batch = docs.slice(start, start + batchSize)
+    const start = i * upsertBatchSize
+    const batch = docs.slice(start, start + upsertBatchSize)
     const texts = batch.map((d) => d.text)
-    let embeddings: number[][]
 
-    try {
-      embeddings = await container.vectorSearch.embed(texts)
-    } catch (err: unknown) {
-      log.warn("Embed sub-batch failed, retrying with half size", {
-        subBatch: i,
-        size: batch.length,
-        error: err instanceof Error ? err.message : String(err),
-      })
-      const half = Math.ceil(batch.length / 2)
-      const first = await container.vectorSearch.embed(batch.slice(0, half).map((d) => d.text))
-      const second = await container.vectorSearch.embed(batch.slice(half).map((d) => d.text))
-      embeddings = [...first, ...second]
-    }
+    // embed() processes one doc at a time internally — memory safe
+    const embeddings = await container.vectorSearch.embed(texts)
 
     await container.vectorSearch.upsert(
       batch.map((d) => d.entityKey),
@@ -185,10 +178,15 @@ async function embedAndStore(
     )
     totalStored += batch.length
 
-    // Release ONNX tensor memory between batches
     if (global.gc) global.gc()
 
-    heartbeat({ subBatch: i + 1, totalSubBatches: totalBatches, stored: totalStored })
+    const mem = process.memoryUsage()
+    heartbeat({
+      subBatch: i + 1,
+      totalSubBatches: totalBatches,
+      stored: totalStored,
+      rssMB: Math.round(mem.rss / 1024 / 1024),
+    })
   }
 
   return totalStored
@@ -279,19 +277,43 @@ export async function processAndEmbedBatch(
 
   // 1. Fetch entities for this batch of files
   const allEntities: EntityDoc[] = []
+  const filesWithNoEntities: string[] = []
   for (const path of filePaths) {
     const entities = await container.graphStore.getEntitiesByFile(
       input.orgId,
       input.repoId,
       path,
     )
+    if (entities.length === 0) {
+      filesWithNoEntities.push(path)
+    }
     allEntities.push(...entities)
   }
   heartbeat(`Fetched ${allEntities.length} entities from ${filePaths.length} files`)
 
-  // 2. Build embeddable documents (filters out file/directory/module/namespace)
+  // 2. Build embeddable documents from code entities
   const justificationMap = await loadJustificationMap(container, input.orgId, input.repoId)
   const docs = buildEmbeddableDocuments(input, allEntities, justificationMap)
+
+  // 2b. Create fallback embeddings for files with NO code entities (config, text, etc.)
+  // This ensures every indexed file is searchable via semantic search.
+  for (const filePath of filesWithNoEntities) {
+    const fileName = filePath.split("/").pop() ?? filePath
+    const fileKey = `file:${filePath}`
+    docs.push({
+      entityKey: fileKey,
+      text: `File: ${filePath}\nName: ${fileName}`,
+      metadata: {
+        orgId: input.orgId,
+        repoId: input.repoId,
+        entityKey: fileKey,
+        entityType: "file",
+        entityName: fileName,
+        filePath,
+        textContent: `File: ${filePath}`,
+      },
+    })
+  }
 
   if (docs.length === 0) {
     log.info("No embeddable entities in batch, skipping")
@@ -299,6 +321,7 @@ export async function processAndEmbedBatch(
   }
 
   // 3. Embed + store in pgvector (sub-batched internally)
+  const entityKeys = docs.map((d) => d.entityKey)
   const stored = await embedAndStore(container, docs, log)
 
   plog.log(
@@ -308,7 +331,12 @@ export async function processAndEmbedBatch(
   )
   log.info("File batch complete", { embeddingsStored: stored, entityCount: allEntities.length })
 
-  return { embeddingsStored: stored, entityKeys: docs.map((d) => d.entityKey) }
+  // Free large arrays before returning — prevents memory buildup across batches
+  allEntities.length = 0
+  docs.length = 0
+  if (global.gc) global.gc()
+
+  return { embeddingsStored: stored, entityKeys }
 }
 
 // ── deleteOrphanedEmbeddings ──────────────────────────────────────────────────

@@ -1,11 +1,10 @@
-import { headers } from "next/headers"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
-import { auth } from "@/lib/auth"
+import { getSessionCached } from "@/lib/api/get-active-org"
 
 export default async function MembersPage() {
-  const session = await auth.api.getSession({ headers: await headers() })
+  const session = await getSessionCached()
   if (!session) return null
 
   const user = session.user
@@ -47,8 +46,8 @@ export default async function MembersPage() {
                   <Badge variant="outline" className="text-xs">Owner</Badge>
                 </td>
                 <td className="py-3 text-right text-xs text-muted-foreground">
-                  {user.createdAt
-                    ? new Date(user.createdAt).toLocaleDateString("en-US", {
+                  {(user as Record<string, unknown>).createdAt
+                    ? new Date((user as Record<string, unknown>).createdAt as string).toLocaleDateString("en-US", {
                         month: "short",
                         day: "numeric",
                         year: "numeric",

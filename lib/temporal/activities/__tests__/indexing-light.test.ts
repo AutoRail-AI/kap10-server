@@ -19,6 +19,7 @@ const mockDeleteRepo = vi.fn().mockResolvedValue(undefined)
 vi.mock("@/lib/di/container", () => ({
   getContainer: () => ({
     graphStore: {
+      bootstrapGraphSchema: vi.fn().mockResolvedValue(undefined),
       bulkUpsertEntities: mockBulkUpsertEntities,
       bulkUpsertEdges: mockBulkUpsertEdges,
       deleteRepoData: mockDeleteRepoData,
