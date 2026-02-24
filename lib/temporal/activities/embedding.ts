@@ -90,10 +90,13 @@ export function buildEmbeddableDocuments(
     const signature = (entity.signature as string) ?? ""
     const body = (entity.body as string) ?? ""
 
+    const doc = (entity.doc as string) ?? ""
+
     const parts: string[] = []
     parts.push(`${kindLabel}: ${name}`)
     if (filePath) parts.push(`File: ${filePath}`)
     if (signature) parts.push(`Signature: ${signature}`)
+    if (doc) parts.push(`Documentation: ${doc}`)
 
     const justification = justificationMap.get(entity.id)
     if (justification) {

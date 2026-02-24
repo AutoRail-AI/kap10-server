@@ -9,6 +9,7 @@
 import type { EntityDoc, DomainOntologyDoc, JustificationDoc } from "@/lib/ports/types"
 import type { GraphContext } from "./schemas"
 import type { TestContext } from "./types"
+import { extractCommentSignals, formatCommentSignalsForPrompt } from "./comment-signals"
 
 /**
  * System prompt preamble for justification LLM calls.
@@ -455,6 +456,12 @@ Key assertions:
   - ${assertions}`)
   }
 
+  // Section 8: Author notes (TODO/FIXME/DEPRECATED markers)
+  const commentSignals = extractCommentSignals(entity.body as string | undefined)
+  if (commentSignals) {
+    sections.push(`## Author Notes\n${formatCommentSignalsForPrompt(commentSignals)}`)
+  }
+
   // Final instruction
   sections.push(`## Instructions
 Analyze this entity and classify it with a business justification.
@@ -603,6 +610,11 @@ ${entity.doc ? `- **Documentation**: ${entity.doc as string}` : ""}
     }
     if (isDeadCode) {
       entitySection += `\n- **Warning**: Zero inbound references — potential dead code`
+    }
+
+    const batchSignals = extractCommentSignals(body ?? null)
+    if (batchSignals) {
+      entitySection += `\n- **Author Notes**: ${formatCommentSignalsForPrompt(batchSignals)}`
     }
 
     if (truncatedBody) {

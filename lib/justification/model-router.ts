@@ -280,7 +280,7 @@ export function computeHeuristicHint(entity: EntityDoc): HeuristicResult | null 
  */
 export function routeModel(
   entity: EntityDoc,
-  opts?: { centrality?: number; hasComplexDependencies?: boolean }
+  opts?: { centrality?: number; hasComplexDependencies?: boolean; callerCount?: number }
 ): ModelRoute {
   // Safety patterns always go to premium
   const filePath = entity.file_path ?? ""
@@ -293,19 +293,27 @@ export function routeModel(
     }
   }
 
-  // Premium tier: high centrality, complex dependency graphs, or high cyclomatic complexity
+  // Premium tier: high centrality, complex dependency graphs, high callerCount, or high cyclomatic complexity
   const entityComplexity = entity.complexity as number | undefined
-  if ((opts?.centrality ?? 0) > 0.8 || opts?.hasComplexDependencies || (entityComplexity != null && entityComplexity >= 10)) {
+  const callerCount = opts?.callerCount
+  if (
+    (opts?.centrality ?? 0) > 0.8 ||
+    opts?.hasComplexDependencies ||
+    (entityComplexity != null && entityComplexity >= 10) ||
+    (callerCount != null && callerCount >= 8)
+  ) {
     return {
       tier: "premium" as ModelTier,
       model: LLM_MODELS.premium,
-      reason: entityComplexity != null && entityComplexity >= 10
-        ? `high cyclomatic complexity (${entityComplexity})`
-        : "high centrality or complex dependencies",
+      reason: callerCount != null && callerCount >= 8
+        ? `high caller count (${callerCount} callers)`
+        : entityComplexity != null && entityComplexity >= 10
+          ? `high cyclomatic complexity (${entityComplexity})`
+          : "high centrality or complex dependencies",
     }
   }
 
-  // Fast tier: simple entities (variables, standalone functions)
+  // Fast tier: simple entities (variables, standalone functions with zero callers)
   const kind = entity.kind ?? ""
   if (["variable", "constant"].includes(kind)) {
     return {

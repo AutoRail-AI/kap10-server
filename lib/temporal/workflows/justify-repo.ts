@@ -147,6 +147,15 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
       // Only carry forward this level's changes (not cumulative across all levels)
       previousLevelChangedIds = levelChangedIds
       progress = Math.round(25 + (i + 1) * levelProgressStep)
+
+      // Every 20 levels, refine ontology with newly discovered domain concepts
+      if ((i + 1) % 20 === 0 && i + 1 < levels.length) {
+        wfLog("INFO", `Refining ontology with new concepts (after level ${i + 1})`, ctx, `Step 5/10 (L${i + 1})`)
+        const { newTermsAdded } = await activities.refineOntologyWithNewConcepts(input)
+        if (newTermsAdded > 0) {
+          wfLog("INFO", `Added ${newTermsAdded} new terms to ontology`, ctx, `Step 5/10 (L${i + 1})`)
+        }
+      }
     }
 
     // Step 6: Bi-directional context propagation

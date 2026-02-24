@@ -12,7 +12,7 @@ import { getContainer } from "@/lib/di/container"
 import { logger } from "@/lib/utils/logger"
 import { buildGraphContexts } from "@/lib/justification/graph-context-builder"
 import { computeHeuristicHint, routeModel } from "@/lib/justification/model-router"
-import { normalizeJustifications, deduplicateFeatures } from "@/lib/justification/post-processor"
+import { normalizeJustifications, deduplicateFeatures, clusterFeatureAreas } from "@/lib/justification/post-processor"
 import {
   buildJustificationPrompt,
   buildBatchJustificationPrompt,
@@ -234,8 +234,13 @@ export async function justifyBatch(
     const isDeadCode = deadCodeIds.has(entity.id)
 
     // Route model — all entities go to LLM
+    // Count inbound callers for tier routing (high callers → premium)
+    const callerCount = graphContext
+      ? graphContext.neighbors.filter((n) => n.direction === "inbound").length
+      : 0
     const route = routeModel(entity, {
       centrality: graphContext?.centrality,
+      callerCount,
     })
 
     // Build test context
@@ -664,7 +669,20 @@ export async function storeFeatureAggregations(
   const container = getContainer()
   heartbeat("computing feature aggregations")
   const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
+
+  // Cluster feature tags into higher-level feature areas by shared domain concepts
+  const areaMap = clusterFeatureAreas(justifications)
+
   const features = deduplicateFeatures(justifications, input.orgId, input.repoId)
+
+  // Annotate features with their area cluster
+  for (const f of features) {
+    const area = areaMap.get(f.feature_tag)
+    if (area) {
+      ;(f as unknown as Record<string, unknown>).feature_area = area
+    }
+  }
+
   await container.graphStore.bulkUpsertFeatureAggregations(input.orgId, features)
 }
 
@@ -710,12 +728,18 @@ export async function embedJustifications(
       if (entity) {
         parts.push(`${entity.kind}: ${entity.name}`)
         parts.push(`File: ${entity.file_path}`)
+        if (entity.doc) parts.push(`Documentation: ${String(entity.doc)}`)
       }
       parts.push(`Taxonomy: ${j.taxonomy}`)
       parts.push(`Purpose: ${j.business_purpose}`)
       if (j.domain_concepts.length > 0) parts.push(`Concepts: ${j.domain_concepts.join(", ")}`)
       parts.push(`Feature: ${j.feature_tag}`)
       if ((j as Record<string, unknown>).reasoning) parts.push(`Reasoning: ${String((j as Record<string, unknown>).reasoning)}`)
+      if (j.compliance_tags.length > 0) parts.push(`Compliance: ${j.compliance_tags.join(", ")}`)
+      if (j.semantic_triples.length > 0) {
+        const tripleStr = j.semantic_triples.slice(0, 5).map((t) => `${t.subject} ${t.predicate} ${t.object}`).join("; ")
+        parts.push(`Relations: ${tripleStr}`)
+      }
       if (entity?.signature) parts.push(`Signature: ${String(entity.signature)}`)
       // Include first 500 chars of body for semantic richness
       if (entity?.body) {
@@ -751,6 +775,58 @@ export async function embedJustifications(
   }
 
   return totalStored
+}
+
+/**
+ * Refine ontology by merging newly discovered domain_concepts from recent justifications.
+ * Called periodically during justification (e.g., every 20 topo levels) to keep
+ * the ontology fresh as more entities are classified.
+ */
+export async function refineOntologyWithNewConcepts(
+  input: JustificationInput
+): Promise<{ newTermsAdded: number }> {
+  const container = getContainer()
+  heartbeat("refining ontology with new concepts")
+
+  const [ontology, justifications] = await Promise.all([
+    container.graphStore.getDomainOntology(input.orgId, input.repoId),
+    container.graphStore.getJustifications(input.orgId, input.repoId),
+  ])
+
+  if (!ontology || justifications.length === 0) return { newTermsAdded: 0 }
+
+  // Collect all domain_concepts from justifications
+  const conceptFreq = new Map<string, number>()
+  for (const j of justifications) {
+    for (const concept of j.domain_concepts) {
+      const normalized = concept.toLowerCase().trim()
+      if (normalized.length > 1) {
+        conceptFreq.set(normalized, (conceptFreq.get(normalized) ?? 0) + 1)
+      }
+    }
+  }
+
+  // Find concepts that appear at least 3 times but aren't in the ontology yet
+  const existingTerms = new Set(ontology.terms.map((t) => t.term.toLowerCase()))
+  const newConcepts: Array<{ term: string; frequency: number; relatedTerms: string[] }> = []
+
+  for (const [concept, freq] of Array.from(conceptFreq.entries())) {
+    if (freq >= 3 && !existingTerms.has(concept)) {
+      newConcepts.push({ term: concept, frequency: freq, relatedTerms: [] })
+    }
+  }
+
+  if (newConcepts.length === 0) return { newTermsAdded: 0 }
+
+  // Merge new terms into existing ontology
+  const updatedOntology = {
+    ...ontology,
+    terms: [...ontology.terms, ...newConcepts.slice(0, 50)], // Cap at 50 new terms per refinement
+    generated_at: new Date().toISOString(),
+  }
+
+  await container.graphStore.upsertDomainOntology(input.orgId, updatedOntology)
+  return { newTermsAdded: Math.min(newConcepts.length, 50) }
 }
 
 export async function setJustifyDoneStatus(input: JustificationInput): Promise<void> {

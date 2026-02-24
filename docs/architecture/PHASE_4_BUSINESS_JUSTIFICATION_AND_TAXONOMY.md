@@ -2372,6 +2372,240 @@ This makes the function-specific prompt section more cohesive by showing callee/
 
 ---
 
+### Overhaul 10: Quality Scoring, Semantic Cascading, Tag Dedup & Backoff
+
+**Problem 1 — Quality scoring too shallow:** The quality scorer only checked basic structure (confidence range, empty fields). It didn't validate the `reasoning` field or detect alignment issues between taxonomy and confidence.
+
+**Solution — Reasoning validation + alignment checks (`quality-scorer.ts`):**
+1. **Reasoning field validation:** Checks length ≥ 80 characters, verifies reasoning is not a copy of businessPurpose, and requires at least one code signal reference (naming patterns, file references, architectural signals, dependency references)
+2. **Confidence/taxonomy alignment:** Flags low-confidence VERTICAL (< 0.5 means risky business logic classification), high-confidence UTILITY with no domain concepts (suspicious misclassification), and VERTICAL entities with < 2 domain concepts
+3. **Architectural pattern cross-check:** Flags `pure_domain` with zero domain concepts (contradiction)
+
+Code signal detection regex patterns:
+```typescript
+const CODE_SIGNAL_PATTERNS = [
+  /\bnam(e|ing|ed)\b/i, /\bpattern\b/i, /\bsignat/i, /\bimport/i,
+  /\bcall(s|ed|ing)?\b/i, /\breturn/i, /\bimplement/i, /\bextend/i,
+  /\bfile\b/i, /\bmodule\b/i, /\bclass\b/i, /\bfunction\b/i,
+  /\binterface\b/i, /\bmethod\b/i, /\bparam/i, /\basync\b/i,
+  /\bdependen/i, /\binherit/i, /\bexport/i, /\btest/i,
+]
+```
+
+**Problem 2 — Cascading invalidation too aggressive:** When a callee was re-justified, ALL callers were marked stale and re-justified — even if the callee's justification was just rephrased without meaningful semantic change. This wasted LLM calls.
+
+**Solution — Semantic cascading (`staleness-checker.ts`):**
+1. **Quality-based invalidation:** Entities with `quality_score < 0.4` or `fallback_justification` flag are always marked stale, regardless of body hash — forces re-justification of low-quality outputs
+2. **Semantic keyword extraction:** Extracts normalized keywords from taxonomy, feature_tag, domain_concepts, and business_purpose (minus English stop words) into a `Set<string>`
+3. **Jaccard similarity comparison:** Computes intersection/union of old vs new callee keyword sets. Only cascades if similarity < 0.75 — meaning the justification semantically changed, not just got rephrased
+4. Thresholds: `QUALITY_RE_JUSTIFY_THRESHOLD = 0.4`, `SEMANTIC_SIMILARITY_THRESHOLD = 0.75`
+
+```typescript
+// Example: if callee's old keywords were {"payment", "transaction", "vertical", "payment_processing"}
+// and new keywords are {"payment", "transaction", "vertical", "payment_processing", "validation"}
+// Jaccard = 4/5 = 0.80 > 0.75 → cosmetic change, no cascade needed
+```
+
+**Problem 3 — Feature tag fragmentation:** LLM produced slightly different tags for the same concept (e.g., `user_auth`, `user_authentication`, `auth_user`), creating fake feature boundaries.
+
+**Solution — Feature tag semantic deduplication (`post-processor.ts`):**
+1. Levenshtein distance computation between all unique tags (single-row optimized)
+2. Normalized similarity: `1.0 - levenshtein(a, b) / max(a.length, b.length)`
+3. Single-linkage clustering at threshold 0.75
+4. Maps all cluster members to the most frequent canonical tag (ties broken alphabetically)
+
+**Problem 4 — Batch LLM failures cascade expensively:** A single rate limit or timeout on a batch request immediately fell to individual retries for every entity in the batch.
+
+**Solution — Exponential backoff (`justification.ts`):**
+1. Batch failures retry 3x with exponential delays: 2s → 8s → 30s
+2. Expanded retryable error detection: rate limits, timeouts, 503, overloaded
+3. 15s cooldown + 3s per-entity spacing when falling to individual retries after all batch retries exhausted
+
+**Problem 5 — MCP tools didn't expose reasoning:** AI coding agents couldn't read the LLM's reasoning through MCP.
+
+**Solution — MCP tool enrichment (`business.ts`):**
+1. `get_business_context`: Now includes `reasoning` and `architecturalPattern` in response
+2. `analyze_impact`: Affected entities now include `reasoning` field
+
+**Files modified:** `lib/justification/quality-scorer.ts`, `lib/mcp/tools/business.ts`, `lib/justification/staleness-checker.ts`, `lib/justification/post-processor.ts`, `lib/temporal/activities/justification.ts`, `lib/justification/__tests__/schemas.test.ts`, `lib/justification/__tests__/model-router.test.ts`
+
+---
+
+### Overhaul 11: Embedding Enrichment & Consistency
+
+**Problem 1 — Incremental embeddings were degraded:** `updateEmbeddings()` in `incremental.ts` used stripped-down inline text (`kind + name + signature + 1000-char body`) instead of the full `buildEmbeddableDocuments()` pipeline. This meant incremental updates produced lower-quality embeddings than the full index.
+
+**Solution:** `updateEmbeddings()` now imports and uses `buildEmbeddableDocuments()` from `embedding.ts`, loading the justification map to include business context. Incremental and full-index embeddings are now identical.
+
+**Problem 2 — Entity `doc` field not embedded:** The entity's documentation string (JSDoc, docstrings, Go doc comments) was extracted by parsers but never included in embedding text — missing valuable semantic signal.
+
+**Solution:** Added `Documentation: {doc}` to both:
+- `buildEmbeddableDocuments()` in `embedding.ts` (entity embeddings)
+- `embedJustifications()` and `cascadeReJustify` re-embed (justification embeddings)
+
+**Problem 3 — Compliance tags and semantic triples not embedded:** These were stored on justification docs but excluded from embedding text — meaning compliance-related searches (e.g., "GDPR data handling") couldn't find entities by their compliance tags.
+
+**Solution:** Added to justification embedding text in both `embedJustifications()` and `cascadeReJustify` re-embed:
+```
+Compliance: PCI-DSS, GDPR
+Relations: OrderService validates payment_amount; PaymentService processes transactions
+```
+
+**Files modified:** `lib/temporal/activities/incremental.ts`, `lib/temporal/activities/embedding.ts`, `lib/temporal/activities/justification.ts`
+
+---
+
+### Overhaul 12: Comment Signal Extraction for Prompts
+
+**Problem:** Developer-annotated markers (TODO, FIXME, HACK, @deprecated) in source code were invisible to the LLM during justification. These markers carry high-signal information about the developer's intent and known issues.
+
+**Solution:** New `lib/justification/comment-signals.ts` utility:
+1. Detects `TODO`, `FIXME`, `HACK`, `NOTE`, `WARNING`, `XXX` markers in comments
+2. Detects `@deprecated` JSDoc annotations and `@Deprecated` decorators
+3. Extracts deprecation reasons when available
+4. Returns structured `CommentSignals` object with markers array and deprecation info
+
+Integrated into prompt builder as "Author Notes" section:
+- **Single entity prompts:** Full section after test assertions
+- **Batch prompts:** Compact inline notation per entity
+
+```
+## Author Notes
+**DEPRECATED**: Use PaymentServiceV2 instead
+- TODO: Refactor to use async/await
+- FIXME: Race condition when concurrent updates
+```
+
+**Files:** `lib/justification/comment-signals.ts` (new), `lib/justification/prompt-builder.ts`
+
+---
+
+### Overhaul 13: CallerCount-Based Model Routing
+
+**Problem:** Model routing only used centrality score and cyclomatic complexity for premium tier routing. Entities with many callers (high fan-in) are critical integration points that deserve premium analysis, but this wasn't captured.
+
+**Solution:** Added `callerCount` parameter to `routeModel()`:
+- Entities with ≥ 8 callers route to premium tier
+- CallerCount computed from graph context inbound neighbors in `justifyBatch`
+- Reason string: `"high caller count (N callers)"`
+
+```typescript
+routeModel(entity, { centrality: 0.5, callerCount: 12 })
+// → { tier: "premium", model: LLM_MODELS.premium, reason: "high caller count (12 callers)" }
+```
+
+**Files:** `lib/justification/model-router.ts`, `lib/temporal/activities/justification.ts`
+
+---
+
+### Overhaul 14: Call Edge Detection for Python & Go
+
+**Problem:** Call edges (`entity A calls entity B`) were only extracted by SCIP for TypeScript. Python and Go tree-sitter parsers extracted structural edges (member_of, extends) but no call edges — meaning the call graph was empty for these languages.
+
+**Solution:** Added `detectCallEdges()` post-processing step to both Python and Go parsers:
+1. After entity extraction and body population, builds a map of callable entity names → IDs
+2. Constructs a regex matching any callable name followed by `(`
+3. Scans each function/method body for matches
+4. Creates `calls` edges (deduplicated, self-calls excluded)
+
+Limitations (documented trade-offs):
+- File-scoped only — cross-file calls require SCIP
+- False positives possible for common names (mitigated by dedup)
+- Doesn't resolve method calls on objects (e.g., `obj.method()` won't match `method`)
+
+**Files:** `lib/indexer/languages/python/tree-sitter.ts`, `lib/indexer/languages/go/tree-sitter.ts`
+
+---
+
+### Overhaul 15: Ontology Refinement During Justification
+
+**Problem:** The domain ontology was static — discovered once during the ontology workflow step and never updated. As justification progressed and the LLM discovered new domain concepts, these weren't fed back into the ontology for subsequent levels.
+
+**Solution:** New `refineOntologyWithNewConcepts` activity:
+1. Collects all `domain_concepts` from completed justifications
+2. Counts concept frequency
+3. Concepts appearing ≥ 3 times but not in the current ontology are merged in
+4. Capped at 50 new terms per refinement to avoid unbounded growth
+5. Called every 20 topological levels during the justification workflow
+
+```
+Level 1-20: Justification uses initial ontology
+After level 20: Ontology refined with new concepts (e.g., "subscription", "billing")
+Level 21-40: Justification uses enriched ontology → better domain context
+After level 40: Another refinement pass
+...
+```
+
+**Files:** `lib/temporal/activities/justification.ts` (new activity), `lib/temporal/workflows/justify-repo.ts` (workflow integration)
+
+---
+
+### Overhaul 16: Feature Area Clustering
+
+**Problem:** Feature tags were flat — `user_auth`, `user_registration`, `user_profile` existed as independent features even though they're all part of "user management". This made the feature landscape fragmented.
+
+**Solution:** New `clusterFeatureAreas()` in `post-processor.ts`:
+1. Collects domain concepts per feature tag
+2. Groups tags that share ≥ 2 domain concepts (e.g., both `user_auth` and `user_profile` share "user", "account")
+3. Maps cluster members to the most frequent canonical tag
+4. Feature aggregations annotated with `feature_area` field pointing to the cluster canonical
+
+```
+user_auth (concepts: user, account, authentication, session)
+user_registration (concepts: user, account, email, verification)
+→ Shared: user, account (≥ 2) → Cluster into area "user_auth" (most frequent)
+```
+
+**Files:** `lib/justification/post-processor.ts`, `lib/temporal/activities/justification.ts`
+
+---
+
+### Overhaul 17: Unified Hybrid Search (3-Leg RRF)
+
+**Problem:** Hybrid search only queried `entity_embeddings` (code structure) and ArangoDB fulltext (keyword matching). The dedicated `justification_embeddings` table was unused in search — meaning business-purpose queries (e.g., "payment processing logic") couldn't leverage the rich justification embeddings.
+
+**Solution:** Added a third `justification_embeddings` leg to the hybrid search pipeline:
+1. New `runJustificationLeg()` calls `searchJustificationEmbeddings()` on the vector search port
+2. Returns top 15 candidates from business-purpose semantic search
+3. Merged via Weighted RRF with weights: semantic=0.7, keyword=1.0, justification=0.5
+4. Graceful degradation — if justification leg fails, pipeline continues with 2 legs
+5. No changes needed if adapter doesn't implement `searchJustificationEmbeddings` (returns empty)
+
+```
+Query: "how does payment validation work?"
+  Semantic leg (entity_embeddings):  code-level matches (0.7 weight)
+  Keyword leg (ArangoDB fulltext):   exact name matches (1.0 weight)
+  Justification leg (justification_embeddings): business-purpose matches (0.5 weight)
+  → RRF merge → enriched results
+```
+
+**Files:** `lib/embeddings/hybrid-search.ts`
+
+---
+
+### Overhaul 10-17 Files Summary
+
+| Change Type | File | What Changed |
+|-------------|------|-------------|
+| Modified | `lib/justification/quality-scorer.ts` | Reasoning validation, alignment checks, pattern cross-check |
+| Modified | `lib/mcp/tools/business.ts` | MCP tools return reasoning + architecturalPattern |
+| Modified | `lib/justification/staleness-checker.ts` | Quality-based invalidation, semantic keyword extraction, Jaccard similarity cascading |
+| Modified | `lib/justification/post-processor.ts` | Levenshtein tag dedup, feature area clustering |
+| Modified | `lib/temporal/activities/justification.ts` | Exponential backoff, callerCount routing, ontology refinement activity, feature area annotation |
+| Modified | `lib/temporal/activities/incremental.ts` | Reuse buildEmbeddableDocuments(), enriched justification embedding text |
+| Modified | `lib/temporal/activities/embedding.ts` | Entity doc field in embeddings |
+| Modified | `lib/justification/model-router.ts` | callerCount parameter for tier routing |
+| Modified | `lib/justification/prompt-builder.ts` | Comment signals "Author Notes" section |
+| Modified | `lib/indexer/languages/python/tree-sitter.ts` | Call edge detection |
+| Modified | `lib/indexer/languages/go/tree-sitter.ts` | Call edge detection |
+| Modified | `lib/embeddings/hybrid-search.ts` | 3-leg RRF (justification_embeddings leg) |
+| Modified | `lib/temporal/workflows/justify-repo.ts` | Ontology refinement every 20 levels |
+| Modified | `lib/justification/__tests__/schemas.test.ts` | reasoning field in test fixtures |
+| Modified | `lib/justification/__tests__/model-router.test.ts` | Zero-skip policy test update |
+| **New** | `lib/justification/comment-signals.ts` | TODO/FIXME/DEPRECATED signal extraction |
+
+---
+
 ## Revision Log
 
 | Date | Author | Change |
@@ -2385,3 +2619,5 @@ This makes the function-specific prompt section more cohesive by showing callee/
 | 2026-02-24 | Claude | **Pipeline hardening: quality scoring, semantic cascading, tag dedup, backoff (7 changes).** (1) **Quality scorer: reasoning validation** — checks length ≥80, not a copy of businessPurpose, must reference code signals. (2) **Confidence/taxonomy alignment** — flags low-confidence VERTICAL (risky), high-confidence UTILITY with no concepts (suspicious), VERTICAL with <2 concepts. (3) **Architectural pattern cross-check** — flags pure_domain with no domain concepts. (4) **MCP tools return reasoning** — `get_business_context` and `analyze_impact` now expose reasoning + architecturalPattern. (5) **Quality-based re-justification** — entities with quality_score < 0.4 or fallback_justification flag always re-justified regardless of body hash. (6) **Semantic cascading** — extracts normalized keywords (taxonomy + feature_tag + domain_concepts + purpose words) and computes Jaccard similarity; only cascades if similarity < 0.75 (meaning actually changed, not just rephrased). (7) **Feature tag deduplication** — Levenshtein distance clustering merges similar tags (e.g., "user_auth" + "user_authentication" → canonical). (8) **Exponential backoff** — batch LLM failures retry 3x with 2s/8s/30s delays before falling to individual retries. Modified files: 6. 909 tests pass. |
 | 2026-02-24 | Claude | **`reasoning` field + enriched call graph context.** (1) Added `reasoning` as required string field to `JustificationResultSchema` and `BatchJustificationItemSchema`. (2) Updated prompt instructions (single + batch) to require chain-of-evidence reasoning. (3) Stored reasoning in all result push sites (justifyBatch single/batch/retry, cascadeReJustify, fallback). (4) Added reasoning to enriched embeddings (~50-100 extra tokens). (5) Entity detail API returns reasoning field. (6) Function prompt call graph section now shows callee/caller purposes inline via `depJustificationMap`. Modified files: 6. |
 | 2026-02-24 | Claude | **Justification quality overhaul & entity browsing (8 changes).** (1) `MAX_BODY_LINES` 500→3000 — large entities no longer truncated at extraction. (2) Prompt truncation limits 3-4x increase (fast: 4K, standard: 8K, premium: 12K chars). (3) **Zero-skip policy** — `applyHeuristics` → `computeHeuristicHint`; all entities go to LLM with hints as context, no heuristic short-circuit. (4) `cascadeReJustify` rewritten with full pipeline (graph contexts, structured output, quality scoring) — eliminates hollow incremental justifications. (5) Justification embeddings enriched from ~30 to ~150-200 tokens (entity name, kind, file, signature, source snippet). (6) Entity detail API returns full justification (taxonomy, purpose, concepts, triples, compliance, pattern). (7) New `getEntitiesWithJustifications` graph store method with AQL UNION + LEFT JOIN across 5 collections. (8) Entity browsing page (`/repos/{repoId}/entities`) with taxonomy stat cards, filterable table, pagination. New files: 2. Modified files: 11. Build passes. |
+| 2026-02-24 | Claude | **Pipeline hardening: quality scoring, semantic cascading, tag dedup, backoff (Overhaul 10).** (1) Quality scorer reasoning validation — length ≥80, not copy of purpose, must reference code signals. (2) Confidence/taxonomy alignment flags. (3) Architectural pattern cross-check. (4) MCP tools expose reasoning + architecturalPattern. (5) Quality-based re-justification (score < 0.4 or fallback always stale). (6) Semantic cascading via Jaccard similarity on normalized keywords (threshold 0.75). (7) Feature tag Levenshtein deduplication. (8) Exponential backoff (2s/8s/30s) for batch LLM failures. 7 files modified. 909 tests pass. |
+| 2026-02-24 | Claude | **Embedding enrichment & pipeline deepening (Overhauls 11-17).** (11) Incremental embeddings reuse `buildEmbeddableDocuments()` for consistency. (12) Entity `doc` field + compliance tags + semantic triples added to embedding text. (13) Comment signal extraction (TODO/FIXME/DEPRECATED) in prompts as "Author Notes". (14) CallerCount-based model routing (≥8 callers → premium). (15) Call edge detection for Python/Go parsers (regex body scan). (16) Ontology refinement every 20 topo levels during justification. (17) Feature area clustering by shared domain concepts. (18) 3-leg hybrid search: entity + keyword + justification embeddings via Weighted RRF. 1 new file, 15 files modified. 909 tests pass. |

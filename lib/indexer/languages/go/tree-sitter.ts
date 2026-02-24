@@ -126,6 +126,9 @@ export function parseGoFile(opts: TreeSitterOptions): GoParseResult {
   // Post-process: compute end_line and extract body for each entity
   fillGoEndLinesAndBodies(entities, lines)
 
+  // Post-process: detect call edges by scanning function/method bodies
+  detectGoCallEdges(entities, edges)
+
   return { entities, edges }
 }
 
@@ -188,6 +191,48 @@ function fillGoEndLinesAndBodies(entities: ParsedEntity[], lines: string[]): voi
       // Estimate complexity for functions and methods
       if (entity.kind === "function" || entity.kind === "method") {
         entity.complexity = estimateGoComplexity(entity.body)
+      }
+    }
+  }
+}
+
+/**
+ * Detect call edges by scanning function/method bodies for `name(` patterns
+ * matching known entity names in the same file.
+ */
+function detectGoCallEdges(entities: ParsedEntity[], edges: ParsedEdge[]): void {
+  // Build a set of callable entity names → IDs
+  const callableMap = new Map<string, string>()
+  for (const e of entities) {
+    if (e.kind === "function" || e.kind === "method") {
+      callableMap.set(e.name, e.id)
+    }
+  }
+
+  if (callableMap.size === 0) return
+
+  const names = Array.from(callableMap.keys()).filter((n) => n.length > 1)
+  if (names.length === 0) return
+
+  const escapedNames = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  const callPattern = new RegExp(`\\b(${escapedNames.join("|")})\\s*\\(`, "g")
+
+  const edgeSet = new Set<string>()
+  for (const entity of entities) {
+    if (entity.kind !== "function" && entity.kind !== "method") continue
+    if (!entity.body) continue
+
+    let match: RegExpExecArray | null
+    const regex = new RegExp(callPattern.source, "g")
+    while ((match = regex.exec(entity.body)) !== null) {
+      const calledName = match[1]!
+      const calleeId = callableMap.get(calledName)
+      if (calleeId && calleeId !== entity.id) {
+        const edgeKey = `${entity.id}→${calleeId}`
+        if (!edgeSet.has(edgeKey)) {
+          edgeSet.add(edgeKey)
+          edges.push({ from_id: entity.id, to_id: calleeId, kind: "calls" })
+        }
       }
     }
   }

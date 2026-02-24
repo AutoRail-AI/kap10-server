@@ -182,6 +182,90 @@ export function extractSemanticTriples(
   return triples
 }
 
+/** Minimum concept overlap to group two feature tags into the same area */
+const AREA_OVERLAP_THRESHOLD = 2
+
+/**
+ * Cluster feature tags into higher-level feature areas based on shared domain_concepts.
+ * Returns a map from feature_tag → feature_area (the canonical tag of the cluster).
+ *
+ * Example: "user_auth", "user_registration", "user_profile" might all cluster
+ * into a "user_management" area if they share concepts like "user", "account".
+ */
+export function clusterFeatureAreas(
+  justifications: JustificationDoc[]
+): Map<string, string> {
+  // Step 1: Collect domain concepts per feature tag
+  const tagConcepts = new Map<string, Set<string>>()
+  for (const j of justifications) {
+    if (!tagConcepts.has(j.feature_tag)) tagConcepts.set(j.feature_tag, new Set())
+    const concepts = tagConcepts.get(j.feature_tag)!
+    for (const c of j.domain_concepts) {
+      concepts.add(c.toLowerCase().trim())
+    }
+  }
+
+  const tags = Array.from(tagConcepts.keys())
+  if (tags.length <= 1) return new Map()
+
+  // Step 2: Build adjacency by shared concept count
+  const clusters: Set<string>[] = []
+  const assigned = new Set<string>()
+
+  for (const tag of tags) {
+    if (assigned.has(tag)) continue
+    const cluster = new Set<string>([tag])
+    assigned.add(tag)
+    const tagConceptSet = tagConcepts.get(tag)!
+
+    for (const other of tags) {
+      if (assigned.has(other)) continue
+      const otherConcepts = tagConcepts.get(other)!
+
+      // Count shared concepts
+      let overlap = 0
+      for (const c of Array.from(tagConceptSet)) {
+        if (otherConcepts.has(c)) overlap++
+      }
+
+      if (overlap >= AREA_OVERLAP_THRESHOLD) {
+        cluster.add(other)
+        assigned.add(other)
+      }
+    }
+
+    if (cluster.size > 1) {
+      clusters.push(cluster)
+    }
+  }
+
+  // Step 3: Build area map — canonical tag is the most frequent tag in cluster
+  const tagFreq = new Map<string, number>()
+  for (const j of justifications) {
+    tagFreq.set(j.feature_tag, (tagFreq.get(j.feature_tag) ?? 0) + 1)
+  }
+
+  const areaMap = new Map<string, string>()
+  for (const cluster of clusters) {
+    let canonical = ""
+    let maxFreq = 0
+    for (const tag of Array.from(cluster)) {
+      const f = tagFreq.get(tag) ?? 0
+      if (f > maxFreq || (f === maxFreq && tag < canonical)) {
+        canonical = tag
+        maxFreq = f
+      }
+    }
+    for (const tag of Array.from(cluster)) {
+      if (tag !== canonical) {
+        areaMap.set(tag, canonical)
+      }
+    }
+  }
+
+  return areaMap
+}
+
 /**
  * Deduplicate and aggregate features by feature_tag.
  */

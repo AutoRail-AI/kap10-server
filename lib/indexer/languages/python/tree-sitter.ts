@@ -142,6 +142,9 @@ export function parsePythonFile(opts: TreeSitterOptions): PythonParseResult {
   // Post-process: compute end_line and extract body for each entity
   fillPythonEndLinesAndBodies(entities, lines)
 
+  // Post-process: detect call edges by scanning function/method bodies
+  detectPythonCallEdges(entities, edges)
+
   return { entities, edges }
 }
 
@@ -200,6 +203,50 @@ function fillPythonEndLinesAndBodies(entities: ParsedEntity[], lines: string[]):
       // Estimate complexity for functions and methods
       if (entity.kind === "function" || entity.kind === "method") {
         entity.complexity = estimatePythonComplexity(entity.body)
+      }
+    }
+  }
+}
+
+/**
+ * Detect call edges by scanning function/method bodies for `name(` patterns
+ * matching known entity names in the same file.
+ */
+function detectPythonCallEdges(entities: ParsedEntity[], edges: ParsedEdge[]): void {
+  // Build a set of callable entity names → IDs
+  const callableMap = new Map<string, string>()
+  for (const e of entities) {
+    if (e.kind === "function" || e.kind === "method" || e.kind === "class") {
+      callableMap.set(e.name, e.id)
+    }
+  }
+
+  if (callableMap.size === 0) return
+
+  // Build a regex matching any callable name followed by (
+  const names = Array.from(callableMap.keys()).filter((n) => n.length > 1)
+  if (names.length === 0) return
+
+  // Escape regex special chars in names, match word boundary + name + (
+  const escapedNames = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  const callPattern = new RegExp(`\\b(${escapedNames.join("|")})\\s*\\(`, "g")
+
+  const edgeSet = new Set<string>()
+  for (const entity of entities) {
+    if (entity.kind !== "function" && entity.kind !== "method") continue
+    if (!entity.body) continue
+
+    let match: RegExpExecArray | null
+    const regex = new RegExp(callPattern.source, "g")
+    while ((match = regex.exec(entity.body)) !== null) {
+      const calledName = match[1]!
+      const calleeId = callableMap.get(calledName)
+      if (calleeId && calleeId !== entity.id) {
+        const edgeKey = `${entity.id}→${calleeId}`
+        if (!edgeSet.has(edgeKey)) {
+          edgeSet.add(edgeKey)
+          edges.push({ from_id: entity.id, to_id: calleeId, kind: "calls" })
+        }
       }
     }
   }

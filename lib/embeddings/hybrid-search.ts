@@ -180,7 +180,7 @@ export async function hybridSearch(
   const runKeyword = input.mode === "hybrid" || input.mode === "keyword"
 
   // Run legs in parallel with independent timeouts
-  const [semanticResults, keywordResults] = await Promise.all([
+  const [semanticResults, keywordResults, justificationResults] = await Promise.all([
     runSemantic
       ? runSemanticLeg(input, container).catch((err: unknown) => {
           const msg = err instanceof Error ? err.message : String(err)
@@ -195,10 +195,17 @@ export async function hybridSearch(
           return [] as RankedItem[]
         })
       : Promise.resolve([] as RankedItem[]),
+    runSemantic
+      ? runJustificationLeg(input, container).catch((err: unknown) => {
+          const msg = err instanceof Error ? err.message : String(err)
+          degraded.justification = `justification search failed: ${msg}`
+          return [] as RankedItem[]
+        })
+      : Promise.resolve([] as RankedItem[]),
   ])
 
-  // If both legs failed, return error
-  if (semanticResults.length === 0 && keywordResults.length === 0) {
+  // If all legs failed, return error
+  if (semanticResults.length === 0 && keywordResults.length === 0 && justificationResults.length === 0) {
     if (Object.keys(degraded).length > 0) {
       return {
         results: [],
@@ -212,8 +219,9 @@ export async function hybridSearch(
     }
   }
 
-  // Merge with Weighted RRF (k=30, semantic=0.7, keyword=1.0)
+  // Merge with Weighted RRF (k=30, semantic=0.7, keyword=1.0, justification=0.5)
   // Code search favors exact lexical matches — keyword leg gets higher weight.
+  // Justification leg adds business-purpose context for intent-based queries.
   const queryTokens = tokenizeQuery(input.query)
   const rankings: RankedItem[][] = []
   const weights: number[] = []
@@ -224,6 +232,10 @@ export async function hybridSearch(
   if (keywordResults.length > 0) {
     rankings.push(keywordResults)
     weights.push(1.0) // Keyword leg weight — favors exact naming
+  }
+  if (justificationResults.length > 0) {
+    rankings.push(justificationResults)
+    weights.push(0.5) // Justification leg weight — business purpose context
   }
 
   // If only one leg, just use that ranking directly
@@ -285,6 +297,45 @@ async function runSemanticLeg(
     entityName: (r.metadata?.entityName as string) ?? r.id,
     entityType: (r.metadata?.entityType as string) ?? "unknown",
     filePath: (r.metadata?.filePath as string) ?? "",
+    score: r.score,
+  }))
+}
+
+// ── Justification Leg ─────────────────────────────────────────────────────────
+
+/**
+ * Search the dedicated justification_embeddings table for business-purpose matches.
+ * This leg surfaces entities whose justification (taxonomy, purpose, domain concepts)
+ * matches the query, even when the entity's code/name doesn't match directly.
+ */
+async function runJustificationLeg(
+  input: HybridSearchInput,
+  container: Container
+): Promise<RankedItem[]> {
+  if (!container.vectorSearch.searchJustificationEmbeddings) {
+    return []
+  }
+
+  // Embed the query
+  let queryEmbedding: number[]
+  if (container.vectorSearch.embedQuery) {
+    queryEmbedding = await container.vectorSearch.embedQuery(input.query)
+  } else {
+    const embeddings = await container.vectorSearch.embed([input.query])
+    queryEmbedding = embeddings[0]!
+  }
+
+  const results = await container.vectorSearch.searchJustificationEmbeddings(
+    queryEmbedding,
+    15, // top 15 candidates for RRF merge
+    { orgId: input.orgId, repoId: input.repoId }
+  )
+
+  return results.map((r) => ({
+    entityKey: r.entityId,
+    entityName: r.entityName,
+    entityType: r.taxonomy.toLowerCase(),
+    filePath: "", // Justification results don't carry file path — will be enriched by graph
     score: r.score,
   }))
 }

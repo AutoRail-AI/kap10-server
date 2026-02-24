@@ -7,6 +7,7 @@ import { heartbeat } from "@temporalio/activity"
 import { randomUUID } from "node:crypto"
 import { getContainer } from "@/lib/di/container"
 import { writeEntitiesToGraph } from "@/lib/temporal/activities/graph-writer"
+import { buildEmbeddableDocuments } from "@/lib/temporal/activities/embedding"
 import { diffEntitySets } from "@/lib/indexer/incremental"
 import { repairEdges } from "@/lib/indexer/edge-repair"
 import { buildCascadeQueue } from "@/lib/indexer/cascade"
@@ -279,6 +280,8 @@ export interface UpdateEmbeddingsInput {
 /**
  * Update embeddings for changed entities.
  * Runs on light-llm-queue (network I/O).
+ * Uses the same buildEmbeddableDocuments() as the full embedding pipeline
+ * to ensure incremental and full-index embeddings are consistent.
  */
 export async function updateEmbeddings(input: UpdateEmbeddingsInput): Promise<{ embeddingsUpdated: number }> {
   const container = getContainer()
@@ -295,28 +298,34 @@ export async function updateEmbeddings(input: UpdateEmbeddingsInput): Promise<{ 
 
   if (entities.length === 0) return { embeddingsUpdated: 0 }
 
-  // Build text content for embedding
-  const texts = entities.map((e) => {
-    const parts = [e.kind, e.name]
-    if (e.signature) parts.push(String(e.signature))
-    if (e.body) parts.push(String(e.body).slice(0, 1000))
-    return parts.join(" ")
-  })
+  // Load justification map for enriched embeddings (may be empty on first run)
+  let justificationMap = new Map<string, JustificationDoc>()
+  try {
+    const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
+    justificationMap = new Map(justifications.map((j) => [j.entity_id, j]))
+  } catch {
+    // Justifications may not exist yet — continue with empty map
+  }
 
+  // Reuse the same buildEmbeddableDocuments() as the full embedding pipeline
+  const docs = buildEmbeddableDocuments(
+    { orgId: input.orgId, repoId: input.repoId },
+    entities,
+    justificationMap,
+  )
+
+  if (docs.length === 0) return { embeddingsUpdated: 0 }
+
+  const texts = docs.map((d) => d.text)
   const embeddings = await container.vectorSearch.embed(texts)
 
-  const ids = entities.map((e) => e.id)
-  const metadata = entities.map((e) => ({
-    orgId: e.org_id,
-    repoId: e.repo_id,
-    kind: e.kind,
-    name: e.name,
-    filePath: e.file_path,
-  }))
+  await container.vectorSearch.upsert(
+    docs.map((d) => d.entityKey),
+    embeddings,
+    docs.map((d) => d.metadata),
+  )
 
-  await container.vectorSearch.upsert(ids, embeddings, metadata)
-
-  return { embeddingsUpdated: entities.length }
+  return { embeddingsUpdated: docs.length }
 }
 
 export interface CascadeReJustifyInput {
@@ -530,12 +539,18 @@ export async function cascadeReJustify(input: CascadeReJustifyInput): Promise<Ca
           if (entity) {
             parts.push(`${entity.kind}: ${entity.name}`)
             parts.push(`File: ${entity.file_path}`)
+            if (entity.doc) parts.push(`Documentation: ${String(entity.doc)}`)
           }
           parts.push(`Taxonomy: ${j.taxonomy}`)
           parts.push(`Purpose: ${j.business_purpose}`)
           if (j.domain_concepts.length > 0) parts.push(`Concepts: ${j.domain_concepts.join(", ")}`)
           parts.push(`Feature: ${j.feature_tag}`)
           if ((j as Record<string, unknown>).reasoning) parts.push(`Reasoning: ${String((j as Record<string, unknown>).reasoning)}`)
+          if (j.compliance_tags.length > 0) parts.push(`Compliance: ${j.compliance_tags.join(", ")}`)
+          if (j.semantic_triples.length > 0) {
+            const tripleStr = j.semantic_triples.slice(0, 5).map((t) => `${t.subject} ${t.predicate} ${t.object}`).join("; ")
+            parts.push(`Relations: ${tripleStr}`)
+          }
           if (entity?.signature) parts.push(`Signature: ${String(entity.signature)}`)
           if (entity?.body) parts.push(String(entity.body).slice(0, 500))
           const text = parts.join("\n")
