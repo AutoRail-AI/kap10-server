@@ -7,9 +7,9 @@ describe("generateBootstrapRule", () => {
     expect(rule).toContain("acme/web-app")
   })
 
-  it("includes kap10 rule version frontmatter", () => {
+  it("includes unerr rule version frontmatter", () => {
     const rule = generateBootstrapRule("test/repo")
-    expect(rule).toContain("kap10_rule_version:")
+    expect(rule).toContain("unerr_rule_version:")
   })
 
   it("includes pre-flight instructions", () => {

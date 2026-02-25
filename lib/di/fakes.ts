@@ -985,7 +985,7 @@ export class FakeGitHost implements IGitHost {
     return { number: 0, title: "" }
   }
   async createPullRequest(): Promise<PullRequest> {
-    return { number: 42, title: "Enable kap10 Code Intelligence" }
+    return { number: 42, title: "Enable unerr Code Intelligence" }
   }
   async getDiff(): Promise<string> {
     return ""

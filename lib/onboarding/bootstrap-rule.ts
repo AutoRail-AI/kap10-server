@@ -1,25 +1,25 @@
 /**
- * Bootstrap Rule generator — produces .cursor/rules/kap10.mdc content.
+ * Bootstrap Rule generator — produces .cursor/rules/unerr.mdc content.
  * This rule instructs AI agents to sync context before/after code generation.
  */
 
 const RULE_VERSION = "1.0.0"
 
 /**
- * Generate the kap10 Bootstrap Rule for Cursor IDE.
+ * Generate the unerr Bootstrap Rule for Cursor IDE.
  * The rule contains pre-flight and post-flight sync instructions.
  */
 export function generateBootstrapRule(repoName: string): string {
   return `---
-kap10_rule_version: "${RULE_VERSION}"
-description: "kap10 Code Intelligence — sync context with the cloud knowledge graph"
+unerr_rule_version: "${RULE_VERSION}"
+description: "unerr Code Intelligence — sync context with the cloud knowledge graph"
 globs: ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.py", "**/*.go", "**/*.rs", "**/*.java"]
 alwaysApply: true
 ---
 
-# kap10 Code Intelligence
+# unerr Code Intelligence
 
-This repository is connected to **kap10** — a cloud-hosted code intelligence platform that provides your AI agent with deep understanding of the codebase structure, dependencies, and call graphs.
+This repository is connected to **unerr** — a cloud-hosted code intelligence platform that provides your AI agent with deep understanding of the codebase structure, dependencies, and call graphs.
 
 ## Pre-flight: Before Writing Code
 

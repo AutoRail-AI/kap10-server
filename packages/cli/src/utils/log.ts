@@ -1,5 +1,5 @@
 /**
- * File logger — writes structured logs to .kap10/logs/ in the repo root.
+ * File logger — writes structured logs to .unerr/logs/ in the repo root.
  *
  * Each setup run creates a timestamped log file. All API calls, responses,
  * and errors are recorded. On error, the CLI prints the log file path.
@@ -11,7 +11,7 @@ import { join } from "node:path"
 let logFilePath: string | null = null
 
 function ensureLogDir(cwd: string): string {
-  const logsDir = join(cwd, ".kap10", "logs")
+  const logsDir = join(cwd, ".unerr", "logs")
   mkdirSync(logsDir, { recursive: true })
   return logsDir
 }
@@ -27,7 +27,7 @@ function datestamp(): string {
 export function initLogFile(cwd: string): string {
   const logsDir = ensureLogDir(cwd)
   logFilePath = join(logsDir, `setup-${datestamp()}.log`)
-  write("info", "=== kap10 setup started ===")
+  write("info", "=== unerr setup started ===")
   write("info", `cwd: ${cwd}`)
   write("info", `node: ${process.version}`)
   write("info", `platform: ${process.platform} ${process.arch}`)

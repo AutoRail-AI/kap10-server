@@ -26,11 +26,11 @@ function getConfig() {
 }
 
 function entityCounterKey(orgId: string, repoId: string, entityKeyStr: string): string {
-  return `kap10:circuit:${orgId}:${repoId}:${entityKeyStr}`
+  return `unerr:circuit:${orgId}:${repoId}:${entityKeyStr}`
 }
 
 function tripKey(orgId: string, repoId: string, entityKeyStr: string): string {
-  return `kap10:circuit:tripped:${orgId}:${repoId}:${entityKeyStr}`
+  return `unerr:circuit:tripped:${orgId}:${repoId}:${entityKeyStr}`
 }
 
 export async function recordBrokenEntry(

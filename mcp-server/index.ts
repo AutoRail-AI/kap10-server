@@ -71,7 +71,7 @@ async function main() {
     const url = process.env.MCP_SERVER_URL ?? `http://localhost:${port}`
     console.log(`
 ┌──────────────────────────────────────────────────┐
-│  kap10 MCP Server                                │
+│  unerr MCP Server                                │
 │  ────────────────────────────────────────────     │
 │  Listening on port ${String(port).padEnd(5)}                          │
 │  Public URL: ${url.padEnd(35)} │

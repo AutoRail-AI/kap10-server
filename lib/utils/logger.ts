@@ -13,7 +13,7 @@ export interface LogContext {
 }
 
 /**
- * Standardized logger for the entire Kap10 application.
+ * Standardized logger for the entire Unerr application.
  *
  * Log format:
  *   [UTC timestamp] [LEVEL] [service] [orgId/repoId] message {extra}

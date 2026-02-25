@@ -3,7 +3,7 @@
  *
  * Accepts ?remote=github.com/owner/repo and returns repo info
  * if it exists in the user's org. Used by the CLI connect command
- * to detect if a repo is already on kap10.
+ * to detect if a repo is already on unerr.
  */
 
 import { NextResponse } from "next/server"

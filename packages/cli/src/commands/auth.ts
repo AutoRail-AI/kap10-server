@@ -1,9 +1,9 @@
 /**
- * kap10 auth — Authentication commands.
+ * unerr auth — Authentication commands.
  *
- * kap10 auth login  — Device OAuth flow (browser) or direct API key
- * kap10 auth logout — Delete stored credentials
- * kap10 auth status — Show current auth state
+ * unerr auth login  — Device OAuth flow (browser) or direct API key
+ * unerr auth logout — Delete stored credentials
+ * unerr auth status — Show current auth state
  */
 
 import { Command } from "commander"
@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-const CONFIG_DIR = join(homedir(), ".kap10")
+const CONFIG_DIR = join(homedir(), ".unerr")
 const CREDENTIALS_PATH = join(CONFIG_DIR, "credentials.json")
 
 export interface Credentials {
@@ -124,7 +124,7 @@ export async function deviceAuthFlow(serverUrl: string): Promise<Credentials> {
       if (tokenBody.key_already_existed) {
         // Key already existed — user must provide it or we use the one on disk
         const existing = getCredentials()
-        if (existing?.apiKey?.startsWith("kap10_sk_")) {
+        if (existing?.apiKey?.startsWith("unerr_sk_")) {
           return {
             serverUrl,
             apiKey: existing.apiKey,
@@ -157,8 +157,8 @@ export function registerAuthCommand(program: Command): void {
 
   auth
     .command("login")
-    .description("Authenticate with kap10 server")
-    .option("--server <url>", "Server URL", "https://app.kap10.dev")
+    .description("Authenticate with unerr server")
+    .option("--server <url>", "Server URL", "https://app.unerr.dev")
     .option("--key <apiKey>", "API key (skip browser login)")
     .action(async (opts: { server: string; key?: string }) => {
       if (opts.key) {
@@ -171,7 +171,7 @@ export function registerAuthCommand(program: Command): void {
         const creds = await deviceAuthFlow(opts.server)
         saveCredentials(creds)
         console.log(`Authenticated as ${creds.orgName ?? "your organization"}.`)
-        console.log("Credentials saved to ~/.kap10/credentials.json")
+        console.log("Credentials saved to ~/.unerr/credentials.json")
       } catch (error: unknown) {
         console.error(error instanceof Error ? error.message : String(error))
         process.exit(1)
@@ -200,7 +200,7 @@ export function registerAuthCommand(program: Command): void {
         console.log(`Organization: ${creds.orgName ?? "unknown"}`)
         console.log(`API Key: ${creds.apiKey.slice(0, 14)}****`)
       } else {
-        console.log("Not authenticated. Run: kap10 auth login")
+        console.log("Not authenticated. Run: unerr auth login")
       }
     })
 }

@@ -1,12 +1,12 @@
 # Phase 6 — Pattern Enforcement & Rules Engine (ast-grep + Semgrep): Deep Dive & Implementation Tracker
 
-> **Phase Feature Statement:** _"kap10 learns my codebase patterns AND enforces my team's explicit architectural rules. Agents always know the conventions — even when .cursorrules falls out of context. I can see a pattern library with confidence scores, and the AI agent asks 'does this code follow conventions?' before writing."_
+> **Phase Feature Statement:** _"unerr learns my codebase patterns AND enforces my team's explicit architectural rules. Agents always know the conventions — even when .cursorrules falls out of context. I can see a pattern library with confidence scores, and the AI agent asks 'does this code follow conventions?' before writing."_
 >
 > **Source:** [`VERTICAL_SLICING_PLAN.md`](./VERTICAL_SLICING_PLAN.md) — Phase 6
 >
 > **Prerequisites:** [Phase 1 — GitHub Connect & Repo Indexing](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) (entities + call graph in ArangoDB, `patterns` and `rules` collections bootstrapped), [Phase 2 — Hosted MCP Server](./PHASE_2_HOSTED_MCP_SERVER.md) (MCP tool registration, OTel spans, Bootstrap Rule), [Phase 3 — Semantic Search](./PHASE_3_SEMANTIC_SEARCH.md) (entity embeddings, hybrid search), [Phase 4 — Business Justification & Taxonomy](./PHASE_4_BUSINESS_JUSTIFICATION_AND_TAXONOMY.md) (unified justifications, feature areas, design patterns), [Phase 5 — Incremental Indexing & GitHub Webhooks](./PHASE_5_INCREMENTAL_INDEXING_AND_GITHUB_WEBHOOKS.md) (push-based re-indexing), [Phase 5.5 — Prompt Ledger, Rewind & Local Ingestion](./PHASE_5.5_PROMPT_LEDGER_REWIND_AND_LOCAL_INGESTION.md) (anti-pattern rules from rewinds, `rules` collection populated reactively)
 >
-> **Database convention:** All kap10 Supabase tables use PostgreSQL schema `kap10`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
+> **Database convention:** All unerr Supabase tables use PostgreSQL schema `unerr`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
 
 ---
 
@@ -191,7 +191,7 @@ Step  Actor                           System Action                             
       with the generated code
 ```
 
-**Why this replaces .cursorrules:** Cursor rules (`.cursorrules`, `.cursor/rules/*.mdc`) are static files loaded into the context window. They suffer from context rot (pushed out as conversation grows), one-size-fits-all loading (irrelevant rules waste tokens), no team coordination, and no hierarchy. kap10's Rules Engine fetches rules fresh on every tool call, scoped to the exact file/context, shared across the team, and hierarchically resolved.
+**Why this replaces .cursorrules:** Cursor rules (`.cursorrules`, `.cursor/rules/*.mdc`) are static files loaded into the context window. They suffer from context rot (pushed out as conversation grows), one-size-fits-all loading (irrelevant rules waste tokens), no team coordination, and no hierarchy. unerr's Rules Engine fetches rules fresh on every tool call, scoped to the exact file/context, shared across the team, and hierarchically resolved.
 
 ### Flow 3: Agent Post-Flight — Code Validation via check_rules
 
@@ -428,7 +428,7 @@ The `patterns` collection is already bootstrapped in `DOC_COLLECTIONS` but needs
   "confidence": 0.91,
   "status": "active",
   "source": "auto-detected",
-  "semgrep_rule": "rules:\n  - id: kap10.missing-zod-validation\n    pattern: ...",
+  "semgrep_rule": "rules:\n  - id: unerr.missing-zod-validation\n    pattern: ...",
   "example_code": "const body = RequestSchema.parse(await req.json());",
   "counter_example_code": "const body = await req.json();",
   "language": "typescript",
@@ -463,7 +463,7 @@ The `rules` collection is already bootstrapped. Phase 6 fills in the complete fi
   "branch": null,
   "workspace_user_id": null,
   "enforcement": "block",
-  "semgrep_rule": "rules:\n  - id: kap10.missing-zod\n    ...",
+  "semgrep_rule": "rules:\n  - id: unerr.missing-zod\n    ...",
   "example": "const body = RequestSchema.parse(await req.json());",
   "counter_example": "const body = await req.json();",
   "priority": 10,
@@ -747,13 +747,13 @@ When `detectPatternsWorkflow` runs after incremental indexing, patterns may chan
 ### 1.4.2 Caching Strategy
 
 **Rule resolution cache (Redis):**
-- Key: `kap10:rules:{orgId}:{repoId}:{branch}:{userId}:{pathHash}`
+- Key: `unerr:rules:{orgId}:{repoId}:{branch}:{userId}:{pathHash}`
 - Value: JSON array of resolved rules
 - TTL: 60 seconds
-- Invalidation: On rule create/update/delete, clear all keys matching `kap10:rules:{orgId}:*`
+- Invalidation: On rule create/update/delete, clear all keys matching `unerr:rules:{orgId}:*`
 
 **Pattern cache (Redis):**
-- Key: `kap10:patterns:{orgId}:{repoId}:{status}`
+- Key: `unerr:patterns:{orgId}:{repoId}:{status}`
 - Value: JSON array of patterns
 - TTL: 300 seconds (5 min — patterns change less frequently than rules)
 - Invalidation: On pattern upsert, clear matching key
@@ -1049,7 +1049,7 @@ When `check_rules` finds a `block`-level violation, the agent must fix it before
 
 ```yaml
 # Example: Force catch(error: unknown) instead of catch(error)
-id: kap10.catch-unknown-error
+id: unerr.catch-unknown-error
 language: typescript
 rule:
   pattern: catch ($ERR) { $$$ }
@@ -1437,7 +1437,7 @@ draft_architecture_rule({ description: string, examples?: string[], language?: s
   // Step 3: Return draft for human review
   RETURN {
     draft: {
-      title: result.id.replace('kap10.', '').replace(/-/g, ' '),
+      title: result.id.replace('unerr.', '').replace(/-/g, ' '),
       astGrepQuery: yamlString,
       semgrepRule: convertToSemgrep(result),    // if applicable
       astGrepFix: result.fix || null,
@@ -1454,7 +1454,7 @@ draft_architecture_rule({ description: string, examples?: string[], language?: s
 
 ```typescript
 const AstGrepRuleSchema = z.object({
-  id: z.string().regex(/^kap10\./),
+  id: z.string().regex(/^unerr\./),
   language: z.enum(["typescript", "javascript", "python", "go", "rust"]),
   rule: z.object({
     pattern: z.string(),
@@ -1473,7 +1473,7 @@ const AstGrepRuleSchema = z.object({
 The `draft_architecture_rule` tool returns a draft — it does NOT automatically create a rule. The human must review and confirm:
 
 1. Agent calls `draft_architecture_rule` with natural language description
-2. kap10 returns draft YAML + validation status
+2. unerr returns draft YAML + validation status
 3. Agent presents draft to user: "I've drafted a rule for your requirement. Here's the ast-grep YAML..."
 4. User reviews and approves via dashboard or CLI
 5. Rule created with `status: "staged"` (triggers Blast Radius Simulation)
@@ -1503,7 +1503,7 @@ LanguageImplementation Edges (in `language_implementations` edge collection):
   "_from": "rules/rule_validate_api_requests",
   "_to": "rules/rule_validate_api_requests",     // self-referencing (payload on edge)
   "language": "typescript",
-  "semgrepRule": "rules:\n  - id: kap10.ts-zod-validation\n    pattern: ...",
+  "semgrepRule": "rules:\n  - id: unerr.ts-zod-validation\n    pattern: ...",
   "astGrepQuery": "rule:\n  pattern: const $S = z.object({ $$$ })\n  ...",
   "astGrepFix": "...",
   "example": "const body = RequestSchema.parse(await req.json());",
@@ -1514,7 +1514,7 @@ LanguageImplementation Edges (in `language_implementations` edge collection):
   "_from": "rules/rule_validate_api_requests",
   "_to": "rules/rule_validate_api_requests",
   "language": "python",
-  "semgrepRule": "rules:\n  - id: kap10.py-pydantic-validation\n    pattern: ...",
+  "semgrepRule": "rules:\n  - id: unerr.py-pydantic-validation\n    pattern: ...",
   "astGrepQuery": "rule:\n  pattern: class $Model(BaseModel): ...",
   "example": "body = RequestModel(**await request.json())",
   "counterExample": "body = await request.json()"
@@ -1524,7 +1524,7 @@ LanguageImplementation Edges (in `language_implementations` edge collection):
   "_from": "rules/rule_validate_api_requests",
   "_to": "rules/rule_validate_api_requests",
   "language": "go",
-  "semgrepRule": "rules:\n  - id: kap10.go-struct-validation\n    pattern: ...",
+  "semgrepRule": "rules:\n  - id: unerr.go-struct-validation\n    pattern: ...",
   "astGrepQuery": "rule:\n  pattern: type $Name struct { $$$ `validate:\"$$$\"` }",
   "example": "type Request struct { Name string `validate:\"required\"`  }",
   "counterExample": "type Request struct { Name string }"
@@ -1787,8 +1787,8 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
   - Scope ordering: workspace(5) > branch(4) > path(3) > repo(2) > org(1)
   - Deduplication by title (most specific wins)
   - Cap at 50 rules (log warning if exceeded)
-  - Redis cache: `kap10:rules:{orgId}:{repoId}:{branch}:{userId}:{pathHash}` (TTL 60s)
-  - Cache invalidation: clear `kap10:rules:{orgId}:*` on any rule mutation
+  - Redis cache: `unerr:rules:{orgId}:{repoId}:{branch}:{userId}:{pathHash}` (TTL 60s)
+  - Cache invalidation: clear `unerr:rules:{orgId}:*` on any rule mutation
 - **Files:**
   - `lib/rules/resolver.ts` (new)
 - **Testing:** Org-wide rules returned when no repo-specific rules exist. Repo rules override org rules with same title. Path-scoped rules filtered correctly. Workspace rules visible only to owning user. Priority ordering works within same scope. Dedup works.
@@ -1834,7 +1834,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 ### P6-API-05: check_patterns MCP Tool
 
 - [x] **Status:** Complete
-- **Description:** Agent sends proposed code → kap10 runs Semgrep rules from auto-detected patterns → returns violations with evidence and examples.
+- **Description:** Agent sends proposed code → unerr runs Semgrep rules from auto-detected patterns → returns violations with evidence and examples.
 - **Input schema:**
   - `code: string` — Code to check
   - `filePath: string` — For context and pattern filtering

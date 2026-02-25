@@ -1,12 +1,12 @@
 # Phase 7 — PR Review Integration (Semgrep-Powered): Deep Dive & Implementation Tracker
 
-> **Phase Feature Statement:** _"kap10 automatically reviews my PRs on GitHub. It runs Semgrep rules from Phase 6 against the diff, identifies impact radius via the knowledge graph, and posts review comments — all deterministic, all explainable, all cheap."_
+> **Phase Feature Statement:** _"unerr automatically reviews my PRs on GitHub. It runs Semgrep rules from Phase 6 against the diff, identifies impact radius via the knowledge graph, and posts review comments — all deterministic, all explainable, all cheap."_
 >
 > **Source:** [`VERTICAL_SLICING_PLAN.md`](./VERTICAL_SLICING_PLAN.md) — Phase 7 + Phase 7 Enhancement (Ledger Trace Merging)
 >
 > **Prerequisites:** [Phase 1 — GitHub Connect & Repo Indexing](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) (entities + call graph in ArangoDB, `rules`/`patterns` collections bootstrapped, GitHub App installed, webhook handler), [Phase 2 — Hosted MCP Server](./PHASE_2_HOSTED_MCP_SERVER.md) (MCP tools, OTel spans), [Phase 3 — Semantic Search](./PHASE_3_SEMANTIC_SEARCH.md) (entity embeddings), [Phase 4 — Business Justification & Taxonomy](./PHASE_4_BUSINESS_JUSTIFICATION_AND_TAXONOMY.md) (feature area context), [Phase 5 — Incremental Indexing & GitHub Webhooks](./PHASE_5_INCREMENTAL_INDEXING_AND_GITHUB_WEBHOOKS.md) (push webhook handler, HMAC verification, Redis dedup), [Phase 5.5 — Prompt Ledger, Rewind & Local Ingestion](./PHASE_5.5_PROMPT_LEDGER_REWIND_AND_LOCAL_INGESTION.md) (ledger collection, Ledger Entry/Summary types), [Phase 6 — Pattern Enforcement & Rules Engine](./PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md) (auto-detected patterns with Semgrep YAML, explicit rules, `IPatternEngine` with real Semgrep CLI)
 >
-> **Database convention:** All kap10 Supabase tables use PostgreSQL schema `kap10`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
+> **Database convention:** All unerr Supabase tables use PostgreSQL schema `unerr`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
 
 ---
 
@@ -50,12 +50,12 @@
 | **Merge Node** | `type: "merge"` in `ledger` | `MergeNode` (type) | A special Ledger Entry created when a PR is merged, linking source branch history to target branch. Contains `sourceBranch`, `targetBranch`, `prNumber`, `mergedBy`, `entryCount`. | ~~merge record~~, ~~branch link~~ |
 | **Merge Summary** | `type: "merge_summary"` in `ledger_summaries` | `MergeSummary` (type) | An LLM-generated narrative summary of all AI activity on a feature branch, created on PR merge. Links to the Merge Node. Provides code archaeology context months later. | ~~branch summary~~, ~~merge narrative~~ |
 | **Review Configuration** | `review_config` (JSON field on Repo) | `ReviewConfig` (type) | Per-repo settings controlling which checks run, severity thresholds, and whether reviews auto-post or require approval. | ~~review settings~~, ~~review prefs~~ |
-| **Check Run** | `github_check_run_id` (on `pr_reviews`) | `checkRunId` | A GitHub Check Run (via Checks API) that houses the full kap10 review in the PR's "Checks" tab. Only `BLOCKER`-severity violations post inline review threads; all other findings live in the Check Run summary. Keeps the PR timeline clean. | ~~PR comment~~, ~~bot comment~~ |
+| **Check Run** | `github_check_run_id` (on `pr_reviews`) | `checkRunId` | A GitHub Check Run (via Checks API) that houses the full unerr review in the PR's "Checks" tab. Only `BLOCKER`-severity violations post inline review threads; all other findings live in the Check Run summary. Keeps the PR timeline clean. | ~~PR comment~~, ~~bot comment~~ |
 | **Click-to-Commit** | — | `suggestedChange` | A GitHub `suggestion` block in an inline review comment, generated from Phase 6's ast-grep `fix:` directive. Developers click "Commit Suggestion" in the GitHub UI to apply the fix — no IDE context-switch required. | ~~code suggestion~~, ~~patch~~ |
 | **Blast Radius Summary** | — | `BlastRadiusSummary` (type) | An N-hop ArangoDB traversal from changed functions up to the nearest API boundary or UI component. Included in the Check Run summary so reviewers see upstream propagation paths, not just local violations. | ~~call tree~~, ~~dependency tree~~ |
-| **Review PR Status** | — | `reviewPrStatus()` | MCP tool that bridges Phase 7 (GitHub) back to Phase 2 (Local MCP). When a PR is blocked, the developer queries their local agent: "Why did kap10 block PR #42?" The tool returns the Temporal workflow trace, specific failures, and remediation guidance. | ~~debug PR~~, ~~pr status~~ |
+| **Review PR Status** | — | `reviewPrStatus()` | MCP tool that bridges Phase 7 (GitHub) back to Phase 2 (Local MCP). When a PR is blocked, the developer queries their local agent: "Why did unerr block PR #42?" The tool returns the Temporal workflow trace, specific failures, and remediation guidance. | ~~debug PR~~, ~~pr status~~ |
 | **Auto-ADR** | `architecture_decision_records` (Supabase table) | `AutoAdr` (type) | An automatically generated Architecture Decision Record (ADR) committed as a follow-up PR when a merged PR introduces significant new graph topology (new feature areas, services, or high-value nodes). | ~~auto-doc~~, ~~doc generation~~ |
-| **Semantic LGTM** | `auto_approved` (boolean on `pr_reviews`) | `semanticLgtm` | Low-risk auto-approval: if Phase 4 taxonomy confirms the diff only touches `HORIZONTAL`/`UTILITY` nodes (no `VERTICAL` business logic), kap10 issues an automatic `APPROVE` via the Pull Request API. | ~~auto-approve~~, ~~rubber stamp~~ |
+| **Semantic LGTM** | `auto_approved` (boolean on `pr_reviews`) | `semanticLgtm` | Low-risk auto-approval: if Phase 4 taxonomy confirms the diff only touches `HORIZONTAL`/`UTILITY` nodes (no `VERTICAL` business logic), unerr issues an automatic `APPROVE` via the Pull Request API. | ~~auto-approve~~, ~~rubber stamp~~ |
 | **Nudge & Assist** | — | `prFollowUpWorkflow` | A Temporal workflow with 48-hour `workflow.sleep()` that posts a supportive follow-up comment on blocked PRs where no new commits have appeared. Transforms CI from a pass/fail barrier into an active coaching mechanism. | ~~reminder bot~~, ~~nag~~ |
 
 ---
@@ -71,7 +71,7 @@ The auto-generated Semgrep rules from Phase 6 are **deterministic YAML** — no 
 - **Explainable** — Every finding links back to the Semgrep rule + evidence from Phase 6's pattern detection
 - **Cheap** — Zero LLM cost for pattern checks (LLM only used for impact summary in the optional `analyzeImpact` step and for ledger merge summaries)
 
-This is the key differentiator: kap10's PR reviews are not "yet another AI review bot." They are deterministic enforcement of the repo's own conventions, backed by evidence.
+This is the key differentiator: unerr's PR reviews are not "yet another AI review bot." They are deterministic enforcement of the repo's own conventions, backed by evidence.
 
 ---
 
@@ -81,7 +81,7 @@ This is the key differentiator: kap10's PR reviews are not "yet another AI revie
 
 **Actor:** System (automated, triggered by GitHub `pull_request` webhook)
 **Precondition:** Repo is in `ready` status (fully indexed). GitHub App is installed with PR permissions. Phase 6 patterns detected and/or rules created. Review is enabled for this repo (default: enabled).
-**Outcome:** kap10 posts a review on the PR with line-level comments for pattern violations, impact warnings, missing tests, and complexity spikes.
+**Outcome:** unerr posts a review on the PR with line-level comments for pattern violations, impact warnings, missing tests, and complexity spikes.
 
 ```
 Step  Actor                           System Action                                              Outcome
@@ -159,7 +159,7 @@ Step  Actor                           System Action                             
                                        a) Build markdown comments from all findings
                                           (see § 1.2.4 Comment Format)
                                        b) Build review body summary:
-                                          "kap10 found N issues (X warnings, Y info)"
+                                          "unerr found N issues (X warnings, Y info)"
                                        c) Determine review action:
                                           - Any "error" severity → REQUEST_CHANGES
                                           - Only "warning" → COMMENT
@@ -170,7 +170,7 @@ Step  Actor                           System Action                             
                                           checksFailed, reviewBody
                                        f) Create PrReviewComment records for each comment
 
-10    Developer sees review on PR     GitHub shows kap10 review with inline comments              Review visible
+10    Developer sees review on PR     GitHub shows unerr review with inline comments              Review visible
                                        Each comment links to the Semgrep rule + pattern
                                        evidence from Phase 6
 ```
@@ -178,7 +178,7 @@ Step  Actor                           System Action                             
 ### Flow 2: PR Updated (synchronize) → Re-Review
 
 **Actor:** System (automated, triggered by force-push or new commits on the PR)
-**Precondition:** PR already has a previous review from kap10.
+**Precondition:** PR already has a previous review from unerr.
 **Outcome:** Previous review is superseded. New review posted with updated findings.
 
 ```
@@ -321,7 +321,7 @@ Step  Actor                           System Action                             
                                        - Enable auto-approve when no findings
 
 3                                     Config stored on Repo model (JSON field):                   —
-                                       reviewConfig column in kap10.repos table
+                                       reviewConfig column in unerr.repos table
 ```
 
 ---
@@ -358,9 +358,9 @@ Step  Actor                           System Action                             
 
 ```sql
 -- Migration: Phase 7 PR Reviews
-CREATE TABLE kap10.pr_reviews (
+CREATE TABLE unerr.pr_reviews (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  repo_id         TEXT NOT NULL REFERENCES kap10.repos(id) ON DELETE CASCADE,
+  repo_id         TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
   pr_number       INTEGER NOT NULL,
   pr_title        TEXT,
   pr_url          TEXT,
@@ -381,13 +381,13 @@ CREATE TABLE kap10.pr_reviews (
 );
 
 CREATE INDEX idx_pr_reviews_repo
-  ON kap10.pr_reviews (repo_id, created_at DESC);
+  ON unerr.pr_reviews (repo_id, created_at DESC);
 CREATE INDEX idx_pr_reviews_pr
-  ON kap10.pr_reviews (repo_id, pr_number, created_at DESC);
+  ON unerr.pr_reviews (repo_id, pr_number, created_at DESC);
 
-CREATE TABLE kap10.pr_review_comments (
+CREATE TABLE unerr.pr_review_comments (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  review_id       UUID NOT NULL REFERENCES kap10.pr_reviews(id) ON DELETE CASCADE,
+  review_id       UUID NOT NULL REFERENCES unerr.pr_reviews(id) ON DELETE CASCADE,
   file_path       TEXT NOT NULL,
   line_number     INTEGER,
   check_type      TEXT NOT NULL
@@ -403,7 +403,7 @@ CREATE TABLE kap10.pr_review_comments (
 );
 
 CREATE INDEX idx_pr_review_comments_review
-  ON kap10.pr_review_comments (review_id);
+  ON unerr.pr_review_comments (review_id);
 ```
 
 **Prisma models:**
@@ -434,7 +434,7 @@ model PrReview {
 
   @@index([repoId, createdAt(sort: Desc)])
   @@map("pr_reviews")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 model PrReviewComment {
@@ -455,7 +455,7 @@ model PrReviewComment {
 
   @@index([reviewId])
   @@map("pr_review_comments")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 ```
 
@@ -489,7 +489,7 @@ ReviewConfig {
 }
 ```
 
-**Migration:** Add `review_config JSONB DEFAULT '{}'::jsonb` column to `kap10.repos` table.
+**Migration:** Add `review_config JSONB DEFAULT '{}'::jsonb` column to `unerr.repos` table.
 
 ### 1.2.4 Review Comment Format
 
@@ -508,7 +508,7 @@ This route handler processes request body without Zod schema validation.
 const body = RequestSchema.parse(await req.json());
 ```
 
-<sub>Rule: `kap10.missing-zod-validation` · [View pattern evidence →](https://app.kap10.dev/...)</sub>
+<sub>Rule: `unerr.missing-zod-validation` · [View pattern evidence →](https://app.unerr.dev/...)</sub>
 ```
 
 **Impact radius (graph-backed):**
@@ -650,7 +650,7 @@ The `mergeLedgerWorkflow` is a separate Temporal workflow, triggered on `pull_re
 - **Webhook dedup:** Redis `setIfNotExists(deliveryId, TTL 24h)` prevents duplicate processing (inherited from Phase 5).
 - **Workflow dedup:** Temporal `workflowId` includes `headSha` — same webhook payload can't start two workflows.
 - **PrReview creation:** If a review record already exists for `(repoId, prNumber, headSha)`, skip creation and return existing record.
-- **GitHub review posting:** If `postReview` fails after the review was actually created on GitHub (network timeout on response), the `github_review_id` may not be stored. On retry, `postReview` first checks if a kap10 review already exists on the PR (by searching for the kap10 signature in review comments) before creating a new one.
+- **GitHub review posting:** If `postReview` fails after the review was actually created on GitHub (network timeout on response), the `github_review_id` may not be stored. On retry, `postReview` first checks if a unerr review already exists on the PR (by searching for the unerr signature in review comments) before creating a new one.
 
 ### 1.3.3 Webhook Security
 
@@ -697,7 +697,7 @@ Phase 7 is designed to be **nearly free** per review:
 | LLM (merge summary only) | ~$0.002 | gpt-4o-mini, 4K input + 800 output, on merge only (not every review) |
 | **Total per review** | **~$0** | LLM cost only on merge, not on review |
 
-This is a key competitive advantage: most AI review bots charge per review because they use LLMs. kap10's reviews are deterministic Semgrep + graph queries — the cost is effectively zero.
+This is a key competitive advantage: most AI review bots charge per review because they use LLMs. unerr's reviews are deterministic Semgrep + graph queries — the cost is effectively zero.
 
 ---
 
@@ -705,7 +705,7 @@ This is a key competitive advantage: most AI review bots charge per review becau
 
 ### Problem: PR Timeline Pollution
 
-Most PR review bots use the standard Issue Comments API. If kap10 finds 15 minor rule violations, it spams the PR timeline with 15 comments. This causes "alert fatigue" — developers mute or uninstall the app. The PR conversation devolves from human-to-human discussion into a wall of bot noise.
+Most PR review bots use the standard Issue Comments API. If unerr finds 15 minor rule violations, it spams the PR timeline with 15 comments. This causes "alert fatigue" — developers mute or uninstall the app. The PR conversation devolves from human-to-human discussion into a wall of bot noise.
 
 ### Architecture: Shift to Checks API
 
@@ -717,7 +717,7 @@ postReviewViaChecks(owner, repo, prNumber, headSha, findings):
   // ─── Step 1: Create Check Run (in_progress) ───
   checkRun = await octokit.rest.checks.create({
     owner, repo,
-    name: "kap10 Architecture Review",
+    name: "unerr Architecture Review",
     head_sha: headSha,
     status: "in_progress",
     started_at: new Date().toISOString()
@@ -761,7 +761,7 @@ postReviewViaChecks(owner, repo, prNumber, headSha, findings):
       owner, repo,
       pull_number: prNumber,
       event: "REQUEST_CHANGES",
-      body: `kap10 found ${blockerFindings.length} blocking violation(s). See the Checks tab for the full report.`,
+      body: `unerr found ${blockerFindings.length} blocking violation(s). See the Checks tab for the full report.`,
       comments: blockerFindings.map(f => ({
         path: f.filePath,
         line: f.line,
@@ -774,7 +774,7 @@ postReviewViaChecks(owner, repo, prNumber, headSha, findings):
 
 ### Severity → Annotation Level Mapping
 
-| kap10 Severity | GitHub Annotation Level | Check Run Conclusion | PR Timeline Impact |
+| unerr Severity | GitHub Annotation Level | Check Run Conclusion | PR Timeline Impact |
 |---|---|---|---|
 | `info` | `notice` | `neutral` | **None** — only in Checks tab |
 | `warning` | `warning` | `neutral` | **None** — only in Checks tab |
@@ -801,7 +801,7 @@ updateCheckRun(owner, repo, checkRunId: number, opts: {
 
 ### Problem: Context-Switch Friction
 
-When kap10 detects a violation (e.g., "Missing transaction boundary on database mutation"), telling the developer about it still forces them to context-switch back to their IDE, figure out the fix, and push a new commit.
+When unerr detects a violation (e.g., "Missing transaction boundary on database mutation"), telling the developer about it still forces them to context-switch back to their IDE, figure out the fix, and push a new commit.
 
 ### Architecture: GitHub Suggested Changes from ast-grep Fix
 
@@ -840,10 +840,10 @@ ${finding.example}
 
 ### How It Works for the Developer
 
-1. kap10 posts an inline review comment with a `suggestion` block
+1. unerr posts an inline review comment with a `suggestion` block
 2. Developer sees the suggested fix directly on the PR diff in GitHub
 3. Developer clicks **"Commit Suggestion"** → GitHub creates a commit with the exact fix
-4. The `synchronize` webhook fires → kap10 re-reviews → the violation is gone
+4. The `synchronize` webhook fires → unerr re-reviews → the violation is gone
 5. PR passes without the developer ever opening their IDE
 
 ### Integration with Phase 6 Auto-Remediation
@@ -952,11 +952,11 @@ The blast radius summary appears as a collapsible section in the Check Run:
 
 ### Problem: Black-Box Frustration
 
-If kap10 blocks a PR due to a complex architectural rule, the developer gets frustrated because they cannot explain their unique edge-case to the bot. They see a "blocked" badge and have no recourse except to blindly fix the violation or escalate to a team lead.
+If unerr blocks a PR due to a complex architectural rule, the developer gets frustrated because they cannot explain their unique edge-case to the bot. They see a "blocked" badge and have no recourse except to blindly fix the violation or escalate to a team lead.
 
 ### Architecture: `review_pr_status` MCP Tool
 
-Bridge Phase 7 (GitHub) back to Phase 2 (Local MCP). The developer opens their IDE and asks their agent: "Why did kap10 block PR #42?"
+Bridge Phase 7 (GitHub) back to Phase 2 (Local MCP). The developer opens their IDE and asks their agent: "Why did unerr block PR #42?"
 
 ```
 review_pr_status({ pr_number: number }):
@@ -1021,9 +1021,9 @@ review_pr_status({ pr_number: number }):
 
 ### Developer Workflow
 
-1. PR is blocked by kap10 → developer sees "Changes Requested" on GitHub
+1. PR is blocked by unerr → developer sees "Changes Requested" on GitHub
 2. Developer opens IDE (Cursor, Claude Code, etc.)
-3. Asks agent: *"Why did kap10 block PR #42?"*
+3. Asks agent: *"Why did unerr block PR #42?"*
 4. Agent calls `review_pr_status(42)` → receives full context
 5. Agent explains: *"Your PR is blocked because `processPayment()` doesn't use the rate limiter middleware. 12 of 14 API routes use it. Here's the fix..."*
 6. Developer asks agent to apply the fix
@@ -1086,7 +1086,7 @@ generateAdrWorkflow(orgId, repoId, prNumber, mergedBy):
   adrMarkdown = renderAdrMarkdown(adrContent)
 
   // Use Octokit to create a branch + commit + PR
-  branchName = `kap10/adr-pr-${prNumber}`
+  branchName = `unerr/adr-pr-${prNumber}`
   await gitHost.createBranch(owner, repo, branchName, mainSha)
   await gitHost.createOrUpdateFile(owner, repo, branchName, adrFilename, adrMarkdown, {
     message: `docs: add ADR for PR #${prNumber} — ${adrContent.title}`
@@ -1094,7 +1094,7 @@ generateAdrWorkflow(orgId, repoId, prNumber, mergedBy):
   adrPr = await gitHost.createPullRequest(owner, repo, {
     title: `docs: ADR — ${adrContent.title}`,
     body: `## Auto-generated Architecture Decision Record\n\n` +
-          `This ADR was automatically generated by kap10 based on the changes in PR #${prNumber}.\n\n` +
+          `This ADR was automatically generated by unerr based on the changes in PR #${prNumber}.\n\n` +
           `**Review and merge to keep architectural documentation up-to-date.**\n\n` +
           `---\n\n${adrMarkdown}`,
     head: branchName,
@@ -1129,8 +1129,8 @@ createPullRequest(owner, repo, opts): Promise<{ number: number, htmlUrl: string 
 ### Guardrails
 
 - Only trigger for PRs that introduce significant topology changes (threshold configurable)
-- ADR PRs are opened against `main` with label `kap10:auto-adr`
-- ADR PRs require human merge — kap10 never force-pushes to docs
+- ADR PRs are opened against `main` with label `unerr:auto-adr`
+- ADR PRs require human merge — unerr never force-pushes to docs
 - Rate limit: max 1 ADR PR per repo per day (prevent spam on active repos)
 - LLM cost: ~$0.003 per ADR (gpt-4o-mini, 3K input + 800 output)
 
@@ -1144,7 +1144,7 @@ Gatekeepers that only exist to block PRs slow down velocity. If a developer fixe
 
 ### Architecture: Phase 4 Taxonomy-Driven Auto-Approval
 
-Leverage Phase 4's `feature_area` and `business_value` taxonomy to measure risk. If the Temporal workflow evaluates the diff and ArangoDB confirms all changed nodes are strictly `HORIZONTAL` or `UTILITY` (and do not touch `VERTICAL` business logic), kap10 issues an automatic `APPROVE`.
+Leverage Phase 4's `feature_area` and `business_value` taxonomy to measure risk. If the Temporal workflow evaluates the diff and ArangoDB confirms all changed nodes are strictly `HORIZONTAL` or `UTILITY` (and do not touch `VERTICAL` business logic), unerr issues an automatic `APPROVE`.
 
 ```
 evaluateSemanticLgtm(orgContext, affectedEntities, findings):
@@ -1175,7 +1175,7 @@ evaluateSemanticLgtm(orgContext, affectedEntities, findings):
   RETURN {
     autoApprove: true,
     reason: "All changed entities are horizontal/utility with low business value and low impact radius",
-    tag: "Low Risk — Auto-Approved by kap10"
+    tag: "Low Risk — Auto-Approved by unerr"
   }
 ```
 
@@ -1264,11 +1264,11 @@ It looks like no changes have been pushed in 48 hours. Here's a quick recap:
 ${blockerComments.map(c => `- **${c.ruleTitle}** at \`${c.filePath}:${c.lineNumber}\``).join('\n')}
 
 **Need help?** Open your IDE and ask your AI agent:
-> *"Why did kap10 block PR #${prNumber}? Help me fix it."*
+> *"Why did unerr block PR #${prNumber}? Help me fix it."*
 
 Your agent will fetch the full context via `review_pr_status` and guide you through the fix.
 
-<sub>This is an automated follow-up from kap10. [Disable nudges →](${settingsUrl})</sub>
+<sub>This is an automated follow-up from unerr. [Disable nudges →](${settingsUrl})</sub>
 ```
 
 ### Trigger Point
@@ -1302,7 +1302,7 @@ ReviewConfig {
 | Package | Purpose | Phase 7 Usage |
 |---|---|---|
 | **`probot`** | GitHub App framework wrapping `@octokit/rest` + `@octokit/webhooks` | Webhook signature validation, clean event emitters (`app.on('pull_request.opened')`), automatic installation token rotation. Lets Temporal workers focus on diff analysis rather than managing GitHub auth state. |
-| **`parse-diff`** | Unified diff parser → traversable JSON (hunks, chunks, line indices) | Maps Semgrep/ast-grep file-level line numbers to PR diff positions. Ensures kap10 only comments on changed lines (not pre-existing violations) and that GitHub inline comments land on the correct diff line. |
+| **`parse-diff`** | Unified diff parser → traversable JSON (hunks, chunks, line indices) | Maps Semgrep/ast-grep file-level line numbers to PR diff positions. Ensures unerr only comments on changed lines (not pre-existing violations) and that GitHub inline comments land on the correct diff line. |
 | **`arangojs` (AQL template tag)** | Safe AQL query builder with parameterized bindings | Blast Radius N-hop traversals require dynamic `repoId`, `entityKey`, and hop-depth bindings. The `aql` template tag acts like a prepared SQL statement — prevents injection while maintaining strict TypeScript typing on results. Already a project dependency; this note ensures the `aql` tag is used consistently for all Phase 7 traversals. |
 
 ---
@@ -1350,7 +1350,7 @@ Phase 7 establishes the review pipeline that Phase 8 (Usage-Based Billing) measu
 ### P7-INFRA-01: GitHub App Permissions Update
 
 - [x] **Status:** Complete
-- **Description:** Ensure the kap10 GitHub App has the required permissions for PR review. The app currently has `contents: read` and `metadata: read` (for cloning and webhooks). Phase 7 needs:
+- **Description:** Ensure the unerr GitHub App has the required permissions for PR review. The app currently has `contents: read` and `metadata: read` (for cloning and webhooks). Phase 7 needs:
   - `pull_requests: write` — Post reviews and review comments
   - `checks: write` — Optional, for future GitHub Checks API integration
   - Subscribe to `pull_request` webhook events (in addition to existing `installation`, `push`)
@@ -1380,12 +1380,12 @@ Phase 7 establishes the review pipeline that Phase 8 (Usage-Based Billing) measu
 ### P7-DB-01: Supabase Migration — PrReview & PrReviewComment
 
 - [x] **Status:** Complete
-- **Description:** Create the `kap10.pr_reviews` and `kap10.pr_review_comments` tables. Add `review_config` JSON column to `kap10.repos`.
+- **Description:** Create the `unerr.pr_reviews` and `unerr.pr_review_comments` tables. Add `review_config` JSON column to `unerr.repos`.
 - **Files:**
   - `supabase/migrations/2026XXXX_phase7_pr_reviews.sql` (new)
   - `prisma/schema.prisma` (modify — add `PrReview`, `PrReviewComment` models, add `reviewConfig Json?` to Repo, add `reviews PrReview[]` relation)
 - **Testing:** `pnpm migrate` succeeds. `pnpm prisma generate` succeeds. CRUD operations work via Prisma. Cascade delete works (delete repo → delete reviews → delete comments).
-- **Notes:** Both models use `@@schema("kap10")` and `@@map(...)`. Run `pnpm prisma generate` after schema change.
+- **Notes:** Both models use `@@schema("unerr")` and `@@map(...)`. Run `pnpm prisma generate` after schema change.
 
 ### P7-DB-02: Domain Types — PrReview, PrReviewComment, ReviewConfig
 
@@ -1558,7 +1558,7 @@ Phase 7 establishes the review pipeline that Phase 8 (Usage-Based Billing) measu
 - **Implementation:**
   - Accept all findings: `PatternFinding[]`, `ImpactFinding[]`, `TestFinding[]`, `ComplexityFinding[]`, `DependencyFinding[]`
   - Generate per-finding markdown using templates
-  - Generate review body summary: "kap10 found N issues (X warnings, Y info)"
+  - Generate review body summary: "unerr found N issues (X warnings, Y info)"
   - Determine review action: `REQUEST_CHANGES` (any error), `COMMENT` (warnings only), `APPROVE` (if config enables auto-approve)
   - Map findings to GitHub review comment format: `{ path, line, body }`
   - Cap at 50 inline comments per review (GitHub API limit)
@@ -1715,7 +1715,7 @@ Phase 7 establishes the review pipeline that Phase 8 (Usage-Based Billing) measu
 
 - [x] **Status:** Complete
 - **Size:** L
-- **Description:** Implement the auto-ADR workflow (§ 1.4e). On PR merge, assess significance. If threshold met, LLM generates an ADR and kap10 opens a follow-up PR with the documentation.
+- **Description:** Implement the auto-ADR workflow (§ 1.4e). On PR merge, assess significance. If threshold met, LLM generates an ADR and unerr opens a follow-up PR with the documentation.
 - **Implementation:**
   - `generateAdrWorkflow` — 3-activity Temporal workflow: assess significance → generate ADR via LLM → commit as follow-up PR
   - Significance assessment: new entity count, new feature areas, new ports/adapters
@@ -2114,7 +2114,7 @@ Phase 7 establishes the review pipeline that Phase 8 (Usage-Based Billing) measu
   - New port/adapter file → triggers ADR
   - LLM generates valid ADR matching AdrSchema
   - Follow-up PR targets main branch
-  - Follow-up PR has label `kap10:auto-adr`
+  - Follow-up PR has label `unerr:auto-adr`
   - Rate limit: 2nd ADR in same day → skipped
   - ADR markdown renders correctly
   - IGitHost createBranch + createOrUpdateFile + createPullRequest work

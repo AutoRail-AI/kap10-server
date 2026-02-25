@@ -82,7 +82,7 @@ describe("sync_dirty_buffer", () => {
     )
 
     // Verify the file-level cache key was set
-    const cacheKey = `kap10:dirty:org-1:repo-1:user-1:src/cached.ts`
+    const cacheKey = `unerr:dirty:org-1:repo-1:user-1:src/cached.ts`
     const cached = await container.cacheStore.get<{ file_path: string; entities: unknown[] }>(cacheKey)
     expect(cached).not.toBeNull()
     expect(cached!.file_path).toBe("src/cached.ts")
@@ -99,8 +99,8 @@ describe("sync_dirty_buffer", () => {
       container
     )
 
-    const alphaKey = `kap10:dirty:entity:org-1:repo-1:alpha`
-    const betaKey = `kap10:dirty:entity:org-1:repo-1:beta`
+    const alphaKey = `unerr:dirty:entity:org-1:repo-1:alpha`
+    const betaKey = `unerr:dirty:entity:org-1:repo-1:beta`
 
     const alpha = await container.cacheStore.get<{ name: string; dirty: boolean }>(alphaKey)
     const beta = await container.cacheStore.get<{ name: string; dirty: boolean }>(betaKey)

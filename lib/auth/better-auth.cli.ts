@@ -16,7 +16,7 @@ dns.setDefaultResultOrder("ipv4first")
 const getResendClient = () =>
   process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null
 const getEmailFrom = () =>
-  process.env.EMAIL_FROM || "kap10 <noreply@kap10.dev>"
+  process.env.EMAIL_FROM || "unerr <noreply@unerr.dev>"
 
 const dbUrl = process.env.SUPABASE_DB_URL ?? process.env.DATABASE_URL
 if (!dbUrl) {
@@ -40,7 +40,7 @@ const pool = new Pool({
 
 export const auth = betterAuth({
   database: pool,
-  appName: "kap10",
+  appName: "unerr",
   baseURL: process.env.BETTER_AUTH_URL || "http://localhost:3000",
   secret:
     process.env.BETTER_AUTH_SECRET ||
@@ -78,7 +78,7 @@ export const auth = betterAuth({
       await resend.emails.send({
         from: getEmailFrom(),
         to: user.email,
-        subject: "Verify your kap10 account",
+        subject: "Verify your unerr account",
         html: `<p>Verify: <a href="${url}">${url}</a></p>`,
       })
     },

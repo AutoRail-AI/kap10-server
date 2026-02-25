@@ -6,7 +6,7 @@
 >
 > **Prerequisites:** [Phase 8 — Usage-Based Billing & Limits](./PHASE_8_USAGE_BASED_BILLING_AND_LIMITS.md) (billing, plan feature gating, Langfuse cost tracking); [Phase 3 — Semantic Search](./PHASE_3_SEMANTIC_SEARCH.md) (pgvector embedding pipeline, `IVectorSearch`); [Phase 6 — Pattern Enforcement & Rules Engine](./PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md) (pattern detection for auto-extraction candidates)
 >
-> **What this is NOT:** Phase 9 does not replace rules (Phase 6). Rules say "what you must do"; snippets show "how we do it here." Snippets are exemplar code injected into agent context — they are not enforced or validated. Phase 9 does not implement a full public marketplace — the community library is a curated read-only registry managed by the kap10 team.
+> **What this is NOT:** Phase 9 does not replace rules (Phase 6). Rules say "what you must do"; snippets show "how we do it here." Snippets are exemplar code injected into agent context — they are not enforced or validated. Phase 9 does not implement a full public marketplace — the community library is a curated read-only registry managed by the unerr team.
 >
 > **Delivery position:** Post-launch feature. Ships after Phase 8 (GA) is stable. See [dependency graph](./VERTICAL_SLICING_PLAN.md#phase-summary--dependencies).
 
@@ -44,7 +44,7 @@
 | **Snippet category** | `snippet.category`: `ui_component`, `api_pattern`, `data_model`, `testing`, `architecture`, `error_handling`, `performance`, `security`, `devops`, `user_flow` | "type", "kind", "class" |
 | **Pin** | Action of promoting a code entity to a team snippet via `pin_snippet` MCP tool | "save", "bookmark", "star" |
 | **Exemplar** | A snippet that is linked to a specific entity in the knowledge graph via `entity_ref` | "reference implementation", "canonical example" |
-| **Snippet embedding** | pgvector row in `kap10.snippet_embeddings` — vector representation of snippet `title + description + code` | "snippet vector", "code embedding" |
+| **Snippet embedding** | pgvector row in `unerr.snippet_embeddings` — vector representation of snippet `title + description + code` | "snippet vector", "code embedding" |
 | **Snippet resolution** | Priority-ordered selection: team → auto-extracted → community → semantic similarity | "snippet ranking", "snippet matching" |
 
 ---
@@ -108,7 +108,7 @@ Step  Actor Action                           System Action                      
 
       Step D: Semantic similarity (fill remaining slots)                                                        ~80ms
         → Embed taskDescription via IVectorSearch.embedQuery()
-        → Search kap10.snippet_embeddings with cosine distance
+        → Search unerr.snippet_embeddings with cosine distance
         → Filter: orgId (team + community) AND category match
         → Return top N to fill remaining slots up to limit
 
@@ -188,7 +188,7 @@ Step  Actor Action                           System Action                      
                                                }
                                              → IGraphStore.upsertSnippet(orgId, snippet)
 
-5                                            Embed snippet for semantic search:                                  kap10.snippet_embeddings:
+5                                            Embed snippet for semantic search:                                  unerr.snippet_embeddings:
                                              → text = title + "\n" + description                                 new row
                                                       + "\n" + code
                                              → embedding = IVectorSearch.embed([text])
@@ -230,7 +230,7 @@ Step  Actor Action                           System Action                      
                                              → Validate required fields                                          new document
                                              → If scope = "team": require Teams/Enterprise plan
                                              → If scope = "community": status = "draft"
-                                               (pending kap10 team review)
+                                               (pending unerr team review)
                                              → Create snippet document in ArangoDB
                                              → Embed for semantic search
 
@@ -292,7 +292,7 @@ Step  System Action                                                             
             code: entity.body
             entity_ref: entity._key
 
-5     Activity: embedDraftSnippets                                                 kap10.snippet_embeddings:
+5     Activity: embedDraftSnippets                                                 unerr.snippet_embeddings:
       → Batch embed all new draft snippets                                         new rows
       → Same pipeline as Phase 3 embedding
 
@@ -331,7 +331,7 @@ Step  Actor Action                           System Action                      
                                              → IVectorSearch.embedQuery(query)
 
 3                                            Vector search:                                                      ~30ms
-                                             → Search kap10.snippet_embeddings
+                                             → Search unerr.snippet_embeddings
                                                with cosine distance
                                              → Filter: entityType = "snippet"
                                                AND (orgId = ctx.orgId OR orgId IS NULL)
@@ -410,7 +410,7 @@ SnippetDoc {
   repo_id:            String?   // null = org-wide or community
   entity_ref:         String?   // Link to source entity _key (pinned/auto-extracted)
   upvotes:            Number    // Community voting count
-  verified:           Boolean   // Reviewed by kap10 team (community) or org admin (team)
+  verified:           Boolean   // Reviewed by unerr team (community) or org admin (team)
   created_by:         String    // User ID who created/pinned
   version:            Number    // Snippet versioning (for edits)
   status:             String    // "active" | "draft" | "deprecated"
@@ -425,7 +425,7 @@ SnippetDoc {
 Snippet embeddings live in a separate table from entity embeddings to avoid cross-contamination in search results:
 
 ```
-kap10.snippet_embeddings {
+unerr.snippet_embeddings {
   id:                 UUID      // PK
   snippet_key:        String    // FK to ArangoDB snippets._key
   org_id:             String?   // null for community snippets
@@ -442,7 +442,7 @@ kap10.snippet_embeddings {
 }
 ```
 
-**Why a separate table?** Entity embeddings (`kap10.entity_embeddings`) are scoped to `(repo_id, entity_key)` and filtered by `repoId`. Snippet embeddings cross repo boundaries (community snippets are global, team snippets are org-scoped). Mixing them in one table would require complex filter logic and risk polluting entity search with snippet results (and vice versa). A separate table with its own HNSW index provides clean isolation.
+**Why a separate table?** Entity embeddings (`unerr.entity_embeddings`) are scoped to `(repo_id, entity_key)` and filtered by `repoId`. Snippet embeddings cross repo boundaries (community snippets are global, team snippets are org-scoped). Mixing them in one table would require complex filter logic and risk polluting entity search with snippet results (and vice versa). A separate table with its own HNSW index provides clean isolation.
 
 ### Snippet Resolution Algorithm
 
@@ -501,7 +501,7 @@ return result (max: limit)
 **Why this priority order?**
 1. **Team snippets first** — the team's own conventions are the highest-signal examples. A team's "how we do auth" is more relevant than a generic community pattern.
 2. **Auto-extracted second** — patterns proven in the same repo are highly relevant context, but haven't been curated by a human (lower confidence than pinned team snippets).
-3. **Community third** — curated by the kap10 team, these are well-known best practices but may not match the team's specific conventions.
+3. **Community third** — curated by the unerr team, these are well-known best practices but may not match the team's specific conventions.
 4. **Semantic last** — fills remaining slots with the most semantically relevant snippets regardless of source. Acts as a catch-all when category filters are too narrow.
 
 ### Snippet Lifecycle
@@ -535,7 +535,7 @@ Community contribution path:
   user creates with scope = "community"
       │
       ▼
-  draft ──── kap10 team reviews ──── approve ──► active
+  draft ──── unerr team reviews ──── approve ──► active
       │                                            │
       │                                            │ deprecate
       └──── reject ───────────────────────────► deprecated
@@ -584,7 +584,7 @@ Snippet features are gated by plan tier (Phase 8 feature flags):
 | 4 | **`pin_snippet` — embedding fails** | `IVectorSearch.embed()` throws | Snippet created in ArangoDB without embedding. Response includes `_meta.embedded: false, note: "Snippet saved but semantic search unavailable. Will be embedded on next sync."` Retry embedding in next `embedSnippetsWorkflow` run. | Snippet exists but not semantically searchable until next embedding run. Exact-match queries still find it. |
 | 5 | **Auto-extraction — no candidates meet threshold** | `scoreAndFilter` returns 0 candidates | Workflow completes successfully with 0 snippets created. Log: `"No snippet candidates found for {repoId}."` | No auto-extracted suggestions visible. Normal — not every repo has snippet-worthy entities. |
 | 6 | **Auto-extraction — re-indexing duplicates** | Same entity extracted again after re-index | `createDraftSnippets` checks for existing snippet with same `entity_ref`. If found, skip. | No duplicates. Idempotent. |
-| 7 | **Community snippet — inappropriate content** | User-submitted snippet contains malicious code or offensive content | Community snippets start as `draft` and require kap10 team review before `active`. Admin can deprecate at any time. Snippets flagged by users go to review queue. | Inappropriate content never reaches agent context (draft snippets excluded from `get_snippets`). |
+| 7 | **Community snippet — inappropriate content** | User-submitted snippet contains malicious code or offensive content | Community snippets start as `draft` and require unerr team review before `active`. Admin can deprecate at any time. Snippets flagged by users go to review queue. | Inappropriate content never reaches agent context (draft snippets excluded from `get_snippets`). |
 | 8 | **Snippet embedding model version mismatch** | CLI or cloud uses different embedding model version | `snippet_embeddings` table includes `model_version` column. Search uses same model as the stored embeddings. On model upgrade, re-embed all snippets via `reembedSnippetsWorkflow`. | Brief period of degraded semantic search quality during model transition. |
 | 9 | **Stale snippet — code entity was deleted or significantly changed** | Snippet's `entity_ref` no longer exists in graph after re-indexing | Background check during `extractSnippetCandidatesWorkflow`: if entity_ref is orphaned, mark snippet status as `deprecated` and add `_meta.orphaned: true`. | Snippet removed from active results. Dashboard shows "Source entity no longer exists" warning. |
 | 10 | **Large snippet code (>5000 chars)** | Code length check during creation | Truncate code to 5000 chars with annotation: `"[truncated — original: {N} chars]"`. Full code available via `entity_ref` link in knowledge graph. | Snippet shows truncated preview. Agent can fetch full code via `get_function` if needed. |
@@ -593,7 +593,7 @@ Snippet features are gated by plan tier (Phase 8 feature flags):
 
 Community snippets are user-contributed and publicly visible. Safety measures:
 
-1. **Review gate:** All community contributions start as `draft`. Kap10 team reviews and approves before `active`.
+1. **Review gate:** All community contributions start as `draft`. Unerr team reviews and approves before `active`.
 2. **Lint check:** On submission, snippet code is parsed with tree-sitter. If parsing fails, submission is rejected (prevents non-code content).
 3. **Size limits:** Max 5000 chars for code, 500 chars for description, 200 chars for title.
 4. **Rate limit:** Max 10 community snippet submissions per user per day.
@@ -658,7 +658,7 @@ Phase 9 is designed so that subsequent phases can extend the snippet library wit
 
 ### Bootstrap Rule Update
 
-Phase 9 updates the Bootstrap Rule (`.cursor/rules/kap10.mdc`) to include snippet instructions:
+Phase 9 updates the Bootstrap Rule (`.cursor/rules/unerr.mdc`) to include snippet instructions:
 
 ```
 Before implementing a feature:
@@ -676,8 +676,8 @@ Before implementing a feature:
 
 ## 2.1 Infrastructure Layer
 
-- [ ] **P9-INFRA-01: Create Supabase migration for `kap10.snippet_embeddings` table** — M
-  - Table: `kap10.snippet_embeddings`
+- [ ] **P9-INFRA-01: Create Supabase migration for `unerr.snippet_embeddings` table** — M
+  - Table: `unerr.snippet_embeddings`
   - Columns: `id` (UUID PK), `snippet_key` (String), `org_id` (String, nullable), `repo_id` (String, nullable), `source` (String), `category` (String), `language` (String), `model_version` (String), `embedding` (vector(768)), `created_at` (timestamptz)
   - Unique constraint: `(snippet_key, model_version)`
   - HNSW index: `ON embedding USING hnsw (embedding vector_cosine_ops)`
@@ -769,9 +769,9 @@ Before implementing a feature:
 
 - [ ] **P9-ADAPT-04: Extend `IVectorSearch` with snippet embedding support** — M
   - Add methods or extend existing ones:
-    - `upsertSnippetEmbedding(snippetKey, embedding, metadata)` → insert into `kap10.snippet_embeddings`
-    - `searchSnippets(embedding, topK, filter?)` → search `kap10.snippet_embeddings` with cosine distance
-    - `deleteSnippetEmbedding(snippetKey)` → delete from `kap10.snippet_embeddings`
+    - `upsertSnippetEmbedding(snippetKey, embedding, metadata)` → insert into `unerr.snippet_embeddings`
+    - `searchSnippets(embedding, topK, filter?)` → search `unerr.snippet_embeddings` with cosine distance
+    - `deleteSnippetEmbedding(snippetKey)` → delete from `unerr.snippet_embeddings`
   - Filter support: `orgId`, `source`, `category`, `language`
   - Implement in `LlamaindexVectorSearch` adapter
   - Implement in `FakeVectorSearch` (in-memory)
@@ -924,7 +924,7 @@ Before implementing a feature:
 
 - [ ] **P9-API-10: Create `POST /api/snippets/[id]/upvote` route** — S
   - Increments upvote count on a snippet
-  - One upvote per user per snippet (tracked via `kap10.snippet_upvotes` or Redis set)
+  - One upvote per user per snippet (tracked via `unerr.snippet_upvotes` or Redis set)
   - Auth: Better Auth session
   - **Test:** First upvote → count incremented. Second upvote by same user → no-op. Different user → count incremented again.
   - **Depends on:** P9-ADAPT-01

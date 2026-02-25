@@ -5,7 +5,7 @@
 #   BETTER_AUTH_SECRET, DATABASE_URL, REDIS_URL,
 #   ARANGODB_URL, ARANGODB_USER, ARANGODB_PASSWORD, ARANGODB_DB_NAME
 
-app = "kap10-mcp"
+app = "unerr-mcp"
 primary_region = "sjc"
 
 [build]
@@ -14,8 +14,8 @@ primary_region = "sjc"
 [env]
   NODE_ENV = "production"
   MCP_SERVER_PORT = "8787"
-  MCP_SERVER_URL = "https://mcp.kap10.dev"
-  MCP_JWT_AUDIENCE = "kap10-mcp"
+  MCP_SERVER_URL = "https://mcp.unerr.dev"
+  MCP_JWT_AUDIENCE = "unerr-mcp"
   MCP_RATE_LIMIT_MAX = "60"
   MCP_RATE_LIMIT_WINDOW_S = "60"
   MCP_MAX_RESPONSE_BYTES = "32768"

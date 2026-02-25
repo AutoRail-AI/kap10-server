@@ -82,7 +82,7 @@ export async function prepareWorkspace(input: PrepareWorkspaceInput): Promise<Pr
 
 /**
  * Download a zip from Supabase Storage and extract it to the workspace path.
- * Used for local_cli repos uploaded via `kap10 push`.
+ * Used for local_cli repos uploaded via `unerr push`.
  */
 async function prepareLocalCliWorkspace(
   container: { storageProvider: import("@/lib/ports/storage-provider").IStorageProvider },

@@ -1,6 +1,6 @@
-# Kap10 — Local Development Setup
+# Unerr — Local Development Setup
 
-Step-by-step guide to run the full Kap10 platform on your machine: infrastructure, app, GitHub App (repo indexing), and optional workers.
+Step-by-step guide to run the full Unerr platform on your machine: infrastructure, app, GitHub App (repo indexing), and optional workers.
 
 ---
 
@@ -39,7 +39,7 @@ Step-by-step guide to run the full Kap10 platform on your machine: infrastructur
 
 ```bash
 git clone <your-repo-url>
-cd kap10-server
+cd unerr-server
 pnpm install
 ```
 
@@ -97,7 +97,7 @@ The GitHub App is used for **connecting repositories and indexing** (Phase 1). I
    (Or: GitHub → **Settings** → **Developer settings** → **GitHub Apps** → **New GitHub App**.)
 
 2. **Basic information**
-   - **GitHub App name:** e.g. `kap10-local` or `kap10-dev` (this becomes the URL slug).
+   - **GitHub App name:** e.g. `unerr-local` or `unerr-dev` (this becomes the URL slug).
    - **Homepage URL:** `http://localhost:3000` (must match `BETTER_AUTH_URL`).
    - **Callback URL:**  
      `http://localhost:3000/api/github/callback`
@@ -151,11 +151,11 @@ After creating the app you land on its **General** page.
        ```
 
 3. **App slug (optional)**  
-   The install URL is `https://github.com/apps/{slug}/installations/new`. The slug is your app name lowercased and hyphenated. If your app name is `kap10-local`, you can set:
+   The install URL is `https://github.com/apps/{slug}/installations/new`. The slug is your app name lowercased and hyphenated. If your app name is `unerr-local`, you can set:
    ```bash
-   GITHUB_APP_SLUG=kap10-local
+   GITHUB_APP_SLUG=unerr-local
    ```
-   If you don’t set this, the code defaults to `kap10-dev`.
+   If you don’t set this, the code defaults to `unerr-dev`.
 
 4. **Webhook secret (if you enabled webhooks)**  
    Use the same value you put in the GitHub App **Webhook secret** field:
@@ -169,7 +169,7 @@ After creating the app you land on its **General** page.
 |----------|----------|-------------|
 | `GITHUB_APP_ID` | Yes | Numeric App ID from the app’s General page. |
 | `GITHUB_APP_PRIVATE_KEY` | Yes | Full PEM private key (multi-line or single line with `\n`). |
-| `GITHUB_APP_SLUG` | No | URL slug (e.g. `kap10-local`). Default: `kap10-dev`. |
+| `GITHUB_APP_SLUG` | No | URL slug (e.g. `unerr-local`). Default: `unerr-dev`. |
 | `GITHUB_WEBHOOK_SECRET` | If using webhooks | Same value as in GitHub App webhook settings. |
 
 **Note:** The app uses **App ID + Private Key** to generate JWTs and obtain installation access tokens. It does **not** use the GitHub App’s “Client ID” or “Client secret” for repo indexing. See [Phase 1 doc — GitHub App](architecture/PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) for details.
@@ -207,7 +207,7 @@ Ensure `.env.local` has:
 ```bash
 REDIS_URL=redis://localhost:6379
 ARANGODB_URL=http://localhost:8529
-ARANGODB_DATABASE=kap10_db
+ARANGODB_DATABASE=unerr_db
 ARANGO_ROOT_PASSWORD=firstPassword12345
 TEMPORAL_ADDRESS=localhost:7233
 ```
@@ -381,7 +381,7 @@ You’re calling code that needs the GitHub App (e.g. listing or connecting repo
 
 ### “Connect GitHub” redirects to the wrong app
 
-Set `GITHUB_APP_SLUG` in `.env.local` to the slug of your app (same as in the URL `https://github.com/apps/<slug>`). The slug is usually the app name in lowercase with hyphens (e.g. `kap10-local`).
+Set `GITHUB_APP_SLUG` in `.env.local` to the slug of your app (same as in the URL `https://github.com/apps/<slug>`). The slug is usually the app name in lowercase with hyphens (e.g. `unerr-local`).
 
 ### Cannot select repositories during GitHub App install
 

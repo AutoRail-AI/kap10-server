@@ -1,5 +1,5 @@
-// Prisma schema for kap10 app tables (Phase 0 + Phase 2 + Phase 3).
-// All kap10-managed tables live in PostgreSQL schema "kap10" (same Supabase project, multi-app).
+// Prisma schema for unerr app tables (Phase 0 + Phase 2 + Phase 3).
+// All unerr-managed tables live in PostgreSQL schema "unerr" (same Supabase project, multi-app).
 // Better Auth tables (user, session, account, etc.) stay in "public"; we do not migrate those.
 
 generator client {
@@ -9,7 +9,7 @@ generator client {
 
 datasource db {
   provider   = "postgresql"
-  schemas    = ["public", "kap10"]
+  schemas    = ["public", "unerr"]
   extensions = [vector(map: "vector", schema: "extensions")]
 }
 
@@ -25,14 +25,14 @@ enum RepoStatus {
   justifying
   justify_failed
 
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 enum RepoProvider {
   github
   local_cli
 
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 // Phase 1: GitHub App installation per org (installation token fetched on demand)
@@ -50,7 +50,7 @@ model GitHubInstallation {
   @@unique([organizationId, installationId])
   @@index([organizationId])
   @@map("github_installations")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 model Repo {
@@ -96,7 +96,7 @@ model Repo {
   @@unique([organizationId, provider, providerId])
   @@index([organizationId])
   @@map("repos")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 enum DeletionLogStatus {
@@ -105,7 +105,7 @@ enum DeletionLogStatus {
   completed
   failed
 
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 model DeletionLog {
@@ -122,7 +122,7 @@ model DeletionLog {
   @@index([organizationId])
   @@index([status])
   @@map("deletion_logs")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 // Phase 2: API keys for MCP server access (org-level or repo-scoped)
@@ -146,7 +146,7 @@ model ApiKey {
   @@index([keyHash])
   @@index([repoId])
   @@map("api_keys")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 // Phase 2: Shadow workspace overlay (per-user, per-repo, per-branch)
@@ -163,7 +163,7 @@ model Workspace {
   @@unique([userId, repoId, branch])
   @@index([expiresAt])
   @@map("workspaces")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 // Phase 10a: Graph snapshot status for local-first intelligence proxy
@@ -172,7 +172,7 @@ enum SnapshotStatus {
   available
   failed
 
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 model GraphSnapshotMeta {
@@ -191,7 +191,7 @@ model GraphSnapshotMeta {
 
   @@index([orgId])
   @@map("graph_snapshot_meta")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 // Phase 3: Entity embeddings for semantic search (pgvector)
@@ -216,7 +216,7 @@ model EntityEmbedding {
   @@index([orgId, repoId])
   @@index([modelVersion])
   @@map("entity_embeddings")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 // Phase 4: Justification embeddings for semantic business-purpose search (pgvector)
@@ -239,7 +239,7 @@ model JustificationEmbedding {
   @@index([taxonomy])
   @@index([featureTag])
   @@map("justification_embeddings")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 // Phase 5.5: Ledger snapshots — stores working-state file snapshots in PostgreSQL
@@ -260,7 +260,7 @@ model LedgerSnapshot {
   @@index([orgId, repoId, branch])
   @@index([ledgerEntryId])
   @@map("ledger_snapshots")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 
 // Phase 5.5: Rule embeddings for anti-pattern vectorization (pgvector)
@@ -282,5 +282,5 @@ model RuleEmbedding {
   @@index([orgId, repoId])
   @@index([ruleType])
   @@map("rule_embeddings")
-  @@schema("kap10")
+  @@schema("unerr")
 }

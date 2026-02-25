@@ -27,11 +27,11 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "kap10 — The AI Tech Lead | autorail",
-    template: "%s | kap10",
+    default: "unerr — The AI Tech Lead | autorail",
+    template: "%s | unerr",
   },
   description:
-    "kap10 by autorail — Supervise, review, and ship with AI coding agents. Context-aware guardrails for Cursor, Claude Code, and Windsurf.",
+    "unerr by autorail — Supervise, review, and ship with AI coding agents. Context-aware guardrails for Cursor, Claude Code, and Windsurf.",
   keywords: [
     "AI coding",
     "code review",

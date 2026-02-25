@@ -1,8 +1,8 @@
 /**
- * kap10 pull — Download graph snapshot for a repo.
+ * unerr pull — Download graph snapshot for a repo.
  *
  * Fetches pre-signed URL from server, downloads msgpack, verifies checksum,
- * stores in ~/.kap10/snapshots/{repoId}.msgpack with manifest.
+ * stores in ~/.unerr/snapshots/{repoId}.msgpack with manifest.
  */
 
 import { Command } from "commander"
@@ -12,9 +12,9 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { getCredentials } from "./auth.js"
 
-const KAP10_DIR = join(homedir(), ".kap10")
-const SNAPSHOTS_DIR = join(KAP10_DIR, "snapshots")
-const MANIFESTS_DIR = join(KAP10_DIR, "manifests")
+const UNERR_DIR = join(homedir(), ".unerr")
+const SNAPSHOTS_DIR = join(UNERR_DIR, "snapshots")
+const MANIFESTS_DIR = join(UNERR_DIR, "manifests")
 
 export interface SnapshotManifest {
   repoId: string
@@ -56,7 +56,7 @@ export function registerPullCommand(program: Command): void {
     .action(async (opts: { repo: string; force?: boolean }) => {
       const creds = getCredentials()
       if (!creds) {
-        console.error("Not authenticated. Run: kap10 auth login")
+        console.error("Not authenticated. Run: unerr auth login")
         process.exit(1)
       }
 

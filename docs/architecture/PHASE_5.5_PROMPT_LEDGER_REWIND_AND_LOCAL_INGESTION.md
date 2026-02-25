@@ -1,12 +1,12 @@
 # Phase 5.5 — Prompt Ledger, Rewind & Local Ingestion: Deep Dive & Implementation Tracker
 
-> **Phase Feature Statement:** _"Every AI-generated change is tracked with the prompt that caused it. When the AI breaks something, I click 'Rewind' to restore to the last working state — and kap10 automatically creates a rule so the AI never makes that mistake again. After a rewind, all subsequent prompts appear as a new timeline branch. I can also index local repos that aren't on GitHub."_
+> **Phase Feature Statement:** _"Every AI-generated change is tracked with the prompt that caused it. When the AI breaks something, I click 'Rewind' to restore to the last working state — and unerr automatically creates a rule so the AI never makes that mistake again. After a rewind, all subsequent prompts appear as a new timeline branch. I can also index local repos that aren't on GitHub."_
 >
 > **Source:** [`VERTICAL_SLICING_PLAN.md`](./VERTICAL_SLICING_PLAN.md) — Phase 5.5
 >
 > **Prerequisites:** [Phase 1 — GitHub Connect & Repo Indexing](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) (entities + call graph in ArangoDB, stable entity hashing, persistent workspace), [Phase 2 — Hosted MCP Server](./PHASE_2_HOSTED_MCP_SERVER.md) (MCP tools, workspace resolution, `sync_local_diff`, OTel spans), [Phase 3 — Semantic Search](./PHASE_3_SEMANTIC_SEARCH.md) (entity embeddings in pgvector, hybrid search), [Phase 4 — Business Justification & Taxonomy](./PHASE_4_BUSINESS_JUSTIFICATION_AND_TAXONOMY.md) (unified justifications, canonical value seeds), [Phase 5 — Incremental Indexing & GitHub Webhooks](./PHASE_5_INCREMENTAL_INDEXING_AND_GITHUB_WEBHOOKS.md) (push-based re-indexing, entity diff, cascade re-justification)
 >
-> **Database convention:** All kap10 Supabase tables use PostgreSQL schema `kap10`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
+> **Database convention:** All unerr Supabase tables use PostgreSQL schema `unerr`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
 
 ---
 
@@ -40,9 +40,9 @@
 | **Rewind** | `rewind_target_id` | `rewindTargetId` | The act of restoring files to a previous Working Snapshot. Creates a new Ledger Entry with status `working` and increments the Timeline Branch counter. | ~~undo~~, ~~rollback~~, ~~restore~~ |
 | **Anti-Pattern Rule** | `rule_generated` | `ruleGenerated` | A Phase 6 rule auto-synthesized by the LLM after a Rewind, capturing what went wrong so the AI never makes the same mistake. Stored in the `rules` ArangoDB collection. | ~~lesson~~, ~~learned rule~~, ~~anti-rule~~ |
 | **Ledger Summary** | `ledger_summaries` (ArangoDB collection) | `LedgerSummary` (type) | A commit-level roll-up aggregating all Ledger Entries from the active Timeline Branch into a single summary when the user commits. | ~~commit summary~~, ~~roll-up record~~ |
-| **Local Repo** | `provider: "local_cli"` | `RepoProvider.local_cli` | A repository not hosted on GitHub, indexed via `kap10 push`. Has `githubRepoId = null` and `githubFullName = null` in Supabase. | ~~offline repo~~, ~~unhosted repo~~, ~~manual repo~~ |
+| **Local Repo** | `provider: "local_cli"` | `RepoProvider.local_cli` | A repository not hosted on GitHub, indexed via `unerr push`. Has `githubRepoId = null` and `githubFullName = null` in Supabase. | ~~offline repo~~, ~~unhosted repo~~, ~~manual repo~~ |
 | **Storage Provider** | — | `IStorageProvider` | The 12th hexagonal port. Abstracts pre-signed upload URLs, file download, and file deletion for Supabase Storage. Used by CLI upload and workspace preparation. | ~~file store~~, ~~blob store~~, ~~upload service~~ |
-| **Drift Threshold** | — | `DRIFT_THRESHOLD` | The percentage of indexed files with local modifications (default: 20%) that triggers a CLI prompt to run `kap10 push`. | ~~stale threshold~~, ~~change threshold~~ |
+| **Drift Threshold** | — | `DRIFT_THRESHOLD` | The percentage of indexed files with local modifications (default: 20%) that triggers a CLI prompt to run `unerr push`. | ~~stale threshold~~, ~~change threshold~~ |
 | **Shadow Rewind** | — | `SimulateRewindResult` | A dry-run rewind that calculates the exact file-level impact of reverting to a Working Snapshot without actually applying changes. Compares the snapshot's files against the current local state (via MCP) to detect manual changes that would be overwritten. Returns a "Blast Radius Warning" if conflicts exist. | ~~dry run~~, ~~preview rewind~~, ~~rewind simulation~~ |
 | **Anti-Pattern Vectorization** | — | `vectorizeAntiPattern` | After a rewind auto-generates a rule, the rule is embedded into the Phase 3 `pgvector` embedding pipeline and a background hybrid search scans the entire codebase for semantic matches to the newly discovered anti-pattern. Results are surfaced as proactive fix suggestions. | ~~pattern scan~~, ~~codebase audit~~, ~~retroactive scan~~ |
 | **Ledger Circuit Breaker** | — | `LedgerCircuitBreaker` | An automated safety mechanism that detects AI hallucination loops (>4 consecutive `broken` ledger entries on the same function within 10 minutes). Forcefully injects a `system_halt` response to the agent, halting the loop and surfacing a clear message to the developer. | ~~rate limiter~~, ~~loop detector~~, ~~spam filter~~ |
@@ -159,7 +159,7 @@ Step  Actor                           System Action                             
          revert_to_working_state
       b) User clicks "Rewind" in
          dashboard timeline
-      c) User runs `kap10 rewind`
+      c) User runs `unerr rewind`
 
 2                                     Resolve target snapshot:                                   —
                                        a) If snapshotId provided → fetch from Supabase
@@ -239,7 +239,7 @@ Step  Actor                           System Action                             
                                           (cosine similarity > 0.75):
                                           - Create a "proactive_fix" notification:
                                             "You rewound the AI for: {rule.title}.
-                                             kap10 found {N} other places with this
+                                             unerr found {N} other places with this
                                              same pattern. Review them?"
                                           - Store matches in the rule document:
                                             rule.codebase_matches = [{entityKey, filePath,
@@ -264,7 +264,7 @@ Step  Actor                           System Action                             
 
 **Critical invariant:** A Rewind never deletes Ledger Entries. The entries are marked `reverted`, preserving the full audit trail. The Timeline Branch mechanism ensures the post-rewind timeline is separate and clean.
 
-**Shadow Rewind design rationale:** The Shadow Rewind (step 3.5) provides psychological safety. Developers will trust the "Rewind" button because kap10 warns them before destroying manual work. The `dryRun` mode allows agents and the CLI to simulate rewinds non-destructively, which is essential for AI agents that may want to evaluate whether a rewind is safe before committing to it.
+**Shadow Rewind design rationale:** The Shadow Rewind (step 3.5) provides psychological safety. Developers will trust the "Rewind" button because unerr warns them before destroying manual work. The `dryRun` mode allows agents and the CLI to simulate rewinds non-destructively, which is essential for AI agents that may want to evaluate whether a rewind is safe before committing to it.
 
 ### Flow 4: Roll-Up on Commit
 
@@ -305,14 +305,14 @@ Step  Actor                           System Action                             
 ### Flow 5: Local Repo Ingestion via CLI
 
 **Actor:** Developer (not using GitHub)
-**Precondition:** `@autorail/kap10` installed. User authenticated via `kap10 auth login`.
-**Outcome:** Local codebase is indexed into kap10's knowledge graph, queryable via MCP.
+**Precondition:** `@autorail/unerr` installed. User authenticated via `unerr auth login`.
+**Outcome:** Local codebase is indexed into unerr's knowledge graph, queryable via MCP.
 
 ```
 Step  Actor                           System Action                                             Outcome
 ────  ──────────────────────────────  ──────────────────────────────────────────────────────    ─────────────────────────
 1     User runs:                      CLI sends POST /api/cli/init:                              —
-      kap10 init --org my-org          { orgId, repoName (from package.json or dir name),
+      unerr init --org my-org          { orgId, repoName (from package.json or dir name),
                                          defaultBranch (from git) }
 
 2                                     Server creates Repo in Supabase:                           Repo registered
@@ -322,12 +322,12 @@ Step  Actor                           System Action                             
                                          status: "pending" }
                                        Returns { repoId, apiKey }
 
-3                                     CLI writes .kap10/config.json:                             Config saved
+3                                     CLI writes .unerr/config.json:                             Config saved
                                        { repoId, orgId, apiKey, createdAt }
-                                       CLI adds .kap10/ to .gitignore if not present
+                                       CLI adds .unerr/ to .gitignore if not present
 
 4     User runs:                      CLI performs .gitignore-aware zip:                          Zip created
-      kap10 push                       a) Read .gitignore rules + hardcoded exclusions
+      unerr push                       a) Read .gitignore rules + hardcoded exclusions
                                           (node_modules, .git, dist, build, __pycache__)
                                        b) Zip using archiver library
                                        c) Log: "Zipping repo... {size}MB"
@@ -365,12 +365,12 @@ Step  Actor                           System Action                             
 
 **Why pre-signed upload:** Vercel serverless functions have a 30-second timeout and 4.5 MB body limit. Codebases routinely exceed both. The pre-signed URL lets the CLI upload directly to Supabase Storage, bypassing Vercel entirely. The server only handles lightweight JSON requests.
 
-**Sync Drift for Local Repos:** Unlike GitHub repos (where webhooks notify of changes), local repos have no push event. The codebase drifts between `kap10 push` invocations. Three mitigation strategies:
+**Sync Drift for Local Repos:** Unlike GitHub repos (where webhooks notify of changes), local repos have no push event. The codebase drifts between `unerr push` invocations. Three mitigation strategies:
 
 | Strategy | Mechanism | When |
 |---|---|---|
-| **Manual re-push** | User runs `kap10 push` whenever they want the index updated | Always available |
-| **Drift detection** | `kap10 watch` tracks local file modifications. If >20% of indexed files have changed (`DRIFT_THRESHOLD`), prompts user to run `kap10 push` | During active development |
+| **Manual re-push** | User runs `unerr push` whenever they want the index updated | Always available |
+| **Drift detection** | `unerr watch` tracks local file modifications. If >20% of indexed files have changed (`DRIFT_THRESHOLD`), prompts user to run `unerr push` | During active development |
 | **Incremental push (future)** | Phase 5's incremental indexing extended to accept diffs from CLI | Post-Phase 5.5 enhancement |
 
 ### Flow 6: Dashboard Timeline View
@@ -566,7 +566,7 @@ Working Snapshots live in Supabase because they contain large file content blobs
 
 ```sql
 -- Migration: Phase 5.5 Ledger Snapshots
-CREATE TABLE kap10.ledger_snapshots (
+CREATE TABLE unerr.ledger_snapshots (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id          TEXT NOT NULL,
   repo_id         TEXT NOT NULL,
@@ -580,10 +580,10 @@ CREATE TABLE kap10.ledger_snapshots (
 );
 
 CREATE INDEX idx_ledger_snapshots_timeline
-  ON kap10.ledger_snapshots (org_id, repo_id, user_id, branch, timeline_branch, created_at DESC);
+  ON unerr.ledger_snapshots (org_id, repo_id, user_id, branch, timeline_branch, created_at DESC);
 
 CREATE INDEX idx_ledger_snapshots_entry
-  ON kap10.ledger_snapshots (ledger_entry_id);
+  ON unerr.ledger_snapshots (ledger_entry_id);
 
 -- Snapshot retention: auto-delete snapshots older than 30 days
 -- (managed by cleanupWorkspacesWorkflow cron, not a DB trigger)
@@ -606,7 +606,7 @@ model LedgerSnapshot {
 
   @@index([orgId, repoId, userId, branch])
   @@map("ledger_snapshots")
-  @@schema("kap10")
+  @@schema("unerr")
 }
 ```
 
@@ -614,7 +614,7 @@ model LedgerSnapshot {
 
 ```sql
 -- Migration: Add local_cli to RepoProvider enum
-ALTER TYPE kap10."RepoProvider" ADD VALUE IF NOT EXISTS 'local_cli';
+ALTER TYPE unerr."RepoProvider" ADD VALUE IF NOT EXISTS 'local_cli';
 ```
 
 The `Repo` model's `githubRepoId` and `githubFullName` fields are already nullable (`BigInt?` and `String?`), intentionally designed for this extension. No Repo model changes needed beyond the enum value.
@@ -679,7 +679,7 @@ Config: SIMILARITY_THRESHOLD = 0.75, MAX_MATCHES = 20
    a) Combine title + description into a single text block
    b) Call Phase 3's nomic-embed-text pipeline to generate embedding vector
    c) Store in pgvector alongside entity embeddings:
-      INSERT INTO kap10.rule_embeddings (rule_id, embedding, created_at)
+      INSERT INTO unerr.rule_embeddings (rule_id, embedding, created_at)
 
 2. Search for existing violations:
    a) Execute Phase 3's hybrid search (keyword + semantic) against
@@ -700,7 +700,7 @@ Config: SIMILARITY_THRESHOLD = 0.75, MAX_MATCHES = 20
 4. Create notification:
    INSERT INTO public.notifications:
      { type: "warning", title: "Anti-pattern found in codebase",
-       message: "You rewound the AI for '{rule.title}'. kap10 found
+       message: "You rewound the AI for '{rule.title}'. unerr found
                  {matchCount} other places with this same pattern.",
        link: "/repos/{repoId}/rules/{ruleId}",
        metadata: { ruleId, matchCount } }
@@ -712,7 +712,7 @@ Config: SIMILARITY_THRESHOLD = 0.75, MAX_MATCHES = 20
    c) Demote unconfirmed matches to "probable" status
 ```
 
-**Why this matters:** kap10 doesn't just learn from mistakes — it actively hunts them down. The dashboard will show: _"You rewound the AI for a SQL injection vulnerability. kap10 found 3 other places the AI made this exact mistake last week. Would you like to fix them?"_ This transforms anti-pattern rules from passive guards into active codebase healers.
+**Why this matters:** unerr doesn't just learn from mistakes — it actively hunts them down. The dashboard will show: _"You rewound the AI for a SQL injection vulnerability. unerr found 3 other places the AI made this exact mistake last week. Would you like to fix them?"_ This transforms anti-pattern rules from passive guards into active codebase healers.
 
 ### 1.2.8b Ledger Circuit Breaker (Hallucination Loop Detection)
 
@@ -726,7 +726,7 @@ Circuit Breaker Algorithm:
 Trigger Point: Inside sync_local_diff, after Ledger Entry creation
 
 Monitoring State (per-function, in Redis):
-  Key: kap10:circuit:{orgId}:{repoId}:{entityKey}
+  Key: unerr:circuit:{orgId}:{repoId}:{entityKey}
   Value: { brokenCount: number, firstBrokenAt: ISO string }
   TTL: 10 minutes (auto-resets)
 
@@ -734,7 +734,7 @@ Detection Logic:
   On each Ledger Entry with status == "broken":
     1. Extract affected entity keys from the entry's changes
     2. For each entity key:
-       a) Increment Redis counter: INCR kap10:circuit:{orgId}:{repoId}:{entityKey}
+       a) Increment Redis counter: INCR unerr:circuit:{orgId}:{repoId}:{entityKey}
        b) If counter == 1: SET firstBrokenAt = now(), EXPIRE 10min
        c) Read current counter value
 
@@ -751,7 +751,7 @@ Trip Response:
        {
          content: [{
            type: "text",
-           text: "🛑 kap10 Circuit Breaker triggered: You are in an AI hallucination
+           text: "🛑 unerr Circuit Breaker triggered: You are in an AI hallucination
                   loop on function `{entityName}` ({brokenCount} consecutive failures
                   in {elapsedMinutes} minutes).
 
@@ -795,7 +795,7 @@ Trip Response:
 
   Manual Override:
     User can call: POST /api/repos/{repoId}/circuit-breaker/reset
-    Or CLI: kap10 circuit-reset [--entity <key>]
+    Or CLI: unerr circuit-reset [--entity <key>]
     This manually DELs the Redis keys, immediately re-enabling the entity.
 ```
 
@@ -819,7 +819,7 @@ The existing `sync_local_diff` MCP tool (`lib/mcp/tools/sync.ts`) gains new opti
   prompt?: string,              // The user's prompt to the AI agent
   agentModel?: string,          // e.g. "claude-sonnet-4-20250514"
   agentTool?: string,           // e.g. "cursor", "claude-code", "windsurf"
-  mcpToolsCalled?: string[],    // Which kap10 tools the agent used before this sync
+  mcpToolsCalled?: string[],    // Which unerr tools the agent used before this sync
   validationResult?: {          // Post-change validation result
     testsPass: boolean,
     lintPass: boolean,
@@ -844,16 +844,16 @@ This is an additive, backward-compatible change. Agents not sending `prompt` sti
 
 | # | Failure | Detection | Recovery | Data Risk |
 |---|---------|-----------|----------|-----------|
-| 1 | **ArangoDB down during ledger append** | Write throws `ArangoError` | Retry 3× with exponential backoff (200ms, 400ms, 800ms). If all fail, `sync_local_diff` still succeeds (ledger is optional). Log warning. Buffer entry in Redis (`kap10:ledger:buffer:{entryId}`, TTL 1h). Background job retries from buffer. | Low — sync succeeds, ledger entry deferred |
+| 1 | **ArangoDB down during ledger append** | Write throws `ArangoError` | Retry 3× with exponential backoff (200ms, 400ms, 800ms). If all fail, `sync_local_diff` still succeeds (ledger is optional). Log warning. Buffer entry in Redis (`unerr:ledger:buffer:{entryId}`, TTL 1h). Background job retries from buffer. | Low — sync succeeds, ledger entry deferred |
 | 2 | **Supabase down during snapshot creation** | Insert throws Prisma error | Retry 2× (500ms, 1000ms). If fails, ledger entry stays `pending` (not marked `working`). Next validation attempt will re-try snapshot creation. | Low — no snapshot created, but entry is safe |
 | 3 | **LLM timeout during anti-pattern synthesis** | Temporal activity timeout (30s) | Retry via Temporal's built-in retry policy (3 attempts, backoff). If all fail, rewind entry gets `rule_generated = null`. Rule can be manually triggered from dashboard. | None — rewind already completed |
-| 4 | **Concurrent rewinds by same user** | Redis lock `kap10:lock:rewind:{userId}:{repoId}:{branch}` | Second rewind request waits for lock (max 5s). If lock not acquired, return error: "Another rewind is in progress." | None — serialized via lock |
-| 5 | **CLI upload interrupted** | Pre-signed URL expires (10 min) | User re-runs `kap10 push`. Server generates a new pre-signed URL. Previous partial upload is orphaned in storage (cleaned by retention policy). | None — re-upload is idempotent |
+| 4 | **Concurrent rewinds by same user** | Redis lock `unerr:lock:rewind:{userId}:{repoId}:{branch}` | Second rewind request waits for lock (max 5s). If lock not acquired, return error: "Another rewind is in progress." | None — serialized via lock |
+| 5 | **CLI upload interrupted** | Pre-signed URL expires (10 min) | User re-runs `unerr push`. Server generates a new pre-signed URL. Previous partial upload is orphaned in storage (cleaned by retention policy). | None — re-upload is idempotent |
 | 6 | **CLI upload succeeds but trigger fails** | CLI receives error from POST /api/cli/index | CLI retries trigger call 2× (same storagePath). Idempotent — server checks if workflow already running for this repoId before starting. | None — zip exists in storage, workflow can be triggered |
 | 7 | **Large snapshot exceeds Supabase row size** | JSONB insert exceeds 1GB Postgres limit | Extremely unlikely (would need 1GB+ of file content). Mitigation: Cap snapshot at 100 files. If more files changed, snapshot only the most recently modified 100. Log warning. | Low — partial snapshot better than none |
 | 8 | **Timeline Branch counter corruption** | Counter skips values or goes negative | Branch counter is always `MAX(timeline_branch) + 1` query, never stored as a separate mutable counter. Cannot corrupt — derived from data. | None — mathematically sound |
 | 9 | **Orphaned entries after crash** | Entries stuck in `pending` indefinitely | `cleanupWorkspacesWorkflow` (existing 15-min cron) extended to: mark entries older than 24h with status `pending` as `broken` (assumption: validation never came). | Low — conservative timeout |
-| 10 | **CLI .kap10/config.json deleted** | `kap10 push` fails with "Not initialized" | User re-runs `kap10 init`. Server detects existing repo by orgId + repoName match and returns existing repoId instead of creating duplicate. | None — idempotent init |
+| 10 | **CLI .unerr/config.json deleted** | `unerr push` fails with "Not initialized" | User re-runs `unerr init`. Server detects existing repo by orgId + repoName match and returns existing repoId instead of creating duplicate. | None — idempotent init |
 
 ### 1.3.2 Append-Only Guarantee
 
@@ -925,7 +925,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 | `ledger` collection (prompt → change history) | Phase 6's pattern detection pipeline uses ledger data to identify recurring AI mistakes (same anti-pattern appearing in multiple sessions → auto-escalate rule priority). |
 | `ledger_summaries` (commit-level AI contribution) | Phase 6's architecture health report includes "AI change velocity" metrics derived from summaries. |
 | `IStorageProvider` (12th port) | Phase 6 reuses for storing Semgrep YAML rule files and ast-grep pattern libraries. |
-| CLI auth + init flow | Phase 6's CLI extensions (`kap10 check`, `kap10 rules`) reuse the same auth and config infrastructure. |
+| CLI auth + init flow | Phase 6's CLI extensions (`unerr check`, `unerr rules`) reuse the same auth and config infrastructure. |
 
 ### What Phase 5.5 Must NOT Do (Respecting Phase 6 Boundaries)
 
@@ -992,7 +992,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 ### P5.5-DB-02: Supabase Migration — Ledger Snapshots Table
 
 - [x] **Status:** Complete
-- **Description:** Create the `kap10.ledger_snapshots` table and add `local_cli` to the `RepoProvider` enum. Add Prisma model `LedgerSnapshot`.
+- **Description:** Create the `unerr.ledger_snapshots` table and add `local_cli` to the `RepoProvider` enum. Add Prisma model `LedgerSnapshot`.
 - **Files:**
   - `supabase/migrations/2026XXXX_phase55_ledger_snapshots.sql` (new)
   - `prisma/schema.prisma` (modify — add `LedgerSnapshot` model, add `local_cli` to `RepoProvider` enum)
@@ -1190,7 +1190,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
   1. Fetch rule from ArangoDB `rules` collection
   2. Combine `title + description` into embedding input text
   3. Call Phase 3 nomic-embed-text to generate embedding vector
-  4. Store in `kap10.rule_embeddings` pgvector table (new table, same schema as `entity_embeddings`)
+  4. Store in `unerr.rule_embeddings` pgvector table (new table, same schema as `entity_embeddings`)
   5. Execute hybrid search against repo's `entity_embeddings`: keyword extraction from title + cosine similarity against rule embedding
   6. Filter: similarity > 0.75, cap at 20 matches
   7. For each match: extract entity snippet (first 10 lines of body)
@@ -1199,7 +1199,7 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
   10. If `semgrepRule` is present on the rule: queue background Semgrep verification on matched files (promote confirmed → "verified", demote unconfirmed → "probable")
 - **Files:**
   - `lib/temporal/activities/anti-pattern.ts` (modify — add vectorization activity)
-  - `supabase/migrations/2026XXXX_phase55_rule_embeddings.sql` (new — `kap10.rule_embeddings` table)
+  - `supabase/migrations/2026XXXX_phase55_rule_embeddings.sql` (new — `unerr.rule_embeddings` table)
 - **Testing:** Rule embedded successfully. Hybrid search returns matching entities. Matches stored on rule document. Notification created. Zero matches → scan_status still "complete" with empty array. LLM/embedding failure → graceful skip (scan_status = "failed"). Semgrep verification promotes/demotes correctly.
 - **Blocked by:** P5.5-API-05, Phase 3 embedding pipeline
 
@@ -1214,8 +1214,8 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
   4. Block further sync_local_diff calls for affected entity during cooldown
   5. Create dashboard notification and Langfuse event
   6. Auto-reset via Redis TTL, or manual reset via API/CLI
-- **Redis keys:** `kap10:circuit:{orgId}:{repoId}:{entityKey}` with `{ brokenCount, firstBrokenAt }`, TTL = window minutes
-- **Manual override:** `POST /api/repos/{repoId}/circuit-breaker/reset`, `kap10 circuit-reset`
+- **Redis keys:** `unerr:circuit:{orgId}:{repoId}:{entityKey}` with `{ brokenCount, firstBrokenAt }`, TTL = window minutes
+- **Manual override:** `POST /api/repos/{repoId}/circuit-breaker/reset`, `unerr circuit-reset`
 - **Files:**
   - `lib/mcp/tools/sync.ts` (modify — add circuit breaker check before and after ledger append)
   - `lib/mcp/security/circuit-breaker.ts` (new — circuit breaker logic)
@@ -1225,32 +1225,32 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 - **Blocked by:** P5.5-API-01
 - **Notes:** —
 
-### P5.5-API-06: CLI `kap10 init` Command
+### P5.5-API-06: CLI `unerr init` Command
 
 - [x] **Status:** Complete
-- **Description:** Register a local repo for kap10 indexing. Creates `.kap10/config.json` with `repoId`, `orgId`, and API key. Calls `POST /api/cli/init` to register the repo in Supabase with `provider: "local_cli"`.
+- **Description:** Register a local repo for unerr indexing. Creates `.unerr/config.json` with `repoId`, `orgId`, and API key. Calls `POST /api/cli/init` to register the repo in Supabase with `provider: "local_cli"`.
 - **Behavior:**
   1. Read org from `--org` flag (or prompt user)
   2. Detect repo name from `package.json` name field, or directory name as fallback
   3. Detect default branch from `git rev-parse --abbrev-ref HEAD` or default to "main"
   4. Call `POST /api/cli/init` with `{ orgId, repoName, defaultBranch }`
   5. Server creates `Repo` row with `provider: "local_cli"`, returns `{ repoId, apiKey }`
-  6. Write `.kap10/config.json` to repo root
-  7. Add `.kap10/` to `.gitignore` if not already present
-- **Idempotency:** If `.kap10/config.json` exists and `repoId` matches server, skip creation. If server has a repo with matching `orgId + repoName + provider: "local_cli"`, return existing repoId.
+  6. Write `.unerr/config.json` to repo root
+  7. Add `.unerr/` to `.gitignore` if not already present
+- **Idempotency:** If `.unerr/config.json` exists and `repoId` matches server, skip creation. If server has a repo with matching `orgId + repoName + provider: "local_cli"`, return existing repoId.
 - **Files:**
   - `packages/cli/src/commands/init.ts` (new)
   - `app/api/cli/init/route.ts` (new)
 - **Testing:** Init creates config file. Re-init is idempotent. `.gitignore` updated. Server creates repo with correct provider. Missing org returns clear error.
 - **Blocked by:** P5.5-DB-02, P5.5-INFRA-02
 
-### P5.5-API-07: CLI `kap10 push` Command
+### P5.5-API-07: CLI `unerr push` Command
 
 - [x] **Status:** Complete
 - **Description:** Zip the current directory (.gitignore-aware), upload via pre-signed URL, and trigger indexing.
 - **Behavior:**
-  1. Read `.kap10/config.json` for `repoId`, `orgId`, `apiKey`
-  2. Build zip using `archiver` library, respecting `.gitignore` via `ignore` library + hardcoded exclusions (`node_modules`, `.git`, `dist`, `build`, `__pycache__`, `.kap10`)
+  1. Read `.unerr/config.json` for `repoId`, `orgId`, `apiKey`
+  2. Build zip using `archiver` library, respecting `.gitignore` via `ignore` library + hardcoded exclusions (`node_modules`, `.git`, `dist`, `build`, `__pycache__`, `.unerr`)
   3. Call `POST /api/cli/index` with `{ repoId, phase: "request_upload" }` → receive pre-signed URL
   4. Upload zip directly to Supabase Storage via pre-signed URL with progress bar
   5. Call `POST /api/cli/index` with `{ repoId, phase: "trigger_index", storagePath }` → server triggers `indexRepoWorkflow`
@@ -1262,17 +1262,17 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 - **Testing:** Zip respects .gitignore. Pre-signed URL upload succeeds. Indexing triggered. Progress bar renders. Timeout handled gracefully. 500MB+ repos handled.
 - **Blocked by:** P5.5-ADAPT-03, P5.5-API-06
 
-### P5.5-API-08: CLI `kap10 watch` Command
+### P5.5-API-08: CLI `unerr watch` Command
 
 - [x] **Status:** Partial — watch command exists but prompt-detector.ts not created
-- **Description:** File watcher that streams changes to the kap10 ledger in real-time. Enables rewind from the terminal.
+- **Description:** File watcher that streams changes to the unerr ledger in real-time. Enables rewind from the terminal.
 - **Behavior:**
   1. Start `chokidar` watcher on repo path (ignore node_modules, .git, dist)
   2. Debounce changes (1s delay) → compute `git diff HEAD` → stream to ledger via `sync_local_diff` MCP call
   3. Attempt to detect agent prompt from agent logs (`.cursor/prompts/`, Claude Code conversation context, etc.)
   4. If no prompt detected, record as `[manual edit — no agent prompt detected]`
   5. Listen for rewind events from server (WebSocket or SSE) → apply file restores locally
-  6. Track drift percentage — if >20% of indexed files have local mods, prompt user to run `kap10 push`
+  6. Track drift percentage — if >20% of indexed files have local mods, prompt user to run `unerr push`
 - **Files:**
   - `packages/cli/src/commands/watch.ts` (new)
   - `packages/cli/src/prompt-detector.ts` (new — extract agent prompt from various agent log locations)
@@ -1284,12 +1284,12 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 - [x] **Status:** Complete
 - **Description:** Terminal commands for rewind and timeline viewing.
 - **Commands:**
-  - `kap10 rewind` — Rewind to most recent working snapshot
-  - `kap10 rewind --snapshot <id>` — Rewind to specific snapshot
-  - `kap10 rewind --steps N` — Go back N working states
-  - `kap10 timeline` — Show prompt history (formatted table)
-  - `kap10 mark-working` — Mark current state as working
-  - `kap10 branches` — Show timeline branches
+  - `unerr rewind` — Rewind to most recent working snapshot
+  - `unerr rewind --snapshot <id>` — Rewind to specific snapshot
+  - `unerr rewind --steps N` — Go back N working states
+  - `unerr timeline` — Show prompt history (formatted table)
+  - `unerr mark-working` — Mark current state as working
+  - `unerr branches` — Show timeline branches
 - **Files:**
   - `packages/cli/src/commands/rewind.ts` (new)
   - `packages/cli/src/commands/timeline.ts` (new)
@@ -1524,14 +1524,14 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 - [x] **Status:** Not started — init-push.test.ts not created
 - **Description:** Integration tests for the CLI local repo ingestion flow.
 - **Test cases:**
-  - `kap10 init` creates `.kap10/config.json` with correct shape
-  - `kap10 init` adds `.kap10/` to `.gitignore`
+  - `unerr init` creates `.unerr/config.json` with correct shape
+  - `unerr init` adds `.unerr/` to `.gitignore`
   - Re-init is idempotent (returns same repoId)
-  - `kap10 push` creates zip excluding node_modules, .git, dist
-  - `kap10 push` uploads via pre-signed URL
-  - `kap10 push` triggers indexing workflow
+  - `unerr push` creates zip excluding node_modules, .git, dist
+  - `unerr push` uploads via pre-signed URL
+  - `unerr push` triggers indexing workflow
   - Post-push, repo status transitions to `ready`
-  - Missing config → clear error: "Not initialized. Run kap10 init first."
+  - Missing config → clear error: "Not initialized. Run unerr init first."
 - **Files:**
   - `packages/cli/src/__tests__/init-push.test.ts` (new)
 - **Blocked by:** P5.5-API-06, P5.5-API-07
@@ -1623,18 +1623,18 @@ lib/
       anti-pattern-vectorization.test.ts ← Proactive codebase scan tests
 packages/cli/src/
   commands/
-    init.ts                       ← kap10 init
-    push.ts                       ← kap10 push
-    watch.ts                      ← kap10 watch
-    rewind.ts                     ← kap10 rewind
-    timeline.ts                   ← kap10 timeline
-    mark-working.ts               ← kap10 mark-working
-    branches.ts                   ← kap10 branches
+    init.ts                       ← unerr init
+    push.ts                       ← unerr push
+    watch.ts                      ← unerr watch
+    rewind.ts                     ← unerr rewind
+    timeline.ts                   ← unerr timeline
+    mark-working.ts               ← unerr mark-working
+    branches.ts                   ← unerr branches
   prompt-detector.ts              ← Agent prompt extraction
   __tests__/
     init-push.test.ts             ← CLI integration tests
   commands/
-    circuit-reset.ts              ← kap10 circuit-reset CLI command
+    circuit-reset.ts              ← unerr circuit-reset CLI command
 app/
   api/
     cli/
@@ -1660,7 +1660,7 @@ components/repo/
 supabase/migrations/
   2026XXXX_phase55_cli_uploads_bucket.sql
   2026XXXX_phase55_ledger_snapshots.sql
-  2026XXXX_phase55_rule_embeddings.sql    ← kap10.rule_embeddings pgvector table for anti-pattern vectorization
+  2026XXXX_phase55_rule_embeddings.sql    ← unerr.rule_embeddings pgvector table for anti-pattern vectorization
 ```
 
 ## Modified Files Summary

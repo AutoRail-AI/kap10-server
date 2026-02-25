@@ -4,7 +4,7 @@
 >
 > **Source:** [`VERTICAL_SLICING_PLAN.md`](./VERTICAL_SLICING_PLAN.md) — Phase 10 (10b increment)
 >
-> **Prerequisites:** [Phase 10a — Local-First Intelligence Proxy (MVP)](./PHASE_10a_LOCAL_FIRST_INTELLIGENCE_PROXY.md) (7 local structural tools, CozoDB, `kap10 pull`, `kap10 serve`, query router, cloud proxy); [Phase 6 — Pattern Enforcement & Rules Engine](./PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md) (rules, patterns, `get_rules`, `check_rules`, Semgrep, ast-grep)
+> **Prerequisites:** [Phase 10a — Local-First Intelligence Proxy (MVP)](./PHASE_10a_LOCAL_FIRST_INTELLIGENCE_PROXY.md) (7 local structural tools, CozoDB, `unerr pull`, `unerr serve`, query router, cloud proxy); [Phase 6 — Pattern Enforcement & Rules Engine](./PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md) (rules, patterns, `get_rules`, `check_rules`, Semgrep, ast-grep)
 >
 > **What this is NOT:** Phase 10b does not implement new MCP tools — it relocates `get_rules` and `check_rules` from cloud-only to local-first resolution. It does not add local semantic search (that remains cloud-only via pgvector). It does not modify rule enforcement logic — it mirrors it locally.
 >
@@ -94,18 +94,18 @@ Step  System Action                                                             
       updateMeta, notifyConnectedClients
 ```
 
-**Backward compatibility:** A v2 snapshot loaded by a 10a-era CLI (which only understands v1) silently ignores the `rules` and `patterns` fields — the msgpack deserializer skips unknown keys. The CLI logs: `"Snapshot v2 detected. Upgrade CLI for local rule checking: npm install -g @autorail/kap10@latest"`.
+**Backward compatibility:** A v2 snapshot loaded by a 10a-era CLI (which only understands v1) silently ignores the `rules` and `patterns` fields — the msgpack deserializer skips unknown keys. The CLI logs: `"Snapshot v2 detected. Upgrade CLI for local rule checking: npm install -g @autorail/unerr@latest"`.
 
 ### Flow 2: Agent Rule Check — Local Resolution
 
 **Actor:** AI agent via MCP client
-**Precondition:** `kap10 serve` running with v2 snapshot loaded; local `rules` and `patterns` CozoDB relations populated
+**Precondition:** `unerr serve` running with v2 snapshot loaded; local `rules` and `patterns` CozoDB relations populated
 **Outcome:** `get_rules` and `check_rules` resolve from local CozoDB in <5ms
 
 ```
 Step  Actor Action                           System Action                                                      Latency
 ────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────
-1     Agent calls MCP tool:                  IDE MCP client sends JSON-RPC via stdio to kap10 CLI               ~1ms
+1     Agent calls MCP tool:                  IDE MCP client sends JSON-RPC via stdio to unerr CLI               ~1ms
       get_rules({
         file_path: "lib/auth/jwt.ts"
       })
@@ -165,11 +165,11 @@ When `check_rules` encounters a Semgrep-engine rule locally, it skips the rule a
 ### Flow 3: Predictive Context Pre-Fetching
 
 **Actor:** System (CLI background process monitoring editor events)
-**Precondition:** `kap10 serve` running; cloud API reachable; developer navigating code in IDE
+**Precondition:** `unerr serve` running; cloud API reachable; developer navigating code in IDE
 **Outcome:** Cloud pre-warms Redis cache with likely queries for the developer's current context, so cloud-routed tools respond faster when called
 
 ```
-Step  IDE (LSP)                     kap10 CLI                              Cloud
+Step  IDE (LSP)                     unerr CLI                              Cloud
 ────  ────────────────────────────  ─────────────────────────────────────  ─────────────────────────────
 1     textDocument/didOpen           CLI intercepts MCP notification        (no action yet)
       file: "lib/auth/jwt.ts"       (if IDE sends document open events
@@ -251,16 +251,16 @@ inspect_entity         → CLOUD          Phase 2        Full entity details fro
 
 ### Flow 5: First Pull with v2 Snapshot
 
-**Actor:** Developer running `kap10 pull` after CLI upgrade to 10b
+**Actor:** Developer running `unerr pull` after CLI upgrade to 10b
 **Precondition:** 10b-era CLI installed; cloud has generated v2 snapshots (post-Phase 6)
 **Outcome:** CozoDB populated with entities, edges, rules, and patterns
 
 ```
 Step  Actor Action                           System Action                                                      State Change
 ────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────────────────────────
-1     Developer runs `kap10 pull`            CLI calls GET /api/graph-snapshots/{repoId}/download               None
+1     Developer runs `unerr pull`            CLI calls GET /api/graph-snapshots/{repoId}/download               None
 
-2                                            Download msgpack snapshot                                          ~/.kap10/snapshots/{repoId}.msgpack
+2                                            Download msgpack snapshot                                          ~/.unerr/snapshots/{repoId}.msgpack
                                              → SHA-256 checksum verification ✓
 
 3                                            Decode msgpack:                                                     None (in-memory)
@@ -269,7 +269,7 @@ Step  Actor Action                           System Action                      
                                              → rules[] (NEW — Phase 10b)
                                              → patterns[] (NEW — Phase 10b)
 
-4                                            CozoDB bulk load (EXTENDED):                                       ~/.kap10/snapshots/{repoId}.msgpack
+4                                            CozoDB bulk load (EXTENDED):                                       ~/.unerr/snapshots/{repoId}.msgpack
                                              → :create rules relation (if not exists)                           CozoDB relations: entities,
                                              → :create patterns relation (if not exists)                        edges, file_index,
                                              → :insert entities [...] (same as v1)                              search_tokens, rules, patterns
@@ -469,7 +469,7 @@ Cloud tool handler (e.g., semantic_search):
 |---|---------|-----------|----------|-------------|
 | 1 | **v2 snapshot loaded by v1 CLI** | CLI reads `envelope.version`, compares against supported range | CLI logs warning: `"Snapshot v2 detected. Upgrade CLI for local rules."` Loads entities + edges (v1 fields), ignores rules + patterns. | Rules not available locally — fall through to cloud. No crash. Structural tools work normally. |
 | 2 | **Local `check_rules` — tree-sitter parse failure** | `tree-sitter.parse()` throws or returns partial AST | CLI catches error, skips structural rule evaluation for that file, returns `_meta.parseError: true`. Falls back to cloud for all rule checks on that file. | Agent sees partial results with annotation. Can call cloud `check_rules` for full evaluation. |
-| 3 | **Local `get_rules` — CozoDB rules relation empty** | Query returns 0 rows | CLI returns empty rules list with `_meta.rulesLoaded: false, note: "No rules synced locally. Ensure kap10 pull ran after Phase 6 rules were configured."` | Agent sees no rules. Cloud fallback returns rules if they exist. |
+| 3 | **Local `get_rules` — CozoDB rules relation empty** | Query returns 0 rows | CLI returns empty rules list with `_meta.rulesLoaded: false, note: "No rules synced locally. Ensure unerr pull ran after Phase 6 rules were configured."` | Agent sees no rules. Cloud fallback returns rules if they exist. |
 | 4 | **Pre-fetch — cloud unreachable** | HTTP timeout (3s) on `POST /api/prefetch` | Silently ignored. Pre-fetch is fire-and-forget. No retry. | No pre-warming. Cloud tools take normal latency (~200-300ms instead of ~50ms). No functional impact. |
 | 5 | **Pre-fetch — Redis write failure on cloud** | Redis `SET` returns error | Cloud logs warning. Pre-fetch pipeline returns 200 anyway (no error to CLI). | Same as #4 — no pre-warming, normal latency. |
 | 6 | **Pre-fetch flood — developer navigates rapidly** | CLI debounce counter tracks requests/second | 500ms debounce window. If debounce window is exceeded (shouldn't happen with proper debounce), CLI drops the pre-fetch. Max 2 pre-fetches/second. | Some pre-fetches skipped. No functional impact. |
@@ -478,7 +478,7 @@ Cloud tool handler (e.g., semantic_search):
 | 9 | **Snapshot v2 much larger than v1 (rules bloat)** | Snapshot size exceeds `maxLocalStorageMB` quota | CLI warns: `"Snapshot for org/repo is 450 MB (quota: 500 MB)."` Pull proceeds if space available. | User may need to increase quota or remove other repos. |
 | 10 | **Rule conflict between local (stale) and cloud (current)** | Local rules were synced 20h ago; cloud rules changed 1h ago | No detection at query time — local rules serve until next pull. `_meta.staleness` includes `lastPulledAt` in every response. | Agent operates on slightly stale rules. For safety-critical checks, agent can force a cloud `check_rules` call. |
 | 11 | **Pre-fetch cursor context references deleted entity** | Cloud entity lookup returns null in Step 1 | Pre-fetch pipeline returns 200 (no-op). No cache entries written. | No pre-warming for that symbol. Normal latency on next cloud query. |
-| 12 | **CLI upgrade mid-session (v1 → v2 CLI, v1 snapshot loaded)** | CLI detects v1 snapshot after upgrade | CLI serves with v1 data. New `rules` and `patterns` relations created but empty. Logs: `"Run 'kap10 pull' to load rules and patterns."` | Local structural tools work. Rules not available until re-pull. |
+| 12 | **CLI upgrade mid-session (v1 → v2 CLI, v1 snapshot loaded)** | CLI detects v1 snapshot after upgrade | CLI serves with v1 data. New `rules` and `patterns` relations created but empty. Logs: `"Run 'unerr pull' to load rules and patterns."` | Local structural tools work. Rules not available until re-pull. |
 
 ### Rule Evaluation Safety
 
@@ -775,7 +775,7 @@ Phase 10b is designed so that Phase 11 (Native IDE Integrations) requires **zero
 
 ## 2.5 CLI / Client Layer
 
-- [x] **P10b-CLI-01: Extend `kap10 pull` to load rules and patterns from v2 snapshot** — M
+- [x] **P10b-CLI-01: Extend `unerr pull` to load rules and patterns from v2 snapshot** — M
   - After decoding msgpack:
     - If `envelope.version >= 2` and `envelope.rules` exists:
       - Create `rules` relation (if not exists)
@@ -806,24 +806,24 @@ Phase 10b is designed so that Phase 11 (Native IDE Integrations) requires **zero
   - **Files:** `packages/cli/src/query-router.ts` (modified)
   - Notes: Rewritten routing table: 9 local tools + 4 cloud tools. Dynamic fallback to cloud when `localGraph.hasRules()` returns false. Constructor accepts optional `ruleEvaluator`. 12 tests passing.
 
-- [x] **P10b-CLI-03: Integrate pre-fetch debounce into `kap10 serve`** — M
-  - On `kap10 serve` startup:
+- [x] **P10b-CLI-03: Integrate pre-fetch debounce into `unerr serve`** — M
+  - On `unerr serve` startup:
     - Initialize pre-fetch module (debounce timer, cloud proxy reference)
     - If MCP client sends `notifications/resources/updated` or custom cursor events:
       - Extract file path + cursor position
       - Feed to pre-fetch debounce module
-  - Pre-fetch is opt-in: `~/.kap10/config.json` → `"prefetchEnabled": true` (default: false for 10b, true in Phase 11)
+  - Pre-fetch is opt-in: `~/.unerr/config.json` → `"prefetchEnabled": true` (default: false for 10b, true in Phase 11)
   - If pre-fetch disabled or cloud unreachable: no pre-fetching, no error
   - **Test:** Start serve with `prefetchEnabled: true` → cursor event → pre-fetch fires after debounce. `prefetchEnabled: false` → no pre-fetch. Cloud unreachable → pre-fetch silently fails.
   - **Depends on:** P10b-ADAPT-03, Phase 10a P10a-CLI-02
   - **Files:** `packages/cli/src/commands/serve.ts` (modified)
   - Notes: PrefetchManager initialized when `opts.prefetch` is true. Fed cursor context from tool calls containing `file_path` args. SIGINT/SIGTERM handlers for cleanup.
 
-- [x] **P10b-CLI-04: Add `--prefetch` flag to `kap10 serve`** — S
-  - `kap10 serve --prefetch` — enables predictive pre-fetching for this session
-  - `kap10 serve --no-prefetch` — disables (overrides config)
-  - Default: reads from `~/.kap10/config.json` (`prefetchEnabled` field)
-  - **Test:** `kap10 serve --prefetch` → pre-fetching active. `kap10 serve --no-prefetch` → pre-fetching disabled. No flag → reads config.
+- [x] **P10b-CLI-04: Add `--prefetch` flag to `unerr serve`** — S
+  - `unerr serve --prefetch` — enables predictive pre-fetching for this session
+  - `unerr serve --no-prefetch` — disables (overrides config)
+  - Default: reads from `~/.unerr/config.json` (`prefetchEnabled` field)
+  - **Test:** `unerr serve --prefetch` → pre-fetching active. `unerr serve --no-prefetch` → pre-fetching disabled. No flag → reads config.
   - **Depends on:** P10b-CLI-03
   - **Files:** `packages/cli/src/commands/serve.ts` (modified)
   - Notes: Added `--prefetch` / `--no-prefetch` CLI options to `serve` command. Added 2 new tool definitions: `get_rules` and `check_rules`. Startup message: "13 tools (9 local, 4 cloud)".
@@ -845,12 +845,12 @@ Phase 10b is designed so that Phase 11 (Native IDE Integrations) requires **zero
 - [x] **P10b-UI-02: Add "Pre-fetch" toggle to local setup instructions** — S
   - Extend the local setup instructions (Phase 10a) with pre-fetch configuration:
     - Explain what pre-fetching does
-    - Show how to enable: `kap10 serve --prefetch`
-    - Note: "Pre-fetching sends your cursor position to the kap10 cloud. Disable if you prefer full privacy."
+    - Show how to enable: `unerr serve --prefetch`
+    - Note: "Pre-fetching sends your cursor position to the unerr cloud. Disable if you prefer full privacy."
   - **Test:** Instructions render. Toggle explanation is clear.
   - **Depends on:** Phase 10a P10a-UI-03
   - **Files:** `components/repo/local-setup-instructions.tsx` (modified)
-  - Notes: Added Step 5: `kap10 serve --prefetch` with privacy note. Updated footer text: "9 local tools (graph queries + rules)".
+  - Notes: Added Step 5: `unerr serve --prefetch` with privacy note. Updated footer text: "9 local tools (graph queries + rules)".
 
 - [x] **P10b-UI-03: Update `GraphSnapshotMeta` display to show v2 metadata** — S
   - Extend the snapshot status badge (Phase 10a) to show:
@@ -963,7 +963,7 @@ Phase 10b is designed so that Phase 11 (Native IDE Integrations) requires **zero
 
 - [x] **P10b-TEST-11: Manual rule check latency comparison** — M
   - Configure Phase 6 rules for a real repo
-  - Run `kap10 pull` → verify v2 snapshot loaded (rules + patterns present)
+  - Run `unerr pull` → verify v2 snapshot loaded (rules + patterns present)
   - Agent calls `get_rules("lib/auth/jwt.ts")`:
     - Via cloud MCP: measure latency (~200ms expected)
     - Via local CLI MCP: measure latency (<5ms expected)
@@ -975,7 +975,7 @@ Phase 10b is designed so that Phase 11 (Native IDE Integrations) requires **zero
   - Notes: Deferred to manual QA — all automated tests passing. Infrastructure is in place for latency comparison.
 
 - [x] **P10b-TEST-12: Manual pre-fetch verification** — M
-  - Start `kap10 serve --prefetch`
+  - Start `unerr serve --prefetch`
   - Open a file in IDE → wait 1s → check Redis for pre-fetch cache entries
   - Agent calls `semantic_search` for a symbol in the opened file → verify faster response
   - Close IDE → wait 5 minutes → verify Redis cache entries expired

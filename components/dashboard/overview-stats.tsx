@@ -4,7 +4,7 @@ import { Card, CardContent } from "@/components/ui/card"
 
 /**
  * Usage telemetry stat card. Labels in Cloud White, metric values in Electric Cyan.
- * Uses hover:shadow-glow-cyan for kap10 product lane.
+ * Uses hover:shadow-glow-cyan for unerr product lane.
  */
 export function StatCard({
   label,

@@ -11,19 +11,19 @@ import { InMemoryCacheStore, InMemoryRelationalStore } from "@/lib/di/fakes"
 
 describe("hashApiKey", () => {
   it("returns consistent hash for same input", () => {
-    const h1 = hashApiKey("kap10_sk_test123")
-    const h2 = hashApiKey("kap10_sk_test123")
+    const h1 = hashApiKey("unerr_sk_test123")
+    const h2 = hashApiKey("unerr_sk_test123")
     expect(h1).toBe(h2)
   })
 
   it("returns different hashes for different inputs", () => {
-    const h1 = hashApiKey("kap10_sk_aaa")
-    const h2 = hashApiKey("kap10_sk_bbb")
+    const h1 = hashApiKey("unerr_sk_aaa")
+    const h2 = hashApiKey("unerr_sk_bbb")
     expect(h1).not.toBe(h2)
   })
 
   it("returns a hex string", () => {
-    const hash = hashApiKey("kap10_sk_test")
+    const hash = hashApiKey("unerr_sk_test")
     expect(hash).toMatch(/^[a-f0-9]+$/)
   })
 })
@@ -31,8 +31,8 @@ describe("hashApiKey", () => {
 describe("generateApiKey", () => {
   it("returns raw, hash, and prefix", () => {
     const key = generateApiKey()
-    expect(key.raw).toMatch(/^kap10_sk_/)
-    expect(key.prefix).toMatch(/^kap10_sk_/)
+    expect(key.raw).toMatch(/^unerr_sk_/)
+    expect(key.prefix).toMatch(/^unerr_sk_/)
     expect(key.prefix).toContain("****")
     expect(key.hash).toMatch(/^[a-f0-9]+$/)
   })
@@ -52,7 +52,7 @@ describe("generateApiKey", () => {
 describe("createJwt", () => {
   it("creates a three-part JWT", () => {
     const token = createJwt(
-      { sub: "user1", org: "org1", scope: "mcp:read", aud: "kap10-mcp" },
+      { sub: "user1", org: "org1", scope: "mcp:read", aud: "unerr-mcp" },
       "test-secret"
     )
     const parts = token.split(".")
@@ -61,7 +61,7 @@ describe("createJwt", () => {
 
   it("encodes correct payload", () => {
     const token = createJwt(
-      { sub: "user1", org: "org1", scope: "mcp:read mcp:sync", aud: "kap10-mcp" },
+      { sub: "user1", org: "org1", scope: "mcp:read mcp:sync", aud: "unerr-mcp" },
       "test-secret",
       3600
     )
@@ -77,7 +77,7 @@ describe("createJwt", () => {
     expect(payload.sub).toBe("user1")
     expect(payload.org).toBe("org1")
     expect(payload.scope).toBe("mcp:read mcp:sync")
-    expect(payload.aud).toBe("kap10-mcp")
+    expect(payload.aud).toBe("unerr-mcp")
     expect(payload.exp).toBeGreaterThan(payload.iat)
   })
 })
@@ -128,7 +128,7 @@ describe("authenticateMcpRequest", () => {
 
   it("rejects invalid API key", async () => {
     const result = await authenticateMcpRequest(
-      "Bearer kap10_sk_invalidkey",
+      "Bearer unerr_sk_invalidkey",
       cache,
       relational
     )
@@ -156,10 +156,10 @@ describe("authenticateMcpRequest", () => {
 
   it("authenticates valid JWT", async () => {
     vi.stubEnv("BETTER_AUTH_SECRET", "test-jwt-secret")
-    vi.stubEnv("MCP_JWT_AUDIENCE", "kap10-mcp")
+    vi.stubEnv("MCP_JWT_AUDIENCE", "unerr-mcp")
 
     const token = createJwt(
-      { sub: "user1", org: "org1", scope: "mcp:read mcp:sync", aud: "kap10-mcp" },
+      { sub: "user1", org: "org1", scope: "mcp:read mcp:sync", aud: "unerr-mcp" },
       "test-jwt-secret"
     )
 
@@ -177,10 +177,10 @@ describe("authenticateMcpRequest", () => {
 
   it("rejects expired JWT", async () => {
     vi.stubEnv("BETTER_AUTH_SECRET", "test-jwt-secret")
-    vi.stubEnv("MCP_JWT_AUDIENCE", "kap10-mcp")
+    vi.stubEnv("MCP_JWT_AUDIENCE", "unerr-mcp")
 
     const token = createJwt(
-      { sub: "user1", org: "org1", scope: "mcp:read", aud: "kap10-mcp" },
+      { sub: "user1", org: "org1", scope: "mcp:read", aud: "unerr-mcp" },
       "test-jwt-secret",
       -10 // already expired
     )

@@ -1,7 +1,7 @@
 /**
- * kap10 server GOLDEN SAMPLE ARCHITECTURE
+ * unerr server GOLDEN SAMPLE ARCHITECTURE
  * ----------------------------------------------------------------------------
- * This component demonstrates the "Glass Brain" architecture for kap10 server
+ * This component demonstrates the "Glass Brain" architecture for unerr server
  * pages. Use this pattern for all new dashboard and complex UI views.
  *
  * SHELL CONTEXT:

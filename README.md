@@ -1,4 +1,4 @@
-# Kap10
+# Unerr
 
 Cloud-native code intelligence platform. Connects to your repositories, builds a knowledge graph of your codebase, and exposes it to AI coding agents via MCP (Model Context Protocol). Built with Next.js 16, React 19, and a Ports & Adapters (hexagonal) architecture.
 
@@ -7,7 +7,7 @@ Cloud-native code intelligence platform. Connects to your repositories, builds a
 ## Architecture
 
 ```
-Developer's IDE                        kap10 Cloud
+Developer's IDE                        unerr Cloud
 ┌──────────────┐                      ┌──────────────────────────────────────────┐
 │  Cursor /    │   MCP (HTTP-SSE)     │  Next.js 16 App                         │
 │  Claude Code │◄────────────────────►│  ┌───────────┐  ┌──────────────────┐    │
@@ -36,12 +36,12 @@ Developer's IDE                        kap10 Cloud
 
 | Store | Role | What lives here |
 |-------|------|-----------------|
-| **Supabase (PostgreSQL)** | App data, auth, billing | Auth tables in `public`; kap10 app tables in schema **`kap10`** (repos, deletion_logs, etc.). PostgreSQL only — no MongoDB. |
+| **Supabase (PostgreSQL)** | App data, auth, billing | Auth tables in `public`; unerr app tables in schema **`unerr`** (repos, deletion_logs, etc.). PostgreSQL only — no MongoDB. |
 | **ArangoDB** | Graph knowledge store | Files, functions, classes, relationships (calls, imports, extends), rules, patterns |
 | **Temporal** | Workflow orchestration | Repo indexing, justification, pattern detection, PR review pipelines |
 | **Redis** | Cache & rate limits | Hot query cache, API rate limiting, MCP session state |
 
-Kap10 uses a **PostgreSQL schema** (not table prefix): all kap10-managed tables live in schema `kap10`. Better Auth tables stay in `public`. See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](docs/architecture/VERTICAL_SLICING_PLAN.md).
+Unerr uses a **PostgreSQL schema** (not table prefix): all unerr-managed tables live in schema `unerr`. Better Auth tables stay in `public`. See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](docs/architecture/VERTICAL_SLICING_PLAN.md).
 
 ### Tech Stack
 
@@ -50,7 +50,7 @@ Kap10 uses a **PostgreSQL schema** (not table prefix): all kap10-managed tables 
 | **Framework** | Next.js 16 (App Router), React 19 |
 | **Language** | TypeScript (strict mode) |
 | **Auth** | Better Auth (email/password, Google OAuth, GitHub OAuth, organizations) |
-| **Database** | Supabase (PostgreSQL) via Prisma 7; kap10 tables in schema `kap10` |
+| **Database** | Supabase (PostgreSQL) via Prisma 7; unerr tables in schema `unerr` |
 | **Graph DB** | ArangoDB 3.12 (pool-based multi-tenancy, `arangojs`) |
 | **Workflows** | Temporal 1.24 (durable execution, resume-from-failure, TypeScript SDK) |
 | **Code Intel** | SCIP (Sourcegraph) + Tree-sitter (Phase 1+) |
@@ -104,7 +104,7 @@ corepack enable
 
 # 2. Clone and install dependencies
 git clone <your-repo-url>
-cd kap10-server
+cd unerr-server
 pnpm install
 
 # 3. Configure environment
@@ -186,7 +186,7 @@ TEMPORAL_ADDRESS=localhost:7233
 
 # ArangoDB — graph knowledge store
 ARANGODB_URL=http://localhost:8529
-ARANGODB_DATABASE=kap10_db
+ARANGODB_DATABASE=unerr_db
 ARANGO_ROOT_PASSWORD=firstPassword12345    # must match docker-compose default
 ```
 
@@ -338,8 +338,8 @@ lib/
 └── utils/                      # Utility functions
 
 prisma/
-├── schema.prisma               # Prisma schema (schemas: public + kap10)
-└── migrations/                 # SQL migrations (repos, deletion_logs in kap10 schema)
+├── schema.prisma               # Prisma schema (schemas: public + unerr)
+└── migrations/                 # SQL migrations (repos, deletion_logs in unerr schema)
 
 scripts/
 ├── temporal-worker-heavy.ts    # Heavy-compute worker (SCIP, Semgrep — Phase 1+)

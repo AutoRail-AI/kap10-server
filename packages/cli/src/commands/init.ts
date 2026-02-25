@@ -1,13 +1,13 @@
 /**
- * kap10 init — Register a local repo with the kap10 server.
- * Creates .kap10/config.json and adds .kap10 to .gitignore.
+ * unerr init — Register a local repo with the unerr server.
+ * Creates .unerr/config.json and adds .unerr to .gitignore.
  */
 import { Command } from "commander"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { getCredentials } from "./auth.js"
 
-interface KAP10Config {
+interface UNERRConfig {
   repoId: string
   serverUrl: string
   orgId: string
@@ -17,15 +17,15 @@ interface KAP10Config {
 export function registerInitCommand(program: Command): void {
   program
     .command("init")
-    .description("Register this local repository with kap10 server")
-    .option("--server <url>", "Server URL", process.env.KAP10_SERVER_URL ?? "http://localhost:3000")
+    .description("Register this local repository with unerr server")
+    .option("--server <url>", "Server URL", process.env.UNERR_SERVER_URL ?? "http://localhost:3000")
     .option("--branch <branch>", "Default branch", "main")
     .option("--ephemeral", "Create an ephemeral sandbox (expires in 4 hours)")
     .action(async (opts: { server: string; branch: string; ephemeral?: boolean }) => {
       try {
         const creds = getCredentials()
         if (!creds?.apiKey) {
-          console.error("Not authenticated. Run: kap10 auth login")
+          console.error("Not authenticated. Run: unerr auth login")
           process.exit(1)
         }
 
@@ -33,7 +33,7 @@ export function registerInitCommand(program: Command): void {
         const cwd = process.cwd()
         const repoName = path.basename(cwd)
 
-        console.log(`Registering ${repoName} with kap10 server...`)
+        console.log(`Registering ${repoName} with unerr server...`)
 
         const res = await fetch(`${opts.server}/api/cli/init`, {
           method: "POST",
@@ -57,38 +57,38 @@ export function registerInitCommand(program: Command): void {
 
         const result = (await res.json()) as { repoId: string; orgId: string }
 
-        // Create .kap10 directory and config
-        const kap10Dir = path.join(cwd, ".kap10")
-        if (!fs.existsSync(kap10Dir)) {
-          fs.mkdirSync(kap10Dir, { recursive: true })
+        // Create .unerr directory and config
+        const unerrDir = path.join(cwd, ".unerr")
+        if (!fs.existsSync(unerrDir)) {
+          fs.mkdirSync(unerrDir, { recursive: true })
         }
 
-        const config: KAP10Config = {
+        const config: UNERRConfig = {
           repoId: result.repoId,
           serverUrl: opts.server,
           orgId: result.orgId,
           branch: opts.branch,
         }
         fs.writeFileSync(
-          path.join(kap10Dir, "config.json"),
+          path.join(unerrDir, "config.json"),
           JSON.stringify(config, null, 2) + "\n"
         )
 
-        // Add .kap10 to .gitignore if not already there
+        // Add .unerr to .gitignore if not already there
         const gitignorePath = path.join(cwd, ".gitignore")
         if (fs.existsSync(gitignorePath)) {
           const content = fs.readFileSync(gitignorePath, "utf-8")
-          if (!content.includes(".kap10")) {
-            fs.appendFileSync(gitignorePath, "\n# kap10 local config\n.kap10/\n")
+          if (!content.includes(".unerr")) {
+            fs.appendFileSync(gitignorePath, "\n# unerr local config\n.unerr/\n")
           }
         } else {
-          fs.writeFileSync(gitignorePath, "# kap10 local config\n.kap10/\n")
+          fs.writeFileSync(gitignorePath, "# unerr local config\n.unerr/\n")
         }
 
         console.log(`Registered repo: ${repoName} (${result.repoId})`)
-        console.log(`  Config: .kap10/config.json`)
+        console.log(`  Config: .unerr/config.json`)
         if (opts.ephemeral) {
-          console.log(`  Ephemeral sandbox created (expires in 4 hours). Use \`kap10 promote\` to make permanent.`)
+          console.log(`  Ephemeral sandbox created (expires in 4 hours). Use \`unerr promote\` to make permanent.`)
         }
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)

@@ -29,7 +29,7 @@ export default async function CliAuthorizePage({
             Authorize CLI
           </h1>
           <p className="text-sm text-muted-foreground">
-            No authorization code provided. Run <code className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">kap10 auth login</code> in your terminal to start.
+            No authorization code provided. Run <code className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">unerr auth login</code> in your terminal to start.
           </p>
         </div>
       </div>

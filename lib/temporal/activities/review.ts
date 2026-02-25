@@ -82,7 +82,7 @@ export async function fetchDiffAndRunChecks(input: {
   const config = await container.relationalStore.getRepoReviewConfig(input.orgId)
   const os = await import("node:os")
   const path = await import("node:path")
-  const workspacePath = path.join(os.tmpdir(), "kap10-workspaces", input.orgId, input.repoId)
+  const workspacePath = path.join(os.tmpdir(), "unerr-workspaces", input.orgId, input.repoId)
 
   const [pattern, impact, test, complexity, dependency, trustBoundary, env, contract, idempotency] = await Promise.all([
     runPatternCheck(input.orgId, input.repoId, result.files, workspacePath, container.graphStore, container.patternEngine, config),
@@ -218,7 +218,7 @@ export async function runChecks(input: {
 
   const os = await import("node:os")
   const path = await import("node:path")
-  const workspacePath = path.join(os.tmpdir(), "kap10-workspaces", input.orgId, input.repoId)
+  const workspacePath = path.join(os.tmpdir(), "unerr-workspaces", input.orgId, input.repoId)
 
   // Run all checks in parallel
   const [pattern, impact, test, complexity, dependency, trustBoundary, env, contract, idempotency] = await Promise.all([
@@ -330,7 +330,7 @@ export async function postReview(input: {
     // Post Check Run
     try {
       const checkRun = await container.gitHost.createCheckRun(input.owner, input.repo, {
-        name: "kap10 Architecture Review",
+        name: "unerr Architecture Review",
         headSha: input.headSha,
         status: "in_progress",
       })
@@ -475,9 +475,9 @@ It looks like no changes have been pushed in 48 hours. Here's a quick recap:
 ${blockerList}
 
 **Need help?** Open your IDE and ask your AI agent:
-> *"Why did kap10 block PR #${prNumber}? Help me fix it."*
+> *"Why did unerr block PR #${prNumber}? Help me fix it."*
 
 Your agent will fetch the full context via \`review_pr_status\` and guide you through the fix.
 
-<sub>This is an automated follow-up from kap10.</sub>`
+<sub>This is an automated follow-up from unerr.</sub>`
 }

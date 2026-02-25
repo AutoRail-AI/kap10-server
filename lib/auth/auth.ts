@@ -16,7 +16,7 @@ function getResendClient(): Resend | null {
 
 // Email sender configuration
 const getEmailFrom = () =>
-  process.env.EMAIL_FROM || "Kap10 <noreply@kap10.dev>"
+  process.env.EMAIL_FROM || "Unerr <noreply@unerr.dev>"
 
 function slugify(name: string): string {
   return name
@@ -44,7 +44,7 @@ function buildAuthConfig(
     database,
 
     // App configuration
-    appName: "Kap10",
+    appName: "Unerr",
     baseURL: process.env.BETTER_AUTH_URL || "http://localhost:3000",
     secret:
       process.env.BETTER_AUTH_SECRET ||
@@ -156,7 +156,7 @@ function buildAuthConfig(
           await resend.emails.send({
             from: getEmailFrom(),
             to: user.email,
-            subject: "Verify your Kap10 account",
+            subject: "Verify your Unerr account",
             html: `
             <!DOCTYPE html>
             <html>
@@ -173,7 +173,7 @@ function buildAuthConfig(
                         <!-- Header -->
                         <tr>
                           <td style="background: linear-gradient(135deg, #8134CE 0%, #6E18B3 100%); padding: 32px; border-radius: 8px 8px 0 0; text-align: center;">
-                            <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 600; font-family: 'Space Grotesk', sans-serif;">Kap10</h1>
+                            <h1 style="color: #ffffff; margin: 0; font-size: 24px; font-weight: 600; font-family: 'Space Grotesk', sans-serif;">Unerr</h1>
                             <p style="color: rgba(255,255,255,0.9); margin: 8px 0 0 0; font-size: 14px;">Code Intelligence Platform</p>
                           </td>
                         </tr>
@@ -185,7 +185,7 @@ function buildAuthConfig(
                               Hi ${user.name || "there"},
                             </p>
                             <p style="color: rgba(250,250,250,0.6); margin: 0 0 24px 0; font-size: 16px; line-height: 1.6;">
-                              Thanks for signing up for Kap10! Please verify your email address by clicking the button below.
+                              Thanks for signing up for Unerr! Please verify your email address by clicking the button below.
                             </p>
                             <table width="100%" cellpadding="0" cellspacing="0">
                               <tr>
@@ -208,7 +208,7 @@ function buildAuthConfig(
                         <tr>
                           <td style="padding: 24px 32px; border-top: 1px solid rgba(250,250,250,0.1); text-align: center;">
                             <p style="color: rgba(250,250,250,0.4); margin: 0; font-size: 12px;">
-                              &copy; ${new Date().getFullYear()} Kap10. All rights reserved.
+                              &copy; ${new Date().getFullYear()} Unerr. All rights reserved.
                             </p>
                           </td>
                         </tr>

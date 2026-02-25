@@ -226,7 +226,7 @@ export function RepoPickerSheet({
                   <span className="font-semibold text-foreground">
                     Choose the right branch for each repository.
                   </span>{" "}
-                  Kap10 indexes the selected branch to build your code intelligence graph
+                  Unerr indexes the selected branch to build your code intelligence graph
                   — accurate function maps, dependency analysis, and AI suggestions depend
                   on indexing the branch with your team&apos;s latest working code. For
                   most teams this is <code className="font-mono">main</code> or{" "}

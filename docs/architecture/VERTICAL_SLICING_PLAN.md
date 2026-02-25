@@ -1,4 +1,4 @@
-# kap10 — Vertical Slicing Architecture Plan
+# unerr — Vertical Slicing Architecture Plan
 
 > **Each phase ships a single, end-to-end testable feature.**
 > No phase depends on future phases to be useful. Every phase produces a working feature a user can interact with.
@@ -10,7 +10,7 @@
 ## System Overview
 
 ```
-Developer's IDE                        kap10 Cloud
+Developer's IDE                        unerr Cloud
 ┌──────────────┐                      ┌──────────────────────────────────────────────┐
 │  Cursor /    │   MCP (HTTP-SSE)     │  Next.js 16 App                             │
 │  Claude Code │◄────────────────────►│  ┌───────────┐  ┌────────────────────┐      │
@@ -26,9 +26,9 @@ Developer's IDE                        kap10 Cloud
     │  Repos   │◄────────────────────►│  │ ArangoDB   │    │ Supabase        │      │
     └──────────┘                      │  │ (Graph DB) │    │ (App + Vectors) │      │
                                       │  └───────────┘    └─────────────────┘      │
-       kap10 CLI (Phase 5.5)          │        │                  │                 │
+       unerr CLI (Phase 5.5)          │        │                  │                 │
     ┌──────────────┐  Pre-signed URL  │  ┌─────▼──────────────────▼────────┐       │
-    │  kap10 push  │─────────────────►│  │ Supabase Storage (cli_uploads)  │       │
+    │  unerr push  │─────────────────►│  │ Supabase Storage (cli_uploads)  │       │
     │  (zip upload)│                  │  └─────────────────┬───────────────┘       │
     └──────────────┘                  │                    ▼                        │
                                       │  ┌─────────────────────────────────┐       │
@@ -47,13 +47,13 @@ Developer's IDE                        kap10 Cloud
 | **ArangoDB** | Graph knowledge store | Files, functions, classes, interfaces, relationships (calls, imports, extends, implements), justifications, classifications, features, change ledger |
 | **Temporal** | Workflow orchestration | All multi-step pipelines: repo indexing, justification, pattern detection, PR review, incremental re-indexing |
 | **Redis** | Cache, rate limits, MCP sessions | Hot query cache, API rate limiting, MCP connection state |
-| **Supabase Storage** | File uploads (CLI) | Zipped codebase uploads from `kap10 push`; pre-signed URLs for direct client upload; auto-cleaned after indexing *(Phase 5.5)* |
+| **Supabase Storage** | File uploads (CLI) | Zipped codebase uploads from `unerr push`; pre-signed URLs for direct client upload; auto-cleaned after indexing *(Phase 5.5)* |
 
-**Supabase: schema approach (mandatory).** All kap10-managed Supabase tables live in PostgreSQL schema **`kap10`** (we use the schema approach, not a table prefix). From now on, every new kap10 table MUST be created in schema `kap10` via Prisma with `@@schema("kap10")`; do not add kap10 app tables to `public`. Prisma: `schemas = ["public", "kap10"]` in the datasource; use `@@schema("kap10")` on every kap10 model and enum. Table names are unprefixed (e.g. `repos`, `deletion_logs`). Better Auth tables stay in `public` (user, session, account, organization, member, invitation, verification); we do not migrate those. This is required when sharing one Supabase project with multiple apps (clear separation, no name clashes, simpler permissions). [Prisma multi-schema](https://www.prisma.io/docs/orm/prisma-schema/data-model/multi-schema).
+**Supabase: schema approach (mandatory).** All unerr-managed Supabase tables live in PostgreSQL schema **`unerr`** (we use the schema approach, not a table prefix). From now on, every new unerr table MUST be created in schema `unerr` via Prisma with `@@schema("unerr")`; do not add unerr app tables to `public`. Prisma: `schemas = ["public", "unerr"]` in the datasource; use `@@schema("unerr")` on every unerr model and enum. Table names are unprefixed (e.g. `repos`, `deletion_logs`). Better Auth tables stay in `public` (user, session, account, organization, member, invitation, verification); we do not migrate those. This is required when sharing one Supabase project with multiple apps (clear separation, no name clashes, simpler permissions). [Prisma multi-schema](https://www.prisma.io/docs/orm/prisma-schema/data-model/multi-schema).
 
 ### Why Temporal (not BullMQ)
 
-BullMQ is a job queue — it fires individual jobs. kap10's core pipelines are **multi-step workflows** where:
+BullMQ is a job queue — it fires individual jobs. unerr's core pipelines are **multi-step workflows** where:
 - A monorepo indexing job (Clone → Install → SCIP → Parse → Extract → Embed → Justify) can run for 30+ minutes
 - If the SCIP step OOMs on step 3 of 6, BullMQ restarts from scratch. **Temporal resumes from step 3.**
 - Steps have complex dependencies (justification level N depends on level N-1 completing)
@@ -110,7 +110,7 @@ All LLM calls use **structured output** (`generateObject()` + Zod schemas) — s
 
 ### Why ArangoDB (not CozoDB)
 
-code-synapse uses CozoDB embedded — perfect for a local CLI sidecar. kap10 is a **multi-tenant cloud service** where:
+code-synapse uses CozoDB embedded — perfect for a local CLI sidecar. unerr is a **multi-tenant cloud service** where:
 - Multiple repos per user, multiple users per org
 - Concurrent graph queries from MCP connections
 - Graph traversals (N-hop callers, impact analysis) are the primary query pattern
@@ -141,19 +141,19 @@ These architectural patterns span multiple phases and are referenced throughout.
 
 ### 1. The Shadow Workspace — Bridging Local ↔ Cloud
 
-**Problem:** kap10's graph lives in the cloud, but the developer's *current work* is local and uncommitted. The agent sees stale cloud state while the developer is mid-refactor.
+**Problem:** unerr's graph lives in the cloud, but the developer's *current work* is local and uncommitted. The agent sees stale cloud state while the developer is mid-refactor.
 
-**Solution:** The AI agent acts as a courier. A Bootstrap Rule (`.cursor/rules/kap10.mdc` or `CLAUDE.md`) forces the agent to call `sync_local_diff` before and after every significant operation.
+**Solution:** The AI agent acts as a courier. A Bootstrap Rule (`.cursor/rules/unerr.mdc` or `CLAUDE.md`) forces the agent to call `sync_local_diff` before and after every significant operation.
 
 #### Bootstrap Rule (distributed via Auto-PR — see Phase 2)
 
 ```markdown
-# .cursor/rules/kap10.mdc
+# .cursor/rules/unerr.mdc
 ---
-description: kap10 integration rules — always active
+description: unerr integration rules — always active
 globs: ["**/*"]
 alwaysApply: true
-kap10_rule_version: "1.0.0"
+unerr_rule_version: "1.0.0"
 ---
 
 ## Pre-flight (before ANY code generation task)
@@ -169,12 +169,12 @@ kap10_rule_version: "1.0.0"
 
 ## Path formatting (IMPORTANT for monorepos)
 Always format file paths relative to the ROOT of the git repository when
-calling kap10 MCP tools, regardless of your current working directory.
+calling unerr MCP tools, regardless of your current working directory.
 Example: use "packages/frontend/src/auth.ts" not "src/auth.ts".
 Run `git rev-parse --show-toplevel` to find the repo root if unsure.
 ```
 
-> **Rule versioning:** The `kap10_rule_version` field enables automated update PRs. When kap10 ships a new Bootstrap Rule version, the Auto-PR workflow compares the installed version against the latest and opens an update PR if outdated. Semver convention: patch = wording tweaks, minor = new rules/tools added, major = breaking agent workflow changes.
+> **Rule versioning:** The `unerr_rule_version` field enables automated update PRs. When unerr ships a new Bootstrap Rule version, the Auto-PR workflow compares the installed version against the latest and opens an update PR if outdated. Semver convention: patch = wording tweaks, minor = new rules/tools added, major = breaking agent workflow changes.
 
 #### `sync_local_diff` MCP Tool
 
@@ -182,7 +182,7 @@ Run `git rev-parse --show-toplevel` to find the repo root if unsure.
 // lib/mcp/tools/sync.ts
 const SyncLocalDiffTool = {
   name: 'sync_local_diff',
-  description: 'Sync uncommitted local changes to kap10 cloud graph',
+  description: 'Sync uncommitted local changes to unerr cloud graph',
   inputSchema: z.object({
     diff: z.string().describe('Output of `git diff HEAD` (exclude lockfiles)'),
     branch: z.string().describe('Current git branch name'),
@@ -190,7 +190,7 @@ const SyncLocalDiffTool = {
   }),
   handler: async ({ diff, branch, baseSha }, ctx) => {
     // 0. Acquire Redis distributed lock (prevents concurrent writes to same workspace)
-    const lockKey = `kap10:lock:workspace:${ctx.userId}:${ctx.repoId}:${branch}`;
+    const lockKey = `unerr:lock:workspace:${ctx.userId}:${ctx.repoId}:${branch}`;
     const lock = await acquireLock(lockKey, { ttl: 30_000, retries: 3, backoff: 200 });
 
     try {
@@ -235,7 +235,7 @@ Workspaces
         └── fix/login-bug     ← overlay from sync_local_diff
 ```
 
-- **Branch auto-detection:** When the agent sends `sync_local_diff` with `branch: "feature/auth"`, kap10 checks if that branch matches a known remote branch. If yes, it layers the diff on top of the latest indexed state for that branch. If no, it layers on top of `main`.
+- **Branch auto-detection:** When the agent sends `sync_local_diff` with `branch: "feature/auth"`, unerr checks if that branch matches a known remote branch. If yes, it layers the diff on top of the latest indexed state for that branch. If no, it layers on top of `main`.
 - **TTL:** Workspace overlays expire after **12 hours** of inactivity (configurable per-org, range 1–24 h, default 12 h). The extended TTL ensures workspaces survive overnight sessions and timezone gaps. On cold start (first sync after expiry), the stale overlay is purged and rebuilt from the latest indexed commit. The Bootstrap Rule's pre-flight sync refreshes the sliding window.
 - **Conflict resolution:** Cloud graph wins on conflict — the overlay is ephemeral, the indexed state is the source of truth.
 
@@ -370,7 +370,7 @@ app.post('/api/mcp/:apiKey', async (req, res) => {
 
 ### 4. LLM Observability & Cost Metering — Langfuse
 
-**Problem:** kap10 makes hundreds of LLM calls per repo (justification, classification, pattern synthesis, impact summaries). Without centralized observability, we can't debug failures, track costs, or bill users accurately.
+**Problem:** unerr makes hundreds of LLM calls per repo (justification, classification, pattern synthesis, impact summaries). Without centralized observability, we can't debug failures, track costs, or bill users accurately.
 
 **Solution:** Langfuse as the single source of truth for all LLM usage. Every AI SDK call flows through OpenTelemetry → Langfuse, which tracks tokens, latency, cost, and model per call. **This LLM cost data becomes the billing meter** — what Langfuse records is what the user pays for.
 
@@ -993,7 +993,7 @@ model DeletionLog {
 - **Multiple GitHub connections per organization:** An organization can connect to multiple GitHub accounts and organizations. Each connection is a separate `github_installations` row. Available repos are aggregated across all connections.
 - **GitHub connections management:** `/settings/connections` page for viewing, adding, and removing GitHub connections. API: `GET /api/github/connections`, `DELETE /api/github/connections`.
 - Dashboard shell: Resend-style fixed header (logo + Docs) + Void Black sidebar (`w-56`, `bg-[#0A0A0F]`, `border-white/10`) with `DashboardNav` (Overview, Repositories, Search) + dynamic Recents section (top 5 recently updated repos) + `UserProfileMenu` (bottom — organization switching, theme toggle, sign out). Active nav items use Electric Cyan 2px left indicator.
-- Overview page: Platform Usage stats grid (4 cards pulling real data from relational + graph stores) → CLI Hero terminal (`npx @autorail/kap10 connect`) → Org-scoped repository grid with Add Repo card.
+- Overview page: Platform Usage stats grid (4 cards pulling real data from relational + graph stores) → CLI Hero terminal (`npx @autorail/unerr connect`) → Org-scoped repository grid with Add Repo card.
 - Repos page: GitHub-style paginated data table (20/page) with search, GitHub account/org filter, sorting, branch info, MCP session count, inline Open button, "Add Org" action.
 - `AccountProvider`: dashboard-only context for organization context switching (only loads on authenticated dashboard routes)
 - `ThemeProvider` (next-themes): dark/light mode toggle (default: dark)
@@ -1007,16 +1007,16 @@ model DeletionLog {
 
 ### Database changes
 
-**Supabase (via Prisma)** — same DB for Better Auth (in `public`) and kap10 app tables in schema **`kap10`** (see Storage & Infrastructure Split).
+**Supabase (via Prisma)** — same DB for Better Auth (in `public`) and unerr app tables in schema **`unerr`** (see Storage & Infrastructure Split).
 ```prisma
 // prisma/schema.prisma
 datasource db {
   provider = "postgresql"
-  schemas  = ["public", "kap10"]
+  schemas  = ["public", "unerr"]
 }
 
-// Better Auth tables stay in public. Kap10 app tables:
-// @@schema("kap10") and @@map("repos"), @@map("deletion_logs"), etc.
+// Better Auth tables stay in public. Unerr app tables:
+// @@schema("unerr") and @@map("repos"), @@map("deletion_logs"), etc.
 ```
 
 **ArangoDB** — single-database, pool-based multi-tenancy:
@@ -1024,7 +1024,7 @@ datasource db {
 > **Why NOT database-per-org:** ArangoDB spawns isolated V8 contexts, memory buffers, and threads per database. At 1,000+ orgs, this OOMs the cluster. Instead, use a single database with `org_id` + `repo_id` on every document/edge, enforced at the query level.
 
 ```
-kap10_db                              ← single shared database
+unerr_db                              ← single shared database
 ├── repos             (document)      ← org_id indexed
 ├── files             (document)      ← org_id + repo_id indexed
 ├── functions         (document)      ← org_id + repo_id indexed
@@ -1171,7 +1171,7 @@ components/
 
 ## Phase 1 — GitHub Connect & Repository Indexing
 
-**Feature:** _"I connect my GitHub account, select a repo, and kap10 indexes it. I can see files, functions, and classes in the dashboard."_
+**Feature:** _"I connect my GitHub account, select a repo, and unerr indexes it. I can see files, functions, and classes in the dashboard."_
 
 ### What ships
 - GitHub OAuth integration (via Better Auth social provider)
@@ -1375,7 +1375,7 @@ model Repo {
 }
 ```
 
-> **Forward-compatibility note:** In the actual Prisma schema, `githubRepoId` is `BigInt?` and `githubFullName` is `String?` (nullable). This is intentional — it allows the `Repo` model to represent non-GitHub repositories (e.g., local CLI uploads in Phase 5.5). In Phase 5.5, the `RepoProvider` enum gains a `local_cli` value, and repos created via `kap10 push` will have `githubRepoId = null` and `githubFullName = null`.
+> **Forward-compatibility note:** In the actual Prisma schema, `githubRepoId` is `BigInt?` and `githubFullName` is `String?` (nullable). This is intentional — it allows the `Repo` model to represent non-GitHub repositories (e.g., local CLI uploads in Phase 5.5). In Phase 5.5, the `RepoProvider` enum gains a `local_cli` value, and repos created via `unerr push` will have `githubRepoId = null` and `githubFullName = null`.
 
 ### Temporal workflows & activities
 
@@ -1496,7 +1496,7 @@ lib/indexer/
 Each language is isolated in its own folder. New languages are added by creating a plugin folder and registering in `registry.ts`.
 
 **Adaptation required:**
-- Replace CozoDB writes with ArangoDB batch inserts (single `kap10_db` database, pool-based tenancy)
+- Replace CozoDB writes with ArangoDB batch inserts (single `unerr_db` database, pool-based tenancy)
 - Add `repo_id` and `org_id` to all entities and edges for tenant isolation (see Phase 0 ArangoDB schema)
 - Replace local file paths with cloned tmp paths
 - Remove local LLM dependency (justification comes in Phase 4)
@@ -1511,7 +1511,7 @@ Each language is isolated in its own folder. New languages are added by creating
 
 ## Phase 2 — Hosted MCP Server
 
-**Feature:** _"I paste a kap10 MCP URL into Cursor/Claude Code, and my AI agent can search my codebase and inspect functions."_
+**Feature:** _"I paste a unerr MCP URL into Cursor/Claude Code, and my AI agent can search my codebase and inspect functions."_
 
 This is the **core product differentiator** — the hosted MCP endpoint that AI agents connect to.
 
@@ -1620,7 +1620,7 @@ app.post('/api/mcp/:apiKey', async (req, res) => {
 ### MCP transport
 
 ```
-Client (Cursor)                          kap10 Server (Fly.io)
+Client (Cursor)                          unerr Server (Fly.io)
      │                                        │
      │  GET /api/mcp/{apiKey}                 │
      │  Accept: text/event-stream              │
@@ -1639,22 +1639,22 @@ Client (Cursor)                          kap10 Server (Fly.io)
 
 ### Auto-PR Onboarding
 
-When a user connects a repo, kap10 automatically opens a PR with the Bootstrap Rule and MCP configuration:
+When a user connects a repo, unerr automatically opens a PR with the Bootstrap Rule and MCP configuration:
 
 ```typescript
 // lib/onboarding/auto-pr.ts
 async function createOnboardingPR(repo: Repo, apiKey: string) {
   const files = [
     {
-      path: '.cursor/rules/kap10.mdc',
-      content: generateBootstrapRule(),  // Pre-flight/post-flight sync rules (includes kap10_rule_version in frontmatter)
+      path: '.cursor/rules/unerr.mdc',
+      content: generateBootstrapRule(),  // Pre-flight/post-flight sync rules (includes unerr_rule_version in frontmatter)
     },
     {
       path: '.cursor/mcp.json',
       content: JSON.stringify({
         mcpServers: {
-          kap10: {
-            url: `https://mcp.kap10.dev/api/mcp/${apiKey}`,
+          unerr: {
+            url: `https://mcp.unerr.dev/api/mcp/${apiKey}`,
             transport: 'sse',
           },
         },
@@ -1665,15 +1665,15 @@ async function createOnboardingPR(repo: Repo, apiKey: string) {
   await octokit.createPullRequest({
     owner: repo.owner,
     repo: repo.name,
-    title: 'feat: add kap10 integration',
-    body: `## kap10 Integration\n\nThis PR adds:\n- **Bootstrap Rule** (\\`.cursor/rules/kap10.mdc\\`) — ensures your AI agent syncs context before/after code generation\n- **MCP Configuration** (\\`.cursor/mcp.json\\`) — connects your IDE to kap10's knowledge graph\n\nMerge this to enable kap10 for all team members.`,
-    branch: 'kap10/onboarding',
+    title: 'feat: add unerr integration',
+    body: `## unerr Integration\n\nThis PR adds:\n- **Bootstrap Rule** (\\`.cursor/rules/unerr.mdc\\`) — ensures your AI agent syncs context before/after code generation\n- **MCP Configuration** (\\`.cursor/mcp.json\\`) — connects your IDE to unerr's knowledge graph\n\nMerge this to enable unerr for all team members.`,
+    branch: 'unerr/onboarding',
     files,
   });
 }
 ```
 
-This PR is opened **once** after the first successful indexing. The user merges it to activate kap10 for all team members.
+This PR is opened **once** after the first successful indexing. The user merges it to activate unerr for all team members.
 
 ### New files
 ```
@@ -1697,7 +1697,7 @@ lib/
     workspace.ts           ← Workspace resolution (per-user, per-repo, per-branch)
   onboarding/
     auto-pr.ts             ← Create onboarding PR with Bootstrap Rule + MCP config
-    bootstrap-rule.ts      ← Generate kap10.mdc content (with kap10_rule_version)
+    bootstrap-rule.ts      ← Generate unerr.mdc content (with unerr_rule_version)
     rule-updater.ts        ← Compare installed vs latest rule version, open update PR
 app/
   api/
@@ -2008,7 +2008,7 @@ app/
 
 **Feature:** _"Every function in my codebase has a plain-English 'why it exists' explanation and a VERTICAL/HORIZONTAL/UTILITY classification. AI agents use this to write code that fits the existing architecture. I can see a Blueprint Dashboard showing my system's business swimlanes."_
 
-This is the **"institutional memory"** — what makes kap10 more than a code search tool.
+This is the **"institutional memory"** — what makes unerr more than a code search tool.
 
 ### What ships
 - LLM-powered justification of every entity (purpose, feature area, business value)
@@ -2291,9 +2291,9 @@ app/
 
 ### Architecture Health Report (Post-Onboarding)
 
-**Purpose:** After the first full indexing + justification completes, kap10 automatically generates a comprehensive Architecture Health Report. This serves two goals:
-1. **Immediate value demonstration** — the user sees that kap10 *actually understands* their codebase before they even start using it with agents
-2. **Baseline for improvement** — identifies existing problems that AI agents are notorious for causing (and that kap10 will prevent going forward)
+**Purpose:** After the first full indexing + justification completes, unerr automatically generates a comprehensive Architecture Health Report. This serves two goals:
+1. **Immediate value demonstration** — the user sees that unerr *actually understands* their codebase before they even start using it with agents
+2. **Baseline for improvement** — identifies existing problems that AI agents are notorious for causing (and that unerr will prevent going forward)
 
 **Triggered:** Automatically after `justifyRepoWorkflow` completes for a newly connected repo.
 
@@ -2430,7 +2430,7 @@ const HealthReportSchema = z.object({
     risks: z.array(z.object({
       risk: z.string().describe('e.g., "No service layer boundary — AI agents will bypass abstractions"'),
       severity: z.enum(['low', 'medium', 'high', 'critical']),
-      mitigation: z.string().describe('What kap10 will do to prevent this'),
+      mitigation: z.string().describe('What unerr will do to prevent this'),
     })).max(5),
   }),
 
@@ -2477,7 +2477,7 @@ const HealthReportSchema = z.object({
 
 ## Phase 5 — Incremental Indexing & GitHub Webhooks
 
-**Feature:** _"When I push to GitHub, kap10 automatically re-indexes only the changed files. My MCP connection always has up-to-date knowledge."_
+**Feature:** _"When I push to GitHub, unerr automatically re-indexes only the changed files. My MCP connection always has up-to-date knowledge."_
 
 > **Performance Note:** Incremental indexing reuses the **persistent workspace** from Phase 1 (`/data/workspaces/{orgId}/{repoId}/`). On push webhook: `git pull` into the existing directory → `npm install` (instant if `package.json` unchanged) → SCIP on changed files only. This keeps incremental re-index latency under 30 seconds for typical pushes, even on large monorepos.
 
@@ -2684,7 +2684,7 @@ All Temporal workflows follow a "keep heavy data in the worker" principle to avo
 
 ## Phase 5.5 — Prompt Ledger, Rewind & Branching
 
-**Feature:** _"Every AI-generated change is tracked with the prompt that caused it. When the AI breaks something, I click 'Rewind' to restore to the last working state — and kap10 automatically creates a rule so the AI never makes that mistake again. After a rewind, all subsequent prompts appear as a new timeline branch."_
+**Feature:** _"Every AI-generated change is tracked with the prompt that caused it. When the AI breaks something, I click 'Rewind' to restore to the last working state — and unerr automatically creates a rule so the AI never makes that mistake again. After a rewind, all subsequent prompts appear as a new timeline branch."_
 
 This is the **"black box recorder"** for AI-assisted development — the feature that makes the Loop of Death impossible.
 
@@ -2694,7 +2694,7 @@ This is the **"black box recorder"** for AI-assisted development — the feature
 - **Rewind MCP Tool:** `revert_to_working_state` — restores specific files/functions to a previous working snapshot
 - **Anti-Pattern Rule Synthesis:** After rewind, LLM analyzes the failed changes and generates a rule to prevent the same mistake
 - **Timeline Branching:** After a rewind, all subsequent prompts form a new timeline branch (like git branching, but for prompts)
-- **Local Sync via CLI:** A lightweight `kap10` CLI that streams ledger entries between the user's local workspace and the cloud
+- **Local Sync via CLI:** A lightweight `unerr` CLI that streams ledger entries between the user's local workspace and the cloud
 - **Dashboard Timeline:** Visual timeline with working/broken states, branch points, and rewind actions
 - **Roll-up on Commit:** When the user commits, all pending ledger entries are rolled up into a single commit-linked summary
 
@@ -2716,7 +2716,7 @@ const LedgerEntrySchema = z.object({
   prompt: z.string(),                 // The user's prompt to the AI agent
   agentModel: z.string().optional(),  // "claude-3.5-sonnet", "gpt-4o", etc.
   agentTool: z.string().optional(),   // "cursor", "claude-code", "windsurf"
-  mcpToolsCalled: z.array(z.string()).optional(),  // Which kap10 tools the agent used
+  mcpToolsCalled: z.array(z.string()).optional(),  // Which unerr tools the agent used
 
   // What changed
   changes: z.array(z.object({
@@ -2847,7 +2847,7 @@ const RevertToWorkingStateTool = {
 
 ### Anti-Pattern Rule Synthesis
 
-After every rewind, kap10 uses the LLM to analyze what went wrong and generate a rule to prevent recurrence:
+After every rewind, unerr uses the LLM to analyze what went wrong and generate a rule to prevent recurrence:
 
 ```typescript
 // lib/ledger/anti-pattern.ts
@@ -2971,44 +2971,44 @@ async function rollUpOnCommit(ctx: OrgContext, commitSha: string): Promise<void>
 }
 ```
 
-### kap10 CLI — Local Workspace Sync
+### unerr CLI — Local Workspace Sync
 
-A lightweight CLI tool for real-time ledger streaming between the user's local machine and kap10 cloud. This enables rewind to work even without the agent — the user can rewind from the terminal.
+A lightweight CLI tool for real-time ledger streaming between the user's local machine and unerr cloud. This enables rewind to work even without the agent — the user can rewind from the terminal.
 
 ```bash
 # Install
-npm install -g @autorail/kap10
+npm install -g @autorail/unerr
 
 # Authenticate
-kap10 auth login
+unerr auth login
 
 # --- Local Repo Ingestion (Phase 5.5) ---
 
-# Initialize a local repo for kap10 indexing
-kap10 init --org my-org
+# Initialize a local repo for unerr indexing
+unerr init --org my-org
 
 # Push codebase for indexing (zip + upload + trigger)
-kap10 push
-kap10 push -m "Added new auth module"
+unerr push
+unerr push -m "Added new auth module"
 
 # --- Ledger & Rewind ---
 
 # Start watching (streams changes to ledger in real-time)
-kap10 watch --repo owner/repo --branch main
+unerr watch --repo owner/repo --branch main
 
 # View timeline
-kap10 timeline
+unerr timeline
 
 # Rewind to last working state
-kap10 rewind                          # Latest working snapshot
-kap10 rewind --snapshot snap_abc123   # Specific snapshot
-kap10 rewind --steps 3               # Go back 3 working states
+unerr rewind                          # Latest working snapshot
+unerr rewind --snapshot snap_abc123   # Specific snapshot
+unerr rewind --steps 3               # Go back 3 working states
 
 # Mark current state as working
-kap10 mark-working
+unerr mark-working
 
 # View branches
-kap10 branches
+unerr branches
 ```
 
 **CLI Architecture:**
@@ -3033,8 +3033,8 @@ async function watchMode(config: WatchConfig): Promise<void> {
       // Get the last prompt from the agent's conversation (if available)
       const prompt = await getLastAgentPrompt(config);  // Reads from .cursor/prompts or similar
 
-      // Stream to kap10 cloud
-      await kap10Client.syncDiff({
+      // Stream to unerr cloud
+      await unerrClient.syncDiff({
         diff,
         branch: await getCurrentBranch(config.repoPath),
         baseSha: await getHeadSha(config.repoPath),
@@ -3044,7 +3044,7 @@ async function watchMode(config: WatchConfig): Promise<void> {
   });
 
   // Listen for rewind commands from cloud (triggered via dashboard)
-  kap10Client.onRewindEvent(async (event) => {
+  unerrClient.onRewindEvent(async (event) => {
     for (const file of event.restoredFiles) {
       await writeFile(join(config.repoPath, file.path), file.content);
     }
@@ -3063,26 +3063,26 @@ async function watchMode(config: WatchConfig): Promise<void> {
 
 ### CLI-First Local Ingestion
 
-In addition to the ledger/rewind capabilities above, Phase 5.5 adds **local repo ingestion** — allowing users to index codebases that aren't hosted on GitHub. Users zip and upload their local repo via `kap10 push`, and the same indexing pipeline (SCIP, entity hashing, writeToArango) processes it.
+In addition to the ledger/rewind capabilities above, Phase 5.5 adds **local repo ingestion** — allowing users to index codebases that aren't hosted on GitHub. Users zip and upload their local repo via `unerr push`, and the same indexing pipeline (SCIP, entity hashing, writeToArango) processes it.
 
 #### New CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `kap10 init` | Initialize a local repo for kap10 indexing. Creates `.kap10/config.json` with `repoId`, `orgId`, and API key. Calls `POST /api/cli/init` to register the repo in Supabase with `provider: "local_cli"`. |
-| `kap10 push` | Zip the current directory (`.gitignore`-aware via `ignore` + `archiver`), request a pre-signed upload URL from the server, upload directly to Supabase Storage, then call `POST /api/cli/index` to trigger the indexing workflow. |
+| `unerr init` | Initialize a local repo for unerr indexing. Creates `.unerr/config.json` with `repoId`, `orgId`, and API key. Calls `POST /api/cli/init` to register the repo in Supabase with `provider: "local_cli"`. |
+| `unerr push` | Zip the current directory (`.gitignore`-aware via `ignore` + `archiver`), request a pre-signed upload URL from the server, upload directly to Supabase Storage, then call `POST /api/cli/index` to trigger the indexing workflow. |
 
 ```bash
 # Initialize a local repo
-kap10 init --org my-org
-# → Creates .kap10/config.json, registers repo in Supabase
+unerr init --org my-org
+# → Creates .unerr/config.json, registers repo in Supabase
 
 # Push codebase for indexing
-kap10 push
+unerr push
 # → Zips repo (respecting .gitignore), uploads via pre-signed URL, triggers indexing
 
 # Push with message (for tracking)
-kap10 push -m "Added new auth module"
+unerr push -m "Added new auth module"
 ```
 
 #### Why Pre-Signed Upload (Not Direct POST)
@@ -3103,11 +3103,11 @@ Vercel serverless functions have a **30-second timeout** and **4.5 MB body limit
 
 #### Sync Drift Challenge
 
-Unlike GitHub repos (where webhooks notify of changes), local repos have no push event. The codebase can drift between `kap10 push` invocations.
+Unlike GitHub repos (where webhooks notify of changes), local repos have no push event. The codebase can drift between `unerr push` invocations.
 
 **Solutions:**
-- **Periodic re-sync:** Users run `kap10 push` whenever they want the index updated (manual trigger, similar to `git push`)
-- **20% drift threshold:** If `kap10 watch` detects >20% of indexed files have local modifications, it prompts the user to run `kap10 push` to re-index
+- **Periodic re-sync:** Users run `unerr push` whenever they want the index updated (manual trigger, similar to `git push`)
+- **20% drift threshold:** If `unerr watch` detects >20% of indexed files have local modifications, it prompts the user to run `unerr push` to re-index
 - **Incremental push (future):** Phase 5's incremental indexing can be extended to accept diffs from the CLI, but initial implementation is full re-index on each push
 
 #### `IStorageProvider` — 12th Port
@@ -3242,19 +3242,19 @@ lib/
     rewind.ts              ← revert_to_working_state MCP tool
     timeline.ts            ← get_timeline, mark_working MCP tools
 packages/
-  cli/                     ← @autorail/kap10 npm package (separate package in monorepo)
+  cli/                     ← @autorail/unerr npm package (separate package in monorepo)
     src/
       index.ts             ← CLI entry point (commander.js)
       commands/
-        init.ts            ← kap10 init — register local repo, create .kap10/config.json
-        push.ts            ← kap10 push — zip + pre-signed upload + trigger indexing
-        watch.ts           ← kap10 watch — file watcher + ledger streaming
-        rewind.ts          ← kap10 rewind — restore from terminal
-        timeline.ts        ← kap10 timeline — view prompt history
-        mark-working.ts    ← kap10 mark-working — explicit snapshot
-        branches.ts        ← kap10 branches — view timeline branches
-        auth.ts            ← kap10 auth login/logout
-      client.ts            ← HTTP client for kap10 API
+        init.ts            ← unerr init — register local repo, create .unerr/config.json
+        push.ts            ← unerr push — zip + pre-signed upload + trigger indexing
+        watch.ts           ← unerr watch — file watcher + ledger streaming
+        rewind.ts          ← unerr rewind — restore from terminal
+        timeline.ts        ← unerr timeline — view prompt history
+        mark-working.ts    ← unerr mark-working — explicit snapshot
+        branches.ts        ← unerr branches — view timeline branches
+        auth.ts            ← unerr auth login/logout
+      client.ts            ← HTTP client for unerr API
       prompt-detector.ts   ← Extract agent prompt from Cursor/Claude Code/Windsurf logs
 app/
   api/
@@ -3298,13 +3298,13 @@ model LedgerSnapshot {
 - `pnpm test` — Ledger entry creation is append-only; snapshot captures correct file content; rewind restores to exact snapshot state; timeline branch increments after rewind; roll-up correctly marks entries as committed and creates summary; anti-pattern rule synthesis produces valid Semgrep YAML
 - `pnpm test` — `revert_to_working_state` MCP tool returns file contents, creates new branch, generates rule; `get_timeline` returns entries in chronological order with branch info
 - `e2e` — Dashboard timeline shows prompt → change → working/broken flow; Rewind button restores files; post-rewind prompts appear on new branch lane; commit roll-up shows AI contribution summary
-- `e2e` — CLI: `kap10 watch` detects file changes → streams to cloud → `kap10 timeline` shows entries → `kap10 rewind` restores files locally
+- `e2e` — CLI: `unerr watch` detects file changes → streams to cloud → `unerr timeline` shows entries → `unerr rewind` restores files locally
 
 ---
 
 ## Phase 6 — Pattern Enforcement & Rules Engine (ast-grep + Semgrep)
 
-**Feature:** _"kap10 learns my codebase patterns AND enforces my team's explicit architectural rules. Agents always know the conventions — even when .cursorrules falls out of context."_
+**Feature:** _"unerr learns my codebase patterns AND enforces my team's explicit architectural rules. Agents always know the conventions — even when .cursorrules falls out of context."_
 
 This is the **"AI Tech Lead"** — the feature that justifies the product name.
 
@@ -3343,12 +3343,12 @@ rule:
 
 #### Semgrep — Rule-based enforcement
 
-Once patterns are detected, kap10 auto-generates **Semgrep rules** that can be executed deterministically:
+Once patterns are detected, unerr auto-generates **Semgrep rules** that can be executed deterministically:
 
 ```yaml
 # Auto-generated Semgrep rule
 rules:
-  - id: kap10.missing-rate-limit
+  - id: unerr.missing-rate-limit
     pattern: |
       export async function $HANDLER(request: NextRequest) {
         ...
@@ -3455,9 +3455,9 @@ Cursor rules (`.cursorrules`, `.cursor/rules/*.mdc`) are static files that get l
 3. **No team coordination:** Individual `.cursorrules` files aren't shared across the team. Everyone's AI writes code differently.
 4. **No hierarchy:** Can't have org-wide rules + repo-specific overrides + personal preferences layered correctly.
 
-#### The Solution: kap10 Rules Engine
+#### The Solution: unerr Rules Engine
 
-Rules are stored in ArangoDB, organized hierarchically, and **injected via MCP on every query** — the agent asks kap10 "what rules apply here?" and gets only the relevant subset for the current file/context. Rules never fall out of context because they're fetched fresh on every tool call.
+Rules are stored in ArangoDB, organized hierarchically, and **injected via MCP on every query** — the agent asks unerr "what rules apply here?" and gets only the relevant subset for the current file/context. Rules never fall out of context because they're fetched fresh on every tool call.
 
 ```
 Rule Hierarchy (most specific wins on conflict):
@@ -3524,7 +3524,7 @@ const RuleSchema = z.object({
 
 #### Rule Resolution — What the Agent Sees
 
-When the agent calls any MCP tool (or the Bootstrap Rule forces a pre-flight `get_rules` call), kap10 resolves the applicable rules:
+When the agent calls any MCP tool (or the Bootstrap Rule forces a pre-flight `get_rules` call), unerr resolves the applicable rules:
 
 ```typescript
 // lib/rules/resolver.ts
@@ -3581,7 +3581,7 @@ async function resolveRules(ctx: {
 
 #### MCP Integration — Rules Injected on Every Call
 
-The Bootstrap Rule (`.cursor/rules/kap10.mdc`) ensures the agent fetches rules before writing code:
+The Bootstrap Rule (`.cursor/rules/unerr.mdc`) ensures the agent fetches rules before writing code:
 
 ```markdown
 ## Pre-flight (before ANY code generation task)
@@ -3669,11 +3669,11 @@ org_{org_id}/
 
 | Tool | Description |
 |------|-------------|
-| `check_patterns` | Agent sends proposed code → kap10 runs Semgrep rules against it → returns violations with examples |
+| `check_patterns` | Agent sends proposed code → unerr runs Semgrep rules against it → returns violations with examples |
 | `get_conventions` | "What are the coding conventions?" → returns active patterns with examples |
 | `suggest_approach` | "I need to add a new API route" → returns template based on existing patterns |
 | `get_rules` | **Fetch all applicable rules for the current file/context.** Returns hierarchically resolved rules (org → repo → path → workspace). Called in pre-flight by Bootstrap Rule. |
-| `check_rules` | Agent sends proposed code → kap10 checks against applicable rules (both explicit rules AND auto-detected patterns) → returns violations sorted by enforcement level |
+| `check_rules` | Agent sends proposed code → unerr checks against applicable rules (both explicit rules AND auto-detected patterns) → returns violations sorted by enforcement level |
 
 ### New files
 ```
@@ -3731,13 +3731,13 @@ app/
 
 ## Phase 7 — PR Review Integration (Semgrep-powered)
 
-**Feature:** _"kap10 automatically reviews my PRs on GitHub. It runs Semgrep rules from Phase 6 against the diff, identifies impact radius, and posts review comments."_
+**Feature:** _"unerr automatically reviews my PRs on GitHub. It runs Semgrep rules from Phase 6 against the diff, identifies impact radius, and posts review comments."_
 
 ### What ships
 - GitHub `pull_request` webhook → trigger automated review via Temporal
 - **Semgrep CLI** runs against PR diff using auto-generated rules from Phase 6
 - Impact analysis via ArangoDB graph traversal
-- Post review comments via GitHub API (as kap10 bot)
+- Post review comments via GitHub API (as unerr bot)
 - Dashboard: PR review history with status
 - Configurable review rules per repo
 
@@ -3868,7 +3868,7 @@ model PrReviewComment {
 
 ### Test
 - `pnpm test` — Semgrep runner catches violations from auto-generated rules; diff analyzer maps changed lines to entities
-- **Manual** — Open PR that adds API route without rate limiting → kap10 posts Semgrep-backed review comment
+- **Manual** — Open PR that adds API route without rate limiting → unerr posts Semgrep-backed review comment
 - **Temporal UI** — `reviewPrWorkflow` shows each check as a separate activity with timing
 - `e2e` — Dashboard reviews page shows completed review with Semgrep findings
 
@@ -3978,13 +3978,13 @@ app/dashboard/repos/[repoId]/
 
 ## Phase 8 — Usage-Based Billing & Limits (Langfuse-Powered)
 
-**Feature:** _"I can see my kap10 usage, manage my subscription, and buy more usage when I hit my monthly limit. Langfuse tracks every LLM call — that's what I pay for. Teams can add members and share a usage pool."_
+**Feature:** _"I can see my unerr usage, manage my subscription, and buy more usage when I hit my monthly limit. Langfuse tracks every LLM call — that's what I pay for. Teams can add members and share a usage pool."_
 
 ### Billing Philosophy
 
 **No repo limits. No seat-gating on individual plans. LLM cost is the meter.**
 
-Developers already pay for Claude ($20/mo), Cursor ($20/mo), or both. kap10 is an add-on to that stack — pricing must feel like a no-brainer, not another $100/mo line item. We charge **roughly half** of what Claude Code charges for comparable tiers.
+Developers already pay for Claude ($20/mo), Cursor ($20/mo), or both. unerr is an add-on to that stack — pricing must feel like a no-brainer, not another $100/mo line item. We charge **roughly half** of what Claude Code charges for comparable tiers.
 
 | Principle | Implementation |
 |-----------|----------------|
@@ -4099,7 +4099,7 @@ When a user/team exhausts their monthly LLM budget:
 ```
 
 **Behavior when limit hit:**
-- MCP tool calls return `429 Too Many Requests` with a message: `"Monthly LLM budget reached. Buy more at https://app.kap10.dev/billing or upgrade your plan."`
+- MCP tool calls return `429 Too Many Requests` with a message: `"Monthly LLM budget reached. Buy more at https://app.unerr.dev/billing or upgrade your plan."`
 - Dashboard shows a cost bar with upgrade/top-up CTAs
 - Webhooks (push, PR) are **queued** (not dropped) — they'll process when budget is available
 - On-demand purchases are **instant** — Stripe processes, credits unlock within seconds
@@ -4328,7 +4328,7 @@ app/
 |--------|-------|-------------|
 | **Community** (public) | All users | Curated by autorail team + community PRs. Categorized by framework, pattern type, language. Think "verified recipes." |
 | **Team / Enterprise** | Org-scoped | Snippets from the team's own repos. Senior devs pin exemplar implementations. Auto-suggested when Phase 6 detects a recurring pattern. |
-| **Auto-Extracted** | Repo-scoped | kap10 identifies high-quality implementations during indexing (Phase 1/5) — functions with good test coverage, well-documented modules, frequently-referenced utilities — and suggests them as snippet candidates. |
+| **Auto-Extracted** | Repo-scoped | unerr identifies high-quality implementations during indexing (Phase 1/5) — functions with good test coverage, well-documented modules, frequently-referenced utilities — and suggests them as snippet candidates. |
 
 ### Snippet Schema
 
@@ -4552,7 +4552,7 @@ app/dashboard/snippets/
 
 | Increment | Depends on | Local tools | Cloud tools | What it adds |
 |-----------|-----------|-------------|-------------|--------------|
-| **10a (MVP)** | Phase 2 | `get_function`, `get_callers`, `get_callees`, `get_imports`, `get_file_entities`, `search_code`, `get_class` | `sync_local_diff`, `get_project_stats` | CLI as MCP proxy, CozoDB embedded graph, `kap10 pull`, `syncLocalGraphWorkflow`, hybrid query router (structural tools only) |
+| **10a (MVP)** | Phase 2 | `get_function`, `get_callers`, `get_callees`, `get_imports`, `get_file_entities`, `search_code`, `get_class` | `sync_local_diff`, `get_project_stats` | CLI as MCP proxy, CozoDB embedded graph, `unerr pull`, `syncLocalGraphWorkflow`, hybrid query router (structural tools only) |
 | **10b (Full)** | Phase 6 | All 10a tools + `get_rules`, `check_rules` | All 10a cloud tools + `semantic_search`, `find_similar`, `justify_entity`, `generate_health_report` | Rules/patterns synced to local CozoDB, predictive context pre-fetching, full tool routing table |
 
 **Why ship MVP early:** The 7 structural tools (`get_function`, `get_callers`, `get_callees`, `get_imports`, `get_file_entities`, `search_code`, `get_class`) account for ~70% of agent tool calls in typical coding sessions. Moving these to local CozoDB eliminates network round-trips for the majority of queries immediately after Phase 2, without waiting for rules (Phase 6) or justification (Phase 4).
@@ -4567,7 +4567,7 @@ app/dashboard/snippets/
          │ stdio / SSE
          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  kap10 CLI (Local MCP Proxy)                                    │
+│  unerr CLI (Local MCP Proxy)                                    │
 │  ┌──────────────────┐  ┌──────────────────────────────────┐     │
 │  │ CozoDB Embedded  │  │ Hybrid Query Router              │     │
 │  │ (local graph)    │  │                                  │     │
@@ -4595,7 +4595,7 @@ app/dashboard/snippets/
 │           │ cache miss               │ LLM / semantic ops       │
 │           ▼                          ▼                           │
 │  ┌─────────────────────────────────────────────────────────┐    │
-│  │              Cloud Fallback (kap10 API)                 │    │
+│  │              Cloud Fallback (unerr API)                 │    │
 │  │  ArangoDB · pgvector · Vercel AI SDK · Langfuse         │    │
 │  └─────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
@@ -4603,9 +4603,9 @@ app/dashboard/snippets/
 
 #### What Ships
 
-- **CLI as MCP server:** `kap10` CLI binary acts as a local MCP server (stdio transport). IDEs connect to the local CLI instead of the cloud endpoint. *(10a)*
+- **CLI as MCP server:** `unerr` CLI binary acts as a local MCP server (stdio transport). IDEs connect to the local CLI instead of the cloud endpoint. *(10a)*
 - **Embedded CozoDB graph:** A local, embedded graph database that stores a compacted copy of the repo's knowledge graph. Handles structural queries (functions, callers, callees, imports) with zero network latency. *(10a)*
-- **Cloud → local sync:** Nightly Temporal workflow (`syncLocalGraphWorkflow`) pushes a compacted graph snapshot from ArangoDB to the local CozoDB instance via the CLI's `kap10 pull` command. *(10a)*
+- **Cloud → local sync:** Nightly Temporal workflow (`syncLocalGraphWorkflow`) pushes a compacted graph snapshot from ArangoDB to the local CozoDB instance via the CLI's `unerr pull` command. *(10a)*
 - **Hybrid query routing:** Each MCP tool is annotated as `local` or `cloud`. The router dispatches accordingly. 10a routes 7 structural tools locally; 10b adds rules + patterns. *(10a scaffold, 10b completes)*
 - **Rules & patterns in local graph:** `syncLocalGraphWorkflow` extended to include `rules` and `patterns` ArangoDB collections in the CozoDB snapshot. *(10b)*
 - **Predictive context pre-fetching:** LSP cursor tracking sends the user's active file/symbol to the cloud. The cloud pre-fetches likely queries and pushes results to Redis pre-cache. *(10b)*
@@ -4634,12 +4634,12 @@ Nightly Temporal workflow (light-llm-queue):
   4. notifyClient          — Post event to Redis pub/sub channel for connected CLIs
 ```
 
-#### `kap10 pull` CLI Command
+#### `unerr pull` CLI Command
 
 ```bash
-kap10 pull                    # Pull latest graph snapshot for all configured repos
-kap10 pull --repo org/repo    # Pull specific repo
-kap10 pull --force            # Force full re-sync (ignore local version)
+unerr pull                    # Pull latest graph snapshot for all configured repos
+unerr pull --repo org/repo    # Pull specific repo
+unerr pull --force            # Force full re-sync (ignore local version)
 ```
 
 Downloads the msgpack snapshot from Supabase Storage, deserializes, and loads into local CozoDB.
@@ -4647,7 +4647,7 @@ Downloads the msgpack snapshot from Supabase Storage, deserializes, and loads in
 #### Predictive Context Pre-Fetching
 
 ```
-IDE (LSP)                     kap10 CLI                    Cloud
+IDE (LSP)                     unerr CLI                    Cloud
    │                              │                          │
    │ textDocument/didOpen         │                          │
    │ cursor: auth.ts:42           │                          │
@@ -4676,7 +4676,7 @@ IDE (LSP)                     kap10 CLI                    Cloud
 packages/cli/src/
   mcp-proxy.ts                # Local MCP server (stdio transport, hybrid router)
   local-graph.ts              # CozoDB embedded graph client (NAPI binding)
-  sync.ts                     # kap10 pull implementation (download + deserialize + load)
+  sync.ts                     # unerr pull implementation (download + deserialize + load)
   prefetch.ts                 # LSP cursor tracking → cloud prefetch requests
   query-router.ts             # Routes MCP tool calls to local CozoDB or cloud API
   cozo-schema.ts              # CozoDB relation definitions (mirrors ArangoDB collections)
@@ -4712,7 +4712,7 @@ lib/use-cases/
 │  VS Code Extension                                            │
 │  ┌─────────────────────────────────────────────────┐          │
 │  │ WebView Panel (React)                           │          │
-│  │  ├─ @kap10/ui components (Blueprint, Impact,    │          │
+│  │  ├─ @unerr/ui components (Blueprint, Impact,    │          │
 │  │  │   Timeline, Diff)                            │          │
 │  │  └─ @vscode/webview-ui-toolkit for native look  │          │
 │  └─────────────────────────────────────────────────┘          │
@@ -4720,7 +4720,7 @@ lib/use-cases/
 │           ▼                                                   │
 │  ┌─────────────────────────────────────────────────┐          │
 │  │ Extension Host                                  │          │
-│  │  ├─ kap10 API client (auth, data fetching)      │          │
+│  │  ├─ unerr API client (auth, data fetching)      │          │
 │  │  ├─ MCP tool invocation (show_blueprint, etc.)  │          │
 │  │  └─ Collision warning decoration provider       │          │
 │  └─────────────────────────────────────────────────┘          │
@@ -4730,14 +4730,14 @@ lib/use-cases/
 │  JetBrains Plugin (Kotlin)                                    │
 │  ┌─────────────────────────────────────────────────┐          │
 │  │ JCEF Browser Panel                              │          │
-│  │  ├─ Same @kap10/ui React components             │          │
+│  │  ├─ Same @unerr/ui React components             │          │
 │  │  └─ Rendered via Chromium Embedded Framework     │          │
 │  └─────────────────────────────────────────────────┘          │
 │           │ CefMessageRouter (JS ↔ Kotlin bridge)             │
 │           ▼                                                   │
 │  ┌─────────────────────────────────────────────────┐          │
 │  │ Plugin Services (Kotlin)                        │          │
-│  │  ├─ kap10 API client                            │          │
+│  │  ├─ unerr API client                            │          │
 │  │  ├─ Tool window registration                    │          │
 │  │  └─ Editor gutter collision markers             │          │
 │  └─────────────────────────────────────────────────┘          │
@@ -4748,7 +4748,7 @@ lib/use-cases/
 
 - **VS Code extension:** Native extension with WebView panels rendering React components. Blueprint Dashboard, Impact Graph, AI Timeline, and Live Diff — all inside VS Code.
 - **JetBrains plugin:** Kotlin plugin using JCEF (Chromium Embedded Framework) to render the same React components. Tool windows for IntelliJ IDEA, WebStorm, PyCharm, GoLand.
-- **`@kap10/ui` shared component package:** Dashboard visualization components extracted into a standalone React package with no Next.js dependencies. Consumed by the web dashboard, VS Code extension, and JetBrains plugin.
+- **`@unerr/ui` shared component package:** Dashboard visualization components extracted into a standalone React package with no Next.js dependencies. Consumed by the web dashboard, VS Code extension, and JetBrains plugin.
 - **New MCP tools for IDE rendering:**
   - `show_blueprint` — Returns Blueprint Dashboard data for the current repo/feature
   - `show_impact_graph` — Returns N-hop dependency graph for a given entity
@@ -4765,14 +4765,14 @@ export function activate(context: vscode.ExtensionContext) {
   // Register WebView panel provider
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
-      'kap10.blueprintView',
+      'unerr.blueprintView',
       new BlueprintViewProvider(context.extensionUri)
     )
   );
 
   // Register MCP tool-triggered commands
   context.subscriptions.push(
-    vscode.commands.registerCommand('kap10.showBlueprint', (data) => {
+    vscode.commands.registerCommand('unerr.showBlueprint', (data) => {
       BlueprintPanel.createOrShow(context.extensionUri, data);
     })
   );
@@ -4782,15 +4782,15 @@ export function activate(context: vscode.ExtensionContext) {
 #### JetBrains JCEF Integration
 
 ```kotlin
-// packages/jetbrains-plugin/src/main/kotlin/com/kap10/plugin/BlueprintToolWindow.kt
+// packages/jetbrains-plugin/src/main/kotlin/com/unerr/plugin/BlueprintToolWindow.kt
 class BlueprintToolWindow : ToolWindowFactory {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val browser = JBCefBrowser()
-        browser.loadHTML(getReactAppHtml()) // @kap10/ui bundle
+        browser.loadHTML(getReactAppHtml()) // @unerr/ui bundle
 
         // Bridge: Kotlin → JS
         val query = CefMessageRouter.create()
-        query.addHandler(Kap10DataHandler(project), true)
+        query.addHandler(UnerrDataHandler(project), true)
         browser.jbCefClient.addMessageRouter(query)
 
         toolWindow.component.add(browser.component)
@@ -4798,7 +4798,7 @@ class BlueprintToolWindow : ToolWindowFactory {
 }
 ```
 
-#### `@kap10/ui` Package
+#### `@unerr/ui` Package
 
 Extract existing dashboard visualization components into a standalone package:
 
@@ -4824,16 +4824,16 @@ packages/vscode-extension/
     impact-panel.ts           # Impact Graph WebView panel
     timeline-panel.ts         # AI Timeline WebView panel
     diff-panel.ts             # Live Diff WebView panel
-    api-client.ts             # kap10 API client for extension host
+    api-client.ts             # unerr API client for extension host
     collision-decorator.ts    # Editor decoration for collision warnings
   package.json                # VS Code extension manifest
 packages/jetbrains-plugin/
-  src/main/kotlin/com/kap10/plugin/
+  src/main/kotlin/com/unerr/plugin/
     BlueprintToolWindow.kt    # JCEF Blueprint Dashboard panel
     ImpactToolWindow.kt       # JCEF Impact Graph panel
     TimelineToolWindow.kt     # JCEF AI Timeline panel
     CollisionAnnotator.kt     # Editor gutter collision markers
-    Kap10DataHandler.kt       # CefMessageRouter data handler
+    UnerrDataHandler.kt       # CefMessageRouter data handler
   build.gradle.kts            # IntelliJ Platform plugin config
 packages/ui/
   src/
@@ -4856,7 +4856,7 @@ lib/mcp/tools/
 | Package | Purpose |
 |---------|---------|
 | `@vscode/webview-ui-toolkit` | VS Code-native UI components for WebView panels |
-| `vite` | Build `@kap10/ui` as ES module library (no Next.js bundler dependency) |
+| `vite` | Build `@unerr/ui` as ES module library (no Next.js bundler dependency) |
 
 ---
 
@@ -4881,7 +4881,7 @@ lib/mcp/tools/
         │                              │
         ▼                              ▼
 ┌───────────────────────────────────────────────────────────────┐
-│  kap10 Cloud                                                  │
+│  unerr Cloud                                                  │
 │  ┌──────────────────────────────────────────────┐             │
 │  │ Entity Activity Tracker                      │             │
 │  │  ├─ entity_activity collection (ArangoDB)    │             │
@@ -5040,7 +5040,7 @@ components/dashboard/
   collision-badge.tsx          # Collision warning badge for repo cards
 packages/vscode-extension/src/
   collision-decorator.ts       # (also listed in Phase 11 — extended with real-time updates)
-packages/jetbrains-plugin/src/main/kotlin/com/kap10/plugin/
+packages/jetbrains-plugin/src/main/kotlin/com/unerr/plugin/
   CollisionAnnotator.kt       # (also listed in Phase 11 — extended with real-time updates)
 ```
 
@@ -5111,7 +5111,7 @@ import { execFileAsync } from 'node:child_process';
 
 export async function prepareWorkspace(input: PrepareWorkspaceInput): Promise<PrepareWorkspaceOutput> {
   const { stdout } = await execFileAsync(
-    '/usr/local/bin/kap10-prepare-workspace',
+    '/usr/local/bin/unerr-prepare-workspace',
     [
       '--repo-url', input.repoUrl,
       '--branch', input.branch,
@@ -5145,7 +5145,7 @@ This pattern means:
 ```
 workers/heavy-compute-rust/
   src/
-    main.rs                   # CLI entry point (kap10-prepare-workspace, kap10-bulk-insert)
+    main.rs                   # CLI entry point (unerr-prepare-workspace, unerr-bulk-insert)
     git.rs                    # libgit2 clone/pull with auth
     scip.rs                   # Zero-copy SCIP index parser (prost + mmap)
     arango.rs                 # HTTP/2 bulk insert client (reqwest)
@@ -5191,7 +5191,7 @@ Phase 2: MCP Server    Phase 3: Semantic Search (LlamaIndex.TS)
     │                  │
     ├─── Phase 10a ────┘─────────────────────────────────────┐
     │    (MVP: Local-First Proxy — 7 structural tools        │
-    │     CozoDB, kap10 pull, syncLocalGraph, query router)  │
+    │     CozoDB, unerr pull, syncLocalGraph, query router)  │
     │                                                        │
     └────────┬───────────────────────────────────────────     │
              ▼                                               │
@@ -5212,14 +5212,14 @@ Phase 5: Incremental Indexing (entity hash diff + cascade)   │
     ▼                                                        │
 Phase 5.5: Prompt Ledger + Rewind + Branching                │
 (+ append-only timeline + working-state snapshots            │
- + anti-pattern rule synthesis + kap10 CLI                   │
+ + anti-pattern rule synthesis + unerr CLI                   │
  + commit roll-up                                            │
  + CLI-first local ingestion via IStorageProvider)           │
     │                                                        │
     ▼                                                        │
 Phase 5.6: CLI-First Zero-Friction Onboarding                │
 (+ RFC 8628 device auth + org-level API keys                 │
- + kap10 connect command + auto IDE config                   │
+ + unerr connect command + auto IDE config                   │
  + default key auto-provisioning)                            │
     │                                                        │
     ├──────────────────┐                                     │
@@ -5248,7 +5248,7 @@ Phase 9: Code Snippet Library (post-launch)
              ├─────────────────────────────────────────┐
              ▼                                         ▼
 Phase 11: Native IDE Integrations        Phase 12: Multiplayer
-(VS Code, JetBrains, @kap10/ui,         Collaboration &
+(VS Code, JetBrains, @unerr/ui,         Collaboration &
  4 new MCP tools — leverages             Collision Detection
  Phase 10 local proxy as transport)      (entity_activity,
                                           real-time broadcast)
@@ -5335,10 +5335,10 @@ Phase 11: Native IDE Integrations        Phase 12: Multiplayer
 
 | Package | Purpose | Phase |
 |---------|---------|-------|
-| `commander` | CLI framework for `@autorail/kap10` | 5.5 |
+| `commander` | CLI framework for `@autorail/unerr` | 5.5 |
 | `chokidar` | File watcher for CLI watch mode (ledger streaming) | 5.5 |
-| `archiver` | ZIP creation for `kap10 push` (`.gitignore`-aware codebase packaging) | 5.5 |
-| `ignore` | `.gitignore`-aware file filtering for `kap10 push` (excludes `node_modules`, build artifacts, etc.) | 5.5 |
+| `archiver` | ZIP creation for `unerr push` (`.gitignore`-aware codebase packaging) | 5.5 |
+| `ignore` | `.gitignore`-aware file filtering for `unerr push` (excludes `node_modules`, build artifacts, etc.) | 5.5 |
 | `@supabase/storage-js` | Supabase Storage client for `SupabaseStorageAdapter` (pre-signed URLs, file download/delete) | 5.5 |
 
 ### Visualization
@@ -5364,7 +5364,7 @@ Phase 11: Native IDE Integrations        Phase 12: Multiplayer
 | `@vscode/languageserver-protocol` | LSP types for cursor tracking events (predictive pre-fetching) | 10 |
 | `msgpackr` | Fast MessagePack serialization for compact graph snapshots (cloud → local sync) | 10 |
 | `@vscode/webview-ui-toolkit` | VS Code-native UI components for WebView panels | 11 |
-| `vite` | Build `@kap10/ui` as standalone ES module library (no Next.js bundler dependency) | 11 |
+| `vite` | Build `@unerr/ui` as standalone ES module library (no Next.js bundler dependency) | 11 |
 | `livekit-server-sdk` | LiveKit server SDK for real-time data channels (future migration target for multiplayer) | 12 |
 | `ws` | WebSocket server for real-time collision broadcast (initial multiplayer implementation) | 12 |
 
@@ -5459,9 +5459,9 @@ expect(result.fileCount).toBeGreaterThan(0);
 | Single-root SCIP indexing | **Monorepo detection + per-package SCIP + `scip combine`** | Enterprise monorepos (Nx, Turborepo, pnpm workspaces) index correctly; cross-package type references resolve |
 | No tool call rate limiting | **Token bucket rate limiter** (Redis sliding window, 60 calls/min) | Prevents runaway agents from draining DB connections and inflating LLM costs; 429 response tells agent to stop looping |
 | No change tracking | **Prompt Ledger** (append-only timeline + working-state snapshots + branching) | Every AI change linked to its prompt; rewind to any working state; anti-pattern rules auto-generated from failures; commit roll-up shows AI contribution |
-| No local workspace sync for ledger | **kap10 CLI** (`@autorail/kap10` — watch, rewind, timeline, mark-working) | Users can rewind from terminal; file changes streamed to cloud in real-time; works alongside agent-based sync |
+| No local workspace sync for ledger | **unerr CLI** (`@autorail/unerr` — watch, rewind, timeline, mark-working) | Users can rewind from terminal; file changes streamed to cloud in real-time; works alongside agent-based sync |
 | No data deletion mechanism | **24-hour deletion SLA** (`deleteRepoWorkflow` + `deletionAuditWorkflow`) | Enterprise compliance; all repo data (graph, embeddings, metadata) purged within 24h of disconnect; audit trail for compliance |
-| No initial value demonstration | **Architecture Health Report** (auto-generated after first indexing) | Dead code, architecture drift, testing gaps, circular deps, complexity hotspots, LLM risk assessment — proves kap10 works before user writes a single prompt |
+| No initial value demonstration | **Architecture Health Report** (auto-generated after first indexing) | Dead code, architecture drift, testing gaps, circular deps, complexity hotspots, LLM risk assessment — proves unerr works before user writes a single prompt |
 | `execAsync('git clone/pull/diff')` | **`simple-git`** + **`parse-diff`** | Promise-based Git with auth/queuing/concurrency safety; structured diff parsing into typed JSON — no brittle shell commands |
 | Custom Redis `MULTI/EXEC` rate limiter | **`@upstash/ratelimit`** | Mathematically proven sliding window; no race conditions; works with standard `ioredis` |
 | Hand-rolled 6-regex secret scrubber | **TruffleHog regex ruleset** (800+ vendor patterns) + entropy fallback | Catches Slack, Stripe, GCP, Azure, and hundreds more vendor-specific key formats; maintained by security team |
@@ -5469,4 +5469,4 @@ expect(result.fileCount).toBeGreaterThan(0);
 
 ---
 
-*kap10 — The AI Tech Lead. Institutional memory, rewind, rules, and proven patterns for your codebase.*
+*unerr — The AI Tech Lead. Institutional memory, rewind, rules, and proven patterns for your codebase.*

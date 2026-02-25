@@ -1,5 +1,5 @@
 /**
- * kap10 branches — Show timeline branches.
+ * unerr branches — Show timeline branches.
  */
 import { Command } from "commander"
 import * as fs from "node:fs"
@@ -7,7 +7,7 @@ import * as path from "node:path"
 import { getCredentials } from "./auth.js"
 
 function loadConfig(): { repoId: string; serverUrl: string; orgId: string } | null {
-  const configPath = path.join(process.cwd(), ".kap10", "config.json")
+  const configPath = path.join(process.cwd(), ".unerr", "config.json")
   if (!fs.existsSync(configPath)) return null
   return JSON.parse(fs.readFileSync(configPath, "utf-8")) as { repoId: string; serverUrl: string; orgId: string }
 }
@@ -19,9 +19,9 @@ export function registerBranchesCommand(program: Command): void {
     .action(async () => {
       try {
         const config = loadConfig()
-        if (!config) { console.error("Not initialized. Run: kap10 init"); process.exit(1) }
+        if (!config) { console.error("Not initialized. Run: unerr init"); process.exit(1) }
         const creds = getCredentials()
-        if (!creds?.apiKey) { console.error("Not authenticated. Run: kap10 auth login"); process.exit(1) }
+        if (!creds?.apiKey) { console.error("Not authenticated. Run: unerr auth login"); process.exit(1) }
 
         const res = await fetch(
           `${config.serverUrl}/api/repos/${config.repoId}/timeline?limit=200`,

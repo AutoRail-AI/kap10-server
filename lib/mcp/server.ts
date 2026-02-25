@@ -15,7 +15,7 @@ export interface McpServerConfig {
 }
 
 const DEFAULT_CONFIG: McpServerConfig = {
-  name: "kap10-mcp",
+  name: "unerr-mcp",
   version: "0.2.0",
 }
 

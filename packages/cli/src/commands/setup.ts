@@ -1,13 +1,13 @@
 /**
- * kap10 setup — The magic default command.
+ * unerr setup — The magic default command.
  *
- * Runs when the user types `npx @autorail/kap10` with no subcommand.
+ * Runs when the user types `npx @autorail/unerr` with no subcommand.
  * Orchestrates the full onboarding flow:
  *
  *  1. Authenticate (device flow or API key)
  *  2. Detect IDE (auto-detect or interactive prompt)
  *  3. Detect git context (host, owner, repo, branch)
- *  4. Check if repo exists on kap10
+ *  4. Check if repo exists on unerr
  *  5. GitHub flow: install app → select repos → trigger indexing
  *     Local flow: init → push → trigger indexing
  *  6. Poll indexing progress
@@ -32,7 +32,7 @@ import {
 import { banner, section, success, fail, info, detail, warn, blank, done, pc } from "../utils/ui.js"
 import { initLogFile, logInfo, logError, logApi, getLogFilePath } from "../utils/log.js"
 
-const DEFAULT_SERVER = "https://app.kap10.dev"
+const DEFAULT_SERVER = "https://app.unerr.dev"
 
 interface SetupContext {
   serverUrl: string
@@ -134,7 +134,7 @@ function stepDetectGit(): GitContext | null {
   if (!isGitRepo()) {
     logInfo("Not a git repository")
     warn("Not inside a git repository.")
-    info("You can still use kap10 with local upload (kap10 init + kap10 push).")
+    info("You can still use unerr with local upload (unerr init + unerr push).")
     return null
   }
 
@@ -156,12 +156,12 @@ function stepDetectGit(): GitContext | null {
   return git
 }
 
-// ─── Step 4: Check Repo on kap10 ─────────────────────────────────────────────
+// ─── Step 4: Check Repo on unerr ─────────────────────────────────────────────
 
 async function stepCheckRepo(
   ctx: SetupContext
 ): Promise<{ repoId: string; status: string; indexed: boolean } | null> {
-  section("Checking kap10...")
+  section("Checking unerr...")
 
   if (!ctx.git) return null
 
@@ -180,7 +180,7 @@ async function stepCheckRepo(
         status: string
         indexed: boolean
       }
-      logInfo("Repo found on kap10", data)
+      logInfo("Repo found on unerr", data)
 
       if (data.indexed) {
         success(`Already indexed: ${pc.bold(data.repoName)}`)
@@ -194,8 +194,8 @@ async function stepCheckRepo(
     }
 
     if (res.status === 404) {
-      logInfo("Repo not found on kap10")
-      info("This repo isn't on kap10 yet.")
+      logInfo("Repo not found on unerr")
+      info("This repo isn't on unerr yet.")
       return null
     }
 
@@ -242,7 +242,7 @@ async function stepGitHubInstall(ctx: SetupContext): Promise<boolean> {
   const confirm = await prompts({
     type: "confirm",
     name: "install",
-    message: "Install kap10 GitHub App to connect your repos?",
+    message: "Install unerr GitHub App to connect your repos?",
     initial: true,
   })
 
@@ -274,7 +274,7 @@ async function stepGitHubInstall(ctx: SetupContext): Promise<boolean> {
   const installData = (await installRes.json()) as { installUrl: string; pollToken: string }
 
   // Open browser
-  info("Opening browser to install kap10 GitHub App...")
+  info("Opening browser to install unerr GitHub App...")
   logInfo("Opening browser", { url: installData.installUrl })
 
   try {
@@ -461,7 +461,7 @@ async function stepSelectAndAddRepos(
     success(`Added ${addData.created.length} repo(s) — indexing started`)
   } else if (addData.alreadyExisting.length > 0) {
     logInfo("Repos already existed", { existing: addData.alreadyExisting.length })
-    success(`Repo(s) already on kap10`)
+    success(`Repo(s) already on unerr`)
   }
 
   return { repoId: currentRepo.id, fullName: currentRepo.fullName }
@@ -504,11 +504,11 @@ async function stepLocalFlow(ctx: SetupContext): Promise<{ repoId: string } | nu
   const initData = (await initRes.json()) as { repoId: string; orgId: string }
   logInfo("Repo registered", initData)
 
-  // Write .kap10/config.json
-  const kap10Dir = join(cwd, ".kap10")
-  mkdirSync(kap10Dir, { recursive: true })
+  // Write .unerr/config.json
+  const unerrDir = join(cwd, ".unerr")
+  mkdirSync(unerrDir, { recursive: true })
   writeFileSync(
-    join(kap10Dir, "config.json"),
+    join(unerrDir, "config.json"),
     JSON.stringify({
       repoId: initData.repoId,
       serverUrl: ctx.serverUrl,
@@ -517,15 +517,15 @@ async function stepLocalFlow(ctx: SetupContext): Promise<{ repoId: string } | nu
     }, null, 2) + "\n"
   )
 
-  // Add .kap10 to .gitignore
+  // Add .unerr to .gitignore
   const gitignorePath = join(cwd, ".gitignore")
   if (existsSync(gitignorePath)) {
     const content = readFileSync(gitignorePath, "utf-8")
-    if (!content.includes(".kap10")) {
-      appendFileSync(gitignorePath, "\n# kap10 local config\n.kap10/\n")
+    if (!content.includes(".unerr")) {
+      appendFileSync(gitignorePath, "\n# unerr local config\n.unerr/\n")
     }
   } else {
-    writeFileSync(gitignorePath, "# kap10 local config\n.kap10/\n")
+    writeFileSync(gitignorePath, "# unerr local config\n.unerr/\n")
   }
 
   success(`Registered: ${pc.bold(repoName)}`)
@@ -569,7 +569,7 @@ async function stepLocalFlow(ctx: SetupContext): Promise<{ repoId: string } | nu
 
   const gitignoreFilePath = path.join(cwd, ".gitignore")
   const ig = ignore()
-  ig.add([".git", ".kap10", "node_modules"])
+  ig.add([".git", ".unerr", "node_modules"])
   if (fs.existsSync(gitignoreFilePath)) {
     ig.add(fs.readFileSync(gitignoreFilePath, "utf-8"))
   }
@@ -683,7 +683,7 @@ async function stepPollIndexing(ctx: SetupContext, repoId: string): Promise<void
           spinner.stop()
           logError("Indexing failed", { error: data.errorMessage })
           fail(`Analysis failed: ${data.errorMessage ?? "Unknown error"}`)
-          info("You can retry from the dashboard or run: kap10 push")
+          info("You can retry from the dashboard or run: unerr push")
           return
         }
 
@@ -728,7 +728,7 @@ function stepConfigureMcp(ctx: SetupContext): void {
     }
 
     const mcpServers = (config.mcpServers ?? {}) as Record<string, unknown>
-    mcpServers["kap10"] = {
+    mcpServers["unerr"] = {
       url: `${ctx.serverUrl}/mcp`,
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
     }
@@ -751,7 +751,7 @@ function stepConfigureMcp(ctx: SetupContext): void {
     }
 
     const mcpServers = (settings["mcp.servers"] ?? {}) as Record<string, unknown>
-    mcpServers["kap10"] = {
+    mcpServers["unerr"] = {
       url: `${ctx.serverUrl}/mcp`,
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
     }
@@ -774,7 +774,7 @@ function stepConfigureMcp(ctx: SetupContext): void {
     }
 
     const mcpServers = (config.mcpServers ?? {}) as Record<string, unknown>
-    mcpServers["kap10"] = {
+    mcpServers["unerr"] = {
       url: `${ctx.serverUrl}/mcp`,
       headers: { Authorization: `Bearer ${ctx.apiKey}` },
     }
@@ -785,7 +785,7 @@ function stepConfigureMcp(ctx: SetupContext): void {
   } else if (ctx.ide === "claude-code") {
     info("Run this command to configure Claude Code:")
     blank()
-    console.log(`    ${pc.cyan("claude mcp add kap10 --transport http")} ${pc.dim(`"${ctx.serverUrl}/mcp"`)} \\`)
+    console.log(`    ${pc.cyan("claude mcp add unerr --transport http")} ${pc.dim(`"${ctx.serverUrl}/mcp"`)} \\`)
     console.log(`      ${pc.cyan("--header")} ${pc.dim(`"Authorization: Bearer ${ctx.apiKey}"`)}`)
     blank()
     logInfo("Claude Code MCP command printed")
@@ -804,7 +804,7 @@ function stepInstallHooks(): void {
     const hooksDir = join(gitDir, "hooks")
     mkdirSync(hooksDir, { recursive: true })
 
-    const hookScript = `#!/bin/sh\nkap10 config verify --silent 2>/dev/null || true\n`
+    const hookScript = `#!/bin/sh\nunerr config verify --silent 2>/dev/null || true\n`
     let installed = 0
 
     for (const hook of ["post-checkout", "post-merge"]) {
@@ -814,7 +814,7 @@ function stepInstallHooks(): void {
         installed++
       } else {
         const content = readFileSync(hookPath, "utf-8")
-        if (!content.includes("kap10 config verify")) {
+        if (!content.includes("unerr config verify")) {
           appendFileSync(hookPath, `\n${hookScript}`)
           installed++
         }
@@ -863,7 +863,7 @@ export async function runSetup(opts?: {
     git,
   }
 
-  // Step 4: Check if repo already on kap10
+  // Step 4: Check if repo already on unerr
   const existingRepo = await stepCheckRepo(ctx)
   blank()
 
@@ -894,7 +894,7 @@ export async function runSetup(opts?: {
     } else {
       // No git at all → suggest init
       info("Run these commands to set up a local repo:")
-      info(`  ${pc.cyan("kap10 init")} && ${pc.cyan("kap10 push")}`)
+      info(`  ${pc.cyan("unerr init")} && ${pc.cyan("unerr push")}`)
       blank()
     }
   }

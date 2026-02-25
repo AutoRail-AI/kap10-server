@@ -26,7 +26,7 @@ export function EmptyStateRepos({
           No repositories connected
         </h2>
         <p className="max-w-md text-sm text-foreground opacity-85 mb-8">
-          Connect your first GitHub repository to get started with kap10 code intelligence.
+          Connect your first GitHub repository to get started with unerr code intelligence.
         </p>
         <Button
           size="lg"

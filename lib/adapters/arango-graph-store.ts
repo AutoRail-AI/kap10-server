@@ -125,7 +125,7 @@ function qualifyVertexHandle(handle: string): string {
 function getConfig() {
   const url = process.env.ARANGODB_URL ?? "http://localhost:8529"
   const password = process.env.ARANGO_ROOT_PASSWORD ?? "changeme"
-  const databaseName = process.env.ARANGODB_DATABASE ?? "kap10_db"
+  const databaseName = process.env.ARANGODB_DATABASE ?? "unerr_db"
   return { url, password, databaseName }
 }
 

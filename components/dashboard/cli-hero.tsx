@@ -4,7 +4,7 @@ import { Check, Copy } from "lucide-react"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 
-const CLI_COMMAND = "npx @autorail/kap10 connect"
+const CLI_COMMAND = "npx @autorail/unerr connect"
 
 /**
  * CLI Hero — Terminal-first onboarding, top of overview.
@@ -30,7 +30,7 @@ export function CliHero() {
         <div className="terminal-dot" style={{ background: "#FEBC2E" }} />
         <div className="terminal-dot" style={{ background: "#28C840" }} />
         <span className="ml-2 text-[11px] font-mono text-muted-foreground">
-          kap10 connect
+          unerr connect
         </span>
       </div>
       <div className="bg-[#0e0e14] p-5">

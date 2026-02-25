@@ -6,7 +6,7 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 
-const CLI_COMMAND = "npx @autorail/kap10 connect"
+const CLI_COMMAND = "npx @autorail/unerr connect"
 
 interface OnboardingCommandCenterProps {
   installHref: string
@@ -44,7 +44,7 @@ export function OnboardingCommandCenter({ installHref }: OnboardingCommandCenter
             <div className="terminal-dot" style={{ background: "#FEBC2E" }} />
             <div className="terminal-dot" style={{ background: "#28C840" }} />
             <span className="ml-2 text-[11px] font-mono text-muted-foreground">
-              kap10 connect
+              unerr connect
             </span>
           </div>
           <div className="bg-[#0e0e14] p-4 font-mono text-sm text-foreground">
@@ -81,7 +81,7 @@ export function OnboardingCommandCenter({ installHref }: OnboardingCommandCenter
         <Card className="glass-card border-border hover:border-electric-cyan/25 transition-colors">
           <CardContent className="pt-6">
             <p className="text-sm text-muted-foreground mb-4 leading-relaxed">
-              Authorize the kap10 GitHub App to select and index repositories
+              Authorize the unerr GitHub App to select and index repositories
               manually.
             </p>
             <Button

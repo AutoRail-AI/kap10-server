@@ -6,7 +6,7 @@
 >
 > **Prerequisites:** [Phase 1 — GitHub Connect & Repo Indexing](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) (entities + call graph in ArangoDB), [Phase 2 — Hosted MCP Server](./PHASE_2_HOSTED_MCP_SERVER.md) (MCP tool registration, rate limiter, truncation, workspace resolution, OTel spans), [Phase 3 — Semantic Search](./PHASE_3_SEMANTIC_SEARCH.md) (entity embeddings in pgvector, hybrid search pipeline, `IVectorSearch` port)
 >
-> **Database convention:** All kap10 Supabase tables use PostgreSQL schema `kap10`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
+> **Database convention:** All unerr Supabase tables use PostgreSQL schema `unerr`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
 
 ---
 
@@ -125,7 +125,7 @@ Step  Actor Action                     System Action                            
 
 7                                      Activity: embedJustifications (light-llm-queue)          —
                                        Embed purpose + business_value text → pgvector
-                                       Stored in kap10.justification_embeddings
+                                       Stored in unerr.justification_embeddings
 
 8                                      Start generateHealthReportWorkflow (child workflow)      —
                                        Run 7 parallel analysis activities
@@ -365,7 +365,7 @@ Phase 3:  ready → embedding → ready | embed_failed
 Phase 4:  ready + justificationStatus: "pending" → "running" → "complete" | "failed"
 ```
 
-**Supabase addition:** `kap10.repos` table gets two new columns:
+**Supabase addition:** `unerr.repos` table gets two new columns:
 - `justification_status` — `pending | running | complete | failed` (default: `pending`)
 - `health_report_status` — `pending | generating | available | failed` (default: `pending`)
 
@@ -817,16 +817,16 @@ Justification Embedding (Phase 4):  embed("Validates that a shopping cart total 
                                            ← purpose + business_value + tags concatenated
 ```
 
-These are stored in a **separate pgvector table** `kap10.justification_embeddings` to avoid conflating code semantics with business semantics. The `search_by_purpose` MCP tool queries this table directly via `IVectorSearch.searchJustificationEmbeddings()` — no prefix hacks or mixed-table filtering.
+These are stored in a **separate pgvector table** `unerr.justification_embeddings` to avoid conflating code semantics with business semantics. The `search_by_purpose` MCP tool queries this table directly via `IVectorSearch.searchJustificationEmbeddings()` — no prefix hacks or mixed-table filtering.
 
 **Schema** (migration: `20260224000000_phase4_justification_embeddings.sql`):
 
 ```sql
-Table: kap10.justification_embeddings
+Table: unerr.justification_embeddings
 Columns:
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid()
   org_id           TEXT NOT NULL
-  repo_id          TEXT NOT NULL REFERENCES kap10.repos(id) ON DELETE CASCADE
+  repo_id          TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE
   entity_id        TEXT NOT NULL          -- ArangoDB entity ID
   entity_name      TEXT NOT NULL          -- resolved from entity graph
   taxonomy         TEXT NOT NULL          -- VERTICAL / HORIZONTAL / UTILITY
@@ -1046,14 +1046,14 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
 ## 2.2 Database & Schema Layer
 
 - [x] **P4-DB-01: Add `justificationStatus` and `healthReportStatus` columns to Repo model** — S
-  - New columns on `kap10.repos`: `justification_status` (String, default "pending"), `health_report_status` (String, default "pending")
+  - New columns on `unerr.repos`: `justification_status` (String, default "pending"), `health_report_status` (String, default "pending")
   - Not an enum — plain string to avoid migration on every status addition
   - Values: `pending | running | complete | failed` (justification), `pending | generating | available | failed` (health report)
   - **Test:** Migration runs. Existing repos get default "pending". Status updates work.
   - **Depends on:** Nothing
-  - **Files:** `prisma/schema.prisma`, new migration file
+  - **Files:** `prisma/schema.prisma`, `supabase/migrations/00002_unerr_schema.sql`
   - **Acceptance:** Columns exist. Default values correct. No impact on existing queries.
-  - Notes: Done. Added `justifying` and `justify_failed` to `RepoStatus` enum in `prisma/schema.prisma`.
+  - Notes: Done. Added `justifying` and `justify_failed` to `RepoStatus` enum. Consolidated into `supabase/migrations/00002_unerr_schema.sql`.
 
 - [x] **P4-DB-02: Create ArangoDB collections for Phase 4** — M
   - Document collections: `justifications` (unified), `features`, `health_reports`, `token_usage_log`
@@ -1070,24 +1070,24 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
   - Notes: Done. Added 6 collections to `DOC_COLLECTIONS` in arango-graph-store.ts: `justifications`, `features_agg`, `health_reports`, `domain_ontologies`, `drift_scores`, `adrs`. Added persistent indexes on org_id/repo_id and justification-specific fields.
 
 - [x] **P4-DB-03: Create `justification_embeddings` table in pgvector** — M
-  - SQL migration: `CREATE TABLE kap10.justification_embeddings (id UUID PK, org_id TEXT, repo_id TEXT, entity_key TEXT, purpose_text TEXT, embedding vector(768), created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ)`
+  - SQL migration: `CREATE TABLE unerr.justification_embeddings (id UUID PK, org_id TEXT, repo_id TEXT, entity_key TEXT, purpose_text TEXT, embedding vector(768), created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ)`
   - Unique constraint: `(repo_id, entity_key)`
-  - HNSW index: `CREATE INDEX idx_justification_embeddings_hnsw ON kap10.justification_embeddings USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)`
-  - Composite index: `CREATE INDEX idx_justification_embeddings_repo ON kap10.justification_embeddings (repo_id, entity_key)`
-  - **Test:** `\d kap10.justification_embeddings` shows correct schema. Upsert by `(repo_id, entity_key)` works. Vector similarity search works.
+  - HNSW index: `CREATE INDEX idx_justification_embeddings_hnsw ON unerr.justification_embeddings USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64)`
+  - Composite index: `CREATE INDEX idx_justification_embeddings_repo ON unerr.justification_embeddings (repo_id, entity_key)`
+  - **Test:** `\d unerr.justification_embeddings` shows correct schema. Upsert by `(repo_id, entity_key)` works. Vector similarity search works.
   - **Depends on:** Phase 3 P3-DB-02 (pgvector extension enabled)
-  - **Files:** `prisma/schema.prisma`, new migration file
+  - **Files:** `prisma/schema.prisma`, `supabase/migrations/00002_unerr_schema.sql`
   - **Acceptance:** Table exists. HNSW index created. Cosine similarity query on 10K embeddings < 100ms.
-  - Notes: Done. Created `supabase/migrations/20260224000000_phase4_justification_embeddings.sql` with HNSW index and ON CONFLICT upsert support.
+  - Notes: Done. Consolidated into `supabase/migrations/00002_unerr_schema.sql`.
 
 - [x] **P4-DB-04: Add `JustificationEmbedding` Prisma model** — S
-  - Model with `@@schema("kap10")`, `@@map("justification_embeddings")`
+  - Model with `@@schema("unerr")`, `@@map("justification_embeddings")`
   - Fields matching the SQL migration above
   - `embedding` field: `Unsupported("vector(768)")`
   - **Test:** `pnpm migrate` runs. Model introspectable via Prisma Client.
   - **Depends on:** P4-DB-03
   - **Files:** `prisma/schema.prisma`
-  - Notes: Done. Added `JustificationEmbedding` model with `@@schema("kap10")`, indexes on taxonomy and featureTag.
+  - Notes: Done. Added `JustificationEmbedding` model with `@@schema("unerr")`, indexes on taxonomy and featureTag.
 
 ---
 

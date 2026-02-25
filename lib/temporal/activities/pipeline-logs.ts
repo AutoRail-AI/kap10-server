@@ -28,7 +28,7 @@ export interface PipelineLogEntry {
   meta?: Record<string, unknown>
 }
 
-const REDIS_KEY_PREFIX = "kap10:pipeline-logs:"
+const REDIS_KEY_PREFIX = "unerr:pipeline-logs:"
 const TTL_LIVE = 24 * 60 * 60 // 24 hours
 const TTL_AFTER_ARCHIVE = 60 * 60 // 1 hour
 

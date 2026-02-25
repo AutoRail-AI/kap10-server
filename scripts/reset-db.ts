@@ -24,11 +24,35 @@ async function main(): Promise<void> {
   const pool = new Pool({
     connectionString: dbUrl,
     ssl: dbUrl.includes("supabase.co") ? { rejectUnauthorized: false } : undefined,
-    connectionTimeoutMillis: 10000,
+    connectionTimeoutMillis: 30000,
+    statement_timeout: 30000,
   })
 
   try {
+    // Quick connectivity check
+    await pool.query("SELECT 1")
     console.log("Resetting all data (keeping schema and migration history)...")
+
+    // Unerr schema first (child tables with FKs to repos must be truncated together).
+    // CASCADE handles FK ordering, but listing all tables ensures nothing is missed.
+    await pool.query(`
+      TRUNCATE TABLE
+        unerr.pr_review_comments,
+        unerr.pr_reviews,
+        unerr.ledger_snapshots,
+        unerr.rule_embeddings,
+        unerr.justification_embeddings,
+        unerr.entity_embeddings,
+        unerr.active_vector_versions,
+        unerr.graph_snapshot_meta,
+        unerr.workspaces,
+        unerr.api_keys,
+        unerr.deletion_logs,
+        unerr.github_installations,
+        unerr.repos
+      RESTART IDENTITY CASCADE
+    `)
+    console.log("  ✓ unerr schema tables truncated")
 
     // Public schema: Better Auth + app tables. Exclude schema_migrations so migrations stay recorded.
     await pool.query(`
@@ -57,16 +81,6 @@ async function main(): Promise<void> {
       RESTART IDENTITY CASCADE
     `)
     console.log("  ✓ public schema tables truncated")
-
-    // Kap10 schema: repos, deletion_logs, github_installations
-    await pool.query(`
-      TRUNCATE TABLE
-        kap10.deletion_logs,
-        kap10.repos,
-        kap10.github_installations
-      RESTART IDENTITY CASCADE
-    `)
-    console.log("  ✓ kap10 schema tables truncated")
 
     console.log("Done. Database is empty and ready for testing.")
   } catch (err: unknown) {

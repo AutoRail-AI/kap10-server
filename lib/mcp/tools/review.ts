@@ -7,7 +7,7 @@ import type { McpAuthContext } from "../auth"
 
 export const REVIEW_PR_STATUS_SCHEMA = {
   name: "review_pr_status",
-  description: "Get the status and details of a kap10 PR review, including blockers, warnings, and remediation guidance. Use this to understand why a PR was blocked.",
+  description: "Get the status and details of a unerr PR review, including blockers, warnings, and remediation guidance. Use this to understand why a PR was blocked.",
   inputSchema: {
     type: "object" as const,
     properties: {

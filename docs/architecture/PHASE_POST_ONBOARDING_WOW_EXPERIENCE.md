@@ -1,6 +1,6 @@
 # Post-Onboarding "Wow" Experience — Surface Hidden Intelligence
 
-> **Phase Feature Statement:** _"After onboarding a repo, kap10 surfaces the massive intelligence it generated — dead code, architectural violations, quality scores, domain glossary, ADRs, fan-in/fan-out hotspots — turning the health report into a 'how does it know this?' moment."_
+> **Phase Feature Statement:** _"After onboarding a repo, unerr surfaces the massive intelligence it generated — dead code, architectural violations, quality scores, domain glossary, ADRs, fan-in/fan-out hotspots — turning the health report into a 'how does it know this?' moment."_
 >
 > **Prerequisites:** [Phase 1 — GitHub Connect & Repo Indexing](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) (entities + edges in ArangoDB), [Phase 4 — Business Justification & Taxonomy](./PHASE_4_BUSINESS_JUSTIFICATION_AND_TAXONOMY.md) (justifications, features, health report, ADRs, domain ontology, dead code detection, quality scoring), [Phase 6 — Pattern Enforcement & Rules Engine](./PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md) (rule creation via `graphStore.upsertRule()`)
 >
@@ -32,7 +32,7 @@
 
 ## Overview
 
-After repo onboarding (index → embed → justify → health report), kap10 generates massive amounts of intelligence that was previously invisible to users. The health report showed only 4 basic risk types. ADRs, domain ontology, dead code, quality scores, drift alerts, architectural violations, graph connectivity — all generated and stored in ArangoDB, but no UI surfaced them.
+After repo onboarding (index → embed → justify → health report), unerr generates massive amounts of intelligence that was previously invisible to users. The health report showed only 4 basic risk types. ADRs, domain ontology, dead code, quality scores, drift alerts, architectural violations, graph connectivity — all generated and stored in ArangoDB, but no UI surfaced them.
 
 **The gap:** We analyze every function down to its business purpose, detect dead code, score justification quality, extract domain vocabulary, generate architecture decision records, detect intent drift — and showed almost none of it.
 

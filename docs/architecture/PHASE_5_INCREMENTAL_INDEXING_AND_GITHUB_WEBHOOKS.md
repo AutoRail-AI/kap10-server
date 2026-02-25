@@ -1,12 +1,12 @@
 # Phase 5 — Incremental Indexing & GitHub Webhooks: Deep Dive & Implementation Tracker
 
-> **Phase Feature Statement:** _"When I push to GitHub, kap10 automatically re-indexes only the changed files. My MCP connection always has up-to-date knowledge within 30 seconds."_
+> **Phase Feature Statement:** _"When I push to GitHub, unerr automatically re-indexes only the changed files. My MCP connection always has up-to-date knowledge within 30 seconds."_
 >
 > **Source:** [`VERTICAL_SLICING_PLAN.md`](./VERTICAL_SLICING_PLAN.md) — Phase 5
 >
 > **Prerequisites:** [Phase 1 — GitHub Connect & Repo Indexing](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) (entities + call graph in ArangoDB, stable entity hashing, persistent workspace), [Phase 2 — Hosted MCP Server](./PHASE_2_HOSTED_MCP_SERVER.md) (MCP tools, workspace resolution, OTel spans), [Phase 3 — Semantic Search](./PHASE_3_SEMANTIC_SEARCH.md) (entity embeddings in pgvector, hybrid search), [Phase 4 — Business Justification & Taxonomy](./PHASE_4_BUSINESS_JUSTIFICATION_AND_TAXONOMY.md) (unified justifications, `justifyEntityWorkflow`, cascade re-justification design, canonical value seeds)
 >
-> **Database convention:** All kap10 Supabase tables use PostgreSQL schema `kap10`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
+> **Database convention:** All unerr Supabase tables use PostgreSQL schema `unerr`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
 
 ---
 
@@ -432,7 +432,7 @@ Classification of changes:
 
 **Problem:** If someone updates a highly central node (e.g., `src/utils/logger.ts` which has 2,000 callers), Temporal will attempt to cascade re-justify all 2,000 caller functions, hitting LLM rate limits and bankrupting the Langfuse budget (Phase 8).
 
-**Solution:** Implement **centrality scoring** in ArangoDB. Before cascading to callers, query the modified entity's inbound edge count. If it exceeds `CENTRALITY_THRESHOLD` (default: 50), the entity is classified as a **hub node**. For hub nodes, kap10 does **not** cascade to callers — it only re-justifies the hub entity itself and updates its embedding, letting the graph natively handle the topological shift.
+**Solution:** Implement **centrality scoring** in ArangoDB. Before cascading to callers, query the modified entity's inbound edge count. If it exceeds `CENTRALITY_THRESHOLD` (default: 50), the entity is classified as a **hub node**. For hub nodes, unerr does **not** cascade to callers — it only re-justifies the hub entity itself and updates its embedding, letting the graph natively handle the topological shift.
 
 ```
 Centrality Check (runs before cascade hop 1):
@@ -573,7 +573,7 @@ Cleanup:
 
 **Problem:** Phase 5's cascade re-justification silently updates the database when a dependency changes. But if a core engineer fundamentally changes a widely used utility's behavior (e.g., changing date parsing semantics), downstream consumers won't know until their code breaks in production.
 
-**Solution:** Inject a `driftEvaluationActivity` into the incremental webhook pipeline. When `ast-grep` detects a significant structural change in a node with high in-degree (many callers), the cloud LLM compares old and new justifications. If the *business intent* has changed, kap10 queries Git blame for the authors of all downstream calling functions and generates an automated alert.
+**Solution:** Inject a `driftEvaluationActivity` into the incremental webhook pipeline. When `ast-grep` detects a significant structural change in a node with high in-degree (many callers), the cloud LLM compares old and new justifications. If the *business intent* has changed, unerr queries Git blame for the authors of all downstream calling functions and generates an automated alert.
 
 ```
 Drift Alerting Pipeline:
@@ -618,7 +618,7 @@ Activity: driftEvaluationActivity (light-llm-queue)
 
               Please review your usage of this function."
        Assignees: [unique author logins]
-       Labels: ["kap10:drift-alert"]
+       Labels: ["unerr:drift-alert"]
 
      Option B — Dashboard notification (always):
        INSERT INTO public.notifications:
@@ -643,10 +643,10 @@ Activity: driftEvaluationActivity (light-llm-queue)
 ```
 Blue/Green Vectoring Architecture:
 
-Schema Extension (kap10.entity_embeddings):
+Schema Extension (unerr.entity_embeddings):
   ADD COLUMN vector_version UUID NOT NULL DEFAULT gen_random_uuid()
 
-New Table (kap10.active_vector_versions):
+New Table (unerr.active_vector_versions):
   repo_id    TEXT PRIMARY KEY
   version_id UUID NOT NULL
   activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -654,26 +654,26 @@ New Table (kap10.active_vector_versions):
 Write Path (during indexing):
   1. Generate new version_id = gen_random_uuid()
   2. All embedding INSERTs use this version_id:
-     INSERT INTO kap10.entity_embeddings
+     INSERT INTO unerr.entity_embeddings
        (entity_key, repo_id, embedding, vector_version)
      VALUES (@key, @repoId, @embedding, @newVersionId)
   3. Old embeddings (previous version) are untouched during writes
 
 Activation (after indexing workflow completes successfully):
   BEGIN;
-    UPDATE kap10.active_vector_versions
+    UPDATE unerr.active_vector_versions
       SET version_id = @newVersionId, activated_at = NOW()
       WHERE repo_id = @repoId;
     -- If no row exists (first index):
-    INSERT INTO kap10.active_vector_versions (repo_id, version_id)
+    INSERT INTO unerr.active_vector_versions (repo_id, version_id)
       VALUES (@repoId, @newVersionId)
       ON CONFLICT (repo_id) DO UPDATE SET
         version_id = @newVersionId, activated_at = NOW();
   COMMIT;
 
 Read Path (semantic search queries):
-  SELECT e.* FROM kap10.entity_embeddings e
-  JOIN kap10.active_vector_versions v ON e.repo_id = v.repo_id
+  SELECT e.* FROM unerr.entity_embeddings e
+  JOIN unerr.active_vector_versions v ON e.repo_id = v.repo_id
   WHERE e.vector_version = v.version_id
     AND e.repo_id = @repoId
     AND e.embedding <=> @queryVector < @threshold
@@ -681,7 +681,7 @@ Read Path (semantic search queries):
   LIMIT @limit
 
 Garbage Collection (background, after activation):
-  DELETE FROM kap10.entity_embeddings
+  DELETE FROM unerr.entity_embeddings
     WHERE repo_id = @repoId
       AND vector_version != @activeVersionId
       AND vector_version != @newVersionId    -- Safety: don't delete if another index is running
@@ -698,7 +698,7 @@ Garbage Collection (background, after activation):
 
 ### Location-Agnostic Semantic Fingerprinting
 
-**Problem:** When a developer refactors code by moving a file (e.g., `src/utils/auth.ts` → `src/core/security/auth.ts`), Git registers this as a deletion + addition. If kap10 blindly follows Git, it deletes the old ArangoDB node and creates a new one — wiping out all Phase 4 justifications, Phase 5.5 Prompt Ledger history, and learned rules tied to that entity's ID.
+**Problem:** When a developer refactors code by moving a file (e.g., `src/utils/auth.ts` → `src/core/security/auth.ts`), Git registers this as a deletion + addition. If unerr blindly follows Git, it deletes the old ArangoDB node and creates a new one — wiping out all Phase 4 justifications, Phase 5.5 Prompt Ledger history, and learned rules tied to that entity's ID.
 
 **Solution:** Implement **Semantic Fingerprinting** during extraction. The entity identity in ArangoDB should not be tied solely to the file path. Generate a SHA-256 hash of the entity's AST structure (ignoring whitespace, comments, and variable names). During an incremental index, if Temporal sees a "deletion" and an "addition" in the same push with identical semantic fingerprints, it executes an `entityMoveActivity` instead — updating the `filePath` property of the existing node while preserving all historical intelligence.
 
@@ -952,13 +952,13 @@ org_{org_id}/
 
 ### Supabase Schema Changes
 
-Phase 5 adds two columns to `kap10.repos`:
+Phase 5 adds two columns to `unerr.repos`:
 
 ```
-ALTER TABLE kap10.repos ADD COLUMN webhook_secret TEXT;
+ALTER TABLE unerr.repos ADD COLUMN webhook_secret TEXT;
   -- Per-repo webhook secret for signature validation (optional — falls back to global GITHUB_WEBHOOK_SECRET)
 
-ALTER TABLE kap10.repos ADD COLUMN incremental_enabled BOOLEAN DEFAULT true;
+ALTER TABLE unerr.repos ADD COLUMN incremental_enabled BOOLEAN DEFAULT true;
   -- Feature flag: disable incremental indexing per-repo (force full re-index on every push)
 ```
 
@@ -1077,7 +1077,7 @@ Option A (Temporal-native, preferred):
   → BUT: per-repo serialization via a semaphore signal
 
 Option B (file lock):
-  pullAndDiff acquires /data/workspaces/{orgId}/{repoId}/.kap10.lock
+  pullAndDiff acquires /data/workspaces/{orgId}/{repoId}/.unerr.lock
   If lock held: wait up to 30s, then fail (Temporal retries)
 
 Chosen: Option A with Temporal signals.
@@ -1097,7 +1097,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
 | Phase 5 artifact | Phase 5.5 usage |
 |---|---|
 | **index_events collection** | Phase 5.5's `ledger` collection links ledger entries to index events. When `sync_local_diff` detects a push, it cross-references the index event to show which entities were affected by the AI's changes. |
-| **incrementalIndexWorkflow** | Phase 5.5's `kap10 push` (local CLI) triggers the same workflow with `provider: "local_cli"`. The workflow's `pullAndDiff` activity gains a conditional branch: if local_cli, download zip from Supabase Storage instead of `git pull`. |
+| **incrementalIndexWorkflow** | Phase 5.5's `unerr push` (local CLI) triggers the same workflow with `provider: "local_cli"`. The workflow's `pullAndDiff` activity gains a conditional branch: if local_cli, download zip from Supabase Storage instead of `git pull`. |
 | **lastIndexedSha tracking** | Phase 5.5's incremental CLI push (future) can send only diffs, using `lastIndexedSha` as the baseline. |
 | **Reconciliation job** | Phase 5.5 extends reconciliation to also check local repos for staleness (drift threshold). |
 
@@ -1112,7 +1112,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
 ### What Phase 5 Must NOT Do (to avoid rework)
 
 1. **Do not couple incremental indexing to a specific git host.** The `pullAndDiff` activity must be generic enough that Phase 5.5 can swap `git pull` for "download zip + extract" without changing the diff logic.
-2. **Do not delete workspace directories after indexing.** Phase 5.5's `kap10 watch` needs the workspace to exist persistently for ledger operations. Phase 5's reconciliation job should NOT clean up workspaces.
+2. **Do not delete workspace directories after indexing.** Phase 5.5's `unerr watch` needs the workspace to exist persistently for ledger operations. Phase 5's reconciliation job should NOT clean up workspaces.
 3. **Do not hard-code the cascade trigger.** Phase 6 needs to chain pattern detection after indexing. Use an extensible post-indexing hook pattern: `onIncrementalIndexComplete(repoId, entityDiff)` that Phase 5.5 and Phase 6 can subscribe to.
 4. **Do not assume push is the only trigger.** Phase 5.5 adds local CLI push. Phase 7 adds PR review. Both trigger incremental indexing with different input sources but the same entity diff pipeline.
 
@@ -1170,11 +1170,11 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
   - Notes: _____
 
 - [x] **P5-DB-02: Add `webhook_secret` and `incremental_enabled` columns to Repo model** — S
-  - New columns on `kap10.repos`: `webhook_secret` (String?, null = use global secret), `incremental_enabled` (Boolean, default true)
+  - New columns on `unerr.repos`: `webhook_secret` (String?, null = use global secret), `incremental_enabled` (Boolean, default true)
   - Prisma migration. Existing repos get defaults (null, true).
   - **Test:** Migration runs. Existing repos get default values. New repos can set webhook_secret.
   - **Depends on:** Nothing
-  - **Files:** `prisma/schema.prisma`, new migration file
+  - **Files:** `prisma/schema.prisma`, `supabase/migrations/00002_unerr_schema.sql`
   - **Acceptance:** Columns exist. Default values correct. No impact on existing queries.
   - Notes: _____
 
@@ -1323,8 +1323,8 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
   - Notes: _____
 
 - [x] **P5-API-00g: Implement Blue/Green pgvector Hot Swapping** — L _(Migration created; adapter-level version-aware read/write deferred to Phase 5.5 when vector search adapter is built out)_
-  - Add `vector_version UUID` column to `kap10.entity_embeddings`
-  - New table: `kap10.active_vector_versions` (repo_id PK, version_id UUID)
+  - Add `vector_version UUID` column to `unerr.entity_embeddings`
+  - New table: `unerr.active_vector_versions` (repo_id PK, version_id UUID)
   - Write path: all embedding INSERTs use a per-workflow version_id
   - Activation: single atomic `UPDATE` flips active version after workflow success
   - Read path: semantic search JOINs on `active_vector_versions` to filter

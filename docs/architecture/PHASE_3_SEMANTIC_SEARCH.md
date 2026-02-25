@@ -6,7 +6,7 @@
 >
 > **Prerequisites:** [Phase 1 — GitHub Connect & Repo Indexing](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) (entities in ArangoDB), [Phase 2 — Hosted MCP Server](./PHASE_2_HOSTED_MCP_SERVER.md) (MCP tool registration pattern, rate limiter, truncation, workspace resolution)
 >
-> **Database convention:** All kap10 Supabase tables use PostgreSQL schema `kap10`. See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
+> **Database convention:** All unerr Supabase tables use PostgreSQL schema `unerr`. See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
 
 ---
 
@@ -46,7 +46,7 @@ Step  System Action                                                         Stat
 1     indexRepoWorkflow completes →                                         Repo status: "indexed"
       signals Phase 3 trigger
 2     Temporal: startWorkflow("embedRepoWorkflow",                          Repo status: "embedding"
-      { orgId, repoId })                                                    Supabase: kap10.repos.status
+      { orgId, repoId })                                                    Supabase: unerr.repos.status
 3     Activity: fetchFilePaths                                              None (lightweight string[])
       → ArangoDB: getFilePaths(orgId, repoId)
       → Return: string[] of file paths (NOT full entities)
@@ -61,7 +61,7 @@ Step  System Action                                                         Stat
 6     Activity: deleteOrphanedEmbeddings                                    Removed rows for deleted entities
       → Compare collected entity keys vs pgvector entity keys
 7     Workflow completes →                                                  Repo status: "ready"
-      update repo status                                                    Supabase: kap10.repos.status
+      update repo status                                                    Supabase: unerr.repos.status
 ```
 
 **Trigger mechanism:** The `indexRepoWorkflow` (Phase 1) uses Temporal's `continueAsNew` or a parent workflow pattern to chain into `embedRepoWorkflow`. Alternatively, the final activity of `indexRepoWorkflow` starts the embed workflow as a child workflow. The exact mechanism depends on whether we want independent retry boundaries (separate workflow = yes, recommended) vs. tight coupling (child workflow).
@@ -238,7 +238,7 @@ The API route accepts `mode=hybrid|semantic|keyword` as a query parameter. The M
 │                                              │                            │  │
 │                                              │ LlamaIndex PGVectorStore   │  │
 │                                              │ → Supabase PostgreSQL      │  │
-│                                              │   (kap10.entity_embeddings)│  │
+│                                              │   (unerr.entity_embeddings)│  │
 │                                              └────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────────────────┘
                                    │ embeddings ready
@@ -425,13 +425,13 @@ WHERE org_id = $orgId AND repo_id = $repoId
 ```sql
 -- HNSW index for cosine distance, filtered by repo
 CREATE INDEX idx_entity_embeddings_hnsw
-ON kap10.entity_embeddings
+ON unerr.entity_embeddings
 USING hnsw (embedding vector_cosine_ops)
 WITH (m = 16, ef_construction = 64);
 
 -- Composite index for tenant scoping + lookup
 CREATE INDEX idx_entity_embeddings_repo_entity
-ON kap10.entity_embeddings (repo_id, entity_key);
+ON unerr.entity_embeddings (repo_id, entity_key);
 ```
 
 ---
@@ -579,7 +579,7 @@ Phase 3 establishes the semantic search foundation that Phase 4 (Business Justif
 |-----------------|---------------|
 | **Entity embeddings (pgvector)** | Phase 4's `justifyRepoWorkflow` uses entity embeddings to find semantically related entities when building context for LLM justification. The `buildEmbeddableDocuments()` function also enriches entity embedding text with justification context (purpose, domain concepts, feature tag) when justifications are available from a previous run. |
 | **Hybrid search pipeline** | Phase 3's hybrid search (`semantic_search` MCP tool) queries `entity_embeddings` only. Phase 4 adds a separate `search_by_purpose` MCP tool that queries the dedicated `justification_embeddings` table via `searchJustificationEmbeddings()`. These are independent search paths — no shared filtering logic. |
-| **IVectorSearch port** | Phase 4 extends the port with 3 optional methods: `upsertJustificationEmbeddings()`, `searchJustificationEmbeddings()`, `deleteJustificationEmbeddings()`. These target the dedicated `kap10.justification_embeddings` table. The Phase 3 methods (`upsert`, `search`, `getEmbedding`, `deleteOrphaned`) remain unchanged and continue to target `kap10.entity_embeddings`. |
+| **IVectorSearch port** | Phase 4 extends the port with 3 optional methods: `upsertJustificationEmbeddings()`, `searchJustificationEmbeddings()`, `deleteJustificationEmbeddings()`. These target the dedicated `unerr.justification_embeddings` table. The Phase 3 methods (`upsert`, `search`, `getEmbedding`, `deleteOrphaned`) remain unchanged and continue to target `unerr.entity_embeddings`. |
 | **nomic-embed-text model** | Phase 4 reuses the same local ONNX embedding model for justification text. Same `embed()` method, same memory-safe single-doc processing. The model is shared — only the storage destination differs. |
 
 ### Phase 3 / Phase 4 Table Separation
@@ -650,17 +650,17 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 ## 2.2 Database & Schema Layer
 
 - [x] **P3-DB-01: Add `EntityEmbedding` model to Prisma schema** — M
-  - New model in `kap10` schema with fields: `id`, `orgId`, `repoId`, `entityKey`, `entityType`, `entityName`, `filePath`, `textContent`, `modelVersion` (default `"nomic-v1.5-768"`), `embedding` (`Unsupported("vector(768)")`), `createdAt`, `updatedAt`
+  - New model in `unerr` schema with fields: `id`, `orgId`, `repoId`, `entityKey`, `entityType`, `entityName`, `filePath`, `textContent`, `modelVersion` (default `"nomic-v1.5-768"`), `embedding` (`Unsupported("vector(768)")`), `createdAt`, `updatedAt`
   - **Vector Model Versioning:** Unique constraint on `(repoId, entityKey, modelVersion)` — includes model version to prevent data collisions during model upgrades. Enables zero-downtime blue/green re-embedding: new model writes to new version key, old embeddings coexist until cutover. Without this, upgrading from `nomic-v1.5` to `nomic-v2` would overwrite embeddings with incompatible vectors.
   - Index on `(orgId, repoId)` for tenant-scoped queries, index on `(modelVersion)` for version-scoped queries
   - Foreign key: `repoId` → `Repo.id` with `onDelete: Cascade` (deleting a repo removes all embeddings)
-  - **Important:** Use `@@schema("kap10")` — all kap10 tables live in the `kap10` PostgreSQL schema
+  - **Important:** Use `@@schema("unerr")` — all unerr tables live in the `unerr` PostgreSQL schema
   - **Important:** `createTable: false` in LlamaIndex PGVectorStore config — Prisma owns the schema
-  - **Test:** `pnpm migrate` runs migration successfully. `\d kap10.entity_embeddings` shows `model_version` column. Upsert by `(repoId, entityKey, modelVersion)` works. Two rows with same `(repoId, entityKey)` but different `modelVersion` coexist.
+  - **Test:** `pnpm migrate` runs migration successfully. `\d unerr.entity_embeddings` shows `model_version` column. Upsert by `(repoId, entityKey, modelVersion)` works. Two rows with same `(repoId, entityKey)` but different `modelVersion` coexist.
   - **Depends on:** Nothing
-  - **Files:** `prisma/schema.prisma`, new migration file
+  - **Files:** `prisma/schema.prisma`, `supabase/migrations/00002_unerr_schema.sql`
   - **Acceptance:** Table exists with correct schema including `model_version`. Version-aware upsert works. Blue/green coexistence verified.
-  - Notes: Model version auto-computed as `nomic-v1.5-{dims}` or overridden via `EMBEDDING_MODEL_VERSION` env var.
+  - Notes: Model version auto-computed as `nomic-v1.5-{dims}` or overridden via `EMBEDDING_MODEL_VERSION` env var. Consolidated into `supabase/migrations/00002_unerr_schema.sql`.
 
 - [x] **P3-DB-02: Enable pgvector extension in Supabase** — S
   - SQL migration: `CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions;`
@@ -668,13 +668,13 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - Supabase dashboard: verify `vector` extension is enabled
   - **Test:** `SELECT * FROM pg_extension WHERE extname = 'vector';` returns a row. `SELECT '[1,2,3]'::vector;` succeeds.
   - **Depends on:** Nothing
-  - **Files:** `supabase/migrations/YYYYMMDDHHMMSS_enable_pgvector.sql`
-  - Notes: _____
+  - **Files:** `supabase/migrations/00001_public_schema.sql`
+  - Notes: Consolidated into `supabase/migrations/00001_public_schema.sql`.
 
 - [x] **P3-DB-03: Create HNSW index on embedding column** — S
-  - SQL migration: `CREATE INDEX idx_entity_embeddings_hnsw ON kap10.entity_embeddings USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);`
-  - Also create composite index: `CREATE INDEX idx_entity_embeddings_repo_entity ON kap10.entity_embeddings (repo_id, entity_key);`
-  - **Test:** `\di kap10.idx_entity_embeddings_hnsw` shows the index. Search query uses index (verify with `EXPLAIN ANALYZE`).
+  - SQL migration: `CREATE INDEX idx_entity_embeddings_hnsw ON unerr.entity_embeddings USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);`
+  - Also create composite index: `CREATE INDEX idx_entity_embeddings_repo_entity ON unerr.entity_embeddings (repo_id, entity_key);`
+  - **Test:** `\di unerr.idx_entity_embeddings_hnsw` shows the index. Search query uses index (verify with `EXPLAIN ANALYZE`).
   - **Depends on:** P3-DB-01, P3-DB-02
   - **Files:** Same migration as P3-DB-01 or separate migration
   - **Acceptance:** Cosine similarity query on 10K embeddings completes in <100ms.
@@ -684,8 +684,8 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - Extend the `RepoStatus` Prisma enum with `embedding` and `embed_failed` values
   - **Test:** Repo status can be set to `embedding` and `embed_failed` without error.
   - **Depends on:** Nothing
-  - **Files:** `prisma/schema.prisma`, new migration file
-  - Notes: _____
+  - **Files:** `prisma/schema.prisma`, `supabase/migrations/00002_unerr_schema.sql`
+  - Notes: Consolidated into `supabase/migrations/00002_unerr_schema.sql`.
 
 ---
 
@@ -717,7 +717,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 - [x] **P3-ADAPT-03: Implement `IVectorSearch.search()` with pgvector cosine similarity** — M
   - Implement the `search(embedding: number[], topK: number, filter?: { orgId?: string; repoId?: string }): Promise<{ id: string; score: number }[]>` method
-  - Use LlamaIndex `VectorStoreIndex.asRetriever()` or direct pgvector SQL: `SELECT entity_key, 1 - (embedding <=> $1) as score FROM kap10.entity_embeddings WHERE org_id = $orgId AND repo_id = $repoId ORDER BY embedding <=> $1 LIMIT $topK`
+  - Use LlamaIndex `VectorStoreIndex.asRetriever()` or direct pgvector SQL: `SELECT entity_key, 1 - (embedding <=> $1) as score FROM unerr.entity_embeddings WHERE org_id = $orgId AND repo_id = $repoId ORDER BY embedding <=> $1 LIMIT $topK`
   - **Critical:** Always include `org_id` filter (multi-tenancy). `repo_id` filter is optional (default: required in Phase 3).
   - **Test:** Insert 100 embeddings. Search with a related query → top result is the most semantically similar. Search with `repoId` filter → only returns entities from that repo.
   - **Depends on:** P3-DB-03, P3-ADAPT-02

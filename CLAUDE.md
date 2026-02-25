@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**Kap10 Web Server** — Cloud-native code intelligence platform that connects to repositories, builds a knowledge graph, and exposes it to AI coding agents via MCP. Built with Next.js 16, React 19, Tailwind CSS v4, and Zod v4. Uses Ports & Adapters (hexagonal) architecture.
+**Unerr Web Server** — Cloud-native code intelligence platform that connects to repositories, builds a knowledge graph, and exposes it to AI coding agents via MCP. Built with Next.js 16, React 19, Tailwind CSS v4, and Zod v4. Uses Ports & Adapters (hexagonal) architecture.
 
 **Package Manager**: pnpm (via Corepack). **Node**: >=20.9.0.
 
@@ -57,7 +57,7 @@ All external dependencies are behind port interfaces in `lib/ports/`. Business l
 
 | Store | Role | What lives here |
 |-------|------|-----------------|
-| **Supabase (PostgreSQL)** | App data, auth, billing | Auth tables in `public`; kap10 app tables in schema `kap10` |
+| **Supabase (PostgreSQL)** | App data, auth, billing | Auth tables in `public`; unerr app tables in schema `unerr` |
 | **ArangoDB** | Graph knowledge store | Files, functions, classes, relationships, rules, patterns |
 | **Temporal** | Workflow orchestration | Repo indexing, pattern detection, PR review pipelines |
 | **Redis** | Cache & rate limits | Hot query cache, API rate limiting, MCP session state |
@@ -100,10 +100,10 @@ Email verification is enforced at the proxy level for email/password signups onl
 
 ### Organization vs GitHub Disambiguation
 
-**"Organization" in kap10 ≠ "organization" on GitHub.** They are independent entities:
-- **Kap10 org**: Better Auth tenant, created at signup from user's name (`"{name}'s organization"`). Lives in `public.organization` table.
-- **GitHub account/org**: Stored as `accountLogin` on `kap10.github_installations` table. Never used as kap10 org name.
-- **GitHub installation**: Links a GitHub account/org to an existing kap10 org. One kap10 org can have multiple GitHub connections.
+**"Organization" in unerr ≠ "organization" on GitHub.** They are independent entities:
+- **Unerr org**: Better Auth tenant, created at signup from user's name (`"{name}'s organization"`). Lives in `public.organization` table.
+- **GitHub account/org**: Stored as `accountLogin` on `unerr.github_installations` table. Never used as unerr org name.
+- **GitHub installation**: Links a GitHub account/org to an existing unerr org. One unerr org can have multiple GitHub connections.
 - **"Workspace"**: Repo-level technical context only (clone dirs, SCIP indexing, monorepo roots). Never means organization.
 
 ### Component Conventions
@@ -135,10 +135,10 @@ Email verification is enforced at the proxy level for email/password signups onl
 ### Supabase / Prisma
 
 - **Relational data:** Supabase (PostgreSQL) and Prisma only. No MongoDB or other NoSQL for app/auth data.
-- **Schema approach:** Kap10 app tables live in PostgreSQL schema **`kap10`**. In Prisma: `schemas = ["public", "kap10"]` and `@@schema("kap10")` on every kap10 model and enum. Do not add new kap10 tables to `public`.
+- **Schema approach:** Unerr app tables live in PostgreSQL schema **`unerr`**. In Prisma: `schemas = ["public", "unerr"]` and `@@schema("unerr")` on every unerr model and enum. Do not add new unerr tables to `public`.
 - **Import**: `import { supabase } from "@/lib/db"` — never create ad-hoc clients
 - **Always check error**: `const { data, error } = await supabase.from("table").select("*"); if (error) throw error;`
-- **Types**: `import type { Database } from "@/lib/db/types"` then `Database["public"]["Tables"]["table_name"]["Row"]` (or `Database["kap10"]["Tables"][...]` for kap10 schema)
+- **Types**: `import type { Database } from "@/lib/db/types"` then `Database["public"]["Tables"]["table_name"]["Row"]` (or `Database["unerr"]["Tables"][...]` for unerr schema)
 - **Common patterns**: `.insert(data).select().single()`, `.select("*").eq("id", id).maybeSingle()`, `.update(data).eq("id", id).select().single()`
 
 ### Zod v4

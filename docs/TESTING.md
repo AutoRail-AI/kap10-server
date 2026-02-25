@@ -1,4 +1,4 @@
-# Testing Guide — kap10 Server
+# Testing Guide — unerr Server
 
 > What to test, how to test it, and who tests it (automated vs human).
 
@@ -86,7 +86,7 @@ Legend:
 | Index repo workflow | Full workflow orchestration with mocked activities | Auto | `lib/temporal/workflows/__tests__/index-repo-workflow.test.ts` |
 | File tree builder | Builds file tree from entity paths | Auto | `lib/utils/file-tree-builder.test.ts` |
 | ArangoDB adapter | Entity/edge CRUD with real ArangoDB instance | Server | `lib/adapters/arango-graph-store.integration.test.ts` |
-| GitHub App install | Install → callback → installation saved in DB | Manual | Install GitHub App on a test org → check `kap10.github_installations` |
+| GitHub App install | Install → callback → installation saved in DB | Manual | Install GitHub App on a test org → check `unerr.github_installations` |
 | Repo indexing end-to-end | Connect repo → indexing starts → entities appear | Manual | Dashboard: connect repo → wait for "ready" → check entity counts |
 | SCIP indexing | SCIP produces correct cross-references | Manual | Requires `scip-typescript` binary → check ArangoDB edges |
 | E2E: Auth flows | Signup, login, org creation | E2E | `e2e/auth-flows.spec.ts` |
@@ -116,7 +116,7 @@ Legend:
 | Response formatter | MCP responses formatted per spec | Auto | `lib/mcp/__tests__/formatter.test.ts` |
 | API key CRUD | Create, list, revoke API keys via `/api/api-keys` | Auto | Test via route handler import |
 | MCP in Cursor | Paste MCP URL + API key into `.cursor/mcp.json` → tools work | Manual | Open Cursor → add MCP config → ask agent to search code |
-| MCP in Claude Code | `claude mcp add kap10 ...` → OAuth flow → tools work | Manual | Terminal → add MCP → Claude Code agent uses tools |
+| MCP in Claude Code | `claude mcp add unerr ...` → OAuth flow → tools work | Manual | Terminal → add MCP → Claude Code agent uses tools |
 | OAuth 2.1 DCR flow | Dynamic client registration per MCP spec | Manual | Claude Code auto-registers → check token exchange works |
 
 **Auto test files:** 6
@@ -230,8 +230,8 @@ Legend:
 | Ledger entries in ArangoDB | AI changes tracked with prompts | Manual | Make AI change via MCP → verify ledger entry in ArangoDB |
 | Full rewind | Break something → click Rewind → verify restoration | Manual | Dashboard: timeline → click Rewind on entry |
 | Anti-pattern rule | Rewind generates rule, rule visible in dashboard | Manual | Rewind → verify rule in rules collection |
-| Local repo upload | `kap10 push` uploads and indexes local codebase | Manual | CLI: `kap10 push` → verify entities appear in ArangoDB |
-| `kap10 watch` | File watcher detects changes, syncs automatically | Manual | CLI: `kap10 watch` → edit files → verify sync |
+| Local repo upload | `unerr push` uploads and indexes local codebase | Manual | CLI: `unerr push` → verify entities appear in ArangoDB |
+| `unerr watch` | File watcher detects changes, syncs automatically | Manual | CLI: `unerr watch` → edit files → verify sync |
 | Timeline UI | Timeline page shows entries with branch lanes | Manual | Browser: `/repos/{id}/timeline` → verify layout |
 | Commits page | AI contribution summaries display correctly | Manual | Browser: `/repos/{id}/commits` → verify summaries |
 
@@ -242,7 +242,7 @@ Legend:
 
 ### Phase 5.6 — CLI-First Zero-Friction Onboarding
 
-> **Summary:** Device authorization flow (RFC 8628), org-level API keys, `kap10 connect` command (auto-detects git remote + IDE, writes MCP config), CLI authorize page, ephemeral sandbox mode, self-healing MCP config, dirty state overlay (real-time uncommitted context via Redis), graph-only upload endpoint.
+> **Summary:** Device authorization flow (RFC 8628), org-level API keys, `unerr connect` command (auto-detects git remote + IDE, writes MCP config), CLI authorize page, ephemeral sandbox mode, self-healing MCP config, dirty state overlay (real-time uncommitted context via Redis), graph-only upload endpoint.
 >
 > **Depends on:** Phase 5.5 (advanced features), Phase 2 (core CLI)
 
@@ -269,10 +269,10 @@ Legend:
 | Ephemeral sandbox | connect --ephemeral, promote, TTL | Auto | `packages/cli/src/__tests__/ephemeral.test.ts` |
 | Local parse fallback | --local-parse flag falls back to zip when binary missing | Auto | `packages/cli/src/__tests__/local-parse.test.ts` |
 | Browser authorize page | Shows code, "Authorize CLI" button works | Manual | Open `/cli/authorize?code=XXXX` → click authorize |
-| CLI `auth login` | Device flow opens browser, polls, saves creds | Manual | Terminal: `kap10 auth login --server http://localhost:3000` |
-| CLI `connect` | Full golden path: auth → git detect → IDE config | Manual | Terminal: `kap10 connect --server http://localhost:3000` |
-| CLI `connect --ephemeral` | Creates ephemeral sandbox with 4h TTL | Manual | Terminal: `kap10 connect --ephemeral` → verify TTL repo |
-| CLI `kap10 promote` | Converts ephemeral → permanent | Manual | `kap10 promote` → verify ephemeral flag removed |
+| CLI `auth login` | Device flow opens browser, polls, saves creds | Manual | Terminal: `unerr auth login --server http://localhost:3000` |
+| CLI `connect` | Full golden path: auth → git detect → IDE config | Manual | Terminal: `unerr connect --server http://localhost:3000` |
+| CLI `connect --ephemeral` | Creates ephemeral sandbox with 4h TTL | Manual | Terminal: `unerr connect --ephemeral` → verify TTL repo |
+| CLI `unerr promote` | Converts ephemeral → permanent | Manual | `unerr promote` → verify ephemeral flag removed |
 | UI connect page | CLI quickstart card shown, manual setup in accordion | Manual | Browser: `/repos/{id}/connect` → verify layout |
 | Org-level API key in MCP | Key without repoId works for any repo in org | Manual | Create org key → use with different repos → verify access |
 | Self-healing config | Git hooks auto-verify MCP config after checkout | Manual | `git checkout branch` → verify config repaired if broken |
@@ -347,13 +347,13 @@ Legend:
 | Review activities | fetchDiff, runSemgrep, analyzeImpact, postReview Temporal activities | Auto | `lib/temporal/activities/__tests__/review.test.ts` |
 | ADR generation | assessMergeSignificance + generateAdr activities | Auto | `lib/temporal/activities/__tests__/adr-generation.test.ts` |
 | Ledger merge | fetchLedgerEntries, reparentLedgerEntries, createMergeNode | Auto | `lib/temporal/activities/__tests__/ledger-merge.test.ts` |
-| Review MCP tool | handleReviewPrStatus — "Why did kap10 block PR #42?" | Auto | `lib/mcp/tools/__tests__/review.test.ts` |
+| Review MCP tool | handleReviewPrStatus — "Why did unerr block PR #42?" | Auto | `lib/mcp/tools/__tests__/review.test.ts` |
 | Summarizer | LLM narrative synthesis for merge summaries | Auto | `lib/use-cases/__tests__/summarizer.test.ts` |
 | REST: reviews CRUD | GET/POST `/api/repos/[repoId]/reviews`, GET `.../[reviewId]` | Server | curl against running dev server |
 | REST: review retry | POST `/api/repos/[repoId]/reviews/[reviewId]/retry` | Server | curl against running dev server |
 | REST: review settings | GET/PATCH `/api/repos/[repoId]/settings/review` | Server | curl against running dev server |
 | REST: merge history | GET `/api/repos/[repoId]/history` | Server | curl against running dev server |
-| PR review end-to-end | Open PR → kap10 posts review comments + Check Run | Manual | Open PR on connected repo → verify review posted |
+| PR review end-to-end | Open PR → unerr posts review comments + Check Run | Manual | Open PR on connected repo → verify review posted |
 | Semantic LGTM | Low-risk PR auto-approved without review | Manual | Open trivial-change PR → verify auto-approval |
 | Auto-ADR | Merge significant PR → ADR generated in repo | Manual | Merge large PR → verify ADR commit |
 | Review UI | `/repos/{id}/reviews` lists reviews with status badges | Manual | Browser: navigate to reviews page → verify rendering |
@@ -366,7 +366,7 @@ Legend:
 
 ### Phase 10a — Local-First Intelligence Proxy (MVP)
 
-> **Summary:** Ships a CLI (`@autorail/kap10`) that serves a local MCP server backed by an embedded CozoDB database. 7 of 9 structural tools resolve in <5ms from a local graph snapshot with no network round-trip. `kap10 pull` downloads a msgpack snapshot from cloud, `kap10 serve` starts the local MCP proxy. 2 tools (`sync_local_diff`, `semantic_search`) proxy transparently to the cloud.
+> **Summary:** Ships a CLI (`@autorail/unerr`) that serves a local MCP server backed by an embedded CozoDB database. 7 of 9 structural tools resolve in <5ms from a local graph snapshot with no network round-trip. `unerr pull` downloads a msgpack snapshot from cloud, `unerr serve` starts the local MCP proxy. 2 tools (`sync_local_diff`, `semantic_search`) proxy transparently to the cloud.
 >
 > **Depends on:** Phase 2
 
@@ -382,8 +382,8 @@ Legend:
 | REST: snapshot list | `GET /api/graph-snapshots` → repos with snapshot metadata | Server | curl against running dev server |
 | REST: snapshot download | `GET /api/graph-snapshots/[repoId]/download` → pre-signed URL | Server | curl against running dev server |
 | REST: snapshot sync | `POST /api/graph-snapshots/[repoId]/sync` → triggers workflow | Server | curl against running dev server |
-| `kap10 pull` | Download msgpack → verify SHA-256 → bulk-load CozoDB | Manual | Terminal: `kap10 pull --repo org/repo` → verify entities loaded |
-| `kap10 serve` | Local MCP server starts, tools respond via stdio | Manual | Terminal: `kap10 serve` → verify tools respond in IDE |
+| `unerr pull` | Download msgpack → verify SHA-256 → bulk-load CozoDB | Manual | Terminal: `unerr pull --repo org/repo` → verify entities loaded |
+| `unerr serve` | Local MCP server starts, tools respond via stdio | Manual | Terminal: `unerr serve` → verify tools respond in IDE |
 | Latency comparison | Local <5ms vs cloud ~200-300ms for same query | Manual | Measure `get_function` latency local vs cloud |
 | Dashboard snapshot status | Badge shows "available"/"generating", "Sync Now" button | Manual | Browser: `/repos/{id}` → verify snapshot status |
 
@@ -412,8 +412,8 @@ Legend:
 | v2 graph export | Rules/patterns compact export, enforcement→severity mapping | Auto | `lib/temporal/activities/__tests__/graph-export-v2.test.ts` |
 | REST: prefetch | `POST /api/prefetch` → context expansion → Redis cache | Server | curl against running dev server |
 | Local rule check latency | `get_rules` <5ms local vs ~200ms cloud | Manual | Measure latency with v2 snapshot loaded |
-| Pre-fetch verification | `kap10 serve --prefetch` → Redis populated → faster cloud response | Manual | Start serve → navigate → check Redis → verify speedup |
-| v2 pull | `kap10 pull` with v2 snapshot → rules/patterns loaded | Manual | Terminal: verify rule/pattern counts in pull output |
+| Pre-fetch verification | `unerr serve --prefetch` → Redis populated → faster cloud response | Manual | Start serve → navigate → check Redis → verify speedup |
+| v2 pull | `unerr pull` with v2 snapshot → rules/patterns loaded | Manual | Terminal: verify rule/pattern counts in pull output |
 | Rules synced indicator | Repo page shows "v2 · X rules" badge | Manual | Browser: `/repos/{id}` → verify badge |
 
 **Auto test files:** 8 (7 new files + 1 extended)
@@ -682,8 +682,8 @@ pnpm dev                # Start dev server
 - [ ] **GitHub**: Connect GitHub → select repo → indexing starts → completes
 - [ ] **MCP (Cursor)**: Paste API key config → agent can search code
 - [ ] **MCP (Claude Code)**: `claude mcp add` → OAuth → agent can search code
-- [ ] **CLI auth**: `kap10 auth login` → browser opens → code shown → authorize → CLI saves key
-- [ ] **CLI connect**: `kap10 connect` → detects repo → writes MCP config
+- [ ] **CLI auth**: `unerr auth login` → browser opens → code shown → authorize → CLI saves key
+- [ ] **CLI connect**: `unerr connect` → detects repo → writes MCP config
 - [ ] **Connect page**: `/repos/{id}/connect` → CLI quickstart visible → manual accordion works
 - [ ] **Incremental**: Push to GitHub → only changed entities re-indexed within 30s
 - [ ] **Timeline**: `/repos/{id}/timeline` → shows ledger entries with status colors
@@ -706,20 +706,20 @@ pnpm dev                # Start dev server
 - [ ] **Blueprint**: `/repos/{id}/blueprint` → swimlane visualization
 - [ ] **Health report**: `/repos/{id}/health` → risk summary
 - [ ] **Activity feed**: `/repos/{id}/activity` → index events displayed
-- [ ] **CLI push**: `kap10 push` → local repo indexed
-- [ ] **CLI watch**: `kap10 watch` → file changes auto-synced
-- [ ] **Ephemeral**: `kap10 connect --ephemeral` → sandbox with TTL
-- [ ] **Promote**: `kap10 promote` → ephemeral becomes permanent
+- [ ] **CLI push**: `unerr push` → local repo indexed
+- [ ] **CLI watch**: `unerr watch` → file changes auto-synced
+- [ ] **Ephemeral**: `unerr connect --ephemeral` → sandbox with TTL
+- [ ] **Promote**: `unerr promote` → ephemeral becomes permanent
 - [ ] **Circuit breaker**: 4+ broken AI changes → agent halted
-- [ ] **Local proxy**: `kap10 pull && kap10 serve` → tools resolve locally
-- [ ] **PR review**: Open PR on connected repo → kap10 posts review comments + Check Run
+- [ ] **Local proxy**: `unerr pull && unerr serve` → tools resolve locally
+- [ ] **PR review**: Open PR on connected repo → unerr posts review comments + Check Run
 - [ ] **Semantic LGTM**: Open trivial-change PR → auto-approved without review
 - [ ] **Auto-ADR**: Merge significant PR → ADR generated
 - [ ] **Reviews UI**: `/repos/{id}/reviews` → list reviews with status badges
 - [ ] **Review detail UI**: `/repos/{id}/reviews/{reviewId}` → findings + comments
-- [ ] **Local rules**: `kap10 pull` v2 → `get_rules` resolves locally in <5ms
+- [ ] **Local rules**: `unerr pull` v2 → `get_rules` resolves locally in <5ms
 - [ ] **Local check_rules**: Structural/naming rules evaluated locally, Semgrep skipped with `_meta`
-- [ ] **Pre-fetch**: `kap10 serve --prefetch` → Redis populated → semantic_search faster
+- [ ] **Pre-fetch**: `unerr serve --prefetch` → Redis populated → semantic_search faster
 - [ ] **v2 snapshot**: Repo page shows "v2 · X rules" badge after pull
 
 ---
@@ -768,7 +768,7 @@ describe("GET /api/my-endpoint", () => {
 
 ```typescript
 // Seed API key into cache for authenticated endpoints
-const rawKey = "kap10_sk_test_key"
+const rawKey = "unerr_sk_test_key"
 const { hashApiKey } = await import("@/lib/mcp/auth")
 const keyHash = hashApiKey(rawKey)
 
@@ -897,7 +897,7 @@ curl -s -X POST http://localhost:3000/api/cli/token \
 curl -s -X POST http://localhost:3000/api/cli/token \
   -H "Content-Type: application/json" \
   -d '{"device_code":"<FROM_STEP_1>","grant_type":"urn:ietf:params:oauth:grant-type:device_code"}'
-# Expected: { access_token: "kap10_sk_...", org_id, org_name, key_already_existed: false }
+# Expected: { access_token: "unerr_sk_...", org_id, org_name, key_already_existed: false }
 ```
 
 ### Phase 5.6 — Context Endpoint
@@ -905,14 +905,14 @@ curl -s -X POST http://localhost:3000/api/cli/token \
 Requires a valid API key (from device flow or dashboard).
 
 ```bash
-API_KEY="kap10_sk_<your_key>"
+API_KEY="unerr_sk_<your_key>"
 
 # Auth enforcement
 curl -s "http://localhost:3000/api/cli/context?remote=github.com/org/repo"
 # Expected: {"error":"Missing or invalid Authorization header"}
 
 curl -s "http://localhost:3000/api/cli/context?remote=github.com/org/repo" \
-  -H "Authorization: Bearer kap10_sk_invalid"
+  -H "Authorization: Bearer unerr_sk_invalid"
 # Expected: {"error":"Invalid API key"}
 
 # Validation
@@ -947,7 +947,7 @@ curl -s "http://localhost:3000/api/cli/context?remote=github.com/YourOrg/your-re
 Requires a valid API key and a connected repo.
 
 ```bash
-API_KEY="kap10_sk_<your_key>"
+API_KEY="unerr_sk_<your_key>"
 REPO_ID="<your_repo_id>"
 
 # List rules (should return empty or existing rules)
@@ -982,7 +982,7 @@ curl -s "http://localhost:3000/api/settings/rules" \
 Requires a valid API key and a connected repo.
 
 ```bash
-API_KEY="kap10_sk_<your_key>"
+API_KEY="unerr_sk_<your_key>"
 REPO_ID="<your_repo_id>"
 
 # List reviews (should return empty or existing reviews)
@@ -1001,7 +1001,7 @@ curl -s "http://localhost:3000/api/repos/$REPO_ID/history" \
 ### Phase 10a — Graph Snapshots API
 
 ```bash
-API_KEY="kap10_sk_<your_key>"
+API_KEY="unerr_sk_<your_key>"
 REPO_ID="<your_repo_id>"
 
 # List available snapshots
@@ -1020,7 +1020,7 @@ curl -s -X POST "http://localhost:3000/api/graph-snapshots/$REPO_ID/sync" \
 ### Phase 10b — Pre-fetch API
 
 ```bash
-API_KEY="kap10_sk_<your_key>"
+API_KEY="unerr_sk_<your_key>"
 REPO_ID="<your_repo_id>"
 
 # Fire a pre-fetch request (fire-and-forget, returns 200 immediately)

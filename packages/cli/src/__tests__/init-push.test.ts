@@ -7,7 +7,7 @@ describe("CLI init command core logic", () => {
   let tmpDir: string
 
   beforeEach(() => {
-    tmpDir = path.join(os.tmpdir(), `kap10-init-test-${Date.now()}`)
+    tmpDir = path.join(os.tmpdir(), `unerr-init-test-${Date.now()}`)
     fs.mkdirSync(tmpDir, { recursive: true })
   })
 
@@ -15,9 +15,9 @@ describe("CLI init command core logic", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
-  it("creates .kap10/config.json with correct structure", () => {
-    const kap10Dir = path.join(tmpDir, ".kap10")
-    fs.mkdirSync(kap10Dir, { recursive: true })
+  it("creates .unerr/config.json with correct structure", () => {
+    const unerrDir = path.join(tmpDir, ".unerr")
+    fs.mkdirSync(unerrDir, { recursive: true })
 
     const config = {
       repoId: "repo-123",
@@ -27,12 +27,12 @@ describe("CLI init command core logic", () => {
     }
 
     fs.writeFileSync(
-      path.join(kap10Dir, "config.json"),
+      path.join(unerrDir, "config.json"),
       JSON.stringify(config, null, 2) + "\n"
     )
 
     const written = JSON.parse(
-      fs.readFileSync(path.join(kap10Dir, "config.json"), "utf-8")
+      fs.readFileSync(path.join(unerrDir, "config.json"), "utf-8")
     ) as { repoId: string; serverUrl: string; orgId: string; branch: string }
 
     expect(written.repoId).toBe("repo-123")
@@ -41,43 +41,43 @@ describe("CLI init command core logic", () => {
     expect(written.branch).toBe("main")
   })
 
-  it("adds .kap10 to .gitignore when gitignore exists", () => {
+  it("adds .unerr to .gitignore when gitignore exists", () => {
     const gitignorePath = path.join(tmpDir, ".gitignore")
     fs.writeFileSync(gitignorePath, "node_modules/\n.env\n")
 
     // Simulate the init logic for .gitignore
     const content = fs.readFileSync(gitignorePath, "utf-8")
-    if (!content.includes(".kap10")) {
-      fs.appendFileSync(gitignorePath, "\n# kap10 local config\n.kap10/\n")
+    if (!content.includes(".unerr")) {
+      fs.appendFileSync(gitignorePath, "\n# unerr local config\n.unerr/\n")
     }
 
     const result = fs.readFileSync(gitignorePath, "utf-8")
-    expect(result).toContain(".kap10/")
+    expect(result).toContain(".unerr/")
     expect(result).toContain("node_modules/")
   })
 
-  it("creates .gitignore with .kap10 when none exists", () => {
+  it("creates .gitignore with .unerr when none exists", () => {
     const gitignorePath = path.join(tmpDir, ".gitignore")
     expect(fs.existsSync(gitignorePath)).toBe(false)
 
     // Simulate init logic
-    fs.writeFileSync(gitignorePath, "# kap10 local config\n.kap10/\n")
+    fs.writeFileSync(gitignorePath, "# unerr local config\n.unerr/\n")
 
     const result = fs.readFileSync(gitignorePath, "utf-8")
-    expect(result).toContain(".kap10/")
+    expect(result).toContain(".unerr/")
   })
 
-  it("does not duplicate .kap10 entry in .gitignore", () => {
+  it("does not duplicate .unerr entry in .gitignore", () => {
     const gitignorePath = path.join(tmpDir, ".gitignore")
-    fs.writeFileSync(gitignorePath, "node_modules/\n.kap10/\n")
+    fs.writeFileSync(gitignorePath, "node_modules/\n.unerr/\n")
 
     const content = fs.readFileSync(gitignorePath, "utf-8")
-    if (!content.includes(".kap10")) {
-      fs.appendFileSync(gitignorePath, "\n# kap10 local config\n.kap10/\n")
+    if (!content.includes(".unerr")) {
+      fs.appendFileSync(gitignorePath, "\n# unerr local config\n.unerr/\n")
     }
 
     const result = fs.readFileSync(gitignorePath, "utf-8")
-    const matches = result.match(/\.kap10/g)
+    const matches = result.match(/\.unerr/g)
     expect(matches).not.toBeNull()
     expect(matches!.length).toBe(1) // Only the original one
   })
@@ -87,7 +87,7 @@ describe("CLI push command core logic", () => {
   let tmpDir: string
 
   beforeEach(() => {
-    tmpDir = path.join(os.tmpdir(), `kap10-push-test-${Date.now()}`)
+    tmpDir = path.join(os.tmpdir(), `unerr-push-test-${Date.now()}`)
     fs.mkdirSync(tmpDir, { recursive: true })
   })
 
@@ -95,19 +95,19 @@ describe("CLI push command core logic", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
-  it("loadConfig returns null when .kap10/config.json does not exist", () => {
-    const configPath = path.join(tmpDir, ".kap10", "config.json")
+  it("loadConfig returns null when .unerr/config.json does not exist", () => {
+    const configPath = path.join(tmpDir, ".unerr", "config.json")
     expect(fs.existsSync(configPath)).toBe(false)
   })
 
   it("loadConfig returns config when file exists", () => {
-    const kap10Dir = path.join(tmpDir, ".kap10")
-    fs.mkdirSync(kap10Dir, { recursive: true })
+    const unerrDir = path.join(tmpDir, ".unerr")
+    fs.mkdirSync(unerrDir, { recursive: true })
 
     const config = { repoId: "r-1", serverUrl: "http://localhost:3000", orgId: "o-1" }
-    fs.writeFileSync(path.join(kap10Dir, "config.json"), JSON.stringify(config))
+    fs.writeFileSync(path.join(unerrDir, "config.json"), JSON.stringify(config))
 
-    const raw = fs.readFileSync(path.join(kap10Dir, "config.json"), "utf-8")
+    const raw = fs.readFileSync(path.join(unerrDir, "config.json"), "utf-8")
     const parsed = JSON.parse(raw) as { repoId: string; serverUrl: string; orgId: string }
     expect(parsed.repoId).toBe("r-1")
   })
@@ -119,11 +119,11 @@ describe("CLI push command core logic", () => {
     fs.writeFileSync(path.join(tmpDir, "node_modules", "pkg", "index.js"), "module.exports = {}")
     fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true })
     fs.writeFileSync(path.join(tmpDir, ".git", "HEAD"), "ref: refs/heads/main")
-    fs.mkdirSync(path.join(tmpDir, ".kap10"), { recursive: true })
-    fs.writeFileSync(path.join(tmpDir, ".kap10", "config.json"), "{}")
+    fs.mkdirSync(path.join(tmpDir, ".unerr"), { recursive: true })
+    fs.writeFileSync(path.join(tmpDir, ".unerr", "config.json"), "{}")
 
     // Default exclusion patterns (same as push.ts uses)
-    const alwaysExclude = [".git", ".kap10", "node_modules"]
+    const alwaysExclude = [".git", ".unerr", "node_modules"]
 
     function shouldInclude(relPath: string): boolean {
       for (const pattern of alwaysExclude) {
@@ -156,6 +156,6 @@ describe("CLI push command core logic", () => {
     expect(files).toContain("src.ts")
     expect(files.some((f) => f.startsWith("node_modules"))).toBe(false)
     expect(files.some((f) => f.startsWith(".git"))).toBe(false)
-    expect(files.some((f) => f.startsWith(".kap10"))).toBe(false)
+    expect(files.some((f) => f.startsWith(".unerr"))).toBe(false)
   })
 })

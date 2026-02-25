@@ -1,5 +1,5 @@
 /**
- * kap10 config verify — P5.6-ADV-04: Self-healing MCP configuration.
+ * unerr config verify — P5.6-ADV-04: Self-healing MCP configuration.
  * Checks and repairs MCP config for supported IDEs (VS Code, Cursor, etc.)
  */
 
@@ -24,7 +24,7 @@ const IDE_CONFIG_PATHS: Record<string, string> = {
 }
 
 function loadConfig(): { repoId: string; serverUrl: string; orgId: string } | null {
-  const configPath = path.join(process.cwd(), ".kap10", "config.json")
+  const configPath = path.join(process.cwd(), ".unerr", "config.json")
   if (!fs.existsSync(configPath)) return null
   return JSON.parse(fs.readFileSync(configPath, "utf-8")) as { repoId: string; serverUrl: string; orgId: string }
 }
@@ -49,15 +49,15 @@ function checkIdeConfig(ideName: string, configPath: string, serverUrl: string):
       return { found: true, configured: false, issues }
     }
 
-    const kap10Server = config.mcpServers["kap10"]
-    if (!kap10Server) {
-      issues.push(`${ideName}: No kap10 MCP server configured`)
+    const unerrServer = config.mcpServers["unerr"]
+    if (!unerrServer) {
+      issues.push(`${ideName}: No unerr MCP server configured`)
       return { found: true, configured: false, issues }
     }
 
     // Check URL
-    if (kap10Server.url && !kap10Server.url.includes(serverUrl.replace(/^https?:\/\//, ""))) {
-      issues.push(`${ideName}: kap10 server URL mismatch (expected: ${serverUrl})`)
+    if (unerrServer.url && !unerrServer.url.includes(serverUrl.replace(/^https?:\/\//, ""))) {
+      issues.push(`${ideName}: unerr server URL mismatch (expected: ${serverUrl})`)
     }
 
     return { found: true, configured: true, issues }
@@ -82,9 +82,9 @@ function repairIdeConfig(ideName: string, configPath: string, serverUrl: string,
 
     if (!config.mcpServers) config.mcpServers = {}
 
-    config.mcpServers["kap10"] = {
+    config.mcpServers["unerr"] = {
       url: `${serverUrl}/api/mcp/sse`,
-      env: apiKey ? { KAP10_API_KEY: apiKey } : {},
+      env: apiKey ? { UNERR_API_KEY: apiKey } : {},
     }
 
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n")
@@ -97,7 +97,7 @@ function repairIdeConfig(ideName: string, configPath: string, serverUrl: string,
 export function registerConfigVerifyCommand(program: Command) {
   const configCmd = program
     .command("config")
-    .description("Manage kap10 configuration")
+    .description("Manage unerr configuration")
 
   configCmd
     .command("verify")
@@ -106,8 +106,8 @@ export function registerConfigVerifyCommand(program: Command) {
     .option("--repair", "Automatically repair misconfigured IDEs")
     .option("--ide <ide>", "Check specific IDE (vscode, cursor, windsurf)")
     .action(async (opts: { silent?: boolean; repair?: boolean; ide?: string }) => {
-      const kap10Config = loadConfig()
-      const serverUrl = kap10Config?.serverUrl ?? process.env.KAP10_SERVER_URL ?? "http://localhost:3000"
+      const unerrConfig = loadConfig()
+      const serverUrl = unerrConfig?.serverUrl ?? process.env.UNERR_SERVER_URL ?? "http://localhost:3000"
 
       const idesToCheck = opts.ide
         ? { [opts.ide]: IDE_CONFIG_PATHS[opts.ide] ?? "" }
@@ -168,9 +168,9 @@ export function registerConfigVerifyCommand(program: Command) {
       }
 
       const hookScript = `#!/bin/sh
-# kap10 auto-verify MCP config
-if command -v kap10 &> /dev/null; then
-  kap10 config verify --silent 2>/dev/null || true
+# unerr auto-verify MCP config
+if command -v unerr &> /dev/null; then
+  unerr config verify --silent 2>/dev/null || true
 fi
 `
 
@@ -178,7 +178,7 @@ fi
         const hookPath = path.join(hooksDir, hookName)
         if (fs.existsSync(hookPath)) {
           const existing = fs.readFileSync(hookPath, "utf-8")
-          if (existing.includes("kap10 config verify")) {
+          if (existing.includes("unerr config verify")) {
             console.log(`  ✓ ${hookName}: already installed`)
             continue
           }

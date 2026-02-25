@@ -1,7 +1,7 @@
 /**
  * GET /api/cli/github/installations — List GitHub installations for the org.
  *
- * Auth: API key (Bearer kap10_sk_...)
+ * Auth: API key (Bearer unerr_sk_...)
  * Returns all GitHub App installations linked to the authenticated org.
  */
 

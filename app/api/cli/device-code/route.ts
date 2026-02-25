@@ -39,7 +39,7 @@ export async function POST() {
   // Reverse lookup: user_code → device_code
   await cacheStore.set(`cli:usercode:${userCode}`, deviceCode, expiresIn)
 
-  const serverUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.kap10.dev"
+  const serverUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.unerr.dev"
 
   return NextResponse.json({
     device_code: deviceCode,

@@ -1,27 +1,27 @@
 #!/usr/bin/env node
 /**
- * @autorail/kap10 — Local-first code intelligence CLI.
+ * @autorail/unerr — Local-first code intelligence CLI.
  *
  * Default (no subcommand):
- *   kap10                  — Full setup wizard: auth → detect IDE → git → index → MCP config
+ *   unerr                  — Full setup wizard: auth → detect IDE → git → index → MCP config
  *
  * Commands:
- *   kap10 auth login       — Authenticate with kap10 server (RFC 8628 device flow)
- *   kap10 auth logout      — Remove stored credentials
- *   kap10 connect          — Golden path: auth + git detect + IDE config
- *   kap10 init             — Register a local repo with kap10 server
- *   kap10 promote          — Convert ephemeral sandbox to permanent repository
- *   kap10 push             — Upload local repository for indexing
- *   kap10 pull             — Download graph snapshot for a repo
- *   kap10 serve            — Start local MCP server with graph queries
- *   kap10 watch            — Watch for file changes and sync to kap10 server
- *   kap10 rewind           — Revert ledger to a previous working state
- *   kap10 timeline         — Show the prompt ledger timeline
- *   kap10 mark-working     — Mark a ledger entry as a known-good working state
- *   kap10 branches         — Show timeline branches for this repository
- *   kap10 circuit-reset    — Reset a tripped circuit breaker for an entity
- *   kap10 config verify    — Check and repair MCP configuration for IDEs
- *   kap10 config install-hooks — Install git hooks for auto-verification
+ *   unerr auth login       — Authenticate with unerr server (RFC 8628 device flow)
+ *   unerr auth logout      — Remove stored credentials
+ *   unerr connect          — Golden path: auth + git detect + IDE config
+ *   unerr init             — Register a local repo with unerr server
+ *   unerr promote          — Convert ephemeral sandbox to permanent repository
+ *   unerr push             — Upload local repository for indexing
+ *   unerr pull             — Download graph snapshot for a repo
+ *   unerr serve            — Start local MCP server with graph queries
+ *   unerr watch            — Watch for file changes and sync to unerr server
+ *   unerr rewind           — Revert ledger to a previous working state
+ *   unerr timeline         — Show the prompt ledger timeline
+ *   unerr mark-working     — Mark a ledger entry as a known-good working state
+ *   unerr branches         — Show timeline branches for this repository
+ *   unerr circuit-reset    — Reset a tripped circuit breaker for an entity
+ *   unerr config verify    — Check and repair MCP configuration for IDEs
+ *   unerr config install-hooks — Install git hooks for auto-verification
  */
 
 import { Command } from "commander"
@@ -43,7 +43,7 @@ import { registerWatchCommand } from "./commands/watch.js"
 const program = new Command()
 
 program
-  .name("kap10")
+  .name("unerr")
   .description("Code intelligence for AI agents")
   .version("0.1.0")
   .option("--server <url>", "Server URL")

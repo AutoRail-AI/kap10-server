@@ -1,12 +1,12 @@
 # Phase ADV — Advanced Code Intelligence & AI Guardrails: Deep Dive & Implementation Tracker
 
-> **Phase Feature Statement:** _"kap10 catches the mistakes AI agents make that humans can't see — blast radius before merging, architectural drift, security taint paths, and production-killing anti-patterns. My dashboard is a predictive control room, not a post-mortem."_
+> **Phase Feature Statement:** _"unerr catches the mistakes AI agents make that humans can't see — blast radius before merging, architectural drift, security taint paths, and production-killing anti-patterns. My dashboard is a predictive control room, not a post-mortem."_
 >
 > **Source:** Internal product vision — cross-cutting phase that extends [Phase 4](./PHASE_4_BUSINESS_JUSTIFICATION_AND_TAXONOMY.md) (justification), [Phase 6](./PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md) (rules engine), and [Phase 7](./PHASE_7_PR_REVIEW_INTEGRATION.md) (PR review)
 >
 > **Prerequisites:** [Phase 1](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) (entities + call graph in ArangoDB), [Phase 4](./PHASE_4_BUSINESS_JUSTIFICATION_AND_TAXONOMY.md) (justifications, taxonomy, feature areas), [Phase 5](./PHASE_5_INCREMENTAL_INDEXING_AND_GITHUB_WEBHOOKS.md) (incremental indexing, AST diffing, drift alerts), [Phase 6](./PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md) (ast-grep rules engine, pattern enforcement)
 >
-> **Database convention:** All kap10 Supabase tables use PostgreSQL schema `kap10`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
+> **Database convention:** All unerr Supabase tables use PostgreSQL schema `unerr`. ArangoDB collections are org-scoped (`org_{orgId}/`). See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
 
 ---
 
@@ -49,9 +49,9 @@
 
 ## 1.1 Vision & Product Positioning
 
-This phase defines a collection of **advanced code intelligence features** that surface the proprietary graph and temporal data already captured by Phases 1–7. The goal is to shift the kap10 dashboard from a _post-mortem analytics tool_ into a _predictive control room_ for AI-generated code.
+This phase defines a collection of **advanced code intelligence features** that surface the proprietary graph and temporal data already captured by Phases 1–7. The goal is to shift the unerr dashboard from a _post-mortem analytics tool_ into a _predictive control room_ for AI-generated code.
 
-**Strategic narrative:** Code generation is becoming a commodity (Cursor, Copilot, Devin). The true bottleneck is **governing the consequences of the code**. kap10 is the immune system for AI-generated code — it proves that AI output is not just functional, but structurally sound, architecturally aligned, and production-safe.
+**Strategic narrative:** Code generation is becoming a commodity (Cursor, Copilot, Devin). The true bottleneck is **governing the consequences of the code**. unerr is the immune system for AI-generated code — it proves that AI output is not just functional, but structurally sound, architecturally aligned, and production-safe.
 
 **Target users:**
 
@@ -103,7 +103,7 @@ This section catalogs all 38 proposed features from the original brainstorm, map
 | 18 | **Rate Limit Blindness** | Phase 6 | **SHIPPED** (70%) | Scale | ast-grep rule `rate-limit-loop-fetch` in `scale-patterns.yaml`: detects `fetch()` in `while` loop without backoff. | Only detects `fetch` in `while` loops. Misses `axios`, `got`, and other HTTP clients. Misses `for`/`map`/`forEach` loop patterns. |
 | 19 | **Connection Pool Exhaustion** | Phase 6 | **SHIPPED** (90%) | Growth | ast-grep rules `connection-pool-prisma` and `connection-pool-redis` in `anti-patterns.yaml`. Detect `new PrismaClient()` and `new Redis()` inside functions. | Covers Prisma and Redis. Misses: `amqp.connect()`, `new MongoClient()`, `createPool()`. |
 | 20 | **Dark Launch Violations** | Phase 6 | **SHIPPED** (60%) | Scale | ast-grep rule `dark-launch-route` in `scale-patterns.yaml`: detects route handlers without feature flag wrapper. | Rule logic not verified for correctness. May produce false positives on non-trunk-based repos. No org-level config to enable/disable. |
-| 21 | **Toxic Supply Chain** | Phase 5 + 6 | **NOT STARTED** | Scale | `renovate.json` has `osvVulnerabilityAlerts: true` but no kap10-native supply chain analysis. | Requires new import diff analysis + OSV advisory DB integration. |
+| 21 | **Toxic Supply Chain** | Phase 5 + 6 | **NOT STARTED** | Scale | `renovate.json` has `osvVulnerabilityAlerts: true` but no unerr-native supply chain analysis. | Requires new import diff analysis + OSV advisory DB integration. |
 | 22 | **Silent Error Swallowing** | Phase 6 | **SHIPPED** (90%) | Growth | ast-grep rules `error-swallowing-empty` and `error-swallowing-null` in `anti-patterns.yaml`. Detect empty catch blocks and catch blocks returning null. | Doesn't detect `catch (e) { console.log("error") }` (logs string without error object). Should also check for catch blocks that only log but don't re-throw or report to structured logging. |
 | 23 | **Zero-Downtime Migration Violations** | Phase 6 | **SHIPPED** (60%) | Scale | ast-grep rule `zero-downtime-alter` in `scale-patterns.yaml`: detects `ALTER TABLE ADD COLUMN DEFAULT`. | Only catches one pattern. Misses: `CREATE INDEX` without `CONCURRENTLY`, `ALTER COLUMN TYPE`, table renames. |
 | 24 | **Cloud IAM Privilege Escalation** | Phase 6 | **NOT STARTED** | Scale | No implementation found. | Requires IaC file detection + wildcard policy ast-grep rules. |
@@ -146,7 +146,7 @@ Low confidence justifications, untested VERTICAL entities, single-entity feature
 
 ## 1.3 Launch Tier — Ship-Critical Features
 
-These features differentiate kap10 at launch. The core backend logic is **already shipped** — the remaining work is primarily **UI polish, wiring gaps, and enhancement**.
+These features differentiate unerr at launch. The core backend logic is **already shipped** — the remaining work is primarily **UI polish, wiring gaps, and enhancement**.
 
 ### Feature L1: Blast Radius Visualization
 
@@ -154,7 +154,7 @@ These features differentiate kap10 at launch. The core backend logic is **alread
 
 **What's missing:** A dashboard visualization showing the interactive dependency tree before an agent commits a change.
 
-**User story:** _"Before I merge this AI-generated PR, kap10 shows me that 14 functions across 3 feature areas will be affected."_
+**User story:** _"Before I merge this AI-generated PR, unerr shows me that 14 functions across 3 feature areas will be affected."_
 
 **Implementation:**
 - **Backend:** Expose `buildBlastRadiusSummary()` via a new API route `/api/repos/[repoId]/impact?entityId=...`
@@ -177,7 +177,7 @@ These features differentiate kap10 at launch. The core backend logic is **alread
 
 **What's missing:** Cosine distance comparison between old and new justification embeddings to detect _semantic_ drift (not just code change). Timeline UI showing justification history.
 
-**User story:** _"kap10 flags that my `calculateInvoice()` function has drifted from 'Computes line item totals' to 'Computes totals AND sends email notifications' — a mixed-responsibility code smell introduced by the AI agent."_
+**User story:** _"unerr flags that my `calculateInvoice()` function has drifted from 'Computes line item totals' to 'Computes totals AND sends email notifications' — a mixed-responsibility code smell introduced by the AI agent."_
 
 **Implementation:**
 - **Backend:** After cascade re-justification, compute cosine distance between old and new justification embeddings. If distance > 0.3, create a `DriftAlert` document in ArangoDB
@@ -215,7 +215,7 @@ These features differentiate kap10 at launch. The core backend logic is **alread
 
 **What's missing:** A dedicated "Cruft & Alignment" view replacing generic health metrics.
 
-**User story:** _"kap10 shows me all functions with 0 inbound calls touched in the last 30 days, with a 1-click 'Ask Agent to Clean Up' button. It also shows where my code diverges from its own mined patterns."_
+**User story:** _"unerr shows me all functions with 0 inbound calls touched in the last 30 days, with a 1-click 'Ask Agent to Clean Up' button. It also shows where my code diverges from its own mined patterns."_
 
 **Implementation:**
 - **Frontend:** Replace generic "Health Score" widget with:

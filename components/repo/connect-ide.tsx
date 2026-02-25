@@ -116,7 +116,7 @@ export function ConnectIde({
         ? "text-electric-cyan border-electric-cyan/30"
         : "text-rail-purple border-rail-purple/30"
 
-  const cliCommand = "npx @autorail/kap10 connect"
+  const cliCommand = "npx @autorail/unerr connect"
 
   return (
     <div className="space-y-5">
@@ -204,7 +204,7 @@ export function ConnectIde({
                   code={JSON.stringify(
                     {
                       mcpServers: {
-                        kap10: {
+                        unerr: {
                           url: mcpUrl,
                           transport: "streamable-http",
                           headers: {
@@ -229,7 +229,7 @@ export function ConnectIde({
                   Run this command in your terminal. OAuth will open a browser for authentication.
                 </p>
                 <CodeBlock
-                  code={`claude mcp add kap10 --transport streamable-http --url ${mcpUrl}`}
+                  code={`claude mcp add unerr --transport streamable-http --url ${mcpUrl}`}
                   label="claude-code"
                   onCopy={handleCopy}
                   copied={copied}
@@ -246,7 +246,7 @@ export function ConnectIde({
                   code={JSON.stringify(
                     {
                       "mcp.servers": {
-                        kap10: {
+                        unerr: {
                           url: mcpUrl,
                           transport: "streamable-http",
                         },
@@ -265,17 +265,17 @@ export function ConnectIde({
             {selectedClient === "ci" && (
               <InstructionCard title="CI / Manual Configuration" animate>
                 <p className="text-xs text-muted-foreground">
-                  Use an environment variable for the API key. Set <code className="text-xs">KAP10_API_KEY</code> in your CI secrets.
+                  Use an environment variable for the API key. Set <code className="text-xs">UNERR_API_KEY</code> in your CI secrets.
                 </p>
                 <CodeBlock
                   code={JSON.stringify(
                     {
                       mcpServers: {
-                        kap10: {
+                        unerr: {
                           url: mcpUrl,
                           transport: "streamable-http",
                           headers: {
-                            Authorization: "Bearer ${KAP10_API_KEY}",
+                            Authorization: "Bearer ${UNERR_API_KEY}",
                           },
                         },
                       },

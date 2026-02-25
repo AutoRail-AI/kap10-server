@@ -321,7 +321,7 @@ describe("Port Compliance — Fakes", () => {
       await expect(gitHost.getPullRequest("owner", "repo", 1)).resolves.toEqual({ number: 0, title: "" })
       await expect(
         gitHost.createPullRequest("owner", "repo", { title: "t", body: "b", head: "feat", base: "main" })
-      ).resolves.toMatchObject({ number: 42, title: "Enable kap10 Code Intelligence" })
+      ).resolves.toMatchObject({ number: 42, title: "Enable unerr Code Intelligence" })
       await expect(gitHost.getDiff("owner", "repo", "main", "feat")).resolves.toBe("")
       await expect(gitHost.listFiles("owner", "repo")).resolves.toEqual([])
       await expect(gitHost.createWebhook("owner", "repo", ["push"], "https://hook")).resolves.toBeUndefined()
@@ -358,7 +358,7 @@ describe("Port Compliance — Fakes", () => {
 
       // createCheckRun
       const checkRun = await gitHost.createCheckRun("acme", "web", {
-        name: "kap10 Architecture Review",
+        name: "unerr Architecture Review",
         headSha: "abc123",
         status: "in_progress",
       })
@@ -384,14 +384,14 @@ describe("Port Compliance — Fakes", () => {
 
       // createBranch
       await expect(
-        gitHost.createBranch("acme", "web", "kap10/adr-pr-42", "mergesha123")
+        gitHost.createBranch("acme", "web", "unerr/adr-pr-42", "mergesha123")
       ).resolves.toBeUndefined()
 
       // createOrUpdateFile
       const fileResult = await gitHost.createOrUpdateFile(
         "acme",
         "web",
-        "kap10/adr-pr-42",
+        "unerr/adr-pr-42",
         "docs/adr/2026-02-22-use-hexagonal-architecture.md",
         "# ADR: Use Hexagonal Architecture\n\n...",
         { message: "docs: add ADR for PR #42" }

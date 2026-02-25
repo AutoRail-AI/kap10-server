@@ -168,7 +168,7 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
   }
 
   /**
-   * Upsert embeddings into pgvector (kap10.entity_embeddings).
+   * Upsert embeddings into pgvector (unerr.entity_embeddings).
    * Uses ON CONFLICT (repo_id, entity_key, model_version) DO UPDATE for
    * version-aware idempotent upserts. Model version enables zero-downtime
    * blue/green re-embedding on model upgrades.
@@ -194,7 +194,7 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
         const vectorStr = `[${embedding.join(",")}]`
 
         await client.query(
-          `INSERT INTO kap10.entity_embeddings
+          `INSERT INTO unerr.entity_embeddings
             (org_id, repo_id, entity_key, entity_type, entity_name, file_path, text_content, model_version, embedding)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector)
           ON CONFLICT (repo_id, entity_key, model_version) DO UPDATE SET
@@ -263,7 +263,7 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
     const result = await pool.query(
       `SELECT entity_key, entity_type, entity_name, file_path,
               1 - (embedding <=> $1::vector) as score
-       FROM kap10.entity_embeddings
+       FROM unerr.entity_embeddings
        ${whereClause}
        ORDER BY embedding <=> $1::vector
        LIMIT $2`,
@@ -288,7 +288,7 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
     const pool = getPgPool()
     const modelVersion = this.getModelVersion()
     const result = await pool.query(
-      `SELECT embedding::text FROM kap10.entity_embeddings
+      `SELECT embedding::text FROM unerr.entity_embeddings
        WHERE repo_id = $1 AND entity_key = $2 AND model_version = $3`,
       [repoId, entityKey, modelVersion]
     )
@@ -310,7 +310,7 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
     if (currentEntityKeys.length === 0) {
       // No current entities = delete all embeddings for this repo + model version
       const result = await pool.query(
-        `DELETE FROM kap10.entity_embeddings WHERE repo_id = $1 AND model_version = $2`,
+        `DELETE FROM unerr.entity_embeddings WHERE repo_id = $1 AND model_version = $2`,
         [repoId, modelVersion]
       )
       return result.rowCount ?? 0
@@ -318,14 +318,14 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
 
     // Use ANY with array parameter for IN clause
     const result = await pool.query(
-      `DELETE FROM kap10.entity_embeddings
+      `DELETE FROM unerr.entity_embeddings
        WHERE repo_id = $1 AND model_version = $2 AND entity_key != ALL($3)`,
       [repoId, modelVersion, currentEntityKeys]
     )
     return result.rowCount ?? 0
   }
 
-  // ── Phase 4: Justification Embeddings (kap10.justification_embeddings) ──
+  // ── Phase 4: Justification Embeddings (unerr.justification_embeddings) ──
 
   /**
    * Upsert justification embeddings into the dedicated justification_embeddings table.
@@ -350,7 +350,7 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
         const vectorStr = `[${embedding.join(",")}]`
 
         await client.query(
-          `INSERT INTO kap10.justification_embeddings
+          `INSERT INTO unerr.justification_embeddings
             (org_id, repo_id, entity_id, entity_name, taxonomy, feature_tag, business_purpose, model_version, embedding)
           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::vector)
           ON CONFLICT (repo_id, entity_id, model_version) DO UPDATE SET
@@ -415,7 +415,7 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
     const result = await pool.query(
       `SELECT entity_id, entity_name, taxonomy, feature_tag, business_purpose,
               1 - (embedding <=> $1::vector) as score
-       FROM kap10.justification_embeddings
+       FROM unerr.justification_embeddings
        ${whereClause}
        ORDER BY embedding <=> $1::vector
        LIMIT $2`,
@@ -439,7 +439,7 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
     const pool = getPgPool()
     const modelVersion = this.getModelVersion()
     const result = await pool.query(
-      `DELETE FROM kap10.justification_embeddings WHERE repo_id = $1 AND model_version = $2`,
+      `DELETE FROM unerr.justification_embeddings WHERE repo_id = $1 AND model_version = $2`,
       [repoId, modelVersion]
     )
     return result.rowCount ?? 0

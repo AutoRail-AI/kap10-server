@@ -7,7 +7,7 @@ describe("Local Parse Fallback (P5.6-ADV-01)", () => {
   let tmpDir: string
 
   beforeEach(() => {
-    tmpDir = path.join(os.tmpdir(), `kap10-local-parse-${Date.now()}`)
+    tmpDir = path.join(os.tmpdir(), `unerr-local-parse-${Date.now()}`)
     fs.mkdirSync(tmpDir, { recursive: true })
   })
 
@@ -16,9 +16,9 @@ describe("Local Parse Fallback (P5.6-ADV-01)", () => {
   })
 
   it("--local-parse flag falls back to zip upload when binary not found", () => {
-    // Simulate checking for the kap10-parse binary
-    const binaryName = process.platform === "win32" ? "kap10-parse.exe" : "kap10-parse"
-    const binaryPath = path.join(tmpDir, ".kap10", "bin", binaryName)
+    // Simulate checking for the unerr-parse binary
+    const binaryName = process.platform === "win32" ? "unerr-parse.exe" : "unerr-parse"
+    const binaryPath = path.join(tmpDir, ".unerr", "bin", binaryName)
 
     const binaryExists = fs.existsSync(binaryPath)
     expect(binaryExists).toBe(false)
@@ -33,8 +33,8 @@ describe("Local Parse Fallback (P5.6-ADV-01)", () => {
   })
 
   it("detects binary when it exists at expected path", () => {
-    const binaryName = process.platform === "win32" ? "kap10-parse.exe" : "kap10-parse"
-    const binDir = path.join(tmpDir, ".kap10", "bin")
+    const binaryName = process.platform === "win32" ? "unerr-parse.exe" : "unerr-parse"
+    const binDir = path.join(tmpDir, ".unerr", "bin")
     fs.mkdirSync(binDir, { recursive: true })
 
     const binaryPath = path.join(binDir, binaryName)
@@ -71,15 +71,15 @@ describe("Local Parse Fallback (P5.6-ADV-01)", () => {
     const archName = archMap[arch]
 
     if (osName && archName) {
-      const downloadUrl = `https://releases.kap10.dev/parse/latest/kap10-parse-${osName}-${archName}`
-      expect(downloadUrl).toContain("kap10-parse")
+      const downloadUrl = `https://releases.unerr.dev/parse/latest/unerr-parse-${osName}-${archName}`
+      expect(downloadUrl).toContain("unerr-parse")
       expect(downloadUrl).toContain(osName)
       expect(downloadUrl).toContain(archName)
     }
   })
 
   it("local parse output format matches expected entity structure", () => {
-    // Simulate the expected output format from kap10-parse binary
+    // Simulate the expected output format from unerr-parse binary
     const mockParseOutput = JSON.stringify({
       files: [
         {

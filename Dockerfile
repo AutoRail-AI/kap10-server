@@ -1,4 +1,4 @@
-# Kap10 Web Server - Development Dockerfile
+# unerr Web Server - Development Dockerfile
 FROM node:22-bookworm-slim
 
 # Install dependencies for native modules (build-essential + python3 needed for sharp native addon)

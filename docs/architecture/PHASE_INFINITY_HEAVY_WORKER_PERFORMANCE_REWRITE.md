@@ -49,7 +49,7 @@ The migration is designed to be incremental — each of the three heavy activiti
    - Compile to a static binary (`musl` target for Alpine compatibility)
 
 4. **Create the TypeScript wrapper:**
-   - Replace the activity body with `execFileAsync('/usr/local/bin/kap10-{activity}', [args...])`
+   - Replace the activity body with `execFileAsync('/usr/local/bin/unerr-{activity}', [args...])`
    - Parse stdout as JSON
    - Map Rust process exit codes to Temporal failure types
    - Preserve heartbeat calls (Rust binary writes progress to stderr; wrapper reads and heartbeats)
@@ -57,7 +57,7 @@ The migration is designed to be incremental — each of the three heavy activiti
 5. **Update Dockerfile:**
    - Multi-stage build: compile Rust in `rust:1.82-alpine` stage
    - Copy binary to existing `node:22-bookworm-slim` heavy worker image
-   - Binary lands at `/usr/local/bin/kap10-{activity}`
+   - Binary lands at `/usr/local/bin/unerr-{activity}`
 
 6. **Deploy with feature flag:**
    - Environment variable `USE_RUST_{ACTIVITY}=true|false` (default: `false`)
@@ -88,7 +88,7 @@ Trigger: index-repo workflow reaches the runSCIP step
 
 **New Rust path:**
 
-1. TypeScript wrapper calls `execFileAsync('/usr/local/bin/kap10-scip-parse', ['--input', scipPath, '--repo-id', repoId, '--output-format', 'json'])`.
+1. TypeScript wrapper calls `execFileAsync('/usr/local/bin/unerr-scip-parse', ['--input', scipPath, '--repo-id', repoId, '--output-format', 'json'])`.
 2. Rust binary opens the `.scip` file via `mmap` (zero heap allocation for file I/O).
 3. `prost`-generated decoder reads the `Index` protobuf message using the official `scip.proto` schema:
    - Iterates `documents` (field 2) — each `Document` contains a `relative_path` and list of `occurrences`.
@@ -126,7 +126,7 @@ Trigger: index-repo workflow reaches the prepareWorkspace step
 
 **New Rust path:**
 
-1. TypeScript wrapper calls `execFileAsync('/usr/local/bin/kap10-prepare-workspace', ['--repo-url', url, '--branch', branch, '--workspace-dir', dir, '--output-format', 'json'])`.
+1. TypeScript wrapper calls `execFileAsync('/usr/local/bin/unerr-prepare-workspace', ['--repo-url', url, '--branch', branch, '--workspace-dir', dir, '--output-format', 'json'])`.
 2. Rust binary uses `git2` crate (libgit2 bindings):
    - In-process clone — no subprocess spawn.
    - Credential callback injects GitHub App installation token.
@@ -196,21 +196,21 @@ Phase ∞ does NOT replace the Temporal heavy worker process. It adds Rust binar
 │  │  ┌─────────────────────────────────────────────────┐ │      │
 │  │  │ Activity: prepareWorkspace                      │ │      │
 │  │  │  if USE_RUST_PREPARE:                           │ │      │
-│  │  │    execFileAsync("kap10-prepare-workspace"...)   │─┼──►  │
+│  │  │    execFileAsync("unerr-prepare-workspace"...)   │─┼──►  │
 │  │  │  else:                                          │ │   Rust│
 │  │  │    original TypeScript impl                     │ │   bins│
 │  │  └─────────────────────────────────────────────────┘ │      │
 │  │  ┌─────────────────────────────────────────────────┐ │      │
 │  │  │ Activity: runSCIP                               │ │      │
 │  │  │  if USE_RUST_SCIP:                              │ │      │
-│  │  │    execFileAsync("kap10-scip-parse"...)          │─┼──►  │
+│  │  │    execFileAsync("unerr-scip-parse"...)          │─┼──►  │
 │  │  │  else:                                          │ │   /usr│
 │  │  │    original TypeScript impl                     │ │   /lo-│
 │  │  └─────────────────────────────────────────────────┘ │   cal/│
 │  │  ┌─────────────────────────────────────────────────┐ │   bin/│
 │  │  │ Activity: parseRest                             │ │      │
 │  │  │  if USE_RUST_PARSE_REST:                        │ │      │
-│  │  │    execFileAsync("kap10-parse-rest"...)          │─┼──►  │
+│  │  │    execFileAsync("unerr-parse-rest"...)          │─┼──►  │
 │  │  │  else:                                          │ │      │
 │  │  │    original TypeScript impl                     │ │      │
 │  │  └─────────────────────────────────────────────────┘ │      │
@@ -236,12 +236,12 @@ Each Rust binary follows a strict contract:
 **Input:** CLI arguments + optional stdin JSON for large payloads.
 
 ```
-kap10-scip-parse \
+unerr-scip-parse \
   --input /data/workspaces/{orgId}/{repoId}/index.scip \
   --repo-id {repoId} \
   --workspace-dir /data/workspaces/{orgId}/{repoId} \
   --arango-url http://arangodb:8529 \
-  --arango-db kap10 \
+  --arango-db unerr \
   --arango-auth {base64 user:pass} \
   --batch-size 1000 \
   --output-format summary
@@ -411,7 +411,7 @@ Step 6: syncLocalGraph (child workflow)
 **Impact:** `execFileAsync` throws `ENOENT`. Activity fails immediately.
 
 **Mitigation:**
-1. Dockerfile build step verifies binary exists and is executable (`RUN /usr/local/bin/kap10-scip-parse --version`).
+1. Dockerfile build step verifies binary exists and is executable (`RUN /usr/local/bin/unerr-scip-parse --version`).
 2. Container health check includes binary existence verification.
 3. Feature flag defaults to `false` (TypeScript path) — binary absence only matters when flag is explicitly enabled.
 4. TypeScript wrapper checks `fs.existsSync(binaryPath)` before `execFileAsync`. If missing and flag is `true`, throws `ApplicationFailure.nonRetryable("Rust binary not found — check Dockerfile build")`.
@@ -515,7 +515,7 @@ The current `cleanup-workspaces` workflow only deletes ArangoDB overlay entities
 Phase ∞ adds filesystem cleanup to the Rust `prepareWorkspace` binary:
 - Before cloning, check if workspace directory exists and is stale (last modified > 7 days).
 - After successful indexing, optionally clean up the `.scip` output files (large, not needed after parsing).
-- A new `kap10-workspace-gc` binary runs as a cron-scheduled Temporal activity, removing workspace directories for repos that no longer exist in the relational store.
+- A new `unerr-workspace-gc` binary runs as a cron-scheduled Temporal activity, removing workspace directories for repos that no longer exist in the relational store.
 
 ---
 
@@ -552,7 +552,7 @@ Phase ∞ adds filesystem cleanup to the Rust `prepareWorkspace` binary:
 ### Layer: Infrastructure (INFRA)
 
 - [ ] **INFRA-01: Initialize `workers/heavy-compute-rust/` Rust crate**
-  - `cargo init --name kap10-heavy-worker workers/heavy-compute-rust`
+  - `cargo init --name unerr-heavy-worker workers/heavy-compute-rust`
   - Configure `Cargo.toml`: edition 2021, `[profile.release]` with `opt-level = 3`, `lto = true`, `panic = "abort"`, `strip = true`
   - Add `.cargo/config.toml` with musl cross-compilation targets
   - Add `rust-toolchain.toml` pinning stable channel (e.g., `1.82.0`)
@@ -602,7 +602,7 @@ Phase ∞ adds filesystem cleanup to the Rust `prepareWorkspace` binary:
   - Copy `workers/heavy-compute-rust/` source
   - `cargo build --release --target x86_64-unknown-linux-musl`
   - Copy binaries to `/usr/local/bin/` in the final Node.js stage
-  - Verify binaries are executable: `RUN kap10-scip-parse --version`
+  - Verify binaries are executable: `RUN unerr-scip-parse --version`
   - **Test:** Docker build succeeds; binary runs in container; static binary confirmed
   - **Notes:** ARM64 variant uses `aarch64-unknown-linux-musl` target. CI builds both architectures.
 
@@ -632,7 +632,7 @@ Phase ∞ adds filesystem cleanup to the Rust `prepareWorkspace` binary:
   - `scip::Occurrence` → extract `range` (line/col), `symbol`, `symbol_roles`
   - Parse SCIP symbol string format to determine entity kind + name
   - Handle all symbol roles: definition, reference, implementation, type definition
-  - **Test:** Parse a known `.scip` file (generated from the kap10-server codebase itself); verify entity/edge counts match TypeScript output; verify all entity types extracted correctly
+  - **Test:** Parse a known `.scip` file (generated from the unerr-server codebase itself); verify entity/edge counts match TypeScript output; verify all entity types extracted correctly
   - **Notes:** Must handle field 7 (`enclosing_range`) which TypeScript skips — this enables parent-child relationships for methods within classes
 
 - [ ] **RUST-03: Implement `mmap` file reader**
@@ -654,7 +654,7 @@ Phase ∞ adds filesystem cleanup to the Rust `prepareWorkspace` binary:
   - **Test:** Write 10,000 test documents to a test collection; verify all created; verify onDuplicate=update works; verify HTTP/2 negotiation; verify error handling for connection refused
   - **Notes:** Test against a real ArangoDB instance (Docker). Mock HTTP for unit tests.
 
-- [ ] **RUST-05: Implement `kap10-scip-parse` binary**
+- [ ] **RUST-05: Implement `unerr-scip-parse` binary**
   - CLI args: `--input`, `--repo-id`, `--workspace-dir`, `--arango-url`, `--arango-db`, `--arango-auth`, `--batch-size`, `--output-format` (`summary` | `json`)
   - Pipeline: open `.scip` via mmap → decode with prost → extract entities/edges → compute hashes → write to ArangoDB in streaming batches → report summary to stdout
   - Progress reporting to stderr: `PROGRESS:N` at 10% intervals
@@ -662,7 +662,7 @@ Phase ∞ adds filesystem cleanup to the Rust `prepareWorkspace` binary:
   - **Test:** End-to-end test: generate `.scip` from a test repo → parse with Rust binary → verify entities in ArangoDB match TypeScript output
   - **Notes:** This is the first binary to ship. Highest impact, highest risk.
 
-- [ ] **RUST-06: Implement `kap10-prepare-workspace` binary**
+- [ ] **RUST-06: Implement `unerr-prepare-workspace` binary**
   - CLI args: `--repo-url`, `--branch`, `--workspace-dir`, `--github-token`, `--output-format`
   - Pipeline: clone or pull via `git2` → scan index for files → detect languages → detect monorepo roots → output JSON
   - `git2` credential callback: inject GitHub token as `x-access-token:{token}`
@@ -671,7 +671,7 @@ Phase ∞ adds filesystem cleanup to the Rust `prepareWorkspace` binary:
   - **Test:** Clone a public repo; verify file list matches `git ls-files` output; verify monorepo detection matches TypeScript output; verify credential injection works with private repos
   - **Notes:** Depends on RUST-01 for entity hashing (file entities created during scan)
 
-- [ ] **RUST-07: Implement `kap10-parse-rest` binary**
+- [ ] **RUST-07: Implement `unerr-parse-rest` binary**
   - CLI args: `--workspace-dir`, `--repo-id`, `--covered-files` (JSON array or file path), `--arango-url`, `--arango-db`, `--arango-auth`, `--batch-size`, `--output-format`
   - Pipeline: scan workspace → filter out SCIP-covered files → for uncovered files: read content → extract entities via tree-sitter grammars → compute hashes → write to ArangoDB
   - Use actual `tree-sitter` crate with language grammars (not regex) for entity extraction:
@@ -682,7 +682,7 @@ Phase ∞ adds filesystem cleanup to the Rust `prepareWorkspace` binary:
   - **Test:** Parse a multi-language repo; verify entity types extracted correctly; verify uncovered-file filtering works; verify tree-sitter produces more accurate results than regex
   - **Notes:** Tree-sitter parsing in Rust is significantly more accurate than the current regex-based "parseWithTreeSitter" functions in TypeScript
 
-- [ ] **RUST-08: Implement `kap10-workspace-gc` binary**
+- [ ] **RUST-08: Implement `unerr-workspace-gc` binary**
   - CLI args: `--base-path`, `--max-age-days`, `--dry-run`, `--output-format`
   - Pipeline: walk `/data/workspaces/` → for each `{orgId}/{repoId}/` directory, check last modified time → remove directories older than `max-age-days`
   - Dry-run mode lists directories that would be removed without deleting
@@ -693,7 +693,7 @@ Phase ∞ adds filesystem cleanup to the Rust `prepareWorkspace` binary:
 
 ### Layer: TypeScript Wrappers (WRAP)
 
-- [ ] **WRAP-01: Create TypeScript wrapper for `kap10-scip-parse`**
+- [ ] **WRAP-01: Create TypeScript wrapper for `unerr-scip-parse`**
   - In `lib/temporal/activities/indexing-heavy.ts`, add Rust path to `runSCIP`
   - Check `USE_RUST_SCIP` env flag
   - Build CLI args from activity input
@@ -704,19 +704,19 @@ Phase ∞ adds filesystem cleanup to the Rust `prepareWorkspace` binary:
   - **Test:** Mock `execFileAsync` → verify correct args passed; verify heartbeat called on progress lines; verify error mapping for each exit code
   - **Notes:** Original TypeScript implementation remains in the `else` branch — not deleted until post-stabilization
 
-- [ ] **WRAP-02: Create TypeScript wrapper for `kap10-prepare-workspace`**
+- [ ] **WRAP-02: Create TypeScript wrapper for `unerr-prepare-workspace`**
   - Same pattern as WRAP-01, in `prepareWorkspace` activity
   - Check `USE_RUST_PREPARE` env flag
   - Pass GitHub token via `--github-token` arg (sourced from `container.gitHost`)
   - **Test:** Verify correct args; verify token passing; verify error mapping
   - **Notes:** Requires `IGitHost` to expose the installation token — may need a new port method `getInstallationToken(repoId)`
 
-- [ ] **WRAP-03: Create TypeScript wrapper for `kap10-parse-rest`**
+- [ ] **WRAP-03: Create TypeScript wrapper for `unerr-parse-rest`**
   - Same pattern as WRAP-01, in `parseRest` activity
   - Check `USE_RUST_PARSE_REST` env flag
   - Pass `coveredFiles` as a temp JSON file (too large for CLI args)
   - **Test:** Verify correct args; verify temp file created and cleaned up; verify error mapping
-  - **Notes:** Temp file at `/tmp/kap10-covered-{uuid}.json`, deleted in `finally` block
+  - **Notes:** Temp file at `/tmp/unerr-covered-{uuid}.json`, deleted in `finally` block
 
 - [ ] **WRAP-04: Create shadow mode comparison utility**
   - When `SHADOW_MODE_SCIP=true`: run both TypeScript and Rust paths, compare outputs
@@ -835,7 +835,7 @@ Phase ∞ adds filesystem cleanup to the Rust `prepareWorkspace` binary:
 
 - [ ] **TEST-10: Dockerfile build verification**
   - Build `Dockerfile.heavy-worker` with Rust stage
-  - Verify all 3 binaries exist at `/usr/local/bin/kap10-*`
+  - Verify all 3 binaries exist at `/usr/local/bin/unerr-*`
   - Verify binaries are executable and return `--version` output
   - Verify binaries are statically linked (no shared library dependencies)
   - Run a smoke test inside the container: parse a bundled test `.scip` file
@@ -894,11 +894,11 @@ TEST-* items depend on their corresponding implementation items.
 1. **Foundation** (INFRA-01–03, DB-01, DB-03) — Rust crate, proto schema, hash tests
 2. **Entity hash** (RUST-01, TEST-01) — most critical compatibility piece, validate immediately
 3. **SCIP parser** (RUST-02, RUST-03, RUST-04) — core modules
-4. **First binary** (RUST-05, WRAP-01, INFRA-04) — `kap10-scip-parse` with feature flag
+4. **First binary** (RUST-05, WRAP-01, INFRA-04) — `unerr-scip-parse` with feature flag
 5. **Shadow validation** (WRAP-04, TEST-02, TEST-06) — compare Rust vs TypeScript output
 6. **Docker integration** (INFRA-06, INFRA-07, TEST-10) — build and deploy
-7. **Second binary** (RUST-06, DB-02, WRAP-02) — `kap10-prepare-workspace`
-8. **Third binary** (RUST-07, WRAP-03) — `kap10-parse-rest` with real tree-sitter
+7. **Second binary** (RUST-06, DB-02, WRAP-02) — `unerr-prepare-workspace`
+8. **Third binary** (RUST-07, WRAP-03) — `unerr-parse-rest` with real tree-sitter
 9. **Workflow update** (WRAP-05, TEST-11) — summary-only returns, remove writeToArango hop
 10. **Workspace GC** (RUST-08) — filesystem cleanup
 11. **Performance tuning** (INFRA-05, TEST-07, TEST-09, TEST-12) — benchmarks and concurrency tests

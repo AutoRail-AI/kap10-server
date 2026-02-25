@@ -24,13 +24,13 @@ describe("Config Healer (P5.6-ADV-04)", () => {
     const configPath = path.join(tmpDir, "mcp.json")
     fs.writeFileSync(configPath, JSON.stringify({
       mcpServers: {
-        kap10: { url: "http://localhost:3000/api/mcp/sse" },
+        unerr: { url: "http://localhost:3000/api/mcp/sse" },
       },
     }))
 
     const raw = fs.readFileSync(configPath, "utf-8")
     const config = JSON.parse(raw) as { mcpServers?: Record<string, { url?: string }> }
-    expect(config.mcpServers?.kap10?.url).toBe("http://localhost:3000/api/mcp/sse")
+    expect(config.mcpServers?.unerr?.url).toBe("http://localhost:3000/api/mcp/sse")
   })
 
   it("verifies config after simulated git checkout", () => {
@@ -38,7 +38,7 @@ describe("Config Healer (P5.6-ADV-04)", () => {
     const configPath = path.join(tmpDir, "mcp.json")
     fs.writeFileSync(configPath, JSON.stringify({
       mcpServers: {
-        kap10: { url: "http://localhost:3000/api/mcp/sse" },
+        unerr: { url: "http://localhost:3000/api/mcp/sse" },
       },
     }))
 
@@ -49,11 +49,11 @@ describe("Config Healer (P5.6-ADV-04)", () => {
       },
     }))
 
-    // Verify: kap10 config is missing after checkout
+    // Verify: unerr config is missing after checkout
     const raw = fs.readFileSync(configPath, "utf-8")
     const config = JSON.parse(raw) as { mcpServers?: Record<string, unknown> }
-    const hasKap10 = config.mcpServers !== undefined && "kap10" in config.mcpServers
-    expect(hasKap10).toBe(false)
+    const hasUnerr = config.mcpServers !== undefined && "unerr" in config.mcpServers
+    expect(hasUnerr).toBe(false)
   })
 
   it("detects config drift when server URL changes", () => {
@@ -63,24 +63,24 @@ describe("Config Healer (P5.6-ADV-04)", () => {
     // Config with wrong server URL
     fs.writeFileSync(configPath, JSON.stringify({
       mcpServers: {
-        kap10: { url: "http://old-server:3000/api/mcp/sse" },
+        unerr: { url: "http://old-server:3000/api/mcp/sse" },
       },
     }))
 
     const raw = fs.readFileSync(configPath, "utf-8")
     const config = JSON.parse(raw) as { mcpServers?: Record<string, { url?: string }> }
-    const currentUrl = config.mcpServers?.kap10?.url ?? ""
+    const currentUrl = config.mcpServers?.unerr?.url ?? ""
 
     // Check drift: current URL doesn't match expected
     const hasDrift = !currentUrl.includes(expectedServerUrl.replace(/^https?:\/\//, ""))
     expect(hasDrift).toBe(true)
   })
 
-  it("auto-repairs broken config by adding kap10 server entry", () => {
+  it("auto-repairs broken config by adding unerr server entry", () => {
     const configPath = path.join(tmpDir, "mcp.json")
     const serverUrl = "http://localhost:3000"
 
-    // Start with config missing kap10
+    // Start with config missing unerr
     fs.writeFileSync(configPath, JSON.stringify({
       mcpServers: {
         "some-other-tool": { command: "npx", args: ["other"] },
@@ -92,7 +92,7 @@ describe("Config Healer (P5.6-ADV-04)", () => {
     const config = JSON.parse(raw) as { mcpServers?: Record<string, unknown> }
     if (!config.mcpServers) config.mcpServers = {}
 
-    config.mcpServers["kap10"] = {
+    config.mcpServers["unerr"] = {
       url: `${serverUrl}/api/mcp/sse`,
       env: {},
     }
@@ -103,8 +103,8 @@ describe("Config Healer (P5.6-ADV-04)", () => {
     const repaired = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
       mcpServers: Record<string, { url?: string }>
     }
-    expect(repaired.mcpServers["kap10"]).toBeTruthy()
-    expect(repaired.mcpServers["kap10"]!.url).toBe("http://localhost:3000/api/mcp/sse")
+    expect(repaired.mcpServers["unerr"]).toBeTruthy()
+    expect(repaired.mcpServers["unerr"]!.url).toBe("http://localhost:3000/api/mcp/sse")
     // Other tools are preserved
     expect(repaired.mcpServers["some-other-tool"]).toBeTruthy()
   })
@@ -120,7 +120,7 @@ describe("Config Healer (P5.6-ADV-04)", () => {
     fs.mkdirSync(configDir, { recursive: true })
     const config = {
       mcpServers: {
-        kap10: {
+        unerr: {
           url: `${serverUrl}/api/mcp/sse`,
           env: {},
         },
@@ -132,7 +132,7 @@ describe("Config Healer (P5.6-ADV-04)", () => {
     const written = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
       mcpServers: Record<string, { url: string }>
     }
-    expect(written.mcpServers["kap10"]!.url).toContain("mcp/sse")
+    expect(written.mcpServers["unerr"]!.url).toContain("mcp/sse")
   })
 
   it("silent mode suppresses output on success", () => {
@@ -152,7 +152,7 @@ describe("Config Healer (P5.6-ADV-04)", () => {
 
   it("silent mode still shows errors", () => {
     const silent = true
-    const issues = ["cursor: No kap10 MCP server configured"]
+    const issues = ["cursor: No unerr MCP server configured"]
     const output: string[] = []
 
     // Errors are always shown, even in silent mode
@@ -161,7 +161,7 @@ describe("Config Healer (P5.6-ADV-04)", () => {
     }
 
     expect(output.length).toBe(1)
-    expect(output[0]).toContain("No kap10 MCP server configured")
+    expect(output[0]).toContain("No unerr MCP server configured")
   })
 
   it("handles malformed JSON config gracefully", () => {
@@ -178,7 +178,7 @@ describe("Config Healer (P5.6-ADV-04)", () => {
     expect(parseError).toBe(true)
   })
 
-  it("preserves existing non-kap10 MCP servers during repair", () => {
+  it("preserves existing non-unerr MCP servers during repair", () => {
     const configPath = path.join(tmpDir, "mcp.json")
     const original = {
       mcpServers: {
@@ -192,7 +192,7 @@ describe("Config Healer (P5.6-ADV-04)", () => {
     const config = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
       mcpServers: Record<string, unknown>
     }
-    config.mcpServers["kap10"] = { url: "http://localhost:3000/api/mcp/sse" }
+    config.mcpServers["unerr"] = { url: "http://localhost:3000/api/mcp/sse" }
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
 
     const result = JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
@@ -201,6 +201,6 @@ describe("Config Healer (P5.6-ADV-04)", () => {
     expect(Object.keys(result.mcpServers).length).toBe(3)
     expect(result.mcpServers["copilot"]).toBeTruthy()
     expect(result.mcpServers["cody"]).toBeTruthy()
-    expect(result.mcpServers["kap10"]).toBeTruthy()
+    expect(result.mcpServers["unerr"]).toBeTruthy()
   })
 })

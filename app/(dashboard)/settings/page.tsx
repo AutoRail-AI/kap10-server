@@ -54,7 +54,7 @@ export default async function SettingsGeneralPage() {
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-sm text-muted-foreground">kap10.dev/</span>
+              <span className="text-sm text-muted-foreground">unerr.dev/</span>
               <Input
                 className="h-9 max-w-xs"
                 defaultValue={activeOrg.slug}

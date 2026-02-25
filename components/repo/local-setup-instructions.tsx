@@ -98,33 +98,33 @@ export function LocalSetupInstructions({ repoId, repoName, serverUrl }: LocalSet
           <h3 className="font-grotesk text-sm font-semibold text-foreground">CLI Setup</h3>
         </div>
         <p className="text-xs text-muted-foreground">
-          Install the kap10 CLI for local-first code intelligence with sub-5ms graph queries.
+          Install the unerr CLI for local-first code intelligence with sub-5ms graph queries.
         </p>
 
         <div className="space-y-3">
           <div className="space-y-1.5">
             <p className="text-xs font-medium text-foreground">1. Install CLI</p>
-            <CodeBlock code="npm install -g @autorail/kap10" />
+            <CodeBlock code="npm install -g @autorail/unerr" />
           </div>
 
           <div className="space-y-1.5">
             <p className="text-xs font-medium text-foreground">2. Authenticate</p>
-            <CodeBlock code={`kap10 auth login --server ${serverUrl}`} />
+            <CodeBlock code={`unerr auth login --server ${serverUrl}`} />
           </div>
 
           <div className="space-y-1.5">
             <p className="text-xs font-medium text-foreground">3. Pull graph snapshot</p>
-            <CodeBlock code={`kap10 pull --repo ${repoId}`} />
+            <CodeBlock code={`unerr pull --repo ${repoId}`} />
           </div>
 
           <div className="space-y-1.5">
             <p className="text-xs font-medium text-foreground">4. Start local MCP server</p>
-            <CodeBlock code="kap10 serve" />
+            <CodeBlock code="unerr serve" />
           </div>
 
           <div className="space-y-1.5">
             <p className="text-xs font-medium text-foreground">5. (Optional) Enable pre-fetch</p>
-            <CodeBlock code="kap10 serve --prefetch" />
+            <CodeBlock code="unerr serve --prefetch" />
             <p className="text-[11px] text-muted-foreground">
               Predictive context pre-warming: pre-loads related entities as you navigate code.
             </p>

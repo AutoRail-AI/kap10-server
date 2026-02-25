@@ -270,7 +270,7 @@ describe("adr-generation activities", () => {
 
       // Verify branch was created
       expect(fakeGitHost.branches.length).toBe(1)
-      expect(fakeGitHost.branches[0]!.name).toBe("kap10/adr-pr-77")
+      expect(fakeGitHost.branches[0]!.name).toBe("unerr/adr-pr-77")
       expect(fakeGitHost.branches[0]!.fromSha).toBe("mergesha123")
       expect(fakeGitHost.branches[0]!.owner).toBe("acme")
       expect(fakeGitHost.branches[0]!.repo).toBe("web")
@@ -301,7 +301,7 @@ describe("adr-generation activities", () => {
 
       // Verify file was created
       expect(fakeGitHost.files.length).toBeGreaterThanOrEqual(1)
-      const createdFile = fakeGitHost.files.find((f) => f.branch === "kap10/adr-pr-88")
+      const createdFile = fakeGitHost.files.find((f) => f.branch === "unerr/adr-pr-88")
       expect(createdFile).toBeDefined()
       expect(createdFile!.path).toContain("docs/adr/")
       expect(createdFile!.path).toContain(".md")

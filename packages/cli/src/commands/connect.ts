@@ -1,5 +1,5 @@
 /**
- * kap10 connect — Golden path CLI command.
+ * unerr connect — Golden path CLI command.
  *
  * Handles: auth → git context detection → repo check → IDE config → done.
  * One command to go from zero to MCP-connected.
@@ -96,7 +96,7 @@ function writeMcpConfig(
     }
 
     const mcpServers = (config.mcpServers ?? {}) as Record<string, unknown>
-    mcpServers["kap10"] = {
+    mcpServers["unerr"] = {
       url: `${serverUrl}/mcp`,
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -121,7 +121,7 @@ function writeMcpConfig(
     }
 
     const mcpServers = (settings["mcp.servers"] ?? {}) as Record<string, unknown>
-    mcpServers["kap10"] = {
+    mcpServers["unerr"] = {
       url: `${serverUrl}/mcp`,
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -136,7 +136,7 @@ function writeMcpConfig(
   // Always print Claude Code command
   console.log("")
   console.log("  For Claude Code, run:")
-  console.log(`  claude mcp add kap10 --transport http "${serverUrl}/mcp" \\`)
+  console.log(`  claude mcp add unerr --transport http "${serverUrl}/mcp" \\`)
   console.log(`    --header "Authorization: Bearer ${apiKey}"`)
   console.log("")
   console.log(`  MCP configured for ${repoName}.`)
@@ -145,8 +145,8 @@ function writeMcpConfig(
 export function registerConnectCommand(program: Command): void {
   program
     .command("connect")
-    .description("Connect current repo to kap10 MCP (auth + detect + configure)")
-    .option("--server <url>", "Server URL", "https://app.kap10.dev")
+    .description("Connect current repo to unerr MCP (auth + detect + configure)")
+    .option("--server <url>", "Server URL", "https://app.unerr.dev")
     .option("--key <apiKey>", "API key (skip browser login)")
     .option("--ide <type>", "IDE type: cursor, vscode, claude-code")
     .option("--ephemeral", "Create an ephemeral sandbox (expires in 4 hours)")
@@ -198,8 +198,8 @@ export function registerConnectCommand(program: Command): void {
         console.log(`  Branch: ${git.branch}`)
         console.log("")
 
-        // Step 3: Check if repo exists on kap10 (or create ephemeral sandbox)
-        console.log("Checking kap10...")
+        // Step 3: Check if repo exists on unerr (or create ephemeral sandbox)
+        console.log("Checking unerr...")
         if (opts.ephemeral) {
           // Ephemeral sandbox mode: register repo as ephemeral
           try {
@@ -219,7 +219,7 @@ export function registerConnectCommand(program: Command): void {
 
             if (initRes.ok) {
               console.log(
-                "  Ephemeral sandbox created (expires in 4 hours). Use `kap10 promote` to make permanent."
+                "  Ephemeral sandbox created (expires in 4 hours). Use `unerr promote` to make permanent."
               )
             } else {
               const body = (await initRes.json()) as { error?: string }
@@ -258,7 +258,7 @@ export function registerConnectCommand(program: Command): void {
               }
             } else if (contextRes.status === 404) {
               console.log(
-                "  This repo isn't on kap10 yet."
+                "  This repo isn't on unerr yet."
               )
               console.log(
                 "  Add it via the dashboard or connect GitHub at:"
@@ -294,7 +294,7 @@ export function registerConnectCommand(program: Command): void {
           const hooksDir = join(gitDir, "hooks")
           mkdirSync(hooksDir, { recursive: true })
 
-          const hookScript = `#!/bin/sh\nkap10 config verify --silent 2>/dev/null || true\n`
+          const hookScript = `#!/bin/sh\nunerr config verify --silent 2>/dev/null || true\n`
 
           for (const hook of ["post-checkout", "post-merge"]) {
             const hookPath = join(hooksDir, hook)

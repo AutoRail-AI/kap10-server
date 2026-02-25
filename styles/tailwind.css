@@ -1,7 +1,7 @@
 @import 'tailwindcss';
 
 /* ============================================================================
-   kap10 server Design System
+   unerr server Design System
    Tailwind CSS v4 + shadcn/ui compatible
    Theme: Void Black + Rail Purple (Glass Brain Aesthetic)
    See: docs/brand/brand.md
@@ -386,7 +386,7 @@
     box-shadow: 0 0 40px rgba(110, 24, 179, 0.3);
   }
 
-  /* Hover shadow glows for stat cards (kap10 = cyan, platform = purple) */
+  /* Hover shadow glows for stat cards (unerr = cyan, platform = purple) */
   .shadow-glow-purple {
     box-shadow: 0 0 20px rgba(110, 24, 179, 0.2);
   }

@@ -1,5 +1,5 @@
 /**
- * kap10 push — .gitignore-aware zip upload + trigger indexing.
+ * unerr push — .gitignore-aware zip upload + trigger indexing.
  */
 import { Command } from "commander"
 import * as fs from "node:fs"
@@ -7,7 +7,7 @@ import * as path from "node:path"
 import { getCredentials } from "./auth.js"
 
 function loadConfig(): { repoId: string; serverUrl: string; orgId: string } | null {
-  const configPath = path.join(process.cwd(), ".kap10", "config.json")
+  const configPath = path.join(process.cwd(), ".unerr", "config.json")
   if (!fs.existsSync(configPath)) return null
   const raw = fs.readFileSync(configPath, "utf-8")
   return JSON.parse(raw) as { repoId: string; serverUrl: string; orgId: string }
@@ -17,18 +17,18 @@ export function registerPushCommand(program: Command): void {
   program
     .command("push")
     .description("Upload local repository for indexing")
-    .option("--local-parse", "Use local AST extraction (requires kap10-parse binary)")
+    .option("--local-parse", "Use local AST extraction (requires unerr-parse binary)")
     .action(async (opts: { localParse?: boolean }) => {
       try {
         const config = loadConfig()
         if (!config) {
-          console.error("Not initialized. Run: kap10 init")
+          console.error("Not initialized. Run: unerr init")
           process.exit(1)
         }
 
         const creds = getCredentials()
         if (!creds?.apiKey) {
-          console.error("Not authenticated. Run: kap10 auth login")
+          console.error("Not authenticated. Run: unerr auth login")
           process.exit(1)
         }
 
@@ -65,7 +65,7 @@ export function registerPushCommand(program: Command): void {
         // Load .gitignore patterns
         const gitignorePath = path.join(process.cwd(), ".gitignore")
         const ig = ignore()
-        ig.add([".git", ".kap10", "node_modules"])
+        ig.add([".git", ".unerr", "node_modules"])
         if (fs.existsSync(gitignorePath)) {
           ig.add(fs.readFileSync(gitignorePath, "utf-8"))
         }

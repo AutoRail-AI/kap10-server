@@ -10,7 +10,7 @@
 import pc from "picocolors"
 
 export const brand = {
-  name: "kap10",
+  name: "unerr",
   tagline: "Code intelligence for AI agents",
 }
 

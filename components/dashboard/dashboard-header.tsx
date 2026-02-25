@@ -15,11 +15,11 @@ export function DashboardHeader() {
       <Link
         href="/"
         className="flex items-center gap-2.5 transition-opacity hover:opacity-90"
-        aria-label="kap10 home"
+        aria-label="unerr home"
       >
         <Image src="/autorail.svg" alt="autorail" width={28} height={28} className="h-6 w-6" />
         <span className="font-grotesk text-sm font-semibold tracking-tight text-foreground">
-          kap10
+          unerr
         </span>
       </Link>
 

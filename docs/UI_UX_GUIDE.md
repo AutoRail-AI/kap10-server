@@ -3,20 +3,20 @@
 
 **Version:** 5.0
 **Status:** Authoritative Reference
-**Target Quality:** Enterprise SaaS — Stripe × Linear × the kap10 Landing Page
+**Target Quality:** Enterprise SaaS — Stripe × Linear × the unerr Landing Page
 **Last Updated:** February 2026
 **Stack:** Next.js 16 App Router, React 19, Tailwind v4, Shadcn UI, Zustand, React Hook Form + Zod v4
 **Design System:** autorail Industrial Glass (Void Black + Electric Cyan)
 **Tailwind:** v4 — `styles/tailwind.css`
 **Golden Sample:** `.cursor/patterns/golden-sample.tsx`
 **Brand Guide:** `docs/brand/brand.md`
-**Landing Page Reference:** https://autorail.com/kap10 — the visual DNA this app continues
+**Landing Page Reference:** https://autorail.com/unerr — the visual DNA this app continues
 
 ---
 
 ## Design Philosophy
 
-> The kap10 dashboard is what happens when a user clicks "Join Waitlist" on the landing page and gets in. **The experience must feel like stepping inside the product they were just sold.** The landing page promises Industrial Glass, terminal-grade precision, cyan intelligence glows, and a structural-engineering HUD. The app delivers exactly that — with the restraint needed for 8-hour daily use.
+> The unerr dashboard is what happens when a user clicks "Join Waitlist" on the landing page and gets in. **The experience must feel like stepping inside the product they were just sold.** The landing page promises Industrial Glass, terminal-grade precision, cyan intelligence glows, and a structural-engineering HUD. The app delivers exactly that — with the restraint needed for 8-hour daily use.
 
 **The Translation Rule:**
 | Landing Page | Dashboard App |
@@ -60,7 +60,7 @@ The dashboard renders inside a fixed sidebar shell provided by `app/(dashboard)/
 │ │ glass-   │ │                                      │ │
 │ │ panel    │ │  ┌─ Header ─────────────────────┐    │ │
 │ │          │ │  │ Title + Actions               │    │ │
-│ │ kap10    │ │  ├─ Stats Grid ─────────────────┤    │ │
+│ │ unerr    │ │  ├─ Stats Grid ─────────────────┤    │ │
 │ │ logo     │ │  │ glass-card × 4                │    │ │
 │ │          │ │  ├─ Main Content ───────────────┤    │ │
 │ │ Repos    │ │  │ Tabs / Tables / Grid          │    │ │
@@ -74,7 +74,7 @@ The dashboard renders inside a fixed sidebar shell provided by `app/(dashboard)/
 └──────────────────────────────────────────────────────┘
 ```
 
-**Sidebar:** `w-56` (224px), `glass-panel` + `border-r border-border`. "kap10" wordmark in `font-grotesk text-sm font-semibold`. Nav links use `text-muted-foreground` default → `text-electric-cyan` active.
+**Sidebar:** `w-56` (224px), `glass-panel` + `border-r border-border`. "unerr" wordmark in `font-grotesk text-sm font-semibold`. Nav links use `text-muted-foreground` default → `text-electric-cyan` active.
 
 **Main content area:** `flex-1 overflow-y-auto p-6`. All page components render here.
 
@@ -94,12 +94,12 @@ Two **internal-only** tenant operating modes (never surfaced in UI):
 #### UX Rules
 - ❌ Never say "personal mode" or "organization mode" in UI
 - ❌ Never say "personal account" or "personal workspace"
-- ❌ Never use a GitHub account/org name as the kap10 organization name — they are independent entities
+- ❌ Never use a GitHub account/org name as the unerr organization name — they are independent entities
 - ✅ Use "Settings", "Members", "Your Account", "Enable Teams"
 - ✅ Show GitHub account names as secondary metadata (e.g., "(GitHub: @octocat)"), never as the org identity
 - Teams features: **completely hidden** in Normal mode
 
-> **Disambiguation:** "Organization" in kap10 is the account-level tenant (created at signup from the user's name). It is **not** the same as a GitHub organization. GitHub accounts/orgs connect to kap10 orgs as installations — stored separately with their own `accountLogin` field. One kap10 org can have multiple GitHub connections.
+> **Disambiguation:** "Organization" in unerr is the account-level tenant (created at signup from the user's name). It is **not** the same as a GitHub organization. GitHub accounts/orgs connect to unerr orgs as installations — stored separately with their own `accountLogin` field. One unerr org can have multiple GitHub connections.
 
 ### 1.3 Authorization & Role System
 
@@ -626,7 +626,7 @@ All buttons: `size="sm"` in app context. Only `size="lg"` for empty state CTAs.
           No repositories yet
         </EmptyTitle>
         <EmptyDescription className="text-sm text-foreground">
-          Connect your first GitHub repository to get started with kap10.
+          Connect your first GitHub repository to get started with unerr.
         </EmptyDescription>
       </EmptyHeader>
       <Button size="lg" className="bg-rail-fade hover:opacity-90">
@@ -1092,7 +1092,7 @@ Before building any new feature:
 
 ## Appendix C: Landing Page → App Translation Table
 
-This table maps visual elements from the kap10 landing page to their dashboard equivalents:
+This table maps visual elements from the unerr landing page to their dashboard equivalents:
 
 | Landing Page Element | App Equivalent |
 |---------------------|---------------|
@@ -1118,5 +1118,5 @@ This table maps visual elements from the kap10 landing page to their dashboard e
 **Golden Sample:** `.cursor/patterns/golden-sample.tsx`
 **Brand Guide:** `docs/brand/brand.md`
 **Component Library:** Shadcn UI
-**Landing Page Reference:** autorail-landing-page `docs/content/kap10-page.md`
+**Landing Page Reference:** autorail-landing-page `docs/content/unerr-page.md`
 **Next Review:** When major features ship or design system changes occur

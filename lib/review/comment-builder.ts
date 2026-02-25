@@ -200,14 +200,14 @@ function buildReviewBody(
   total: number,
   truncated: boolean
 ): string {
-  if (total === 0) return "**kap10 Architecture Review** — No findings. Clean PR! ✓"
+  if (total === 0) return "**unerr Architecture Review** — No findings. Clean PR! ✓"
 
   const parts = []
   if (failed > 0) parts.push(`${failed} blocking`)
   if (warned > 0) parts.push(`${warned} warnings`)
   if (passed > 0) parts.push(`${passed} info`)
 
-  let body = `**kap10 Architecture Review** — ${total} finding(s): ${parts.join(", ")}`
+  let body = `**unerr Architecture Review** — ${total} finding(s): ${parts.join(", ")}`
   if (truncated)
     body += `\n\n> Note: Showing first ${MAX_INLINE_COMMENTS} of ${total} findings. See the Checks tab for the full report.`
   return body

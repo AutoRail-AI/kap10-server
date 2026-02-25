@@ -1,5 +1,5 @@
 /**
- * Shared PrismaClient singleton for API routes that query kap10-schema tables
+ * Shared PrismaClient singleton for API routes that query unerr-schema tables
  * (e.g., GraphSnapshotMeta) outside the DI container.
  *
  * Uses lazy initialization with PrismaPg adapter (Prisma 7 requirement).
@@ -19,9 +19,9 @@ export function getPrisma(): InstanceType<typeof import("@prisma/client").Prisma
     throw new Error("PrismaClient requires SUPABASE_DB_URL or DATABASE_URL")
   }
 
-  // Set search_path so Prisma resolves kap10-schema tables alongside public-schema tables.
+  // Set search_path so Prisma resolves unerr-schema tables alongside public-schema tables.
   // See: prisma/prisma#28611
-  const searchPath = "kap10,public"
+  const searchPath = "unerr,public"
   const separator = connectionString.includes("?") ? "&" : "?"
   const connWithSchema = connectionString + separator + "options=-c%20search_path%3D" + encodeURIComponent(searchPath)
 

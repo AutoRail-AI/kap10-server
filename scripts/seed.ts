@@ -8,7 +8,7 @@ async function seed() {
   console.log("🌱 Starting seed...")
 
   try {
-    // TODO: Add Kap10 seed data here
+    // TODO: Add Unerr seed data here
     console.log("✅ Seed completed successfully!")
   } catch (error: unknown) {
     console.error(

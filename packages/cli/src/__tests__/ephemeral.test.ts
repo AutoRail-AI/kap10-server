@@ -7,7 +7,7 @@ describe("Ephemeral Sandbox (P5.6-ADV-02)", () => {
   let tmpDir: string
 
   beforeEach(() => {
-    tmpDir = path.join(os.tmpdir(), `kap10-ephemeral-${Date.now()}`)
+    tmpDir = path.join(os.tmpdir(), `unerr-ephemeral-${Date.now()}`)
     fs.mkdirSync(tmpDir, { recursive: true })
   })
 
@@ -17,8 +17,8 @@ describe("Ephemeral Sandbox (P5.6-ADV-02)", () => {
 
   it("connect --ephemeral creates ephemeral repo config", () => {
     // Simulate ephemeral repo creation: a config with ephemeral: true and a TTL
-    const kap10Dir = path.join(tmpDir, ".kap10")
-    fs.mkdirSync(kap10Dir, { recursive: true })
+    const unerrDir = path.join(tmpDir, ".unerr")
+    fs.mkdirSync(unerrDir, { recursive: true })
 
     const ttlHours = 24
     const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000).toISOString()
@@ -33,11 +33,11 @@ describe("Ephemeral Sandbox (P5.6-ADV-02)", () => {
     }
 
     fs.writeFileSync(
-      path.join(kap10Dir, "config.json"),
+      path.join(unerrDir, "config.json"),
       JSON.stringify(ephemeralConfig, null, 2) + "\n"
     )
 
-    const raw = fs.readFileSync(path.join(kap10Dir, "config.json"), "utf-8")
+    const raw = fs.readFileSync(path.join(unerrDir, "config.json"), "utf-8")
     const config = JSON.parse(raw) as {
       repoId: string
       ephemeral: boolean
@@ -50,8 +50,8 @@ describe("Ephemeral Sandbox (P5.6-ADV-02)", () => {
   })
 
   it("promote converts ephemeral to permanent config", () => {
-    const kap10Dir = path.join(tmpDir, ".kap10")
-    fs.mkdirSync(kap10Dir, { recursive: true })
+    const unerrDir = path.join(tmpDir, ".unerr")
+    fs.mkdirSync(unerrDir, { recursive: true })
 
     // Start with ephemeral config
     const ephemeralConfig = {
@@ -63,7 +63,7 @@ describe("Ephemeral Sandbox (P5.6-ADV-02)", () => {
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     }
 
-    const configPath = path.join(kap10Dir, "config.json")
+    const configPath = path.join(unerrDir, "config.json")
     fs.writeFileSync(configPath, JSON.stringify(ephemeralConfig, null, 2))
 
     // Simulate "promote" — remove ephemeral flag and expiry

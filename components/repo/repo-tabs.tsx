@@ -5,6 +5,7 @@ import {
   BookOpen,
   BookText,
   Brain,
+  CircleAlert,
   Clock,
   Code,
   Fingerprint,
@@ -23,7 +24,8 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 
 const tabs = [
-  { label: "Code", href: "", icon: Code },
+  { label: "Issues", href: "", icon: CircleAlert },
+  { label: "Code", href: "/code", icon: Code },
   { label: "Entities", href: "/entities", icon: Layers },
   { label: "Blueprint", href: "/blueprint", icon: LayoutGrid },
   { label: "Patterns", href: "/patterns", icon: Fingerprint },

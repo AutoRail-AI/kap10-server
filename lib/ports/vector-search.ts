@@ -32,7 +32,7 @@ export interface JustificationSearchResult {
 }
 
 export interface IVectorSearch {
-  // ── Phase 3: Entity Embeddings (kap10.entity_embeddings) ────────
+  // ── Phase 3: Entity Embeddings (unerr.entity_embeddings) ────────
 
   /** Embed texts into vectors (document encoding). */
   embed(texts: string[]): Promise<number[][]>
@@ -47,7 +47,7 @@ export interface IVectorSearch {
   /** Delete orphaned entity embeddings (entities removed from graph). Returns count deleted. */
   deleteOrphaned?(repoId: string, currentEntityKeys: string[]): Promise<number>
 
-  // ── Phase 4: Justification Embeddings (kap10.justification_embeddings) ──
+  // ── Phase 4: Justification Embeddings (unerr.justification_embeddings) ──
 
   /** Upsert justification embeddings into the dedicated justification_embeddings table. */
   upsertJustificationEmbeddings?(

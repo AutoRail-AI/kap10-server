@@ -1,7 +1,7 @@
 /**
  * GET /api/cli/repos/[repoId]/status — Poll repo indexing status.
  *
- * Auth: API key (Bearer kap10_sk_...)
+ * Auth: API key (Bearer unerr_sk_...)
  *
  * Returns the current status of a repo (pending, indexing, ready, error)
  * along with progress and entity counts when available.

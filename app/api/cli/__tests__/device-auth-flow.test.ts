@@ -188,7 +188,7 @@ describe("POST /api/cli/token", () => {
       key_already_existed: boolean
     }>(res)
 
-    expect(data.access_token).toMatch(/^kap10_sk_/)
+    expect(data.access_token).toMatch(/^unerr_sk_/)
     expect(data.token_type).toBe("Bearer")
     expect(data.org_id).toBe("org-1")
     expect(data.org_name).toBe("Test Org")
@@ -208,7 +208,7 @@ describe("POST /api/cli/token", () => {
     await testContainer.relationalStore.createApiKey({
       organizationId: "org-2",
       name: "Default CLI Key",
-      keyPrefix: "kap10_sk_xxxx****",
+      keyPrefix: "unerr_sk_xxxx****",
       keyHash: "somehash",
       scopes: ["mcp:read", "mcp:sync"],
       isDefault: true,
@@ -304,7 +304,7 @@ describe("POST /api/cli/token — full device flow integration", () => {
       key_already_existed: boolean
     }>(tokenRes)
 
-    expect(tokenData.access_token).toMatch(/^kap10_sk_/)
+    expect(tokenData.access_token).toMatch(/^unerr_sk_/)
     expect(tokenData.org_id).toBe("org-e2e")
     expect(tokenData.org_name).toBe("E2E Org")
     expect(tokenData.key_already_existed).toBe(false)
@@ -333,7 +333,7 @@ describe("GET /api/cli/context", () => {
 
   it("rejects requests with invalid API key", async () => {
     const req = new Request("http://localhost/api/cli/context?remote=github.com/org/repo", {
-      headers: { Authorization: "Bearer kap10_sk_invalid" },
+      headers: { Authorization: "Bearer unerr_sk_invalid" },
     })
     const res = await contextGET(req)
     expect(res.status).toBe(401)
@@ -359,7 +359,7 @@ describe("GET /api/cli/context", () => {
     }, 300)
 
     // Use raw key
-    const rawKey = `kap10_sk_test_context_key`
+    const rawKey = `unerr_sk_test_context_key`
     const { hashApiKey } = await import("@/lib/mcp/auth")
     const keyHash = hashApiKey(rawKey)
     await testContainer.cacheStore.set(`mcp:apikey:${keyHash}`, {
@@ -380,7 +380,7 @@ describe("GET /api/cli/context", () => {
   })
 
   it("returns 400 for unparseable remote URL", async () => {
-    const rawKey = `kap10_sk_test_parse_key`
+    const rawKey = `unerr_sk_test_parse_key`
     const { hashApiKey } = await import("@/lib/mcp/auth")
     const keyHash = hashApiKey(rawKey)
     await testContainer.cacheStore.set(`mcp:apikey:${keyHash}`, {
@@ -401,7 +401,7 @@ describe("GET /api/cli/context", () => {
   })
 
   it("returns 404 when repo is not found", async () => {
-    const rawKey = `kap10_sk_test_notfound_key`
+    const rawKey = `unerr_sk_test_notfound_key`
     const { hashApiKey } = await import("@/lib/mcp/auth")
     const keyHash = hashApiKey(rawKey)
     await testContainer.cacheStore.set(`mcp:apikey:${keyHash}`, {
@@ -424,7 +424,7 @@ describe("GET /api/cli/context", () => {
 
   it("returns repo info for HTTPS remote", async () => {
     const orgId = "org-https"
-    const rawKey = `kap10_sk_test_https_key`
+    const rawKey = `unerr_sk_test_https_key`
     const { hashApiKey } = await import("@/lib/mcp/auth")
     const keyHash = hashApiKey(rawKey)
     await testContainer.cacheStore.set(`mcp:apikey:${keyHash}`, {
@@ -469,7 +469,7 @@ describe("GET /api/cli/context", () => {
 
   it("returns repo info for SSH remote", async () => {
     const orgId = "org-ssh"
-    const rawKey = `kap10_sk_test_ssh_key`
+    const rawKey = `unerr_sk_test_ssh_key`
     const { hashApiKey } = await import("@/lib/mcp/auth")
     const keyHash = hashApiKey(rawKey)
     await testContainer.cacheStore.set(`mcp:apikey:${keyHash}`, {
@@ -509,7 +509,7 @@ describe("GET /api/cli/context", () => {
 
   it("matches case-insensitively", async () => {
     const orgId = "org-case"
-    const rawKey = `kap10_sk_test_case_key`
+    const rawKey = `unerr_sk_test_case_key`
     const { hashApiKey } = await import("@/lib/mcp/auth")
     const keyHash = hashApiKey(rawKey)
     await testContainer.cacheStore.set(`mcp:apikey:${keyHash}`, {
@@ -542,7 +542,7 @@ describe("GET /api/cli/context", () => {
 
   it("matches bare domain remote (no protocol)", async () => {
     const orgId = "org-bare"
-    const rawKey = `kap10_sk_test_bare_key`
+    const rawKey = `unerr_sk_test_bare_key`
     const { hashApiKey } = await import("@/lib/mcp/auth")
     const keyHash = hashApiKey(rawKey)
     await testContainer.cacheStore.set(`mcp:apikey:${keyHash}`, {

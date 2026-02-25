@@ -1,5 +1,5 @@
 /**
- * kap10 promote — converts an ephemeral sandbox to a permanent repo.
+ * unerr promote — converts an ephemeral sandbox to a permanent repo.
  * Phase 5.6: P5.6-ADV-03
  */
 import { Command } from "commander"
@@ -8,7 +8,7 @@ import * as path from "node:path"
 import { getCredentials } from "./auth.js"
 
 function loadConfig(): { repoId: string; serverUrl: string; orgId: string } | null {
-  const configPath = path.join(process.cwd(), ".kap10", "config.json")
+  const configPath = path.join(process.cwd(), ".unerr", "config.json")
   if (!fs.existsSync(configPath)) return null
   return JSON.parse(fs.readFileSync(configPath, "utf-8")) as {
     repoId: string
@@ -24,14 +24,14 @@ export function registerPromoteCommand(program: Command): void {
     .action(async () => {
       const creds = getCredentials()
       if (!creds) {
-        console.error("Not authenticated. Run `kap10 auth login` first.")
+        console.error("Not authenticated. Run `unerr auth login` first.")
         process.exit(1)
       }
 
       const config = loadConfig()
       if (!config?.repoId) {
         console.error(
-          "No repo configured. Run `kap10 init` or `kap10 connect` first."
+          "No repo configured. Run `unerr init` or `unerr connect` first."
         )
         process.exit(1)
       }

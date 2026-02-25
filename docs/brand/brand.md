@@ -2,7 +2,7 @@
 
 **Autonomous Engineering Infrastructure**
 
-This document defines the visual identity for **autorail**. The aesthetic is "Void Black + Industrial Glass"—utilizing a deep void-black palette with rail purple and electric cyan accents to create a structural, engineering-grade interface that conveys governance, verification, and machine precision. Two products share this system: **kap10** (Electric Cyan) and **necroma** (Rail Purple).
+This document defines the visual identity for **autorail**. The aesthetic is "Void Black + Industrial Glass"—utilizing a deep void-black palette with rail purple and electric cyan accents to create a structural, engineering-grade interface that conveys governance, verification, and machine precision. Two products share this system: **unerr** (Electric Cyan) and **necroma** (Rail Purple).
 
 ---
 
@@ -29,7 +29,7 @@ This limited palette is implemented in `styles/tailwind.css` and across all land
 | :--- | :--- |
 | **Name** | autorail |
 | **Tagline** | Autonomous Engineering Infrastructure |
-| **Products** | kap10 (The AI Tech Lead — cyan) · necroma (The Migration Layer — purple) |
+| **Products** | unerr (The AI Tech Lead — cyan) · necroma (The Migration Layer — purple) |
 | **Concept** | Platform providing governance infrastructure for AI-powered development — persistent context, behavioral verification, and self-healing built into the development lifecycle |
 | **Vibe** | Void Black, Industrial Glass, Rail Purple, Electric Cyan, Machine Precision |
 
@@ -45,7 +45,7 @@ autorail speaks with three distinct voices depending on context. All three share
 
 **Keywords:** *Infrastructure, Governance, Autonomous, Verification, Self-Healing.*
 
-### 2.2 kap10 Voice: The AI Tech Lead
+### 2.2 unerr Voice: The AI Tech Lead
 
 **Tone:** Direct, confident, developer-friendly. Speaks to individual developers and small teams who are already using AI coding agents (Cursor, Claude Code, Windsurf) and hitting the "Day 2" wall.
 
@@ -77,7 +77,7 @@ Our color system creates a deep, immersive environment where **void black backgr
 **Why this works for autorail:**
 - **Void Black (#0A0A0F)**: The production floor. The dark, stable foundation on which everything is built and tested.
 - **Rail Purple (#6E18B3)**: necroma's domain — deep context, legacy analysis, structural verification, the "wire" that connects past to future.
-- **Electric Cyan (#00E5FF)**: kap10's domain — new intelligence, supervision, forward momentum, the "spark" of modern engineering.
+- **Electric Cyan (#00E5FF)**: unerr's domain — new intelligence, supervision, forward momentum, the "spark" of modern engineering.
 
 #### The "Bicameral" Color Logic
 
@@ -85,7 +85,7 @@ To communicate the **two-product** architecture instantly, we separate color usa
 
 | Color | Represents | Use for |
 | :--- | :--- | :--- |
-| **Electric Cyan (`#00E5FF`)** | **New Intelligence** — kap10, Generation, Forward Momentum | Primary buttons, active cursors, generated code, "Ship Ready" confidence |
+| **Electric Cyan (`#00E5FF`)** | **New Intelligence** — unerr, Generation, Forward Momentum | Primary buttons, active cursors, generated code, "Ship Ready" confidence |
 | **Rail Purple (`#6E18B3`)** | **Deep Context** — necroma, Legacy Analysis, Structure | Background borders, knowledge-graph nodes, "Self-Healing" diagnosis, historical logs |
 
 **Rule:** *Cyan is the Spark. Purple is the Wire.* Never blend cyan-to-purple gradients.
@@ -607,7 +607,7 @@ Maintain brand immersion with styled selection:
 
 Codifies the per-product visual rules used across landing pages and product UIs. Each product owns a distinct visual lane within the shared autorail design system.
 
-| Property | kap10 | necroma |
+| Property | unerr | necroma |
 | :--- | :--- | :--- |
 | **Primary accent** | Electric Cyan `#00E5FF` | Rail Purple `#6E18B3` |
 | **Glow shadow** | `rgba(0,229,255,0.15)` | `rgba(110,24,179,0.15)` |
@@ -619,7 +619,7 @@ Codifies the per-product visual rules used across landing pages and product UIs.
 
 ### Usage Rules
 
-- **Never mix product accents** within a single section. A kap10 section is cyan; a necroma section is purple. Cross-product sections (e.g. the main landing BentoGrid) use the platform palette with clear per-card product association.
+- **Never mix product accents** within a single section. A unerr section is cyan; a necroma section is purple. Cross-product sections (e.g. the main landing BentoGrid) use the platform palette with clear per-card product association.
 - **Terminal backgrounds** are slightly tinted toward the product color to reinforce ownership without breaking the Void Black rule.
 - **WebGL heroes** are product-specific — each product page has its own Three.js scene with distinct motion language and color palette.
 

@@ -1,8 +1,8 @@
 /**
- * POST /api/cli/init — Register a local repo with kap10.
+ * POST /api/cli/init — Register a local repo with unerr.
  *
  * Creates (or returns existing) a repo record for the authenticated org
- * with provider="local_cli". Called by `kap10 init`.
+ * with provider="local_cli". Called by `unerr init`.
  */
 
 import { NextResponse } from "next/server"

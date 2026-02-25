@@ -1,11 +1,11 @@
 /**
  * Dual-mode MCP authentication middleware.
  *
- * Mode A (OAuth JWT): Token does NOT start with "kap10_sk_" → validate JWT
+ * Mode A (OAuth JWT): Token does NOT start with "unerr_sk_" → validate JWT
  *   - HMAC-SHA256 with BETTER_AUTH_SECRET
  *   - Check exp, aud (MCP_JWT_AUDIENCE), extract sub (userId), org (orgId), scope
  *
- * Mode B (API Key): Token starts with "kap10_sk_" → hash lookup
+ * Mode B (API Key): Token starts with "unerr_sk_" → hash lookup
  *   - SHA-256 hash → Redis cache (TTL 5 min) → fallback to Supabase
  *   - Timing-safe comparison for hash lookup
  */
@@ -31,20 +31,20 @@ export interface AuthError {
   wwwAuthenticate?: string
 }
 
-const API_KEY_PREFIX = "kap10_sk_"
+const API_KEY_PREFIX = "unerr_sk_"
 const API_KEY_CACHE_TTL = 300 // 5 minutes
 
 /**
  * Hash an API key using SHA-256 (same as storage).
  */
 export function hashApiKey(rawKey: string): string {
-  return createHmac("sha256", "kap10-api-key-salt")
+  return createHmac("sha256", "unerr-api-key-salt")
     .update(rawKey)
     .digest("hex")
 }
 
 /**
- * Generate a new API key with the kap10_sk_ prefix.
+ * Generate a new API key with the unerr_sk_ prefix.
  * Returns { raw, hash, prefix } — raw is shown once, hash is stored.
  */
 export function generateApiKey(): { raw: string; hash: string; prefix: string } {
@@ -145,7 +145,7 @@ export async function authenticateMcpRequest(
   relationalStore: IRelationalStore
 ): Promise<McpAuthContext | AuthError> {
   const log = logger.child({ service: "mcp-auth" })
-  const mcpServerUrl = process.env.MCP_SERVER_URL ?? "https://mcp.kap10.dev"
+  const mcpServerUrl = process.env.MCP_SERVER_URL ?? "https://mcp.unerr.dev"
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     log.warn("Missing or invalid Authorization header")
@@ -248,7 +248,7 @@ function authenticateJwt(token: string): McpAuthContext | AuthError {
     return { status: 500, message: "Server configuration error: missing auth secret" }
   }
 
-  const audience = process.env.MCP_JWT_AUDIENCE ?? "kap10-mcp"
+  const audience = process.env.MCP_JWT_AUDIENCE ?? "unerr-mcp"
   const payload = verifyJwt(token, secret, audience)
 
   if (!payload) {

@@ -124,7 +124,7 @@ async function mintTokens(
     return { error: "server_error", error_description: "Server configuration error" }
   }
 
-  const audience = process.env.MCP_JWT_AUDIENCE ?? "kap10-mcp"
+  const audience = process.env.MCP_JWT_AUDIENCE ?? "unerr-mcp"
 
   // Mint access token (JWT)
   const accessToken = createJwt(

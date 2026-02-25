@@ -111,7 +111,7 @@ export async function handleSyncLocalDiff(
   }
 
   // Step 3: Acquire distributed lock
-  const lockKey = `kap10:lock:workspace:${ctx.userId}:${repoId}:${branch}`
+  const lockKey = `unerr:lock:workspace:${ctx.userId}:${repoId}:${branch}`
   let lockAcquired = false
 
   for (let attempt = 0; attempt < LOCK_RETRIES; attempt++) {

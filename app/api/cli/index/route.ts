@@ -4,7 +4,7 @@
  * Phase 1 (request_upload): Returns a signed upload URL from Supabase Storage.
  * Phase 2 (trigger_index): Starts the indexRepo Temporal workflow.
  *
- * Called by `kap10 push`.
+ * Called by `unerr push`.
  */
 
 import { NextResponse } from "next/server"

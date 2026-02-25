@@ -2,7 +2,7 @@
  * Phase 10a: Download graph snapshot for a repo.
  * GET /api/graph-snapshots/[repoId]/download
  *
- * Auth: session cookie (withAuth) OR Bearer API key (for CLI `kap10 pull`)
+ * Auth: session cookie (withAuth) OR Bearer API key (for CLI `unerr pull`)
  * Returns pre-signed Supabase Storage URL (1h TTL) + metadata.
  */
 
@@ -34,7 +34,7 @@ export async function GET(
   } else {
     // API key auth fallback for CLI
     const authHeader = req.headers.get("authorization")
-    if (authHeader?.startsWith("Bearer kap10_sk_")) {
+    if (authHeader?.startsWith("Bearer unerr_sk_")) {
       const token = authHeader.slice(7)
       const keyHash = hashApiKey(token)
       const container = getContainer()

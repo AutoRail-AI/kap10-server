@@ -59,7 +59,7 @@ describe("incrementalIndexWorkflow — activity orchestration", () => {
       installationId: 999,
       cloneUrl: "https://github.com/test/repo.git",
       defaultBranch: "main",
-      workspacePath: "/tmp/kap10-workspaces/org-1/repo-1",
+      workspacePath: "/tmp/unerr-workspaces/org-1/repo-1",
       initialPush: {
         afterSha: "bbbb2222",
         beforeSha: "aaaa1111",

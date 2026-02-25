@@ -54,7 +54,7 @@ Trigger: Any tool call that touches entities (get_function, search_code, sync_lo
    a. Queries `entity_activity` for all records matching the same `repoId` + `entityKey` set, excluding the current `sessionId`.
    b. Groups results by entity, producing a collision set: `[{ entityKey, otherSessions: [{ userId, userName, branch, lastAction, lastActiveAt }] }]`.
    c. If collision set is non-empty, attaches `_meta.collision` to the tool response.
-6. **Broadcast Bus** publishes a collision event to Redis channel `kap10:collab:{orgId}:{repoId}`:
+6. **Broadcast Bus** publishes a collision event to Redis channel `unerr:collab:{orgId}:{repoId}`:
    ```
    { type: "collision", entities: [...], involvedSessions: [sess_A, sess_B], timestamp }
    ```
@@ -79,7 +79,7 @@ Trigger: Client opens an SSE connection to GET /mcp (or GET /api/repos/:repoId/p
    event: presence_snapshot
    data: { "sessions": [{ "userId": "user_bob", "userName": "Bob", "branch": "fix/jwt", "clientType": "vscode", "lastActiveAt": "..." }] }
    ```
-6. Server subscribes (if not already) to Redis channel `kap10:collab:{orgId}:{repoId}`.
+6. Server subscribes (if not already) to Redis channel `unerr:collab:{orgId}:{repoId}`.
 7. When a collision event arrives via pub/sub:
    a. Server iterates `sseClients` entries matching the involved sessions.
    b. Sends typed SSE event:
@@ -100,7 +100,7 @@ Trigger: Client opens an SSE connection to GET /mcp (or GET /api/repos/:repoId/p
 #### Flow 3: Dashboard Presence Panel
 
 ```
-Actor: Developer viewing the repo detail page in the kap10 dashboard
+Actor: Developer viewing the repo detail page in the unerr dashboard
 Trigger: Page load of /repos/:repoId
 ```
 
@@ -113,11 +113,11 @@ Trigger: Page load of /repos/:repoId
 #### Flow 4: IDE Extension Collision Display
 
 ```
-Actor: Developer using VS Code or JetBrains with kap10 extension installed
+Actor: Developer using VS Code or JetBrains with unerr extension installed
 Trigger: Collision SSE event received by the extension
 ```
 
-1. Extension maintains a persistent SSE connection to the MCP server (established during `kap10 connect`).
+1. Extension maintains a persistent SSE connection to the MCP server (established during `unerr connect`).
 2. On receiving a `collision` event:
    a. Parse entity list and map entity keys to file paths + line ranges (using cached graph data from `get_function`/`get_class` responses).
    b. For each affected file currently open in the editor:
@@ -142,7 +142,7 @@ Trigger: Collision SSE event received by the extension
                          │  mcp:session:{id}  (1h TTL)   │
                          │  mcp:presence:{id} (60s TTL)  │
                          │  pub/sub channels:             │
-                         │    kap10:collab:{org}:{repo}   │
+                         │    unerr:collab:{org}:{repo}   │
                          └──────────┬────────────────────┘
                                     │
           ┌─────────────────────────┼─────────────────────────┐
@@ -257,7 +257,7 @@ Instance 1                    Instance 2
          └────────────┬───────────────┘
                       │
               Redis pub/sub
-         kap10:collab:{org}:{repo}
+         unerr:collab:{org}:{repo}
 ```
 
 When Instance 1 detects a collision involving `sess_A` and `sess_B`:
@@ -272,7 +272,7 @@ This requires two `ioredis` connections per MCP server process:
 #### Redis Pub/Sub Channel Design
 
 ```
-Channel pattern: kap10:collab:{orgId}:{repoId}
+Channel pattern: unerr:collab:{orgId}:{repoId}
 
 Message types:
   { type: "collision",        entities: [...], involvedSessions: [...] }
@@ -320,7 +320,7 @@ Document shape:
 
 ```
 mcp:presence:{sessionId}   → JSON { userId, repoId, branch, clientType, lastActiveAt }  TTL 60s
-kap10:collab:{orgId}:{repoId}  → pub/sub channel (no key — channel only)
+unerr:collab:{orgId}:{repoId}  → pub/sub channel (no key — channel only)
 ```
 
 **Supabase — Extension of existing `notifications` table:**
@@ -471,14 +471,14 @@ Each SSE connection holds an open HTTP response. Node.js default `maxConnections
 `GET /api/repos/:repoId/presence` (the dashboard SSE endpoint) runs in Next.js, not the MCP server. It needs to:
 
 1. Initial load: `SCAN mcp:presence:*` filtered by repoId → O(N) where N is total presence keys.
-2. Live updates: Subscribe to `kap10:collab:{orgId}:{repoId}` for presence events.
+2. Live updates: Subscribe to `unerr:collab:{orgId}:{repoId}` for presence events.
 
-**Optimization:** Cache the active session list in Redis as a sorted set `kap10:repo-sessions:{repoId}` with score = lastActiveAt. This avoids `SCAN` on every page load:
+**Optimization:** Cache the active session list in Redis as a sorted set `unerr:repo-sessions:{repoId}` with score = lastActiveAt. This avoids `SCAN` on every page load:
 
 ```
-On presence refresh:  ZADD kap10:repo-sessions:{repoId} {timestamp} {sessionId}
-On presence expire:   ZREM kap10:repo-sessions:{repoId} {sessionId}
-On dashboard load:    ZRANGEBYSCORE kap10:repo-sessions:{repoId} {now - 120s} +inf
+On presence refresh:  ZADD unerr:repo-sessions:{repoId} {timestamp} {sessionId}
+On presence expire:   ZREM unerr:repo-sessions:{repoId} {sessionId}
+On dashboard load:    ZRANGEBYSCORE unerr:repo-sessions:{repoId} {now - 120s} +inf
 ```
 
 This turns the initial load from O(all-sessions) to O(sessions-on-this-repo).
@@ -565,7 +565,7 @@ Phase 12 introduces no Rust-rewritable components. All collaboration infrastruct
   - **Test:** Can insert a notification with `type = 'collision'`
   - **Notes:** Check `lib/db/types.ts` `NotificationType` union and add `"collision"` if missing
 
-- [ ] **DB-04: Add `kap10:repo-sessions:{repoId}` sorted set convention**
+- [ ] **DB-04: Add `unerr:repo-sessions:{repoId}` sorted set convention**
   - Document key pattern in Redis key registry
   - Score: Unix timestamp of last activity
   - Members: sessionId strings
@@ -627,7 +627,7 @@ Phase 12 introduces no Rust-rewritable components. All collaboration infrastruct
     - `sync_local_diff` → keys from `parseDiffHunks()` mapped to entities
     - `get_file_tree`, `get_stats` → no-op (returns immediately)
   - Refresh presence key: `cacheStore.set("mcp:presence:{sessionId}", ..., 60)`
-  - Update repo session set: `ZADD kap10:repo-sessions:{repoId} {now} {sessionId}`
+  - Update repo session set: `ZADD unerr:repo-sessions:{repoId} {now} {sessionId}`
   - **Test:** Correct entity extraction per tool type; ArangoDB upsert called with correct shape; presence refreshed; skip for no-entity tools
   - **Notes:** Must be non-blocking on failure (try/catch + warn log)
 
@@ -675,7 +675,7 @@ Phase 12 introduces no Rust-rewritable components. All collaboration infrastruct
 
 - [ ] **API-07: Implement presence sweep**
   - Periodic function (runs every 15 s on each MCP server instance)
-  - `ZRANGEBYSCORE kap10:repo-sessions:{repoId} -inf {now - 120s}` → stale sessions
+  - `ZRANGEBYSCORE unerr:repo-sessions:{repoId} -inf {now - 120s}` → stale sessions
   - For each stale session: `ZREM` from sorted set, publish `presence_leave` to repo channel
   - Clean up ArangoDB activity records for departed sessions: `deleteEntityActivity(sessionId)`
   - **Test:** Stale sessions (>120 s since last activity) are detected and cleaned up; presence_leave event published; ArangoDB records deleted
@@ -683,7 +683,7 @@ Phase 12 introduces no Rust-rewritable components. All collaboration infrastruct
 
 - [ ] **API-08: Upgrade `GET /api/repos/[repoId]/mcp-sessions` endpoint**
   - Replace stub (returns 0) with real implementation
-  - Use `ZRANGEBYSCORE kap10:repo-sessions:{repoId} {now - 120s} +inf` to get active session IDs
+  - Use `ZRANGEBYSCORE unerr:repo-sessions:{repoId} {now - 120s} +inf` to get active session IDs
   - For each session ID, `GET mcp:presence:{sessionId}` to get metadata
   - Return `{ repoId, activeSessions: count, sessions: [{ userId, userName, branch, clientType, lastActiveAt }] }`
   - **Test:** Returns correct count; sessions filtered by repoId; stale sessions excluded; auth-gated (org membership required)
@@ -691,7 +691,7 @@ Phase 12 introduces no Rust-rewritable components. All collaboration infrastruct
 
 - [ ] **API-09: Create `GET /api/repos/[repoId]/presence` SSE endpoint**
   - Next.js API route that serves SSE for the dashboard presence panel
-  - Subscribes to `kap10:collab:{orgId}:{repoId}` Redis channel
+  - Subscribes to `unerr:collab:{orgId}:{repoId}` Redis channel
   - Pushes `presence_update` and `collision` events to the dashboard client
   - On initial connection: send `presence_snapshot` from sorted set
   - **Test:** SSE connection established; receives presence updates; auth-gated
@@ -752,7 +752,7 @@ Phase 12 introduces no Rust-rewritable components. All collaboration infrastruct
   - Parse typed events: `collision`, `collision_resolved`, `presence_update`, `presence_snapshot`
   - Store current collision state in extension-local Map
   - **Test:** Connects on activation; reconnects on drop; parses all event types; clears state on deactivation
-  - **Notes:** Extends Phase 11 VS Code extension. Reuses auth token from `kap10 connect`.
+  - **Notes:** Extends Phase 11 VS Code extension. Reuses auth token from `unerr connect`.
 
 - [ ] **IDE-02: VS Code — Collision decorations**
   - `TextEditorDecorationType` with gutter icon and inline annotation
@@ -776,7 +776,7 @@ Phase 12 introduces no Rust-rewritable components. All collaboration infrastruct
   - Parse events using `kotlinx.serialization`
   - Store collision state in `ConcurrentHashMap`
   - **Test:** Connects on plugin load; reconnects on drop; parses events; clears on plugin unload
-  - **Notes:** Extends Phase 11 JetBrains plugin. Shares auth token from `kap10 connect`.
+  - **Notes:** Extends Phase 11 JetBrains plugin. Shares auth token from `unerr connect`.
 
 - [ ] **IDE-05: JetBrains — Collision annotations**
   - `ExternalAnnotator` with `HighlightSeverity.WARNING`

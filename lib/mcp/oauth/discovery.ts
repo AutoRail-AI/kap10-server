@@ -5,7 +5,7 @@
  */
 
 function getServerUrl(): string {
-  return process.env.MCP_SERVER_URL ?? "https://mcp.kap10.dev"
+  return process.env.MCP_SERVER_URL ?? "https://mcp.unerr.dev"
 }
 
 /**

@@ -1,7 +1,7 @@
 /**
  * POST /api/cli/repos — Add GitHub repos and trigger indexing from CLI.
  *
- * Auth: API key (Bearer kap10_sk_...)
+ * Auth: API key (Bearer unerr_sk_...)
  *
  * Accepts a list of GitHub repo IDs, validates them against the org's
  * installations, creates repo records, and starts indexing workflows.

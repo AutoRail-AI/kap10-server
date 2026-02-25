@@ -1,5 +1,5 @@
 /**
- * kap10 watch — File watcher with debounced sync and drift detection.
+ * unerr watch — File watcher with debounced sync and drift detection.
  */
 import { Command } from "commander"
 import * as fs from "node:fs"
@@ -7,7 +7,7 @@ import * as path from "node:path"
 import { getCredentials } from "./auth.js"
 
 function loadConfig(): { repoId: string; serverUrl: string; orgId: string } | null {
-  const configPath = path.join(process.cwd(), ".kap10", "config.json")
+  const configPath = path.join(process.cwd(), ".unerr", "config.json")
   if (!fs.existsSync(configPath)) return null
   return JSON.parse(fs.readFileSync(configPath, "utf-8")) as { repoId: string; serverUrl: string; orgId: string }
 }
@@ -15,18 +15,18 @@ function loadConfig(): { repoId: string; serverUrl: string; orgId: string } | nu
 export function registerWatchCommand(program: Command): void {
   program
     .command("watch")
-    .description("Watch for file changes and sync to kap10 server")
+    .description("Watch for file changes and sync to unerr server")
     .option("--debounce <ms>", "Debounce interval in ms", "2000")
     .action(async (opts: { debounce: string }) => {
       const config = loadConfig()
       if (!config) {
-        console.error("Not initialized. Run: kap10 init")
+        console.error("Not initialized. Run: unerr init")
         process.exit(1)
       }
 
       const creds = getCredentials()
       if (!creds?.apiKey) {
-        console.error("Not authenticated. Run: kap10 auth login")
+        console.error("Not authenticated. Run: unerr auth login")
         process.exit(1)
       }
 
@@ -42,7 +42,7 @@ export function registerWatchCommand(program: Command): void {
       // Load .gitignore patterns
       const ignore = (await import("ignore")).default
       const ig = ignore()
-      ig.add([".git", ".kap10", "node_modules"])
+      ig.add([".git", ".unerr", "node_modules"])
       const gitignorePath = path.join(process.cwd(), ".gitignore")
       if (fs.existsSync(gitignorePath)) {
         ig.add(fs.readFileSync(gitignorePath, "utf-8"))
@@ -126,15 +126,15 @@ export function registerWatchCommand(program: Command): void {
       // P5.6-ADV-04: Config integrity check every 60s
       const configCheckInterval = setInterval(async () => {
         try {
-          const configPath = path.join(process.cwd(), ".kap10", "config.json")
+          const configPath = path.join(process.cwd(), ".unerr", "config.json")
           if (!fs.existsSync(configPath)) return
 
-          const kap10Config = JSON.parse(
+          const unerrConfig = JSON.parse(
             fs.readFileSync(configPath, "utf-8")
           ) as { serverUrl?: string }
-          const serverUrl = kap10Config.serverUrl ?? "http://localhost:3000"
+          const serverUrl = unerrConfig.serverUrl ?? "http://localhost:3000"
 
-          // Quick check: verify .cursor/mcp.json or .vscode/settings.json has kap10 entry
+          // Quick check: verify .cursor/mcp.json or .vscode/settings.json has unerr entry
           const cwd = process.cwd()
           const ideConfigs = [
             { name: "cursor", path: path.join(cwd, ".cursor", "mcp.json"), key: "mcpServers" },
@@ -151,12 +151,12 @@ export function registerWatchCommand(program: Command): void {
                 ? parsed.mcpServers
                 : parsed["mcp.servers"]) as Record<string, unknown> | undefined
 
-              if (servers && !servers["kap10"]) {
+              if (servers && !servers["unerr"]) {
                 console.log(
                   `[config] MCP config drift detected in ${ide.name}, auto-repairing...`
                 )
-                // Re-add kap10 entry
-                servers["kap10"] = {
+                // Re-add unerr entry
+                servers["unerr"] = {
                   url: `${serverUrl}/mcp`,
                   headers: {
                     Authorization: `Bearer ${creds!.apiKey}`,

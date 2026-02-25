@@ -3,8 +3,8 @@
  * Prisma 7 requires a driver adapter; we use @prisma/adapter-pg with SUPABASE_DB_URL.
  *
  * Workaround for Prisma 7 bug (prisma/prisma#28611): PrismaPg ignores @@schema()
- * directives and always queries `public`. We set search_path=kap10,public on the
- * connection so Prisma finds kap10 tables first.
+ * directives and always queries `public`. We set search_path=unerr,public on the
+ * connection so Prisma finds unerr tables first.
  */
 
 import { PrismaPg } from "@prisma/adapter-pg"
@@ -31,9 +31,9 @@ function getPrisma(): PrismaClient {
         "PrismaClient requires SUPABASE_DB_URL or DATABASE_URL. Set it in .env.local."
       )
     }
-    // Set search_path so Prisma resolves kap10-schema tables (repos, deletion_logs)
+    // Set search_path so Prisma resolves unerr-schema tables (repos, deletion_logs)
     // alongside public-schema tables (Better Auth). See: prisma/prisma#28611
-    const searchPath = "kap10,public"
+    const searchPath = "unerr,public"
     const separator = connectionString.includes("?") ? "&" : "?"
     const connWithSchema =
       connectionString + separator + "options=-c%20search_path%3D" + encodeURIComponent(searchPath)
@@ -542,7 +542,7 @@ export class PrismaRelationalStore implements IRelationalStore {
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
     await this.prisma.$executeRaw`
-      INSERT INTO kap10.pr_reviews (id, repo_id, pr_number, pr_title, pr_url, head_sha, base_sha, status, checks_passed, checks_warned, checks_failed, auto_approved, created_at)
+      INSERT INTO unerr.pr_reviews (id, repo_id, pr_number, pr_title, pr_url, head_sha, base_sha, status, checks_passed, checks_warned, checks_failed, auto_approved, created_at)
       VALUES (${id}, ${data.repoId}, ${data.prNumber}, ${data.prTitle}, ${data.prUrl}, ${data.headSha}, ${data.baseSha}, 'pending', 0, 0, 0, false, ${now})
     `
     return {
@@ -586,7 +586,7 @@ export class PrismaRelationalStore implements IRelationalStore {
     if (sets.length === 0) return
     const setClause = sets.map((col, i) => `${col} = $${i + 2}`).join(", ")
     await this.prisma.$executeRawUnsafe(
-      `UPDATE kap10.pr_reviews SET ${setClause} WHERE id = $1`,
+      `UPDATE unerr.pr_reviews SET ${setClause} WHERE id = $1`,
       id,
       ...values
     )
@@ -594,7 +594,7 @@ export class PrismaRelationalStore implements IRelationalStore {
 
   async getPrReview(id: string): Promise<PrReviewRecord | null> {
     const rows = await this.prisma.$queryRaw<Array<Record<string, unknown>>>`
-      SELECT * FROM kap10.pr_reviews WHERE id = ${id} LIMIT 1
+      SELECT * FROM unerr.pr_reviews WHERE id = ${id} LIMIT 1
     `
     if (rows.length === 0) return null
     return this.mapPrReviewRow(rows[0]!)
@@ -602,7 +602,7 @@ export class PrismaRelationalStore implements IRelationalStore {
 
   async getPrReviewByPrAndSha(repoId: string, prNumber: number, headSha: string): Promise<PrReviewRecord | null> {
     const rows = await this.prisma.$queryRaw<Array<Record<string, unknown>>>`
-      SELECT * FROM kap10.pr_reviews WHERE repo_id = ${repoId} AND pr_number = ${prNumber} AND head_sha = ${headSha} LIMIT 1
+      SELECT * FROM unerr.pr_reviews WHERE repo_id = ${repoId} AND pr_number = ${prNumber} AND head_sha = ${headSha} LIMIT 1
     `
     if (rows.length === 0) return null
     return this.mapPrReviewRow(rows[0]!)
@@ -628,7 +628,7 @@ export class PrismaRelationalStore implements IRelationalStore {
     }
     const where = conditions.join(" AND ")
     const rows = await this.prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(
-      `SELECT * FROM kap10.pr_reviews WHERE ${where} ORDER BY created_at DESC LIMIT $${paramIdx}`,
+      `SELECT * FROM unerr.pr_reviews WHERE ${where} ORDER BY created_at DESC LIMIT $${paramIdx}`,
       ...params,
       limit + 1
     )
@@ -648,7 +648,7 @@ export class PrismaRelationalStore implements IRelationalStore {
     const id = crypto.randomUUID()
     const now = new Date().toISOString()
     await this.prisma.$executeRaw`
-      INSERT INTO kap10.pr_review_comments (id, review_id, check_type, severity, file_path, line_number, message, rule_title, semgrep_rule_id, suggestion, auto_fix, created_at)
+      INSERT INTO unerr.pr_review_comments (id, review_id, check_type, severity, file_path, line_number, message, rule_title, semgrep_rule_id, suggestion, auto_fix, created_at)
       VALUES (${id}, ${data.reviewId}, ${data.checkType}, ${data.severity}, ${data.filePath ?? null}, ${data.lineNumber ?? null}, ${data.message}, ${data.ruleTitle ?? null}, ${data.semgrepRuleId ?? null}, ${data.suggestion ?? null}, ${data.autoFix ?? null}, ${now})
     `
     return { ...data, id, createdAt: now }
@@ -656,7 +656,7 @@ export class PrismaRelationalStore implements IRelationalStore {
 
   async listPrReviewComments(reviewId: string): Promise<PrReviewCommentRecord[]> {
     const rows = await this.prisma.$queryRaw<Array<Record<string, unknown>>>`
-      SELECT * FROM kap10.pr_review_comments WHERE review_id = ${reviewId} ORDER BY created_at ASC LIMIT 500
+      SELECT * FROM unerr.pr_review_comments WHERE review_id = ${reviewId} ORDER BY created_at ASC LIMIT 500
     `
     return rows.map((r) => ({
       id: String(r.id),
@@ -677,13 +677,13 @@ export class PrismaRelationalStore implements IRelationalStore {
 
   async updateRepoReviewConfig(repoId: string, config: ReviewConfig): Promise<void> {
     await this.prisma.$executeRaw`
-      UPDATE kap10.repos SET review_config = ${JSON.stringify(config)}::jsonb WHERE id = ${repoId}
+      UPDATE unerr.repos SET review_config = ${JSON.stringify(config)}::jsonb WHERE id = ${repoId}
     `
   }
 
   async getRepoReviewConfig(repoId: string): Promise<ReviewConfig> {
     const rows = await this.prisma.$queryRaw<Array<{ review_config: unknown }>>`
-      SELECT review_config FROM kap10.repos WHERE id = ${repoId} LIMIT 1
+      SELECT review_config FROM unerr.repos WHERE id = ${repoId} LIMIT 1
     `
     if (rows.length === 0 || !rows[0]!.review_config) return { ...DEFAULT_REVIEW_CONFIG }
     return { ...DEFAULT_REVIEW_CONFIG, ...(rows[0]!.review_config as ReviewConfig) }

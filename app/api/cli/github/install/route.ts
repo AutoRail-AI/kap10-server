@@ -1,7 +1,7 @@
 /**
  * POST /api/cli/github/install — Initiate GitHub App installation from CLI.
  *
- * Auth: API key (Bearer kap10_sk_...)
+ * Auth: API key (Bearer unerr_sk_...)
  *
  * Creates a state token in Redis (same as web flow) with a cliPollToken
  * so the CLI can poll for completion. Returns the GitHub App install URL
@@ -17,7 +17,7 @@ import { NextResponse } from "next/server"
 import { getContainer } from "@/lib/di/container"
 import { authenticateMcpRequest, isAuthError } from "@/lib/mcp/auth"
 
-const GITHUB_APP_SLUG = process.env.GITHUB_APP_SLUG ?? "kap10-dev"
+const GITHUB_APP_SLUG = process.env.GITHUB_APP_SLUG ?? "unerr-dev"
 const STATE_TTL_SECONDS = 600
 
 export async function POST(request: Request) {

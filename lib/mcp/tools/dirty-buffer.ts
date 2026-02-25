@@ -148,7 +148,7 @@ export async function handleSyncDirtyBuffer(
     const entities = extractEntitiesFromBuffer(args.content, args.language)
 
     // 2. Store in Redis with short TTL
-    const cacheKey = `kap10:dirty:${ctx.orgId}:${repoId}:${ctx.userId}:${args.file_path}`
+    const cacheKey = `unerr:dirty:${ctx.orgId}:${repoId}:${ctx.userId}:${args.file_path}`
     await container.cacheStore.set(
       cacheKey,
       {
@@ -163,7 +163,7 @@ export async function handleSyncDirtyBuffer(
 
     // 3. Also store per-entity keys for fast lookup
     for (const entity of entities) {
-      const entityCacheKey = `kap10:dirty:entity:${ctx.orgId}:${repoId}:${entity.name}`
+      const entityCacheKey = `unerr:dirty:entity:${ctx.orgId}:${repoId}:${entity.name}`
       await container.cacheStore.set(
         entityCacheKey,
         {
@@ -201,7 +201,7 @@ export async function resolveEntityWithOverlay(
   workspaceId?: string
 ): Promise<{ source: string; entity: unknown } | null> {
   // 1. Check dirty buffer (Redis)
-  const dirtyKey = `kap10:dirty:entity:${orgId}:${repoId}:${entityName}`
+  const dirtyKey = `unerr:dirty:entity:${orgId}:${repoId}:${entityName}`
   const dirtyEntity = await container.cacheStore.get(dirtyKey)
   if (dirtyEntity) {
     return { source: "dirty_buffer", entity: dirtyEntity }

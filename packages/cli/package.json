@@ -1,10 +1,10 @@
 {
-  "name": "@autorail/kap10",
+  "name": "@autorail/unerr",
   "version": "0.1.0",
-  "description": "Local-first code intelligence CLI for kap10",
+  "description": "Local-first code intelligence CLI for unerr",
   "type": "module",
   "bin": {
-    "kap10": "./dist/index.js"
+    "unerr": "./dist/index.js"
   },
   "scripts": {
     "build": "tsup src/index.ts --format esm --target node20 --dts --clean",

@@ -1,7 +1,7 @@
 /**
  * GET /api/cli/github/install/poll — Poll GitHub App installation status.
  *
- * Auth: API key (Bearer kap10_sk_...)
+ * Auth: API key (Bearer unerr_sk_...)
  * Query: ?token=<pollToken>
  *
  * Returns { status: "pending" } while the user hasn't completed installation,

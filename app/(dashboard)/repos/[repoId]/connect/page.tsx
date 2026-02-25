@@ -45,7 +45,7 @@ export default async function ConnectIdePage({
   const isDev = process.env.NODE_ENV === "development"
   const mcpPort = process.env.MCP_SERVER_PORT ?? "8787"
   const mcpServerUrl = process.env.MCP_SERVER_URL
-    ?? (isDev ? `http://localhost:${mcpPort}` : "https://mcp.kap10.dev")
+    ?? (isDev ? `http://localhost:${mcpPort}` : "https://mcp.unerr.dev")
   const mcpEnvironment = !process.env.MCP_SERVER_URL
     ? (isDev ? "local" : "production")
     : "custom"
@@ -90,7 +90,7 @@ export default async function ConnectIdePage({
           Local-First Mode
         </h2>
         <p className="text-sm text-muted-foreground">
-          Run graph queries locally with sub-5ms latency using the kap10 CLI
+          Run graph queries locally with sub-5ms latency using the unerr CLI
         </p>
       </div>
       <LocalSetupInstructions

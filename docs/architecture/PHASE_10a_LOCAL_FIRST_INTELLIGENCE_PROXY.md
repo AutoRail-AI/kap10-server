@@ -42,24 +42,24 @@ Phase 10a has five actor journeys. Three are user-initiated (setup, pull, queryi
 | Term | Meaning |
 |------|---------|
 | **Cloud graph** | ArangoDB — the authoritative, multi-tenant knowledge graph. Source of truth. Written by `indexRepoWorkflow`. |
-| **Local graph** | CozoDB embedded — a single-tenant, read-only compact copy on the developer's machine. Refreshed by `kap10 pull`. Never written to by the developer or agent — only replaced wholesale by sync. |
-| **Graph snapshot** | A msgpack-serialized export of entities + edges for one repo. Produced by `syncLocalGraphWorkflow`, consumed by `kap10 pull`. |
+| **Local graph** | CozoDB embedded — a single-tenant, read-only compact copy on the developer's machine. Refreshed by `unerr pull`. Never written to by the developer or agent — only replaced wholesale by sync. |
+| **Graph snapshot** | A msgpack-serialized export of entities + edges for one repo. Produced by `syncLocalGraphWorkflow`, consumed by `unerr pull`. |
 | **Query router** | The decision layer inside the CLI MCP proxy that inspects the tool name and dispatches to either the local CozoDB graph or the cloud MCP endpoint. |
 | **Cloud fallback** | When a tool is marked as `cloud` in the routing table, or when the local graph has no data for the requested repo, the CLI proxies the MCP request to the cloud endpoint transparently. |
 
-### Flow 1: First-Time Setup — `kap10 connect` (golden path) or `kap10 auth login` + `kap10 pull`
+### Flow 1: First-Time Setup — `unerr connect` (golden path) or `unerr auth login` + `unerr pull`
 
-**Actor:** Developer with a kap10 account and at least one indexed repo
-**Precondition:** `@autorail/kap10` installed (`npm install -g @autorail/kap10` or `npx @autorail/kap10`), Phase 2 cloud MCP server running
+**Actor:** Developer with a unerr account and at least one indexed repo
+**Precondition:** `@autorail/unerr` installed (`npm install -g @autorail/unerr` or `npx @autorail/unerr`), Phase 2 cloud MCP server running
 **Outcome:** Local CozoDB graph populated with compact entity/edge data for selected repos; CLI ready to serve as local MCP server
 
-**Golden path (Phase 5.6 `kap10 connect`):**
+**Golden path (Phase 5.6 `unerr connect`):**
 
 ```
 Step  Actor Action                           System Action                                                      State Change
 ────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────────────────────────
-1     Developer runs                         CLI runs RFC 8628 Device Authorization Flow:                        ~/.kap10/credentials.json created
-      `npx @autorail/kap10 connect`          POST /api/cli/device-code → get device_code + user_code            (apiKey + orgId + orgName)
+1     Developer runs                         CLI runs RFC 8628 Device Authorization Flow:                        ~/.unerr/credentials.json created
+      `npx @autorail/unerr connect`          POST /api/cli/device-code → get device_code + user_code            (apiKey + orgId + orgName)
                                              Opens browser to /cli/authorize?code=XXXX-XXXX
                                              User clicks "Authorize CLI" in browser
                                              CLI polls POST /api/cli/token until approved
@@ -76,15 +76,15 @@ Step  Actor Action                           System Action                      
       "✓ Connected!"                         MCP configured for Cursor"
 ```
 
-**Manual path (for existing users or `kap10 pull` for local graph):**
+**Manual path (for existing users or `unerr pull` for local graph):**
 
 ```
 Step  Actor Action                           System Action                                                      State Change
 ────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────────────────────────
-1     Developer runs `kap10 auth login`      CLI runs RFC 8628 Device Authorization Flow (same as connect)       ~/.kap10/credentials.json created
+1     Developer runs `unerr auth login`      CLI runs RFC 8628 Device Authorization Flow (same as connect)       ~/.unerr/credentials.json created
                                              or accepts --key flag for direct API key auth                       (apiKey + orgId + orgName)
 
-2     Developer runs `kap10 pull`            CLI calls GET /api/graph-snapshots?orgId=...                        None (read-only)
+2     Developer runs `unerr pull`            CLI calls GET /api/graph-snapshots?orgId=...                        None (read-only)
                                              → Server returns list of available repos with snapshot metadata
                                              (repo name, entity count, snapshot size, last updated)
 
@@ -92,17 +92,17 @@ Step  Actor Action                           System Action                      
                                              CLI calls GET /api/graph-snapshots/{repoId}/download
                                              → Server returns pre-signed Supabase Storage URL (24h TTL)
 
-4                                            CLI downloads msgpack snapshot from pre-signed URL                  ~/.kap10/graphs/{repoId}.cozo
+4                                            CLI downloads msgpack snapshot from pre-signed URL                  ~/.unerr/graphs/{repoId}.cozo
                                              → Deserializes msgpack → bulk-loads into local CozoDB file          created/replaced
-                                             CozoDB file stored at ~/.kap10/graphs/{repoId}.cozo
+                                             CozoDB file stored at ~/.unerr/graphs/{repoId}.cozo
 
-5     Developer sees:                        CLI prints summary:                                                 ~/.kap10/manifest.json updated
+5     Developer sees:                        CLI prints summary:                                                 ~/.unerr/manifest.json updated
       "Pulled 3 repos, 12,847 entities"      "✓ org/backend-api: 5,231 entities, 8,492 edges (2.1 MB)           (repo list, versions, timestamps)
                                               ✓ org/frontend: 4,116 entities, 6,203 edges (1.6 MB)
                                               ✓ org/shared-lib: 3,500 entities, 5,100 edges (1.3 MB)"
 
 6     Developer configures IDE:              IDE MCP client connects to CLI via stdio transport                   MCP session established (local)
-      `kap10 serve` as MCP server            CLI starts MCP server on stdio, registers all 9 Phase 2 tools
+      `unerr serve` as MCP server            CLI starts MCP server on stdio, registers all 9 Phase 2 tools
       (or auto-starts via IDE config)
 ```
 
@@ -112,21 +112,21 @@ The CLI uses the **RFC 8628 Device Authorization Flow** (implemented in Phase 5.
 
 | Mode | Flow | Token storage |
 |------|------|---------------|
-| **Device auth** (recommended) | `kap10 auth login` or `kap10 connect` → POST `/api/cli/device-code` → opens browser to `/cli/authorize?code=XXXX-XXXX` → user approves → CLI polls `/api/cli/token` → receives org-level API key | `~/.kap10/credentials.json` — `{ serverUrl, apiKey, orgId, orgName }` |
-| **API key** (escape hatch) | `kap10 auth login --key <key>` → direct API key usage | `~/.kap10/credentials.json` — `{ serverUrl, apiKey, orgId }` |
+| **Device auth** (recommended) | `unerr auth login` or `unerr connect` → POST `/api/cli/device-code` → opens browser to `/cli/authorize?code=XXXX-XXXX` → user approves → CLI polls `/api/cli/token` → receives org-level API key | `~/.unerr/credentials.json` — `{ serverUrl, apiKey, orgId, orgName }` |
+| **API key** (escape hatch) | `unerr auth login --key <key>` → direct API key usage | `~/.unerr/credentials.json` — `{ serverUrl, apiKey, orgId }` |
 
 The auto-provisioned API key is org-scoped (`repoId: null`) with `isDefault: true`, granting access to all repos in the organization. The raw key is returned exactly once during the device flow token exchange.
 
 ### Flow 2: Agent Tool Call — Local Resolution
 
 **Actor:** AI agent (Cursor, Claude Code, VS Code Copilot) via MCP client
-**Precondition:** `kap10 serve` running (or auto-started by IDE); local graph populated via `kap10 pull`
+**Precondition:** `unerr serve` running (or auto-started by IDE); local graph populated via `unerr pull`
 **Outcome:** Agent receives tool response from local CozoDB in <5ms — no network round-trip
 
 ```
 Step  Actor Action                           System Action                                                      Latency
 ────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────
-1     Agent calls MCP tool:                  IDE MCP client sends JSON-RPC via stdio to kap10 CLI               ~1ms
+1     Agent calls MCP tool:                  IDE MCP client sends JSON-RPC via stdio to unerr CLI               ~1ms
       get_function({
         name: "validateJWT"
       })
@@ -166,7 +166,7 @@ Step  Actor Action                           System Action                      
 ```
 Step  Actor Action                           System Action                                                      Latency
 ────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────
-1     Agent calls MCP tool:                  IDE MCP client sends JSON-RPC via stdio to kap10 CLI               ~1ms
+1     Agent calls MCP tool:                  IDE MCP client sends JSON-RPC via stdio to unerr CLI               ~1ms
       sync_local_diff({
         diff: "unified diff text..."
       })
@@ -192,7 +192,7 @@ Step  Actor Action                           System Action                      
 
 **Actor:** System (Temporal scheduled workflow)
 **Precondition:** Repo has been indexed (Phase 1); entity data exists in ArangoDB
-**Outcome:** Compact graph snapshot uploaded to Supabase Storage, ready for `kap10 pull`
+**Outcome:** Compact graph snapshot uploaded to Supabase Storage, ready for `unerr pull`
 
 ```
 Step  System Action                                                                State Change
@@ -219,7 +219,7 @@ Step  System Action                                                             
         path: "{orgId}/{repoId}/latest.msgpack"
       → Generate pre-signed download URL (24h TTL)
       → Store metadata in Supabase:
-        kap10.graph_snapshot_meta (repoId, entityCount, edgeCount,
+        unerr.graph_snapshot_meta (repoId, entityCount, edgeCount,
         sizeBytes, generatedAt, storageUrl)
 
 5     Activity: notifyConnectedClients (light-llm-queue)                           Redis pub/sub event published
@@ -239,29 +239,29 @@ Step  System Action                                                             
 
 ### Flow 5: Stale Graph Detection and Auto-Pull
 
-**Actor:** System (kap10 CLI background process)
-**Precondition:** `kap10 serve` is running; local graph exists
+**Actor:** System (unerr CLI background process)
+**Precondition:** `unerr serve` is running; local graph exists
 **Outcome:** CLI detects stale local graph and auto-pulls fresh snapshot
 
 ```
 Step  System Action                                                                State Change
 ────  ──────────────────────────────────────────────────────────────────────────    ──────────────────────────────
-1     On `kap10 serve` startup:                                                    None
-      CLI reads ~/.kap10/manifest.json for each repo's lastPulledAt timestamp
+1     On `unerr serve` startup:                                                    None
+      CLI reads ~/.unerr/manifest.json for each repo's lastPulledAt timestamp
 
 2     CLI checks freshness:                                                         None
       If (now - lastPulledAt) > 24 hours:
         Log warning: "Local graph for org/repo is stale (last pulled 36h ago)"
         If --auto-pull flag (default: true):
-          Trigger background `kap10 pull --repo org/repo`
+          Trigger background `unerr pull --repo org/repo`
 
 3     CLI subscribes to Redis pub/sub channel (via cloud WebSocket):               WebSocket connection established
       Channel: graph-sync:{orgId}
       On message { repoId, entityCount, generatedAt }:
         If generatedAt > local manifest.lastPulledAt:
-          Trigger background `kap10 pull --repo {repoId}`
+          Trigger background `unerr pull --repo {repoId}`
 
-4     Background pull completes:                                                    ~/.kap10/graphs/{repoId}.cozo
+4     Background pull completes:                                                    ~/.unerr/graphs/{repoId}.cozo
       CozoDB file hot-swapped (close old → open new)                               replaced, manifest updated
       Active MCP sessions see updated data on next query
 ```
@@ -294,7 +294,7 @@ Step  System Action                                                             
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Developer's Machine (local)                                              │
 │                                                                          │
-│  kap10 pull:                                                              │
+│  unerr pull:                                                              │
 │    1. GET /api/graph-snapshots/{repoId}/download → pre-signed URL        │
 │    2. Download msgpack from Supabase Storage                              │
 │    3. msgpackr.decode() → { entities, edges }                            │
@@ -302,9 +302,9 @@ Step  System Action                                                             
 │       - Drop existing relations for this repo                            │
 │       - :insert entities [...rows]                                       │
 │       - :insert edges [...rows]                                          │
-│    5. Update ~/.kap10/manifest.json                                      │
+│    5. Update ~/.unerr/manifest.json                                      │
 │                                                                          │
-│  ~/.kap10/                                                                │
+│  ~/.unerr/                                                                │
 │    credentials.json        ← auth token / API key                        │
 │    manifest.json           ← repo list, versions, timestamps             │
 │    graphs/                                                                │
@@ -354,7 +354,7 @@ Columns: [file_path: String, entity_key: String]
 Key: [file_path, entity_key] (composite unique — derived from entities on load)
 ```
 
-**Why `file_index`?** The `get_file_entities` and `get_imports` tools query by file path. In ArangoDB, this is a secondary index on `file_path`. In CozoDB, a derived relation provides the same lookup performance. It is computed during `kap10 pull` bulk load — not synced from the cloud.
+**Why `file_index`?** The `get_file_entities` and `get_imports` tools query by file path. In ArangoDB, this is a secondary index on `file_path`. In CozoDB, a derived relation provides the same lookup performance. It is computed during `unerr pull` bulk load — not synced from the cloud.
 
 ### Query Router: Routing Table
 
@@ -386,7 +386,7 @@ get_project_stats  → CLOUD          Aggregation across all collections (too ex
 
 The Phase 2 `search_code` tool uses ArangoDB's fulltext index. CozoDB does not have a built-in fulltext index. Phase 10a implements local fulltext search as:
 
-1. **On `kap10 pull`:** Build an in-memory inverted index from entity `name` and `signature` fields. Store as a CozoDB relation `search_index[token: String, entity_key: String]`.
+1. **On `unerr pull`:** Build an in-memory inverted index from entity `name` and `signature` fields. Store as a CozoDB relation `search_index[token: String, entity_key: String]`.
 2. **On query:** Tokenize the search query, look up tokens in `search_index`, intersect/union results, rank by token overlap count.
 
 This is simpler than ArangoDB's BM25-based fulltext but sufficient for name/signature matching. Semantic search (Phase 3's `semantic_search` tool) stays on the cloud.
@@ -396,11 +396,11 @@ This is simpler than ArangoDB's BM25-based fulltext but sufficient for name/sign
 ### Local File System Layout
 
 ```
-~/.kap10/
+~/.unerr/
 ├── credentials.json          # API key from device auth flow (Phase 5.6)
 │   {
-│     "serverUrl": "https://app.kap10.dev",
-│     "apiKey": "kap10_sk_...",  // Org-scoped default API key
+│     "serverUrl": "https://app.unerr.dev",
+│     "apiKey": "unerr_sk_...",  // Org-scoped default API key
 │     "orgId": "org_abc",
 │     "orgName": "My Organization"
 │   }
@@ -427,10 +427,10 @@ This is simpler than ArangoDB's BM25-based fulltext but sufficient for name/sign
 │   ├── repo_456.cozo
 │   └── repo_789.cozo
 │
-└── config.json               # CLI configuration (from Phase 5.5 kap10 init)
+└── config.json               # CLI configuration (from Phase 5.5 unerr init)
     {
       "defaultOrg": "org_abc",
-      "mcpServerUrl": "https://mcp.kap10.dev",
+      "mcpServerUrl": "https://mcp.unerr.dev",
       "autoPull": true,
       "pullIntervalHours": 24
     }
@@ -446,7 +446,7 @@ Every graph snapshot includes a `version` field in the msgpack envelope. This en
 | `v2` | 10b | v1 + rules relation + patterns relation |
 | `v3` | Future | v2 + justifications + features |
 
-The CLI checks the snapshot version against its supported version range. If the snapshot version is newer than the CLI supports, it logs a warning and prompts the user to upgrade: `"Graph snapshot v3 requires kap10 CLI >= 2.0.0. Run: npm install -g @autorail/kap10@latest"`.
+The CLI checks the snapshot version against its supported version range. If the snapshot version is newer than the CLI supports, it logs a warning and prompts the user to upgrade: `"Graph snapshot v3 requires unerr CLI >= 2.0.0. Run: npm install -g @autorail/unerr@latest"`.
 
 ### Repo Status Extension
 
@@ -470,16 +470,16 @@ The dashboard shows a "Local sync" badge on repo cards: "Available" (green), "Ge
 
 | # | Failure | Detection | Recovery | User Impact |
 |---|---------|-----------|----------|-------------|
-| 1 | **`kap10 pull` — network failure during download** | HTTP error or timeout from Supabase Storage | CLI retries download 3 times with exponential backoff (1s, 3s, 9s). If all retries fail, existing local graph is preserved (not deleted). CLI logs error and suggests retrying. | No data loss. Existing local graph continues serving queries. User retries manually or waits for next auto-pull. |
+| 1 | **`unerr pull` — network failure during download** | HTTP error or timeout from Supabase Storage | CLI retries download 3 times with exponential backoff (1s, 3s, 9s). If all retries fail, existing local graph is preserved (not deleted). CLI logs error and suggests retrying. | No data loss. Existing local graph continues serving queries. User retries manually or waits for next auto-pull. |
 | 2 | **Corrupt msgpack snapshot** | `msgpackr.decode()` throws parse error | CLI discards the corrupt download. Existing local graph preserved. Error logged with snapshot URL for debugging. CLI does not replace the `.cozo` file. | Transparent — old graph continues working. Cloud snapshot regenerated on next cron run. |
 | 3 | **CozoDB bulk load failure** | CozoDB returns error on `:insert` | CLI keeps old `.cozo` file. New file written to `.cozo.tmp`, only renamed on success. On failure, `.tmp` is deleted. Error logged. | Transparent — old graph continues working. |
 | 4 | **CozoDB query error during MCP tool call** | CozoDB Datalog query returns error or panics | CLI catches the error and falls back to cloud for that single tool call. Logs warning: `"Local query failed for get_function — falling back to cloud"`. `_meta.source: "cloud_fallback"` in response. | Slightly higher latency for that one call (~300ms instead of ~5ms). Transparent to agent. |
 | 5 | **Cloud MCP server unreachable (for cloud-routed tools)** | HTTP connection error or timeout (5s) | CLI returns MCP error response to agent: `"Cloud server unreachable. Tools requiring cloud (sync_local_diff, get_project_stats) are temporarily unavailable."` Local tools continue working. | Cloud-routed tools fail. Local tools unaffected. Agent can continue structural queries. |
-| 6 | **Local graph is stale (>24h old)** | CLI compares `manifest.lastPulledAt` against current time on startup and before each query | CLI adds `_meta.staleness: { lastPulledAt, hoursStale }` to every response. If >48h stale, adds warning: `"Local graph is 48h stale. Run 'kap10 pull' to refresh."` Auto-pull triggers if enabled. | Agent sees stale data. Structural queries (callers, callees) are still correct unless code changed significantly. Warning in `_meta` lets the agent decide whether to use cloud fallback. |
-| 7 | **OAuth token expired during `kap10 pull`** | 401 response from cloud API | CLI attempts token refresh using `refreshToken`. If refresh succeeds, retries the request. If refresh fails (e.g., token revoked), prompts: `"Session expired. Run 'kap10 auth login' to re-authenticate."` | Pull fails until re-auth. Local graph preserved. Local queries unaffected. |
-| 8 | **Disk full during `kap10 pull`** | Write error on `.cozo.tmp` file | CLI catches write error, deletes partial `.tmp` file, logs error with required disk space. | Pull fails. Old graph preserved. User must free disk space. |
+| 6 | **Local graph is stale (>24h old)** | CLI compares `manifest.lastPulledAt` against current time on startup and before each query | CLI adds `_meta.staleness: { lastPulledAt, hoursStale }` to every response. If >48h stale, adds warning: `"Local graph is 48h stale. Run 'unerr pull' to refresh."` Auto-pull triggers if enabled. | Agent sees stale data. Structural queries (callers, callees) are still correct unless code changed significantly. Warning in `_meta` lets the agent decide whether to use cloud fallback. |
+| 7 | **OAuth token expired during `unerr pull`** | 401 response from cloud API | CLI attempts token refresh using `refreshToken`. If refresh succeeds, retries the request. If refresh fails (e.g., token revoked), prompts: `"Session expired. Run 'unerr auth login' to re-authenticate."` | Pull fails until re-auth. Local graph preserved. Local queries unaffected. |
+| 8 | **Disk full during `unerr pull`** | Write error on `.cozo.tmp` file | CLI catches write error, deletes partial `.tmp` file, logs error with required disk space. | Pull fails. Old graph preserved. User must free disk space. |
 | 9 | **`syncLocalGraphWorkflow` fails on cloud side** | Temporal activity failure (ArangoDB query timeout, Supabase Storage upload error) | Temporal retries each activity independently (3 retries, exponential backoff). If all retries fail, workflow fails. Next cron run retries the full workflow. Dashboard shows "Sync failed" badge. | Snapshot not updated. Existing snapshot (if any) remains downloadable. Users see stale data until next successful sync. |
-| 10 | **Multiple CLI instances for same repo** | Not a failure — valid multi-IDE setup | Each CLI instance opens its own CozoDB file handle (read-only after load). `.cozo` files are safe for concurrent read. `kap10 pull` uses file locking (`flock`) to prevent concurrent writes. | No issues. Multiple IDEs can query the same local graph simultaneously. |
+| 10 | **Multiple CLI instances for same repo** | Not a failure — valid multi-IDE setup | Each CLI instance opens its own CozoDB file handle (read-only after load). `.cozo` files are safe for concurrent read. `unerr pull` uses file locking (`flock`) to prevent concurrent writes. | No issues. Multiple IDEs can query the same local graph simultaneously. |
 
 ### Cloud Fallback Cascade
 
@@ -512,17 +512,17 @@ Every msgpack snapshot includes a SHA-256 checksum in the upload metadata:
 
 ```
 Supabase Storage metadata:
-  x-kap10-checksum: sha256:{hex}
-  x-kap10-entity-count: 5231
-  x-kap10-edge-count: 8492
-  x-kap10-version: v1
-  x-kap10-generated-at: 2026-02-20T02:00:00Z
+  x-unerr-checksum: sha256:{hex}
+  x-unerr-entity-count: 5231
+  x-unerr-edge-count: 8492
+  x-unerr-version: v1
+  x-unerr-generated-at: 2026-02-20T02:00:00Z
 ```
 
-On `kap10 pull`, the CLI:
+On `unerr pull`, the CLI:
 1. Downloads the msgpack blob
 2. Computes SHA-256 of the downloaded bytes
-3. Compares against `x-kap10-checksum` header
+3. Compares against `x-unerr-checksum` header
 4. If mismatch: discards download, retries (possibly corrupted in transit)
 5. If match: proceeds with decode + load
 
@@ -547,7 +547,7 @@ On `kap10 pull`, the CLI:
 
 **Cloud proxy overhead:** For cloud-routed tools, the CLI adds ~2ms of serialization/deserialization overhead. This is negligible compared to network latency.
 
-### `kap10 pull` Performance
+### `unerr pull` Performance
 
 | Repo size | Entity count | Edge count | Snapshot size (msgpack) | Download time (50 Mbps) | CozoDB load time | Total pull time |
 |-----------|-------------|------------|------------------------|------------------------|-----------------|----------------|
@@ -563,7 +563,7 @@ On `kap10 pull`, the CLI:
 | Component | Memory | Notes |
 |-----------|--------|-------|
 | CozoDB per loaded repo | ~10-50 MB | Proportional to entity count. 5K entities ≈ 10 MB. 50K entities ≈ 50 MB. |
-| kap10 CLI process baseline | ~30 MB | Node.js baseline + commander + MCP SDK |
+| unerr CLI process baseline | ~30 MB | Node.js baseline + commander + MCP SDK |
 | Search index (inverted) | ~2-10 MB | In-memory token → entity_key map |
 | Cloud proxy HTTP client | ~5 MB | HTTP/2 connection pool (1-3 connections) |
 
@@ -575,12 +575,12 @@ This is well within acceptable bounds for a CLI tool running alongside an IDE.
 
 | Component | Size | Notes |
 |-----------|------|-------|
-| `@autorail/kap10` npm package | ~15 MB | Includes `cozo-node` NAPI binary (~8 MB) |
+| `@autorail/unerr` npm package | ~15 MB | Includes `cozo-node` NAPI binary (~8 MB) |
 | CozoDB file per repo (medium) | ~5-15 MB | Compact structural data |
 | CozoDB file per repo (monorepo) | ~30-60 MB | Large but manageable |
 | 10 repos total | ~100-300 MB | Worst case for heavy users |
 
-**Disk quota:** The CLI enforces a configurable `maxLocalStorageMB` (default: 500 MB). If pulling a new repo would exceed the quota, the CLI prompts the user to remove old repos: `"Local storage limit reached (480/500 MB). Remove a repo with 'kap10 forget org/old-repo' to make space."`.
+**Disk quota:** The CLI enforces a configurable `maxLocalStorageMB` (default: 500 MB). If pulling a new repo would exceed the quota, the CLI prompts the user to remove old repos: `"Local storage limit reached (480/500 MB). Remove a repo with 'unerr forget org/old-repo' to make space."`.
 
 ### CozoDB Query Performance Characteristics
 
@@ -609,7 +609,7 @@ Phase 10a is designed so that Phase 10b requires **zero refactoring** of the 10a
 | **CozoDB schema** (entities, edges, file_index) | Add `rules` and `patterns` relations | Additive — new relations, no changes to existing |
 | **Routing table** (7 local, 2 cloud) | Add `get_rules → LOCAL`, `check_rules → LOCAL` | Additive — append 2 entries to static map |
 | **`syncLocalGraphWorkflow`** | Extend `queryCompactGraph` to also export rules + patterns collections | Modify one activity — add two AQL queries |
-| **`kap10 pull`** | Deserialize rules/patterns from msgpack, load into CozoDB | Extend bulk load step — add two `:insert` calls |
+| **`unerr pull`** | Deserialize rules/patterns from msgpack, load into CozoDB | Extend bulk load step — add two `:insert` calls |
 | **Snapshot version** | Bump from `v1` to `v2` | Version field already exists; CLI version check already implemented |
 | **Predictive pre-fetching** | New feature (10b only) — LSP cursor tracking | Additive — new CLI module, new API endpoint. No changes to existing 10a code. |
 
@@ -625,23 +625,23 @@ Phase 10a is designed so that Phase 10b requires **zero refactoring** of the 10a
 - **`packages/cli/src/` structure:** Phase 5.5 establishes the CLI package at `packages/cli/`. Phase 10a adds `mcp-proxy.ts`, `local-graph.ts`, `sync.ts`, `query-router.ts`, `cozo-schema.ts` to this package. Phase 10b adds `prefetch.ts` and extends `cozo-schema.ts`. No structural conflict.
 - **Temporal workflow:** `syncLocalGraphWorkflow` runs on `light-llm-queue`. Phase 10b extends its activities, not the workflow definition itself. Clean activity-level extension.
 - **Supabase Storage bucket:** `graph-snapshots` bucket created in 10a. 10b uses the same bucket, same path structure, larger payloads (rules + patterns add ~10% to snapshot size).
-- **CLI config:** `~/.kap10/config.json` is extensible by design (JSON object with optional keys). 10b adds `prefetchEnabled: true` without breaking 10a configs.
+- **CLI config:** `~/.unerr/config.json` is extensible by design (JSON object with optional keys). 10b adds `prefetchEnabled: true` without breaking 10a configs.
 
 ### Phase 5.6 CLI Compatibility
 
-Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@autorail/kap10`). Phase 5.6 implemented the CLI-first onboarding (device auth + connect command), and Phase 10a extends it with local graph commands. All CLI code lives in one package — there is no separate CLI.
+Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@autorail/unerr`). Phase 5.6 implemented the CLI-first onboarding (device auth + connect command), and Phase 10a extends it with local graph commands. All CLI code lives in one package — there is no separate CLI.
 
 | CLI feature | Phase | Status |
 |-----------------------|-------|--------|
-| `kap10 auth login/logout` | 5.6 (device flow), 10a (original) | **Merged.** Phase 5.6 rewrote auth with RFC 8628 device flow. Phase 10a reuses it. |
-| `kap10 connect` | 5.6 | **Done.** Golden path: auth + git detect + IDE config in one command. |
-| `kap10 pull` | 10a | **Done.** Downloads graph snapshots into local CozoDB. |
-| `kap10 serve` | 10a | **Done.** Local MCP server with query routing (local/cloud). |
-| `kap10 push` | 5.5 (future) | **No conflict.** Push uploads code for indexing. Pull downloads graph snapshots. |
-| `kap10 watch` | 5.5 (future) | **No conflict.** Watch streams file changes to the cloud ledger. |
-| `kap10 rewind/timeline/mark-working` | 5.5 (future) | **No conflict.** Ledger commands interact with the cloud API. |
+| `unerr auth login/logout` | 5.6 (device flow), 10a (original) | **Merged.** Phase 5.6 rewrote auth with RFC 8628 device flow. Phase 10a reuses it. |
+| `unerr connect` | 5.6 | **Done.** Golden path: auth + git detect + IDE config in one command. |
+| `unerr pull` | 10a | **Done.** Downloads graph snapshots into local CozoDB. |
+| `unerr serve` | 10a | **Done.** Local MCP server with query routing (local/cloud). |
+| `unerr push` | 5.5 (future) | **No conflict.** Push uploads code for indexing. Pull downloads graph snapshots. |
+| `unerr watch` | 5.5 (future) | **No conflict.** Watch streams file changes to the cloud ledger. |
+| `unerr rewind/timeline/mark-working` | 5.5 (future) | **No conflict.** Ledger commands interact with the cloud API. |
 
-**CLI package:** `packages/cli/` with `@autorail/kap10` as the npm package name. Install via `npm install -g @autorail/kap10` or run directly via `npx @autorail/kap10 connect`. The `commander` entry point (`src/index.ts`) registers all commands from all phases.
+**CLI package:** `packages/cli/` with `@autorail/unerr` as the npm package name. Install via `npm install -g @autorail/unerr` or run directly via `npx @autorail/unerr connect`. The `commander` entry point (`src/index.ts`) registers all commands from all phases.
 
 ---
 
@@ -695,7 +695,7 @@ Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@aut
 ## 2.2 Database & Schema Layer
 
 - [ ] **P10a-DB-01: Create `GraphSnapshotMeta` model in Prisma schema** — M
-  - New model in `kap10` schema:
+  - New model in `unerr` schema:
     - `id` (UUID, PK)
     - `repoId` (FK → Repo, unique — one snapshot per repo)
     - `orgId` (FK → Organization)
@@ -708,19 +708,19 @@ Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@aut
     - `status` (enum: `generating`, `available`, `failed`)
     - `generatedAt` (DateTime)
     - `createdAt`, `updatedAt`
-  - `@@schema("kap10")`, `@@map("graph_snapshot_meta")`
+  - `@@schema("unerr")`, `@@map("graph_snapshot_meta")`
   - **Test:** `pnpm migrate` succeeds. CRUD operations on the model work.
   - **Depends on:** Nothing
-  - **Files:** `prisma/schema.prisma`, new migration file
+  - **Files:** `prisma/schema.prisma`, new SQL migration in `supabase/migrations/`
   - **Acceptance:** Table exists. Unique constraint on `repoId` enforced. Status enum works.
   - Notes: _____
 
 - [ ] **P10a-DB-02: Add `SnapshotStatus` enum to Prisma schema** — S
   - Values: `generating`, `available`, `failed`
-  - `@@schema("kap10")`
+  - `@@schema("unerr")`
   - **Test:** Enum values accepted in model operations.
   - **Depends on:** Nothing
-  - **Files:** `prisma/schema.prisma`, new migration file
+  - **Files:** `prisma/schema.prisma`, new SQL migration in `supabase/migrations/`
   - Notes: _____
 
 ---
@@ -885,19 +885,19 @@ Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@aut
 
 ## 2.5 CLI / Client Layer
 
-- [x] **P10a-CLI-01: Implement `kap10 pull` command** — L ✅ DONE
-  - Subcommand: `kap10 pull [--repo org/repo] [--force]`
+- [x] **P10a-CLI-01: Implement `unerr pull` command** — L ✅ DONE
+  - Subcommand: `unerr pull [--repo org/repo] [--force]`
   - Flow:
-    1. Read auth from `~/.kap10/credentials.json` (fail if not authenticated)
+    1. Read auth from `~/.unerr/credentials.json` (fail if not authenticated)
     2. Call `GET /api/graph-snapshots` → list available repos
     3. For each repo (or filtered by `--repo`):
        a. Call `GET /api/graph-snapshots/{repoId}/download` → pre-signed URL + metadata
        b. Download msgpack from pre-signed URL
        c. Verify SHA-256 checksum
        d. Decode msgpack
-       e. Create/replace CozoDB file at `~/.kap10/graphs/{repoId}.cozo`
+       e. Create/replace CozoDB file at `~/.unerr/graphs/{repoId}.cozo`
        f. Bulk load entities, edges, and derived file_index
-    4. Update `~/.kap10/manifest.json`
+    4. Update `~/.unerr/manifest.json`
     5. Print summary
   - `--force` flag: skip version check, re-download even if local is up-to-date
   - Version check: compare `manifest.lastPulledAt` against `snapshot.generatedAt`. Skip if local is newer.
@@ -907,29 +907,29 @@ Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@aut
   - **Acceptance:** CozoDB file created and queryable after pull. Manifest updated. Checksum verified. Existing data preserved on failure.
   - Notes: _____
 
-- [x] **P10a-CLI-02: Implement `kap10 serve` command (local MCP server)** — L ✅ DONE
-  - Subcommand: `kap10 serve [--repo org/repo]`
+- [x] **P10a-CLI-02: Implement `unerr serve` command (local MCP server)** — L ✅ DONE
+  - Subcommand: `unerr serve [--repo org/repo]`
   - Starts a local MCP server using stdio transport (JSON-RPC over stdin/stdout)
   - Registers all 9 Phase 2 MCP tools with the same names and schemas
   - Uses the query router to dispatch: 7 tools → local CozoDB, 2 tools → cloud proxy
-  - Loads CozoDB databases from `~/.kap10/graphs/` on startup
+  - Loads CozoDB databases from `~/.unerr/graphs/` on startup
   - Runs until terminated (Ctrl+C or IDE disconnect)
   - IDE configuration example (Cursor `.cursor/mcp.json`):
     ```
-    { "mcpServers": { "kap10": { "command": "kap10", "args": ["serve"] } } }
+    { "mcpServers": { "unerr": { "command": "unerr", "args": ["serve"] } } }
     ```
-  - **Test:** Start `kap10 serve` → MCP client connects via stdio → `tools/list` returns all 9 tools. `get_function` resolves locally. `sync_local_diff` proxies to cloud.
+  - **Test:** Start `unerr serve` → MCP client connects via stdio → `tools/list` returns all 9 tools. `get_function` resolves locally. `sync_local_diff` proxies to cloud.
   - **Depends on:** P10a-ADAPT-01, P10a-CLI-04, P10a-CLI-05
   - **Files:** `packages/cli/src/commands/serve.ts`, `packages/cli/src/mcp-proxy.ts`
   - **Acceptance:** MCP server starts on stdio. All 9 tools registered. Local tools respond in <5ms. Cloud tools proxy correctly. IDE connects successfully.
   - Notes: _____
 
-- [x] **P10a-CLI-03: Implement `kap10 auth login/logout`** — M ✅ DONE (Phase 5.6)
+- [x] **P10a-CLI-03: Implement `unerr auth login/logout`** — M ✅ DONE (Phase 5.6)
   - Rewritten in Phase 5.6 with RFC 8628 Device Authorization Flow
-  - `kap10 auth login` → opens browser to `/cli/authorize` → device approval → receives org-level API key
-  - `kap10 auth login --key <key>` → direct API key auth (escape hatch)
-  - `kap10 auth logout` → deletes `~/.kap10/credentials.json`
-  - Stores credentials at `~/.kap10/credentials.json` as `{ serverUrl, apiKey, orgId, orgName }`
+  - `unerr auth login` → opens browser to `/cli/authorize` → device approval → receives org-level API key
+  - `unerr auth login --key <key>` → direct API key auth (escape hatch)
+  - `unerr auth logout` → deletes `~/.unerr/credentials.json`
+  - Stores credentials at `~/.unerr/credentials.json` as `{ serverUrl, apiKey, orgId, orgName }`
   - **Files:** `packages/cli/src/commands/auth.ts`
   - Notes: Phase 5.6 replaced the original OAuth/API-key dual mode with device auth flow
 
@@ -938,7 +938,7 @@ Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@aut
   - For `local` tools: dispatch to CozoDB adapter, format response
   - For `cloud` tools: proxy full JSON-RPC request to cloud MCP endpoint via P10a-CLI-05 (which injects workspace context)
   - For unknown tools: default to `cloud` (forward-compatible — future tools in Phases 4–6 work automatically)
-  - Cloud proxy: uses `~/.kap10/credentials.json` for auth header
+  - Cloud proxy: uses `~/.unerr/credentials.json` for auth header
   - `semantic_search` is **not** handled locally — it is routed to cloud via the proxy. The proxy's workspace context injection (P10a-CLI-05) ensures the cloud's hybrid search includes the developer's uncommitted local changes from the ArangoDB workspace overlay.
   - Response format: identical to cloud MCP server responses. Adds `_meta.source: "local" | "cloud" | "cloud_fallback"` for observability.
   - **Test:** `get_function` → routed to local. `sync_local_diff` → routed to cloud. `semantic_search` → routed to cloud with workspace context. `unknown_tool` → routed to cloud. Local failure → fallback to cloud with `_meta.source: "cloud_fallback"`.
@@ -949,19 +949,19 @@ Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@aut
 
 - [x] **P10a-CLI-05: Implement cloud MCP proxy client** — M ✅ DONE
   - HTTP/2 client that proxies MCP JSON-RPC requests to the cloud MCP server
-  - URL: reads `mcpServerUrl` from `~/.kap10/config.json` (default: `https://mcp.kap10.dev`)
+  - URL: reads `mcpServerUrl` from `~/.unerr/config.json` (default: `https://mcp.unerr.dev`)
   - Auth: includes `Authorization: Bearer {token}` or `Authorization: Bearer {apiKey}` from credentials
-  - **Workspace context injection (Critical):** The local proxy MUST capture the active `Mcp-Session-Id` (or the active `workspaceId`) from the agent's connection and inject it as an HTTP header `X-Kap10-Workspace-Id` when forwarding requests to the cloud MCP server. Without this, the cloud `semantic_search` handler has no way to identify which ArangoDB workspace overlay to query — search results would be blind to the developer's uncommitted local changes. The cloud MCP server must read this header in `handleSemanticSearch()` and pass it as `workspaceId` to the hybrid search pipeline.
+  - **Workspace context injection (Critical):** The local proxy MUST capture the active `Mcp-Session-Id` (or the active `workspaceId`) from the agent's connection and inject it as an HTTP header `X-Unerr-Workspace-Id` when forwarding requests to the cloud MCP server. Without this, the cloud `semantic_search` handler has no way to identify which ArangoDB workspace overlay to query — search results would be blind to the developer's uncommitted local changes. The cloud MCP server must read this header in `handleSemanticSearch()` and pass it as `workspaceId` to the hybrid search pipeline.
   - Timeout: 10s per request (cloud tools should respond within 1s, 10s is generous timeout)
   - Connection pooling: reuse HTTP/2 connection across requests
   - Error handling: on network error, return MCP error response (don't crash CLI)
-  - **Test:** Proxy a `sync_local_diff` call → cloud responds → response relayed to stdio. Cloud timeout → MCP error returned. Cloud 401 → prompt re-auth. **Proxy a `semantic_search` call → `X-Kap10-Workspace-Id` header present in forwarded request → cloud uses workspace overlay for keyword leg.**
+  - **Test:** Proxy a `sync_local_diff` call → cloud responds → response relayed to stdio. Cloud timeout → MCP error returned. Cloud 401 → prompt re-auth. **Proxy a `semantic_search` call → `X-Unerr-Workspace-Id` header present in forwarded request → cloud uses workspace overlay for keyword leg.**
   - **Depends on:** P10a-CLI-03
   - **Files:** `packages/cli/src/cloud-proxy.ts`
   - Notes: This is the critical bridge between Phase 3's workspace-aware search and Phase 10a's local CLI proxy. Without workspace context injection, cloud-proxied search ignores uncommitted local code.
 
 - [x] **P10a-CLI-06: Implement stale graph detection and auto-pull** — S ✅ DONE
-  - On `kap10 serve` startup: check each repo's `lastPulledAt` in manifest
+  - On `unerr serve` startup: check each repo's `lastPulledAt` in manifest
   - If stale (>24h): log warning, trigger background pull if `autoPull` config is true
   - Subscribe to Redis pub/sub `graph-sync:{orgId}` via WebSocket relay (cloud endpoint)
   - On sync notification: trigger background pull for the updated repo
@@ -1000,9 +1000,9 @@ Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@aut
 
 - [x] **P10a-UI-03: Add "Local Setup" instructions to Connect IDE page** — S ✅ DONE
   - Add a tab or section to the existing Connect IDE page (Phase 2) with local setup instructions:
-    1. Install CLI: `npm install -g @autorail/kap10`
-    2. Authenticate: `kap10 auth login`
-    3. Pull graph: `kap10 pull`
+    1. Install CLI: `npm install -g @autorail/unerr`
+    2. Authenticate: `unerr auth login`
+    3. Pull graph: `unerr pull`
     4. Configure IDE: show MCP config snippet for Cursor/VS Code/Claude Code
   - Include a "Copy" button for the IDE config snippet
   - **Test:** Instructions render. Copy button copies correct config. Tab/section toggles correctly.
@@ -1100,7 +1100,7 @@ Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@aut
   - Notes: _____
 
 - [ ] **P10a-TEST-10: MCP stdio transport integration test** — M
-  - Spawn `kap10 serve` as child process → send JSON-RPC via stdin → read response from stdout
+  - Spawn `unerr serve` as child process → send JSON-RPC via stdin → read response from stdout
   - Verify: `tools/list` returns 9 tools. `get_function` returns entity. Response format matches cloud MCP server.
   - **Depends on:** P10a-CLI-02
   - **Files:** `packages/cli/src/__tests__/mcp-proxy.integration.test.ts`
@@ -1119,8 +1119,8 @@ Phase 10a and Phase 5.6 share the **same CLI package** at `packages/cli/` (`@aut
 
 - [ ] **P10a-TEST-12: Manual latency comparison** — M
   - Index a real repo via Phase 1 + Phase 2
-  - Run `kap10 pull` → verify CozoDB file created
-  - Start `kap10 serve` → connect IDE (Cursor or VS Code)
+  - Run `unerr pull` → verify CozoDB file created
+  - Start `unerr serve` → connect IDE (Cursor or VS Code)
   - Agent calls `get_function("validateJWT")`:
     - Via cloud MCP: measure latency (~200-300ms expected)
     - Via local CLI MCP: measure latency (<5ms expected)
@@ -1160,8 +1160,8 @@ P10a-ADAPT-01 ─── P10a-CLI-04 (router) │
                        │                │
 P10a-CLI-03 (auth) ── P10a-CLI-05 (cloud proxy)
                        │
-                       └── P10a-CLI-01 (kap10 pull)
-                       └── P10a-CLI-02 (kap10 serve) ── P10a-CLI-06 (auto-sync)
+                       └── P10a-CLI-01 (unerr pull)
+                       └── P10a-CLI-02 (unerr serve) ── P10a-CLI-06 (auto-sync)
 
 P10a-DB-01 ── P10a-UI-01 (snapshot badge)
 P10a-API-03 ── P10a-UI-02 (sync button)
@@ -1187,12 +1187,12 @@ All above ── P10a-TEST-01..12 (all tests)
 ## New Files Summary
 
 ```
-packages/cli/src/                  ← @autorail/kap10 CLI package (shared across Phases 5.6, 10a, 10b)
+packages/cli/src/                  ← @autorail/unerr CLI package (shared across Phases 5.6, 10a, 10b)
   commands/
-    auth.ts                         ← kap10 auth login/logout (Phase 5.6: RFC 8628 device flow) ✅
-    connect.ts                      ← kap10 connect — golden path onboarding (Phase 5.6) ✅
-    pull.ts                         ← kap10 pull — download + deserialize + CozoDB load ✅
-    serve.ts                        ← kap10 serve — local MCP server (stdio) ✅
+    auth.ts                         ← unerr auth login/logout (Phase 5.6: RFC 8628 device flow) ✅
+    connect.ts                      ← unerr connect — golden path onboarding (Phase 5.6) ✅
+    pull.ts                         ← unerr pull — download + deserialize + CozoDB load ✅
+    serve.ts                        ← unerr serve — local MCP server (stdio) ✅
   index.ts                         ← commander entry point, registers all commands ✅
   local-graph.ts                   ← CozoGraphStore adapter (read-only IGraphStore subset) ✅
   cozo-schema.ts                   ← CozoDB Datalog relation definitions ✅
@@ -1257,4 +1257,4 @@ app/(dashboard)/repos/[repoId]/page.tsx          ← "Sync Now" button (pending)
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-02-20 | — | Initial document created. 10 API items, 3 adapter items, 5 infrastructure items, 2 database items, 6 CLI items, 3 UI items, 12 test items. Total: **41 tracker items.** |
-| 2026-02-21 | — | **Phase 5.6 integration.** Auth flow updated to RFC 8628 device auth. `kap10 connect` golden path added. CLI package name standardized to `@autorail/kap10`. Credentials format changed to `{ serverUrl, apiKey, orgId, orgName }`. Org-level API keys (`repoId` optional, `isDefault` flag) implemented. 27 of 41 items marked complete. Remaining: INFRA-01..03 (storage bucket, env vars), DB-01..02 (GraphSnapshotMeta model), API-07..08 (upload/notify activities), API-10 (chain trigger), UI-01..02 (badges, sync button), TEST-01 (CozoDB adapter), TEST-07..12 (stale detection, integration, E2E, manual). |
+| 2026-02-21 | — | **Phase 5.6 integration.** Auth flow updated to RFC 8628 device auth. `unerr connect` golden path added. CLI package name standardized to `@autorail/unerr`. Credentials format changed to `{ serverUrl, apiKey, orgId, orgName }`. Org-level API keys (`repoId` optional, `isDefault` flag) implemented. 27 of 41 items marked complete. Remaining: INFRA-01..03 (storage bucket, env vars), DB-01..02 (GraphSnapshotMeta model), API-07..08 (upload/notify activities), API-10 (chain trigger), UI-01..02 (badges, sync button), TEST-01 (CozoDB adapter), TEST-07..12 (stale detection, integration, E2E, manual). |

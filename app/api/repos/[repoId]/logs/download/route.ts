@@ -40,7 +40,7 @@ export const GET = withAuth(async (req: NextRequest) => {
   try {
     const { getRedis } = require("@/lib/queue/redis") as typeof import("@/lib/queue/redis")
     const redis = getRedis()
-    const key = `kap10:pipeline-logs:${repoId}`
+    const key = `unerr:pipeline-logs:${repoId}`
     const raw = await redis.lrange(key, 0, 5000)
     if (raw.length > 0) {
       logs = raw.map((r) => JSON.parse(r) as PipelineLogEntry)

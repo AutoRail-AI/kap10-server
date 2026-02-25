@@ -189,7 +189,7 @@ async function handlePushEvent(
   // Build workspace path (same pattern as index-repo)
   const os = await import("node:os")
   const path = await import("node:path")
-  const workspacePath = path.join(os.tmpdir(), "kap10-workspaces", orgId, repoId)
+  const workspacePath = path.join(os.tmpdir(), "unerr-workspaces", orgId, repoId)
 
   const commitMessage = payload.head_commit?.message
     ?? payload.commits?.[0]?.message

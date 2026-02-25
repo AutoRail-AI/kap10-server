@@ -20,7 +20,7 @@ services:
   # Redis for cache and rate limiting
   redis:
     image: redis:7-alpine
-    container_name: kap10-redis
+    container_name: unerr-redis
     ports:
       - "6379:6379"
     volumes:
@@ -36,7 +36,7 @@ services:
   # ArangoDB (graph knowledge store)
   arangodb:
     image: arangodb/arangodb:3.12
-    container_name: kap10-arangodb
+    container_name: unerr-arangodb
     ports:
       - "8529:8529"
     environment:
@@ -53,7 +53,7 @@ services:
   # PostgreSQL (Temporal persistence store — NOT for app data, app uses cloud Supabase)
   postgresql:
     image: pgvector/pgvector:pg13
-    container_name: kap10-postgresql
+    container_name: unerr-postgresql
     ports:
       - "5432:5432"
     environment:
@@ -72,7 +72,7 @@ services:
   # Temporal server (workflow orchestration)
   temporal:
     image: temporalio/auto-setup:1.24.2
-    container_name: kap10-temporal
+    container_name: unerr-temporal
     ports:
       - "7233:7233"
     environment:
@@ -95,7 +95,7 @@ services:
   # Temporal UI (web dashboard for workflow visibility)
   temporal-ui:
     image: temporalio/ui:2.31.2
-    container_name: kap10-temporal-ui
+    container_name: unerr-temporal-ui
     ports:
       - "8080:8080"
     environment:
@@ -110,7 +110,7 @@ services:
   app:
     profiles: ["app"]
     build: .
-    container_name: kap10-app
+    container_name: unerr-app
     ports:
       - "3000:3000"
     volumes:
@@ -146,7 +146,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.heavy-worker
-    container_name: kap10-temporal-worker-heavy
+    container_name: unerr-temporal-worker-heavy
     network_mode: host
     command: pnpm temporal:worker:heavy
     environment:
@@ -173,7 +173,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.light-worker
-    container_name: kap10-temporal-worker-light
+    container_name: unerr-temporal-worker-light
     network_mode: host
     command: pnpm temporal:worker:light
     environment:
@@ -199,7 +199,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.mcp-server
-    container_name: kap10-mcp-server
+    container_name: unerr-mcp-server
     ports:
       - "8787:8787"
     environment:
@@ -235,7 +235,7 @@ services:
   # Redis Commander — uncomment to enable web UI at http://localhost:8081
   # redis-commander:
   #   image: rediscommander/redis-commander:latest
-  #   container_name: kap10-redis-commander
+  #   container_name: unerr-redis-commander
   #   environment:
   #     - REDIS_HOSTS=local:redis:6379
   #   ports:

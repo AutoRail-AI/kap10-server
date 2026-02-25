@@ -9,7 +9,7 @@ config({ path: path.resolve(process.cwd(), ".env") });
 const dbUrl = process.env["SUPABASE_DB_URL"] ?? process.env["DATABASE_URL"];
 const separator = dbUrl?.includes("?") ? "&" : "?";
 const urlWithSearchPath = dbUrl
-  ? dbUrl + separator + "search_path=kap10,public"
+  ? dbUrl + separator + "search_path=unerr,public"
   : undefined;
 
 export default defineConfig({

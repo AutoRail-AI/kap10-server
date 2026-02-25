@@ -143,7 +143,7 @@ export const env = createEnv({
     // ── MCP Server (Phase 2) ──────────────────────────────────────
     MCP_SERVER_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid MCP Server URL").optional(),
     MCP_SERVER_PORT: z.string().optional().transform((val) => val ? parseInt(val, 10) : 3001),
-    MCP_JWT_AUDIENCE: z.string().optional().default("kap10-mcp"),
+    MCP_JWT_AUDIENCE: z.string().optional().default("unerr-mcp"),
     MCP_OAUTH_DCR_TTL_HOURS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 24),
     MCP_RATE_LIMIT_MAX: z.string().optional().transform((val) => val ? parseInt(val, 10) : 60),
     MCP_RATE_LIMIT_WINDOW_S: z.string().optional().transform((val) => val ? parseInt(val, 10) : 60),

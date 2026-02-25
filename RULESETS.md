@@ -38,7 +38,7 @@ export function proxy() { ... }
 
 ## 2. Supabase Query Patterns
 
-**Rule**: Use the typed Supabase client from `@/lib/db` or Prisma for all relational database operations. Relational data is Supabase (PostgreSQL) and Prisma only — no MongoDB or other NoSQL document stores. Kap10 app tables live in PostgreSQL schema `kap10` (not `public`); for Prisma-managed tables use `@@schema("kap10")`. See docs/architecture/VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split.
+**Rule**: Use the typed Supabase client from `@/lib/db` or Prisma for all relational database operations. Relational data is Supabase (PostgreSQL) and Prisma only — no MongoDB or other NoSQL document stores. Unerr app tables live in PostgreSQL schema `unerr` (not `public`); for Prisma-managed tables use `@@schema("unerr")`. See docs/architecture/VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split.
 
 All queries should import the singleton `supabase` client and use typed table names.
 

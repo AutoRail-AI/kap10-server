@@ -1,10 +1,10 @@
 /**
  * GET /api/cli/github/repos — List available GitHub repos for the org.
  *
- * Auth: API key (Bearer kap10_sk_...)
+ * Auth: API key (Bearer unerr_sk_...)
  *
  * Returns repos accessible via GitHub App installations, excluding
- * repos already connected to kap10. Mirrors /api/repos/available
+ * repos already connected to unerr. Mirrors /api/repos/available
  * but uses API key auth instead of session auth.
  */
 

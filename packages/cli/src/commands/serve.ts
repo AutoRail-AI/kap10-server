@@ -1,7 +1,7 @@
 /**
- * kap10 serve — Start local MCP server with graph query tools.
+ * unerr serve — Start local MCP server with graph query tools.
  *
- * Reads pulled snapshot from ~/.kap10/snapshots, loads into CozoDB,
+ * Reads pulled snapshot from ~/.unerr/snapshots, loads into CozoDB,
  * starts stdio MCP server with all 11 tools via query router.
  */
 
@@ -13,9 +13,9 @@ import { getCredentials } from "./auth.js"
 import { getManifest } from "./pull.js"
 import { isSnapshotStale, getStalenessInfo } from "../auto-sync.js"
 
-const KAP10_DIR = join(homedir(), ".kap10")
-const SNAPSHOTS_DIR = join(KAP10_DIR, "snapshots")
-const MANIFESTS_DIR = join(KAP10_DIR, "manifests")
+const UNERR_DIR = join(homedir(), ".unerr")
+const SNAPSHOTS_DIR = join(UNERR_DIR, "snapshots")
+const MANIFESTS_DIR = join(UNERR_DIR, "manifests")
 
 export function registerServeCommand(program: Command): void {
   program
@@ -27,7 +27,7 @@ export function registerServeCommand(program: Command): void {
     .action(async (opts: { repo?: string; prefetch?: boolean }) => {
       const creds = getCredentials()
       if (!creds) {
-        console.error("Not authenticated. Run: kap10 auth login")
+        console.error("Not authenticated. Run: unerr auth login")
         process.exit(1)
       }
 
@@ -45,7 +45,7 @@ export function registerServeCommand(program: Command): void {
       }
 
       if (repoIds.length === 0) {
-        console.error("No snapshots found. Run: kap10 pull --repo <repoId>")
+        console.error("No snapshots found. Run: unerr pull --repo <repoId>")
         process.exit(1)
       }
 
@@ -53,7 +53,7 @@ export function registerServeCommand(program: Command): void {
       for (const repoId of repoIds) {
         const info = getStalenessInfo(repoId)
         if (info.isStale) {
-          console.warn(`Warning: Snapshot for ${repoId} is ${info.ageHours}h old (stale). Run: kap10 pull --repo ${repoId}`)
+          console.warn(`Warning: Snapshot for ${repoId} is ${info.ageHours}h old (stale). Run: unerr pull --repo ${repoId}`)
         }
       }
 
@@ -136,7 +136,7 @@ export function registerServeCommand(program: Command): void {
       const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js")
 
       const server = new Server(
-        { name: "kap10-local", version: "0.1.0" },
+        { name: "unerr-local", version: "0.1.0" },
         { capabilities: { tools: {} } }
       )
 
@@ -200,6 +200,6 @@ export function registerServeCommand(program: Command): void {
       }
 
       const ruleInfo = localGraph.hasRules() ? ` (${localGraph.getRules().length} rules loaded)` : ""
-      console.error(`kap10 MCP server running on stdio — 13 tools (9 local, 4 cloud)${ruleInfo}`)
+      console.error(`unerr MCP server running on stdio — 13 tools (9 local, 4 cloud)${ruleInfo}`)
     })
 }

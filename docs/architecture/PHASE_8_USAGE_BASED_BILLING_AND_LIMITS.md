@@ -65,7 +65,7 @@ Step  Actor Action                           System Action                      
 ────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────────────────────────
 1     User signs up (email or OAuth)         Better Auth creates user + org in Supabase                         public.user, public.organization
 
-2                                            Post-signup hook (or lazy on first dashboard load):                kap10.subscriptions row created
+2                                            Post-signup hook (or lazy on first dashboard load):                unerr.subscriptions row created
                                              → Create Subscription:
                                                planId: "free"
                                                monthlyLlmBudget: 0.50
@@ -103,7 +103,7 @@ Step  Actor Action                           System Action                      
 2     User redirected to Stripe              Stripe Checkout hosted page                                        None
       → enters payment details               → User completes payment
 
-3     Stripe sends webhook                   POST /api/billing/webhook                                          kap10.subscriptions updated:
+3     Stripe sends webhook                   POST /api/billing/webhook                                          unerr.subscriptions updated:
       checkout.session.completed             → Verify webhook signature                                          planId: "pro"
                                              → Extract orgId from metadata                                       monthlyLlmBudget: 5.00
                                              → Create/update Subscription:                                       stripeCustomerId: cus_xxx
@@ -137,7 +137,7 @@ Step  Actor Action                           System Action                      
                                              → Live Langfuse check confirms: $5.12
                                              → Return 429 with JSON-RPC error:
                                                "Monthly LLM budget reached ($5.12 / $5.00).
-                                                Buy more at https://app.kap10.dev/billing
+                                                Buy more at https://app.unerr.dev/billing
                                                 or upgrade your plan."
 
 2     User visits /billing                   Dashboard shows:                                                    None
@@ -156,7 +156,7 @@ Step  Actor Action                           System Action                      
 4     User confirms payment                  Stripe processes payment                                            None
       (card on file or new card)
 
-5     Stripe sends webhook                   POST /api/billing/webhook                                          kap10.on_demand_purchases:
+5     Stripe sends webhook                   POST /api/billing/webhook                                          unerr.on_demand_purchases:
       payment_intent.succeeded               → Verify webhook signature                                          new row created
                                              → Create OnDemandPurchase:                                          creditUsd: 5.00
                                                creditUsd: 5.00                                                   periodStart/End aligned
@@ -200,13 +200,13 @@ Step  System Action                                                             
       → Sum totalCost across all days in the period
       → Return: { orgId, totalCostUsd }
 
-3b    Activity: writeUsageSnapshot (light-llm-queue)                               kap10.usage_snapshots:
+3b    Activity: writeUsageSnapshot (light-llm-queue)                               unerr.usage_snapshots:
       → INSERT UsageSnapshot:                                                      new row created
         organizationId: orgId
         totalCostUsd: cost from 3a
         snapshotAt: now()
 
-3c    Activity: checkAndEnforceLimits (light-llm-queue)                            kap10.subscriptions:
+3c    Activity: checkAndEnforceLimits (light-llm-queue)                            unerr.subscriptions:
       → Fetch plan for org                                                         status may change
       → Calculate budget: plan.monthlyLlmBudget + SUM(on_demand_purchases)
       → If totalCostUsd > budget AND status != "over_limit":
@@ -300,7 +300,7 @@ Step  Actor Action                           System Action                      
 1     Admin creates team org                 Better Auth org created                                             public.organization
       (Phase 0 org setup)
 
-2     Admin upgrades to Teams Pro            Stripe Checkout → subscription created                              kap10.subscriptions:
+2     Admin upgrades to Teams Pro            Stripe Checkout → subscription created                              unerr.subscriptions:
       with 5 seats                           → planId: "teams_pro"                                                seats: 5
                                              → seats: 5                                                           monthlyLlmBudget: 20.00
                                              → monthlyLlmBudget: 4.00 * 5 = 20.00                                (4.00 × 5)
@@ -376,7 +376,7 @@ payment_intent.succeeded           → On-demand credit purchase                
                            │ nightly sync (Temporal)
                            ▼
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  Supabase PostgreSQL (kap10 schema)                                      │
+│  Supabase PostgreSQL (unerr schema)                                      │
 │                                                                          │
 │  subscriptions           → Plan, budget, Stripe IDs, status              │
 │  usage_snapshots         → Nightly cost snapshots from Langfuse          │
@@ -564,7 +564,7 @@ The existing `checkRateLimit()` function in `lib/mcp/security/rate-limiter.ts` c
 | # | Failure | Detection | Recovery | User Impact |
 |---|---------|-----------|----------|-------------|
 | 1 | **Langfuse API unreachable during nightly sync** | HTTP timeout (10s) on Daily Metrics API call | Temporal activity retries 3x with exponential backoff (5s, 15s, 45s). If all retries fail, workflow marks org as "sync_failed" and continues to next org. Next nightly run retries. | Usage snapshot not updated. Pre-flight check uses stale snapshot (up to 48h old). No false positives — budget check errs on the side of allowing (stale data shows lower cost than reality). |
-| 2 | **Langfuse API returns incorrect cost data** | No automated detection (Langfuse is source of truth) | Manual investigation. Compare Langfuse dashboard vs kap10 usage snapshots. If discrepancy found, admin can manually adjust via `/api/billing/admin/adjust`. | User may be over- or under-billed. Mitigated by transparency — users can verify in Langfuse dashboard. |
+| 2 | **Langfuse API returns incorrect cost data** | No automated detection (Langfuse is source of truth) | Manual investigation. Compare Langfuse dashboard vs unerr usage snapshots. If discrepancy found, admin can manually adjust via `/api/billing/admin/adjust`. | User may be over- or under-billed. Mitigated by transparency — users can verify in Langfuse dashboard. |
 | 3 | **Stripe webhook delivery failure** | Stripe retries webhooks with exponential backoff for up to 3 days | Idempotent webhook handler — reprocessing the same event is safe (subscription upsert, not insert). Stripe dashboard shows failed webhook deliveries for manual inspection. | Subscription status may be stale for up to a few hours (Stripe retries quickly). Worst case: user paid but subscription not updated — manual fix via admin API or Stripe dashboard. |
 | 4 | **Stripe webhook signature verification failure** | `stripe.webhooks.constructEvent()` throws | Return 400 to Stripe. Stripe retries. Log the event for investigation (possible configuration error or attack). | Same as #3. |
 | 5 | **Double-processing of Stripe webhook** | Same event ID processed twice | Webhook handler checks event ID against a processed-events set in Redis (24h TTL). If already processed, return 200 immediately. | None — idempotent. |
@@ -729,7 +729,7 @@ Phase 8 is the launch gate. After GA:
 ## 2.2 Database & Schema Layer
 
 - [ ] **P8-DB-01: Create `Subscription` Prisma model** — M
-  - Model in `kap10` schema:
+  - Model in `unerr` schema:
     - `id` (UUID, PK)
     - `organizationId` (String, unique — one subscription per org)
     - `planId` (String: `"free"`, `"pro"`, `"max"`, `"teams_pro"`, `"teams_max"`, `"enterprise"`)
@@ -742,29 +742,29 @@ Phase 8 is the launch gate. After GA:
     - `currentPeriodStart` (DateTime)
     - `currentPeriodEnd` (DateTime)
     - `createdAt`, `updatedAt`
-  - `@@schema("kap10")`, `@@map("subscriptions")`
+  - `@@schema("unerr")`, `@@map("subscriptions")`
   - Unique constraint on `organizationId`
   - **Test:** `pnpm migrate` succeeds. CRUD operations work. Unique constraint on orgId enforced.
   - **Depends on:** Nothing
-  - **Files:** `prisma/schema.prisma`, new migration
+  - **Files:** `prisma/schema.prisma`, new SQL migration in `supabase/migrations/`
   - Notes: _____
 
 - [ ] **P8-DB-02: Create `UsageSnapshot` Prisma model** — S
-  - Model in `kap10` schema:
+  - Model in `unerr` schema:
     - `id` (UUID, PK)
     - `organizationId` (String)
     - `totalCostUsd` (Float — from Langfuse Daily Metrics API)
     - `snapshotAt` (DateTime)
     - `createdAt` (DateTime)
   - Compound index on `(organizationId, snapshotAt)` for fast lookups
-  - `@@schema("kap10")`, `@@map("usage_snapshots")`
+  - `@@schema("unerr")`, `@@map("usage_snapshots")`
   - **Test:** Insert snapshot → query by orgId + date range → correct results.
   - **Depends on:** Nothing
-  - **Files:** `prisma/schema.prisma`, new migration
+  - **Files:** `prisma/schema.prisma`, new SQL migration in `supabase/migrations/`
   - Notes: _____
 
 - [ ] **P8-DB-03: Create `OnDemandPurchase` Prisma model** — S
-  - Model in `kap10` schema:
+  - Model in `unerr` schema:
     - `id` (UUID, PK)
     - `organizationId` (String)
     - `creditUsd` (Float — e.g., 5.00)
@@ -775,10 +775,10 @@ Phase 8 is the launch gate. After GA:
     - `createdAt` (DateTime)
   - Compound index on `(organizationId, periodStart)`
   - Unique constraint on `stripePaymentId` (prevents double-processing)
-  - `@@schema("kap10")`, `@@map("on_demand_purchases")`
+  - `@@schema("unerr")`, `@@map("on_demand_purchases")`
   - **Test:** Insert purchase → query by orgId + period → correct sum. Duplicate stripePaymentId → rejected.
   - **Depends on:** Nothing
-  - **Files:** `prisma/schema.prisma`, new migration
+  - **Files:** `prisma/schema.prisma`, new SQL migration in `supabase/migrations/`
   - Notes: _____
 
 ---
@@ -1008,7 +1008,7 @@ Phase 8 is the launch gate. After GA:
       ```
       { jsonrpc: "2.0", id, error: {
           code: -32000,
-          message: "Monthly LLM budget reached ($X.XX / $Y.YY). Buy more at https://app.kap10.dev/billing or upgrade your plan.",
+          message: "Monthly LLM budget reached ($X.XX / $Y.YY). Buy more at https://app.unerr.dev/billing or upgrade your plan.",
           data: { orgId, currentCost, budget, upgradeUrl }
       }}
       ```

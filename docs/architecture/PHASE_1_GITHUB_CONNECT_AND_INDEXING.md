@@ -1,12 +1,12 @@
 # Phase 1 — GitHub Connect & Repository Indexing: Deep Dive & Implementation Tracker
 
-> **Phase Feature Statement:** _"I connect my GitHub account, select a repo, and kap10 indexes it. I can see files, functions, and classes in the dashboard."_
+> **Phase Feature Statement:** _"I connect my GitHub account, select a repo, and unerr indexes it. I can see files, functions, and classes in the dashboard."_
 >
 > **Source:** [`VERTICAL_SLICING_PLAN.md`](./VERTICAL_SLICING_PLAN.md) — Phase 1
 >
 > **Prerequisite:** [Phase 0 — Foundation Wiring](./PHASE_0_DEEP_DIVE_AND_TRACKER.md) (complete)
 >
-> **Database convention:** All kap10 Supabase tables use PostgreSQL schema `kap10`. See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
+> **Database convention:** All unerr Supabase tables use PostgreSQL schema `unerr`. See [VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split](./VERTICAL_SLICING_PLAN.md#storage--infrastructure-split).
 
 ---
 
@@ -36,25 +36,25 @@ Phase 1 has five actor journeys. Each is described with a Mermaid sequence diagr
 
 ### Terminology: Organization, workspace, and GitHub disambiguation
 
-> **"Organization" in kap10 is NOT the same as "organization" on GitHub.** The word collision is intentional — both platforms use "organization" for their account-level grouping — but the two are completely independent entities with separate identity, naming, and lifecycle. See the disambiguation table below.
+> **"Organization" in unerr is NOT the same as "organization" on GitHub.** The word collision is intentional — both platforms use "organization" for their account-level grouping — but the two are completely independent entities with separate identity, naming, and lifecycle. See the disambiguation table below.
 
 | Term | Meaning |
 |------|--------|
-| **Kap10 organization** (or "org") | Account-level tenant in Better Auth. Created at signup from the **user's name** (`"{name}'s organization"`). Holds repos, GitHub installations, and settings. Switched via `AccountProvider`. Has no relationship to any GitHub account name. |
-| **GitHub organization** | A GitHub-specific concept — a multi-user account on github.com (e.g., `facebook`, `vercel`). Also includes personal GitHub accounts (type: `"User"`). Kap10 stores this as `accountLogin` on the `github_installations` table — never as the kap10 org name. |
-| **GitHub installation** | A GitHub App installation that links a GitHub account/org to a kap10 organization. Stored in `kap10.github_installations` with `organizationId` (FK to kap10 org) and `accountLogin` (GitHub account name). One kap10 org can have **multiple** GitHub installations. |
+| **Unerr organization** (or "org") | Account-level tenant in Better Auth. Created at signup from the **user's name** (`"{name}'s organization"`). Holds repos, GitHub installations, and settings. Switched via `AccountProvider`. Has no relationship to any GitHub account name. |
+| **GitHub organization** | A GitHub-specific concept — a multi-user account on github.com (e.g., `facebook`, `vercel`). Also includes personal GitHub accounts (type: `"User"`). Unerr stores this as `accountLogin` on the `github_installations` table — never as the unerr org name. |
+| **GitHub installation** | A GitHub App installation that links a GitHub account/org to a unerr organization. Stored in `unerr.github_installations` with `organizationId` (FK to unerr org) and `accountLogin` (GitHub account name). One unerr org can have **multiple** GitHub installations. |
 | **Workspace** | **Repo-level working context only** — Shadow Workspace overlay (Phase 2), cloned repo directory for SCIP indexing (`prepareWorkspace`), monorepo sub-package root. **Never used to mean organization.** |
 
 **Key rules:**
-- A **kap10 organization** is created from the user's name at signup. It is never created from, renamed to, or derived from a GitHub account name.
-- A **GitHub installation** is an attachment to an existing kap10 org. The install route requires `orgId` upfront; the callback never creates organizations.
-- One kap10 org can connect **multiple** GitHub accounts/orgs (each as a separate `github_installations` row).
+- A **unerr organization** is created from the user's name at signup. It is never created from, renamed to, or derived from a GitHub account name.
+- A **GitHub installation** is an attachment to an existing unerr org. The install route requires `orgId` upfront; the callback never creates organizations.
+- One unerr org can connect **multiple** GitHub accounts/orgs (each as a separate `github_installations` row).
 - The word **"workspace"** is reserved for repo-level technical contexts (clone directories, SCIP indexing, monorepo roots, Phase 2 shadow overlays) — never for account-level grouping.
 
 ```
 Data model (identity separation):
 
-  kap10 organization                GitHub installation              GitHub repos
+  unerr organization                GitHub installation              GitHub repos
   ┌──────────────────┐             ┌──────────────────────┐        ┌─────────────────┐
   │ id: "org-abc-123" │◄──FK──────│ organizationId        │        │ organizationId   │
   │ name: "Jaswanth's │            │ installationId: 12345 │        │ githubRepoId     │
@@ -67,7 +67,7 @@ Data model (identity separation):
        │ (no GitHub involvement)          │ (links to existing org)
 ```
 
-> **Forward-compatibility note (Phase 5.5):** Phase 1 is GitHub-focused, but the data model supports extension. The `RepoProvider` enum will gain a `local_cli` value in Phase 5.5 for repos ingested via `kap10 push`. The Prisma schema already has `githubRepoId` (`BigInt?`) and `githubFullName` (`String?`) as nullable fields, allowing `Repo` rows to exist without a GitHub connection. All pipeline logic (SCIP indexing, entity hashing, writeToArango) is provider-agnostic — only `prepareWorkspace` has a provider-specific branch.
+> **Forward-compatibility note (Phase 5.5):** Phase 1 is GitHub-focused, but the data model supports extension. The `RepoProvider` enum will gain a `local_cli` value in Phase 5.5 for repos ingested via `unerr push`. The Prisma schema already has `githubRepoId` (`BigInt?`) and `githubFullName` (`String?`) as nullable fields, allowing `Repo` rows to exist without a GitHub connection. All pipeline logic (SCIP indexing, entity hashing, writeToArango) is provider-agnostic — only `prepareWorkspace` has a provider-specific branch.
 
 ### Post-signup & organization provisioning
 
@@ -78,7 +78,7 @@ A personal organization is **auto-provisioned on signup** via Better Auth `datab
 | **New user signs up** | `databaseHooks.user.create.after` → INSERT `organization` (`"{name}'s organization"`) + INSERT `member` (role: `owner`). User lands on dashboard with empty-state-repos. |
 | **User connects GitHub** | Dashboard → "Connect GitHub" → `GET /api/github/install?orgId=xxx` → GitHub → callback → installation attached to existing org (no repos auto-imported). User then clicks "Add Repository" → selects repos via picker modal → `POST /api/repos`. |
 
-**Key principle:** Organizations are the account-level grouping in kap10. They are auto-provisioned at signup (not from GitHub account names). GitHub connections (installations) link a GitHub account/org to an existing kap10 organization. The callback **strictly requires** an `orgId` in the state payload and never creates organizations.
+**Key principle:** Organizations are the account-level grouping in unerr. They are auto-provisioned at signup (not from GitHub account names). GitHub connections (installations) link a GitHub account/org to an existing unerr organization. The callback **strictly requires** an `orgId` in the state payload and never creates organizations.
 
 **Multiple GitHub connections:** A single organization can have **multiple** GitHub accounts or orgs connected. Each connection is a separate `github_installations` row. Repos from all connections are listed in the organization's dashboard. Users manage connections via `/settings/connections` (add, remove).
 
@@ -96,19 +96,19 @@ sequenceDiagram
     participant Dashboard
     participant NextAPI as Next.js API
     participant GitHub
-    participant Supabase as Supabase (kap10)
+    participant Supabase as Supabase (unerr)
 
     User->>Dashboard: Click "Connect GitHub"
     Dashboard->>NextAPI: GET /api/github/install?orgId=xxx
     NextAPI->>NextAPI: Verify user has organization, store { orgId } in state
-    NextAPI-->>User: Redirect to github.com/apps/kap10/installations/new
+    NextAPI-->>User: Redirect to github.com/apps/unerr/installations/new
     User->>GitHub: Authorize & select repositories
     GitHub-->>NextAPI: GET /api/github/callback?installation_id=123&setup_action=install&state=...
     NextAPI->>NextAPI: Verify state param → extract orgId
     NextAPI->>GitHub: POST /app/installations/123/access_tokens (via @octokit/auth-app)
     GitHub-->>NextAPI: Installation access token (1hr TTL)
     Note over NextAPI: Attach installation to existing organization (orgId from state)
-    NextAPI->>Supabase: INSERT INTO kap10.github_installations (org_id, installation_id, ...)
+    NextAPI->>Supabase: INSERT INTO unerr.github_installations (org_id, installation_id, ...)
     Note over NextAPI: Repos are NOT auto-created here — user selects them via repo picker (Flow 2)
     NextAPI-->>User: Redirect to /?connected=true
 ```
@@ -124,7 +124,7 @@ sequenceDiagram
 | Multiple GitHub connections per organization? | **Yes** | An organization can aggregate repos from multiple GitHub accounts/orgs. Each connection is a separate installation row. |
 
 **State changes:**
-- Supabase `kap10.github_installations`: new row with `installation_id`, `org_id`, `account_login`, `account_type` (additive — does not replace existing installations)
+- Supabase `unerr.github_installations`: new row with `installation_id`, `org_id`, `account_login`, `account_type` (additive — does not replace existing installations)
 - No repo records created — repos are added by the user in Flow 2 (repo picker modal → `POST /api/repos`)
 
 ### Flow 1b: Managing GitHub Connections
@@ -155,12 +155,12 @@ sequenceDiagram
     participant Dashboard
     participant NextAPI as Next.js API
     participant GitHub
-    participant Supabase as Supabase (kap10)
+    participant Supabase as Supabase (unerr)
     participant Temporal
 
     User->>Dashboard: Click "Add Repository"
     Dashboard->>NextAPI: GET /api/repos/available
-    NextAPI->>Supabase: SELECT installation_id FROM kap10.github_installations WHERE org_id = ?
+    NextAPI->>Supabase: SELECT installation_id FROM unerr.github_installations WHERE org_id = ?
     NextAPI->>GitHub: GET /installation/repositories (via installation token)
     GitHub-->>NextAPI: List of accessible repos
     NextAPI-->>Dashboard: Available repos (filtered: exclude already-connected)
@@ -173,11 +173,11 @@ sequenceDiagram
     NextAPI-->>Dashboard: { branches, defaultBranch }
     User->>Dashboard: Choose branch per repo → Click "Connect & Index"
     Dashboard->>NextAPI: POST /api/repos { repos: [{ githubRepoId: 456, branch: "develop" }, ...] }
-    NextAPI->>Supabase: INSERT INTO kap10.repos (status=pending) for each
+    NextAPI->>Supabase: INSERT INTO unerr.repos (status=pending) for each
     loop For each selected repo
         NextAPI->>Temporal: startWorkflow("indexRepoWorkflow", { orgId, repoId, ... })
         Temporal-->>NextAPI: WorkflowHandle { workflowId }
-        NextAPI->>Supabase: UPDATE kap10.repos SET status=indexing, workflow_id=?
+        NextAPI->>Supabase: UPDATE unerr.repos SET status=indexing, workflow_id=?
     end
     NextAPI-->>Dashboard: 200 OK { repos: [...], indexingStarted: true }
     Dashboard-->>User: Repo cards appear with "Indexing..." status
@@ -205,7 +205,7 @@ sequenceDiagram
     participant Light as Light Worker (light-llm-queue)
     participant GitHub
     participant ArangoDB
-    participant Supabase as Supabase (kap10)
+    participant Supabase as Supabase (unerr)
 
     Temporal->>Heavy: Activity: prepareWorkspace
     Heavy->>GitHub: Clone repo (simple-git, full clone)
@@ -235,7 +235,7 @@ sequenceDiagram
     Light->>Light: Generate stable entity hashes (SHA-256)
     Light->>ArangoDB: Batch upsert entities (bulkUpsertEntities)
     Light->>ArangoDB: Batch upsert edges (bulkUpsertEdges)
-    Light->>Supabase: UPDATE kap10.repos SET status=ready, file_count=?, function_count=?, class_count=?
+    Light->>Supabase: UPDATE unerr.repos SET status=ready, file_count=?, function_count=?, class_count=?
     Light-->>Temporal: { entitiesWritten, edgesWritten, fileCount, ... }
 
     Note over Temporal: Update progress → 100%
@@ -295,12 +295,12 @@ sequenceDiagram
     actor User
     participant Dashboard
     participant NextAPI as Next.js API
-    participant Supabase as Supabase (kap10)
+    participant Supabase as Supabase (unerr)
     participant Temporal
 
     User->>Dashboard: View /repos (or dashboard home)
     Dashboard->>NextAPI: GET /api/repos
-    NextAPI->>Supabase: SELECT * FROM kap10.repos WHERE org_id = ?
+    NextAPI->>Supabase: SELECT * FROM unerr.repos WHERE org_id = ?
     NextAPI-->>Dashboard: Repos with statuses
 
     loop Every 5 seconds (for repos with status=indexing)
@@ -366,11 +366,11 @@ sequenceDiagram
     participant Dashboard
     participant NextAPI as Next.js API
     participant ArangoDB
-    participant Supabase as Supabase (kap10)
+    participant Supabase as Supabase (unerr)
 
     User->>Dashboard: Click on repo card → /repos/[repoId]
     Dashboard->>NextAPI: GET /api/repos/[repoId]
-    NextAPI->>Supabase: SELECT * FROM kap10.repos WHERE id = ? AND org_id = ?
+    NextAPI->>Supabase: SELECT * FROM unerr.repos WHERE id = ? AND org_id = ?
     NextAPI-->>Dashboard: Repo metadata (name, status, counts)
 
     Dashboard->>NextAPI: GET /api/repos/[repoId]/tree
@@ -548,11 +548,11 @@ Example:
 
 ### Pool-Based ArangoDB Multi-Tenancy
 
-Single database `kap10_db`. Every document and edge carries `org_id` + `repo_id`:
+Single database `unerr_db`. Every document and edge carries `org_id` + `repo_id`:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                    kap10_db (ArangoDB)                     │
+│                    unerr_db (ArangoDB)                     │
 │                                                           │
 │  Collection: files                                        │
 │  ┌──────────────────────────────────────────────────────┐ │
@@ -585,7 +585,7 @@ Single database `kap10_db`. Every document and edge carries `org_id` + `repo_id`
 | 3 | **SCIP indexer crash** (OOM on large monorepo) | Medium — monorepos with 50k+ files | `runSCIP` activity fails, workflow paused | Temporal detects activity failure (non-zero exit code or OOM kill) | Retry on fresh worker. If 3× OOM: mark repo as `error` with message "Repository too large for indexing". Future: split into sub-package indexing. | 5–30 min |
 | 4 | **ArangoDB write failure** (disk full, connection timeout) | Low | `writeToArango` fails, entities not persisted | Activity throws, Temporal retries | Retry 3×. If persistent: mark repo `error`, alert. ArangoDB disk monitoring via Docker health check. | Minutes (retries) |
 | 5 | **Temporal worker OOM** | Low–Medium | Worker process killed, activities rescheduled to other workers | Kubernetes/Docker OOM kill signal | Temporal automatically reschedules pending activities to healthy workers. Heavy worker memory limit: 8 GB (Phase 1). | Seconds (auto-reschedule) |
-| 6 | **Webhook delivery failure** (GitHub → kap10) | Low | Push events missed, no auto-re-index | GitHub retries webhooks 3× over 24h. `/api/health` monitors webhook endpoint. | GitHub's built-in retry. Manual re-index button as fallback. Webhook event log in GitHub App settings for debugging. | Minutes (GitHub retry) |
+| 6 | **Webhook delivery failure** (GitHub → unerr) | Low | Push events missed, no auto-re-index | GitHub retries webhooks 3× over 24h. `/api/health` monitors webhook endpoint. | GitHub's built-in retry. Manual re-index button as fallback. Webhook event log in GitHub App settings for debugging. | Minutes (GitHub retry) |
 | 7 | **Installation token expiry mid-workflow** | Low — tokens last 1 hr, clone takes < 30 min | `prepareWorkspace` fails mid-clone if token expires | HTTP 401 from GitHub API | `@octokit/auth-app` auto-renews tokens transparently. If the installation is revoked (not just expired): activity fails, repo marked `error` with "GitHub access revoked". | None (auto-renew) |
 | 8 | **Partial indexing** (some files fail SCIP, others succeed) | Medium | Incomplete graph — some entities/edges missing | Compare SCIP output file count vs. repo file count | Accept partial results. Store `coveredFiles[]` and `failedFiles[]` in workflow result. Show warning badge on repo card: "Partially indexed (85% of files)". | None (graceful degradation) |
 | 9 | **Concurrent re-index of same repo** | Medium — webhook + manual trigger race | Duplicate workflows, conflicting ArangoDB writes | Temporal workflow ID uniqueness: `index-{orgId}-{repoId}` | Temporal rejects duplicate workflow IDs by default (`WorkflowExecutionAlreadyStarted`). API checks for existing running workflow before starting new one. If user forces re-index: terminate existing + start new. | None (prevented) |
@@ -701,7 +701,7 @@ Seam 5: Repo status → readiness for Q&A
    - (Or: GitHub → Settings → Developer settings → GitHub Apps → New GitHub App.)
 
 2. **Basic info**
-   - **GitHub App name:** `kap10-dev` (development) or `kap10` (production). This becomes the app slug in URLs (e.g. `https://github.com/apps/kap10-dev`).
+   - **GitHub App name:** `unerr-dev` (development) or `unerr` (production). This becomes the app slug in URLs (e.g. `https://github.com/apps/unerr-dev`).
    - **Homepage URL:** Your app’s public URL (e.g. `http://localhost:3000` or `https://your-domain.com`). Should match `BETTER_AUTH_URL` in `.env.local`.
    - **Callback URL:** `{BASE_URL}/api/github/callback`  
      - Local: `http://localhost:3000/api/github/callback`  
@@ -740,21 +740,21 @@ Seam 5: Repo status → readiness for Q&A
        `GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----"`
 
 9. **Optional: App slug for install redirect**
-   - The install flow redirects to `https://github.com/apps/{slug}/installations/new`. The slug is the app name lowercased and hyphenated (e.g. `kap10-dev` → `kap10-dev`).  
-   - If your app name differs, set `GITHUB_APP_SLUG` in `.env.local` (e.g. `GITHUB_APP_SLUG=my-kap10-app`).
+   - The install flow redirects to `https://github.com/apps/{slug}/installations/new`. The slug is the app name lowercased and hyphenated (e.g. `unerr-dev` → `unerr-dev`).  
+   - If your app name differs, set `GITHUB_APP_SLUG` in `.env.local` (e.g. `GITHUB_APP_SLUG=my-unerr-app`).
 
 10. **Verify**
     - Ensure `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and `GITHUB_WEBHOOK_SECRET` are in `.env.local` (see `.env.example`).
     - Run `pnpm build`; the app should build. Start the app, log in, and click “Connect GitHub” — you should be redirected to GitHub to install the app.
 
 - [x] **P1-INFRA-01: Create GitHub App on github.com** — S
-  - App name: `kap10-dev` (dev), `kap10` (prod)
+  - App name: `unerr-dev` (dev), `unerr` (prod)
   - Permissions: Repository contents (read), metadata (read), pull requests (read/write), webhooks
   - Events: `push`, `pull_request`, `installation`, `installation_repositories`
   - Callback URL: `{BASE_URL}/api/github/callback`
   - Webhook URL: `{BASE_URL}/api/webhooks/github`
   - Generate private key (PEM), store as `GITHUB_APP_PRIVATE_KEY`
-  - **Test:** App visible at `https://github.com/apps/kap10-dev`. Install on a test org.
+  - **Test:** App visible at `https://github.com/apps/unerr-dev`. Install on a test org.
   - **Depends on:** Nothing
   - **Files:** None (GitHub UI configuration)
   - Notes: Manual step; implementer adds env vars and callback/webhook URLs. See “How to create the GitHub App” above.
@@ -818,12 +818,12 @@ Seam 5: Repo status → readiness for Q&A
 - [x] **P1-DB-01: Add `GitHubInstallation` model to Prisma schema** — M
   - Fields: `id` (UUID PK), `organizationId` (FK), `installationId` (BigInt, GitHub's ID), `accountLogin` (String — GitHub org/user login), `accountType` (enum: `Organization` | `User`), `permissions` (JSON — what the app can access), `suspendedAt` (DateTime?), `createdAt`, `updatedAt`
   - Unique: `(organizationId, installationId)`
-  - Schema: `@@schema("kap10")`, `@@map("github_installations")`
-  - **Test:** `pnpm prisma migrate dev` runs cleanly. Table visible in Supabase as `kap10.github_installations`.
+  - Schema: `@@schema("unerr")`, `@@map("github_installations")`
+  - **Test:** `pnpm prisma generate` succeeds. Table visible in Supabase as `unerr.github_installations`.
   - **Depends on:** Nothing
-  - **Files:** `prisma/schema.prisma`
+  - **Files:** `prisma/schema.prisma`, `supabase/migrations/00002_unerr_schema.sql`
   - **Acceptance:** Migration creates table with correct columns and constraints.
-  - Notes: Done. SQL migration `20260217120000_phase1_github_installation_and_repo_indexing.sql`.
+  - Notes: Done. Consolidated into `supabase/migrations/00002_unerr_schema.sql`.
 
 - [x] **P1-DB-02: Extend `Repo` model with indexing fields** — M
   - Add fields: `githubRepoId` (BigInt), `githubFullName` (String — "owner/repo"), `lastIndexedSha` (String? — commit SHA), `indexProgress` (Int, 0–100), `fileCount` (Int), `functionCount` (Int), `classCount` (Int), `errorMessage` (String?), `workflowId` (String? — Temporal workflow ID for status polling)
@@ -1037,7 +1037,7 @@ Seam 5: Repo status → readiness for Q&A
 - [x] **P1-API-03: `GET /api/repos/available` — List installable repos** — S
   - Fetches repos accessible to the org's GitHub installation
   - Filters out repos already connected in Supabase
-  - Caches in Redis for 5 minutes (`kap10:gh-repos:{installationId}`)
+  - Caches in Redis for 5 minutes (`unerr:gh-repos:{installationId}`)
   - **Test:** Returns repos from GitHub. Already-connected repos excluded. Second call within 5 min hits cache.
   - **Depends on:** P1-ADAPT-04, P1-ADAPT-12
   - **Files:** `app/api/repos/available/route.ts`
@@ -1601,9 +1601,9 @@ app/api/repos/route.ts                     ← Add POST handler
 | 2026-02-17 | — | **Review pass — 3 fixes applied.** (1) Added **P1-INFRA-06: Create `Dockerfile.heavy-worker`** — multi-stage Docker build with Node.js, pnpm, yarn, Go, Python, SCIP CLI binaries, and build tools. Without this, P1-API-12 (`prepareWorkspace`) and P1-API-13 (`runSCIP`) would fail with `command not found` inside Docker. (2) Added **P1-ADAPT-13: `setIfNotExists()` on `ICacheStore`** — atomic `SET NX` for webhook deduplication in P1-API-07, preventing race conditions on concurrent duplicate deliveries. Updated P1-API-07 to depend on P1-ADAPT-13. (3) Added **Tree-sitter WASM asset loading caveat** to P1-API-14 — `.wasm` grammar files must be copied to a known directory and loaded via `fs.readFileSync`, not bundler imports. Added `scripts/copy-grammars.ts` postinstall helper and `lib/indexer/grammars/` to new files list. P1-API-14 now depends on P1-INFRA-06. Updated dependency graph, new/modified files summary. **Final count: 47 tracker items** (Infrastructure: 6, Database: 3, Adapters: 13, API: 17, UI: 7, Testing: 12). |
 | 2026-02-17 | — | **Phase 1 implementation completed.** Infrastructure: env vars (env.mjs, .env.example), Docker (8 GB heavy worker, workspaces volume), Dockerfile.heavy-worker (Node 22, git, build-essential, python3). Database: GitHubInstallation model + Repo extensions (Prisma + SQL migration), ArangoDB idx on [org_id, repo_id, file_path]. Ports: IGitHost (getInstallationRepos, getInstallationToken), IRelationalStore (getInstallation, createInstallation, deleteInstallation, updateRepoStatus, getRepoByGithubId, getReposByStatus, getRepo, deleteRepo), ICacheStore (setIfNotExists), IGraphStore (getEntitiesByFile with repoId, getFilePaths, deleteRepoData), WorkflowStatus (progress). Adapters: lib/github/client.ts, GitHubHost (cloneRepo, listFiles, getInstallationRepos, getInstallationToken), Prisma + Arango (bulk upsert, getEntitiesByFile, getEntity, getCallersOf, getCalleesOf), Temporal (startWorkflow, getWorkflowStatus, cancelWorkflow), Redis (setIfNotExists). API: github/install, github/callback, repos (GET/POST), repos/[id] (GET/DELETE), repos/[id]/status, repos/[id]/retry, repos/[id]/tree, repos/[id]/entities, repos/[id]/entities/[entityId], webhooks/github. Workflows: indexRepoWorkflow (prepareWorkspace, runSCIP stub, parseRest stub, writeToArango), deleteRepoWorkflow; activities registered in workers. UI: Connect GitHub, repo picker modal, repo cards (status/progress/retry), repos list (ReposList), repo detail (file tree + entities + entity detail). Fakes extended (Phase 1 methods). **In progress:** P1-ADAPT-09 (SCIP), P1-API-13 (runSCIP), P1-API-14 (parseRest) — stubbed so pipeline runs; full SCIP/parseRest implementation deferred. **Not done:** P1-TEST-* (unit/integration/E2E tests). Tracker: 42 items [x], 3 items [~]. |
 | 2026-02-17 | — | **Phase 1 verification.** Codebase checked against tracker: P1-INFRA-01..06 ✓ (env.mjs, .env.example, docker-compose 8G/512M, workspaces volume, Dockerfile.heavy-worker). P1-DB-01..03 ✓ (Prisma GitHubInstallation, Repo Phase 1 fields, migration `20260217120000_phase1_github_installation_and_repo_indexing.sql`, ArangoDB `idx_*_org_repo_file` in bootstrapGraphSchema). P1-ADAPT-01..08, 10..13 ✓ (github-host, arango-graph-store bulk/getEntitiesByFile/getFilePaths/deleteRepoData, temporal-workflow-engine startWorkflow/getWorkflowStatus, prisma-relational-store Phase 1 methods, redis setIfNotExists; fakes extended). P1-ADAPT-09 [~] SCIP stub. P1-API-01..12, 15..17 ✓ (all routes present; get-active-org used; runSCIP/parseRest stubs). P1-API-13, 14 [~]. P1-UI-01..07 ✓ (empty-state-repos, repo-picker-modal, repo-card, repos-list, use-repo-status, repos/[repoId] page + repo-detail-client with file tree and entity detail/callers/callees, file-tree-builder, retry route). P1-TEST-01..12 remain [ ]. Conclusion: Phase 1 implemented as specified; stub-only items and tests documented. |
-| 2026-02-17 | — | **Post-cleanup verification.** Removed 41 boilerplate files (old AppealGen/10XR template code) + 30 empty directories. Fixed `scripts/seed.ts` (referenced deleted `lib/templates/manager`). Fixed all ESLint errors: added `no-require-imports` override for lazy-init files, `caughtErrorsIgnorePattern` for catch blocks, import ordering, unused vars. Fixed Prisma 7 bug (prisma/prisma#28611) — `@prisma/adapter-pg` ignores `@@schema()` directives; workaround: set `search_path=kap10,public` on connection string. Regenerated Prisma client. Verified: `pnpm build` ✓ (21 routes), `pnpm test` ✓ (5 files, 29 tests including `file-tree-builder.test.ts`), `pnpm lint` ✓ (0 errors, 0 warnings). All tracker notes fields filled in. **Final tally: 42 [x], 3 [~] (SCIP/parseRest stubs), 12 [ ] (tests).** |
+| 2026-02-17 | — | **Post-cleanup verification.** Removed 41 boilerplate files (old AppealGen/10XR template code) + 30 empty directories. Fixed `scripts/seed.ts` (referenced deleted `lib/templates/manager`). Fixed all ESLint errors: added `no-require-imports` override for lazy-init files, `caughtErrorsIgnorePattern` for catch blocks, import ordering, unused vars. Fixed Prisma 7 bug (prisma/prisma#28611) — `@prisma/adapter-pg` ignores `@@schema()` directives; workaround: set `search_path=unerr,public` on connection string. Regenerated Prisma client. Verified: `pnpm build` ✓ (21 routes), `pnpm test` ✓ (5 files, 29 tests including `file-tree-builder.test.ts`), `pnpm lint` ✓ (0 errors, 0 warnings). All tracker notes fields filled in. **Final tally: 42 [x], 3 [~] (SCIP/parseRest stubs), 12 [ ] (tests).** |
 | 2026-02-17 | — | **Post-signup flow: add repo first, optional org.** Removed requirement to create an org before connecting repos. New users see a **welcome screen** with two paths: (1) **Connect GitHub** — callback auto-creates organization (e.g. `{accountLogin}'s organization`) when user has no org, bootstraps ArangoDB, creates installation + repos, redirects to `/`; (2) **Start without GitHub** — server action creates empty organization, redirects to `/`. `/settings` and `/repos` redirect to `/` when user has no org. Added § Post-signup & organization provisioning, updated Flow 1 (precondition, diagram note, redirect to `/?connected=true`), P1-API-02 (auto-org in callback), P1-UI-01 (welcome screen, empty-state-no-org, create-org action). Phase 0 doc updated to match (Flow 2 = welcome screen, two scenarios). |
-| 2026-02-20 | — | **Branch selection + install/callback hardening.** (1) **Branch selection during repo import:** Added `listBranches()` to `IGitHost` port (P1-ADAPT-14) and `GitHubHost` adapter (paginated `octokit.rest.repos.listBranches`). New `GET /api/repos/available/branches` endpoint (P1-API-04b). Updated `POST /api/repos` (P1-API-04) to accept `{ repos: [{ githubRepoId, branch? }] }` with backward-compatible legacy format. Repo picker modal (P1-UI-02) now has two-step flow: step 1 selects repos, step 2 shows per-repo branch dropdowns with info banner. (2) **Install route hardening (P1-API-01):** Now requires explicit `orgId` query param, validates user belongs to the org (403 if not), stores state as object instead of JSON string. (3) **Callback robustness (P1-API-02):** `parseStatePayload()` handles both object and string state defensively (cache store may auto-deserialize JSON). State typed as `{ orgId: string }`. (4) **Empty state context (P1-UI-01):** `EmptyStateRepos` uses `useAccountContext()` to build install href dynamically with `activeOrgId`. Button disabled when no org active. (5) **Prisma config:** `prisma.config.ts` loads `.env.local` first, adds `search_path=kap10,public` to DB URL. Files: `lib/ports/git-host.ts`, `lib/adapters/github-host.ts`, `lib/di/fakes.ts`, `app/api/repos/available/branches/route.ts` (new), `app/api/repos/route.ts`, `app/api/github/install/route.ts`, `app/api/github/callback/route.ts`, `components/dashboard/repo-picker-modal.tsx`, `components/dashboard/repos-list.tsx`, `components/dashboard/empty-state-repos.tsx`, `app/(dashboard)/page.tsx`, `prisma.config.ts`. Verified: `pnpm build` ✓ (28 routes), `pnpm test` ✓ (7 files, 38 tests), `pnpm lint` ✓ (no new errors). |
+| 2026-02-20 | — | **Branch selection + install/callback hardening.** (1) **Branch selection during repo import:** Added `listBranches()` to `IGitHost` port (P1-ADAPT-14) and `GitHubHost` adapter (paginated `octokit.rest.repos.listBranches`). New `GET /api/repos/available/branches` endpoint (P1-API-04b). Updated `POST /api/repos` (P1-API-04) to accept `{ repos: [{ githubRepoId, branch? }] }` with backward-compatible legacy format. Repo picker modal (P1-UI-02) now has two-step flow: step 1 selects repos, step 2 shows per-repo branch dropdowns with info banner. (2) **Install route hardening (P1-API-01):** Now requires explicit `orgId` query param, validates user belongs to the org (403 if not), stores state as object instead of JSON string. (3) **Callback robustness (P1-API-02):** `parseStatePayload()` handles both object and string state defensively (cache store may auto-deserialize JSON). State typed as `{ orgId: string }`. (4) **Empty state context (P1-UI-01):** `EmptyStateRepos` uses `useAccountContext()` to build install href dynamically with `activeOrgId`. Button disabled when no org active. (5) **Prisma config:** `prisma.config.ts` loads `.env.local` first, adds `search_path=unerr,public` to DB URL. Files: `lib/ports/git-host.ts`, `lib/adapters/github-host.ts`, `lib/di/fakes.ts`, `app/api/repos/available/branches/route.ts` (new), `app/api/repos/route.ts`, `app/api/github/install/route.ts`, `app/api/github/callback/route.ts`, `components/dashboard/repo-picker-modal.tsx`, `components/dashboard/repos-list.tsx`, `components/dashboard/empty-state-repos.tsx`, `app/(dashboard)/page.tsx`, `prisma.config.ts`. Verified: `pnpm build` ✓ (28 routes), `pnpm test` ✓ (7 files, 38 tests), `pnpm lint` ✓ (no new errors). |
 | 2026-02-18 | — | **UserProfileMenu & AccountContext (Claude-style sidebar).** Added Claude-style `UserProfileMenu` component to dashboard sidebar footer — replaces static user info. DropdownMenu with: email header, Personal/Org account switcher (check marks on active), Settings, Help & Support (disabled), Upgrade Plan (electric-cyan, disabled), Invite Friends (disabled), dark/light mode toggle (next-themes), Sign Out. Added `AccountProvider` (Personal vs Org context, persisted to `localStorage`, auto-resets if org removed). Added `ThemeProvider` (next-themes, defaultTheme dark) to root Providers. Dashboard layout passes `serverOrgs` to `UserProfileMenu` which hydrates `AccountProvider`. Files: `components/dashboard/user-profile-menu.tsx`, `components/providers/account-context.tsx`, `components/providers/index.tsx`, `app/(dashboard)/layout.tsx`. Phase 0 doc updated (Flows 2–3, §2.5 tracker, revision log). VERTICAL_SLICING_PLAN updated (Phase 0 "What ships", file tree). |
 | 2026-02-20 | — | **Remove "personal" context + user-driven repo selection.** (1) Removed `contextType` from `AccountProvider`; `activeOrgId` is `string` (never null), self-heals by auto-activating first org. Removed "Personal Account" from `UserProfileMenu`. (2) **Repos no longer auto-added on GitHub installation callback.** Callback only creates the `github_installations` record. Repos are added exclusively via user selection in the repo picker modal (`POST /api/repos`). Updated Flow 1 diagram and state changes. (3) Webhook `installation_repositories` event handler removed — repos only added when user explicitly requests. Updated P1-API-02, P1-API-07 tracker items. (4) `getActiveOrgId()` returns `string` (throws if missing). (5) `databaseHooks.user.create.after` retries with randomized slug on conflict. (6) Updated performance budget for callback (no repo inserts). |
 | 2026-02-20 | — | **Remove RepositorySwitcher + Docker DNS fix.** (1) `RepositorySwitcher` removed from sidebar layout — repos managed from dashboard page. Will be replaced by workspace selector in future phase. Updated P1-UI-01 tracker item. (2) Added `dns: [8.8.8.8, 8.8.4.4]` to `temporal-worker-heavy` and `temporal-worker-light` in `docker-compose.yml` — fixes "Can't reach database server" when light worker activities (`writeToArango`, `updateRepoError`) connect to cloud Supabase from Docker. |

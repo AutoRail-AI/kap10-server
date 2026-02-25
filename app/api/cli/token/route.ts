@@ -81,7 +81,7 @@ export async function POST(request: Request) {
   await cacheStore.invalidate(`cli:device:${body.device_code}`)
   await cacheStore.invalidate(`cli:usercode:${state.userCode}`)
 
-  const serverUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.kap10.dev"
+  const serverUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://app.unerr.dev"
 
   return NextResponse.json({
     access_token: rawKey ?? defaultKey.keyPrefix, // raw key only on first creation

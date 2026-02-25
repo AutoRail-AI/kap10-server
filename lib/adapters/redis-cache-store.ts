@@ -5,8 +5,8 @@
 import type { ICacheStore } from "@/lib/ports/cache-store"
 import { getRedis } from "@/lib/queue"
 
-const PREFIX = "kap10:"
-const RATE_PREFIX = "kap10:rl:"
+const PREFIX = "unerr:"
+const RATE_PREFIX = "unerr:rl:"
 
 export class RedisCacheStore implements ICacheStore {
   async get<T>(key: string): Promise<T | null> {

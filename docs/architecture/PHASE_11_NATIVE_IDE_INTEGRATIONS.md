@@ -37,11 +37,11 @@
 
 | Canonical term | DB / TS field | NOT called |
 |---|---|---|
-| **VS Code extension** | `packages/vscode-extension/`; published as `kap10-vscode` on VS Code Marketplace | "plugin", "add-on", "module" (use "plugin" only for JetBrains) |
+| **VS Code extension** | `packages/vscode-extension/`; published as `unerr-vscode` on VS Code Marketplace | "plugin", "add-on", "module" (use "plugin" only for JetBrains) |
 | **JetBrains plugin** | `packages/jetbrains-plugin/`; published on JetBrains Marketplace | "extension" (use "extension" only for VS Code) |
-| **`@kap10/ui`** | `packages/ui/`; shared React component library with no Next.js dependencies | "component lib", "design system" (those terms refer to the web app's internal components) |
-| **WebView panel** | VS Code `WebviewView` or `WebviewPanel` rendering `@kap10/ui` React components | "iframe", "embedded browser", "webview" (lowercase) |
-| **JCEF panel** | JetBrains JCEF (`JBCefBrowser`) rendering `@kap10/ui` React components | "WebView" (avoid — that's VS Code terminology), "embedded browser" |
+| **`@unerr/ui`** | `packages/ui/`; shared React component library with no Next.js dependencies | "component lib", "design system" (those terms refer to the web app's internal components) |
+| **WebView panel** | VS Code `WebviewView` or `WebviewPanel` rendering `@unerr/ui` React components | "iframe", "embedded browser", "webview" (lowercase) |
+| **JCEF panel** | JetBrains JCEF (`JBCefBrowser`) rendering `@unerr/ui` React components | "WebView" (avoid — that's VS Code terminology), "embedded browser" |
 | **Blueprint Dashboard** | Swimlane visualization of repo architecture (entities grouped by file/module) | "architecture diagram", "code map", "dependency graph" |
 | **Impact Graph** | N-hop force-directed graph centered on an entity showing callers, callees, imports | "call graph", "dependency tree" (impact graph is entity-centric, not file-centric) |
 | **Ledger Timeline** | Visual timeline of Prompt Ledger entries for a workspace (Phase 5.5 data) | "history", "audit log", "commit history" |
@@ -58,25 +58,25 @@ Phase 11 has six actor journeys. Three are user-initiated (install, view panels,
 ### Flow 1: VS Code Extension Installation and Setup
 
 **Actor:** Developer using VS Code
-**Precondition:** kap10 account exists; repo connected via Phase 2
-**Outcome:** kap10 panels available in VS Code sidebar and command palette
+**Precondition:** unerr account exists; repo connected via Phase 2
+**Outcome:** unerr panels available in VS Code sidebar and command palette
 
 ```
 Step  Actor Action                           System Action                                                      State Change
 ────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────────────────────────
-1     Developer installs kap10               VS Code Marketplace → extension installed                          Extension activated
+1     Developer installs unerr               VS Code Marketplace → extension installed                          Extension activated
       extension from Marketplace             → Extension activates on workspace open
       (or via `code --install-extension`)
 
-2     Extension detects kap10 config         Check for existing config:                                         None (read-only)
-                                             a) ~/.kap10/credentials.json (from CLI auth)
+2     Extension detects unerr config         Check for existing config:                                         None (read-only)
+                                             a) ~/.unerr/credentials.json (from CLI auth)
                                              b) .cursor/mcp.json or .vscode/settings.json
-                                                (from `kap10 connect`)
+                                                (from `unerr connect`)
                                              → If found: auto-configure API client
                                              → If not found: show "Sign In" button
                                                in sidebar
 
-3a    (If no config) User clicks             Extension opens browser to kap10 OAuth flow                        ~/.kap10/credentials.json
+3a    (If no config) User clicks             Extension opens browser to unerr OAuth flow                        ~/.unerr/credentials.json
       "Sign In" in sidebar                   → Same device auth flow as CLI                                     created
                                              → Callback captures token
                                              → Stores in VS Code SecretStorage
@@ -87,26 +87,26 @@ Step  Actor Action                           System Action                      
                                              → Auto-detects repoId from git remote
 
 4     Extension activates panels             Register sidebar views:                                             VS Code sidebar populated
-                                             → "kap10: Blueprint" view container
-                                             → "kap10: Impact" view container
-                                             → "kap10: Timeline" view container
+                                             → "unerr: Blueprint" view container
+                                             → "unerr: Impact" view container
+                                             → "unerr: Timeline" view container
                                              Register commands:
-                                             → kap10.showBlueprint
-                                             → kap10.showImpactGraph
-                                             → kap10.showTimeline
-                                             → kap10.showDiff
+                                             → unerr.showBlueprint
+                                             → unerr.showImpactGraph
+                                             → unerr.showTimeline
+                                             → unerr.showDiff
                                              Register context menu items:
                                              → "Show Impact Graph" on function/class
 
-5     Developer sees kap10 icon              Sidebar shows kap10 tree view:                                     None
+5     Developer sees unerr icon              Sidebar shows unerr tree view:                                     None
       in activity bar                        → Blueprint Dashboard (click to open)
                                              → Impact Graph (click to open)
                                              → Timeline (click to open)
                                              → Workspace Diff (click to open)
-                                             Status bar: "kap10: Connected (org/repo)"
+                                             Status bar: "unerr: Connected (org/repo)"
 ```
 
-**Credential reuse:** The extension shares credentials with the CLI (`~/.kap10/credentials.json`). If the developer already ran `kap10 auth login`, the extension picks up the token automatically. If the developer hasn't used the CLI, the extension runs its own device auth flow and writes the same `credentials.json` — the CLI then works without re-authenticating.
+**Credential reuse:** The extension shares credentials with the CLI (`~/.unerr/credentials.json`). If the developer already ran `unerr auth login`, the extension picks up the token automatically. If the developer hasn't used the CLI, the extension runs its own device auth flow and writes the same `credentials.json` — the CLI then works without re-authenticating.
 
 ### Flow 2: Developer Views Impact Graph for a Function
 
@@ -118,12 +118,12 @@ Step  Actor Action                           System Action                      
 Step  Actor Action                           System Action                                                      Latency
 ────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────
 1     Developer right-clicks a function      Context menu shows:                                                 ~0ms
-      name in the editor                     "kap10: Show Impact Graph"
+      name in the editor                     "unerr: Show Impact Graph"
 
 2     Developer clicks                       Extension host:                                                     ~5ms
       "Show Impact Graph"                    → Extract symbol name from cursor position
                                              → Determine entity key:
-                                               Option A: local CozoDB lookup (if kap10 serve running)
+                                               Option A: local CozoDB lookup (if unerr serve running)
                                                Option B: cloud API call (if no local graph)
 
 3                                            Extension host fetches graph data:                                  ~10-300ms
@@ -133,11 +133,11 @@ Step  Actor Action                           System Action                      
                                                { nodes: EntityNode[], edges: Edge[] }
 
 4                                            Extension opens WebView panel:                                      ~100ms
-                                             → Create or focus "kap10: Impact Graph" panel
+                                             → Create or focus "unerr: Impact Graph" panel
                                              → Send graph data via postMessage:
                                                { type: "setGraphData", data: graphStructure }
 
-5                                            @kap10/ui ImpactGraph component renders:                           ~200ms
+5                                            @unerr/ui ImpactGraph component renders:                           ~200ms
                                              → Force-directed layout (d3-force or Cytoscape)
                                              → Center node = selected entity (highlighted)
                                              → Caller nodes (inbound edges, colored by depth)
@@ -154,7 +154,7 @@ Step  Actor Action                           System Action                      
 ### Flow 3: Agent Triggers IDE Panel — `show_blueprint`
 
 **Actor:** AI agent via MCP client
-**Precondition:** Agent is working in an IDE with kap10 extension installed
+**Precondition:** Agent is working in an IDE with unerr extension installed
 **Outcome:** Blueprint Dashboard panel opens in the IDE with repo architecture visualization
 
 ```
@@ -191,7 +191,7 @@ Step  Actor Action                           System Action                      
                                                "diff" → DiffPanel
 
 5                                            WebView panel renders:                                              ~200ms
-                                             → @kap10/ui BlueprintDashboard component
+                                             → @unerr/ui BlueprintDashboard component
                                              → Swimlane layout with entity counts
                                              → Dependency arrows between modules
 
@@ -201,7 +201,7 @@ Step  Actor Action                           System Action                      
                                               the most cross-module dependencies..."
 ```
 
-**Render hint pattern:** MCP tool responses include an optional `_meta.renderHint` field. IDEs without the kap10 extension ignore this field — they just see the text content. IDEs with the extension intercept it and open the appropriate visualization panel. This is a progressive enhancement — the tool response is useful as text even without the extension.
+**Render hint pattern:** MCP tool responses include an optional `_meta.renderHint` field. IDEs without the unerr extension ignore this field — they just see the text content. IDEs with the extension intercept it and open the appropriate visualization panel. This is a progressive enhancement — the tool response is useful as text even without the extension.
 
 ### Flow 4: Developer Views Ledger Timeline
 
@@ -213,7 +213,7 @@ Step  Actor Action                           System Action                      
 Step  Actor Action                           System Action                                                      Latency
 ────  ─────────────────────────────────────  ─────────────────────────────────────────────────────────────────   ──────────
 1     Developer clicks "Timeline"            Extension host fetches ledger data:                                 ~200ms
-      in kap10 sidebar                       → Call MCP tool: show_timeline({
+      in unerr sidebar                       → Call MCP tool: show_timeline({
                                                  workspaceId: current workspace
                                                })
                                              → Cloud returns ledger entries:
@@ -236,7 +236,7 @@ Step  Actor Action                           System Action                      
 ### Flow 5: JetBrains Plugin — Same Flows, Different Bridge
 
 **Actor:** Developer using IntelliJ IDEA / WebStorm / PyCharm
-**Precondition:** kap10 plugin installed from JetBrains Marketplace
+**Precondition:** unerr plugin installed from JetBrains Marketplace
 **Outcome:** Same panels and features as VS Code, rendered via JCEF
 
 ```
@@ -247,7 +247,7 @@ VS Code:                              JetBrains:
 │ WebView Panel        │              │ JCEF Panel           │
 │ (Chromium in VS Code)│              │ (JBCefBrowser)       │
 │                      │              │                      │
-│ @kap10/ui React      │              │ @kap10/ui React      │
+│ @unerr/ui React      │              │ @unerr/ui React      │
 │ components           │              │ components           │
 │                      │              │ (same bundle)        │
 └─────────┬────────────┘              └─────────┬────────────┘
@@ -257,7 +257,7 @@ VS Code:                              JetBrains:
 │ Extension Host       │              │ Plugin Service       │
 │ (Node.js)            │              │ (Kotlin/JVM)         │
 │                      │              │                      │
-│ kap10 API client     │              │ kap10 API client     │
+│ unerr API client     │              │ unerr API client     │
 │ MCP tool invocation  │              │ MCP tool invocation  │
 │ File navigation      │              │ File navigation      │
 └──────────────────────┘              └──────────────────────┘
@@ -270,7 +270,7 @@ Key differences:
 5. Panel registration: registerWebviewViewProvider vs ToolWindowFactory
 ```
 
-**Shared:** The `@kap10/ui` React bundle is identical. Both IDEs load the same HTML+JS bundle. Only the native bridge layer differs.
+**Shared:** The `@unerr/ui` React bundle is identical. Both IDEs load the same HTML+JS bundle. Only the native bridge layer differs.
 
 ### Flow 6: Real-Time Panel Updates via SSE
 
@@ -303,7 +303,7 @@ Step  System Action                                                             
       → Fetch fresh data from API
       → Send updated data to WebView via postMessage
 
-4     @kap10/ui components re-render                                                UI updated
+4     @unerr/ui components re-render                                                UI updated
       with fresh data
 ```
 
@@ -313,7 +313,7 @@ Step  System Action                                                             
 
 ## 1.3 System Logic & State Management
 
-### `@kap10/ui` Package Architecture
+### `@unerr/ui` Package Architecture
 
 The shared component library extracts visualization components from the web dashboard (even though they don't exist yet — they are built fresh in Phase 11 and used in both web and IDE contexts):
 
@@ -345,7 +345,7 @@ packages/ui/
 
 **Build configuration:** Vite builds the package as an ES module library (`lib` mode). The output is a single JS bundle + CSS file that both VS Code WebView and JetBrains JCEF can load. No server-side rendering, no Next.js dependencies, no Node.js APIs — pure browser React.
 
-**Styling:** The `@kap10/ui` package uses the same design tokens from the web app (Void Black background, Rail Purple accent) but via CSS variables, not Tailwind. This avoids Tailwind build complexity in WebView/JCEF contexts. The package ships its own small CSS file with the design token variables.
+**Styling:** The `@unerr/ui` package uses the same design tokens from the web app (Void Black background, Rail Purple accent) but via CSS variables, not Tailwind. This avoids Tailwind build complexity in WebView/JCEF contexts. The package ships its own small CSS file with the design token variables.
 
 ### MCP Render Hint Protocol
 
@@ -386,9 +386,9 @@ MCP Tool Response Structure (with render hint):
 | Client | renderHint handling | Experience |
 |---|---|---|
 | **Agent without IDE extension** | Ignored — agent sees text content | Textual summary (fully functional) |
-| **Agent with kap10 VS Code extension** | Extension intercepts renderHint, opens panel | Interactive visualization + text in chat |
-| **Agent with kap10 JetBrains plugin** | Plugin intercepts renderHint, opens tool window | Interactive visualization + text in chat |
-| **Web dashboard** (future) | Dashboard uses same `@kap10/ui` components | Embedded visualization |
+| **Agent with unerr VS Code extension** | Extension intercepts renderHint, opens panel | Interactive visualization + text in chat |
+| **Agent with unerr JetBrains plugin** | Plugin intercepts renderHint, opens tool window | Interactive visualization + text in chat |
+| **Web dashboard** (future) | Dashboard uses same `@unerr/ui` components | Embedded visualization |
 
 ### Extension Host ↔ WebView Communication Protocol
 
@@ -464,15 +464,15 @@ Events are scoped by `orgId` — each SSE connection only receives events for th
 | # | Failure | Detection | Recovery | User Impact |
 |---|---------|-----------|----------|-------------|
 | 1 | **Extension cannot authenticate** | 401 from cloud API | Show "Sign In" button in sidebar. If token expired, attempt refresh. If refresh fails, prompt re-auth. | Panels show "Sign in to view" placeholder. MCP tools still work via separate MCP session. |
-| 2 | **WebView panel fails to load React bundle** | `@kap10/ui` bundle returns 404 or parse error | Extension logs error. Panel shows fallback HTML: "Failed to load visualization. Try reloading: Cmd+Shift+P → kap10: Reload Panels" | One panel fails. Other panels unaffected. Text-only MCP responses still work. |
+| 2 | **WebView panel fails to load React bundle** | `@unerr/ui` bundle returns 404 or parse error | Extension logs error. Panel shows fallback HTML: "Failed to load visualization. Try reloading: Cmd+Shift+P → unerr: Reload Panels" | One panel fails. Other panels unaffected. Text-only MCP responses still work. |
 | 3 | **SSE connection drops** | HTTP connection closed or timeout | Extension reconnects with exponential backoff (1s, 3s, 9s, max 30s). After 5 failed reconnects, fall back to polling (30s interval). | Brief gap in real-time updates. Panels may show stale data for up to 30s. Manual refresh always works. |
 | 4 | **Impact graph — too many nodes (>500)** | `get_callers` depth=5 returns >500 nodes | Truncate display to 200 nodes. Show notification: "Graph truncated to 200 nodes. Reduce depth or select a more specific entity." User can adjust depth slider. | Partial graph displayed. Performance stays smooth. |
 | 5 | **Cloud API unreachable (for cloud-sourced panels)** | HTTP timeout (10s) | If local CozoDB available (Phase 10a): use local data for Impact Graph and Blueprint. For Timeline and Diff: show "Cloud unavailable" with retry button. | Impact Graph works locally. Timeline/Diff require cloud. |
-| 6 | **JetBrains JCEF not available** | `JBCefApp.isSupported()` returns false | Plugin shows notification: "kap10 visualizations require JCEF. Enable it in Settings → IDE → JCEF." Falls back to opening web dashboard in browser. | No in-IDE panels. Browser fallback works. |
+| 6 | **JetBrains JCEF not available** | `JBCefApp.isSupported()` returns false | Plugin shows notification: "unerr visualizations require JCEF. Enable it in Settings → IDE → JCEF." Falls back to opening web dashboard in browser. | No in-IDE panels. Browser fallback works. |
 | 7 | **renderHint not recognized by extension** | Extension receives unknown renderHint value | Ignore — agent sees text response. Log warning for debugging. | No panel opened. Agent still has text data. Future extension update will handle new hints. |
 | 8 | **WebView ↔ host message delivery failure** | postMessage returns without acknowledgment | No retry (fire-and-forget by design). If critical (e.g., setGraphData), host re-sends after 2s timeout if no `ready` or `ack` received. | Panel may show stale data. User can manually refresh. |
 | 9 | **Multiple IDE windows for same repo** | Extension detects multiple workspace folders | Each window gets its own API client and panels. SSE connections are per-window. No cross-window coordination (Phase 12 handles that). | Independent panels per window. No conflicts. |
-| 10 | **Extension update — WebView bundle version mismatch** | New extension sends messages the old WebView doesn't understand | WebView ignores unknown message types (defensive). Extension checks `@kap10/ui` version on `ready` message and reloads if mismatched. | Brief panel reload after extension update. |
+| 10 | **Extension update — WebView bundle version mismatch** | New extension sends messages the old WebView doesn't understand | WebView ignores unknown message types (defensive). Extension checks `@unerr/ui` version on `ready` message and reloads if mismatched. | Brief panel reload after extension update. |
 
 ### Graceful Degradation Hierarchy
 
@@ -512,7 +512,7 @@ Not authenticated:
 | Operation | Target | Expected | Notes |
 |---|---|---|---|
 | Extension activation | <500ms | ~200ms | Register views + commands. No data fetching on activate. |
-| Panel open (first time) | <1s | ~600ms | Load WebView HTML + @kap10/ui bundle + initial render |
+| Panel open (first time) | <1s | ~600ms | Load WebView HTML + @unerr/ui bundle + initial render |
 | Panel open (cached) | <200ms | ~100ms | WebView already loaded, just show and send data |
 | Impact Graph render (local, 50 nodes) | <300ms | ~150ms | CozoDB query (~10ms) + postMessage (~5ms) + d3-force layout (~100ms) + React render (~35ms) |
 | Impact Graph render (cloud, 50 nodes) | <600ms | ~450ms | Cloud query (~300ms) + postMessage + layout + render |
@@ -523,7 +523,7 @@ Not authenticated:
 | SSE event → panel update | <500ms | ~200ms | Event received → fetch fresh data → postMessage → re-render |
 | Node click → file navigation | <200ms | ~50ms | postMessage → extension host → openTextDocument |
 
-### `@kap10/ui` Bundle Size Budget
+### `@unerr/ui` Bundle Size Budget
 
 | Component | Estimated size (gzipped) | Notes |
 |---|---|---|
@@ -533,9 +533,9 @@ Not authenticated:
 | LedgerTimeline | ~8 KB | Vertical list with timeline decorations |
 | DiffViewer | ~12 KB | Diff parser + line renderer |
 | CSS (design tokens) | ~3 KB | CSS variables, minimal reset |
-| **Total @kap10/ui** | **~78 KB** | Acceptable for WebView loading |
+| **Total @unerr/ui** | **~78 KB** | Acceptable for WebView loading |
 
-**React loading strategy:** The WebView shell includes React via CDN or bundled inline. The `@kap10/ui` bundle expects React as a peer dependency. This avoids duplicating React across panels (each panel's WebView loads React once).
+**React loading strategy:** The WebView shell includes React via CDN or bundled inline. The `@unerr/ui` bundle expects React as a peer dependency. This avoids duplicating React across panels (each panel's WebView loads React once).
 
 ### Graph Visualization Library Choice
 
@@ -572,7 +572,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 | **JetBrains plugin scaffold** | Add CollisionAnnotator + notification handler | Additive — new Kotlin class |
 | **SSE infrastructure** | Add `collision` event type | Additive — new event in existing SSE stream |
 | **postMessage protocol** | Add `collision` message type for WebView warnings | Additive — new message type |
-| **`@kap10/ui` package** | Add `CollisionBadge` component for panel overlays | Additive — new component export |
+| **`@unerr/ui` package** | Add `CollisionBadge` component for panel overlays | Additive — new component export |
 | **API client in extension** | Add collision check endpoint calls | Additive — new API method |
 
 ### What Phase 11 must NOT do (to avoid Phase 12 rework)
@@ -580,7 +580,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 1. **Do not use a single-panel WebView architecture.** Each visualization (Blueprint, Impact, Timeline, Diff) should be its own WebView panel, independently creatable and closable. Phase 12 adds a "Collision" panel. If all visualizations were in one panel, adding a new one would require restructuring.
 2. **Do not hardcode SSE event handlers.** Use a dispatched event handler pattern (`switch (event.type)`) so Phase 12 can add `case "collision"` without modifying existing handler code.
 3. **Do not couple the API client to specific endpoints.** The extension's API client should be a generic HTTP client with auth headers, not a hardcoded set of endpoint methods. Phase 12 adds new endpoints (WebSocket upgrade, collision check).
-4. **Do not embed the `@kap10/ui` bundle directly in the extension.** Load it from a well-known path (extension's `dist/` directory or CDN). Phase 12 updates the `@kap10/ui` bundle independently of the extension host code.
+4. **Do not embed the `@unerr/ui` bundle directly in the extension.** Load it from a well-known path (extension's `dist/` directory or CDN). Phase 12 updates the `@unerr/ui` bundle independently of the extension host code.
 5. **Do not assume unidirectional communication.** While Phase 11 only needs SSE (server→client), Phase 12 needs WebSocket (bidirectional). Design the event handling layer to accept events from both SSE and WebSocket sources.
 
 ---
@@ -590,7 +590,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 ## 2.1 Infrastructure Layer
 
 - [ ] **P11-INFRA-01: Create `packages/ui/` shared component package** — L
-  - Initialize package: `@kap10/ui`, React 19 peer dep, no Next.js deps
+  - Initialize package: `@unerr/ui`, React 19 peer dep, no Next.js deps
   - Vite config: `lib` mode, ES module output, external React
   - TypeScript: strict, no JSX transform (use `react-jsx`)
   - CSS: design token variables (Void Black, Rail Purple, font families)
@@ -607,10 +607,10 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
     - `src/extension.ts` entry point with `activate()`/`deactivate()`
     - Build: `esbuild` for bundling extension host code
   - Register:
-    - Activity bar icon (kap10 logo)
+    - Activity bar icon (unerr logo)
     - 4 sidebar views: Blueprint, Impact, Timeline, Diff
-    - 4 commands: `kap10.showBlueprint`, `kap10.showImpactGraph`, `kap10.showTimeline`, `kap10.showDiff`
-    - Context menu: "kap10: Show Impact Graph" on editor text selection
+    - 4 commands: `unerr.showBlueprint`, `unerr.showImpactGraph`, `unerr.showTimeline`, `unerr.showDiff`
+    - Context menu: "unerr: Show Impact Graph" on editor text selection
   - **Test:** `vsce package` produces .vsix. Install in VS Code → activity bar icon appears. Commands registered in palette.
   - **Depends on:** Nothing
   - **Files:** `packages/vscode-extension/` (new package)
@@ -620,7 +620,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
   - Initialize IntelliJ Platform plugin:
     - `build.gradle.kts` with `intellij` plugin config (target: 2024.1+)
     - `plugin.xml` with tool window extensions
-    - `src/main/kotlin/com/kap10/plugin/` source directory
+    - `src/main/kotlin/com/unerr/plugin/` source directory
     - Register 4 tool windows: Blueprint, Impact, Timeline, Diff
   - JCEF dependency check: `JBCefApp.isSupported()` guard
   - **Test:** `./gradlew buildPlugin` produces .zip. Install in IntelliJ → tool windows available. JCEF check passes on supported IDEs.
@@ -628,7 +628,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
   - **Files:** `packages/jetbrains-plugin/` (new package)
   - Notes: _____
 
-- [ ] **P11-INFRA-04: Add graph visualization dependencies to `@kap10/ui`** — M
+- [ ] **P11-INFRA-04: Add graph visualization dependencies to `@unerr/ui`** — M
   - Add dependencies:
     - `d3-force`, `d3-selection`, `d3-zoom` — for Impact Graph force-directed layout
     - `@xyflow/react` (React Flow) — for Blueprint Dashboard swimlane layout
@@ -680,7 +680,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 - [ ] **P11-ADAPT-01: Create VS Code API client module** — M
   - `packages/vscode-extension/src/api-client.ts`:
     - HTTP client using `https` module (no external deps in extension host)
-    - Auth: reads from VS Code SecretStorage or `~/.kap10/credentials.json`
+    - Auth: reads from VS Code SecretStorage or `~/.unerr/credentials.json`
     - Methods: generic `fetch(path, options)` with auth headers
     - Token refresh: automatic if OAuth token expired
     - Timeout: 10s per request
@@ -692,7 +692,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 - [ ] **P11-ADAPT-02: Create VS Code WebView panel manager** — L
   - `packages/vscode-extension/src/panel-manager.ts`:
     - Factory for creating/showing WebView panels
-    - Loads `@kap10/ui` bundle into WebView HTML shell
+    - Loads `@unerr/ui` bundle into WebView HTML shell
     - Manages postMessage protocol (host → WebView, WebView → host)
     - Handles `ready` synchronization
     - Handles `nodeClick` → file navigation (`vscode.workspace.openTextDocument`)
@@ -715,16 +715,16 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
   - Notes: _____
 
 - [ ] **P11-ADAPT-04: Create JetBrains API client and JCEF bridge** — L
-  - `packages/jetbrains-plugin/src/.../Kap10ApiClient.kt`:
+  - `packages/jetbrains-plugin/src/.../UnerrApiClient.kt`:
     - HTTP client using OkHttp or IntelliJ HTTP client
-    - Auth: reads from IntelliJ PasswordSafe or `~/.kap10/credentials.json`
-  - `packages/jetbrains-plugin/src/.../Kap10DataHandler.kt`:
+    - Auth: reads from IntelliJ PasswordSafe or `~/.unerr/credentials.json`
+  - `packages/jetbrains-plugin/src/.../UnerrDataHandler.kt`:
     - `CefMessageRouter.Handler` implementation
     - Handles messages from JS → Kotlin (nodeClick, refreshRequest)
     - Sends data Kotlin → JS via `browser.cefBrowser.executeJavaScript()`
   - **Test:** API client makes authenticated requests. CefMessageRouter delivers messages bidirectionally.
   - **Depends on:** P11-INFRA-03
-  - **Files:** `packages/jetbrains-plugin/src/main/kotlin/com/kap10/plugin/` (new files)
+  - **Files:** `packages/jetbrains-plugin/src/main/kotlin/com/unerr/plugin/` (new files)
   - Notes: _____
 
 ---
@@ -794,7 +794,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
   - Tool definition:
     ```
     name: "show_diff"
-    description: "Show the workspace overlay diff — uncommitted changes tracked by kap10."
+    description: "Show the workspace overlay diff — uncommitted changes tracked by unerr."
     inputSchema: { workspaceId (optional, defaults to session workspace) }
     ```
   - Handler:
@@ -838,10 +838,10 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 
 - [ ] **P11-API-07: Add VS Code extension CI/CD pipeline** — M
   - GitHub Actions workflow:
-    - Build `@kap10/ui` → build extension → `vsce package`
+    - Build `@unerr/ui` → build extension → `vsce package`
     - Run extension tests
     - On tag: publish to VS Code Marketplace via `vsce publish`
-  - Version synced with `@kap10/ui` version
+  - Version synced with `@unerr/ui` version
   - **Test:** CI builds .vsix artifact. Marketplace publish succeeds (staging first).
   - **Depends on:** P11-INFRA-02, P11-INFRA-01
   - **Files:** `.github/workflows/vscode-extension.yml` (new)
@@ -849,7 +849,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 
 - [ ] **P11-API-08: Add JetBrains plugin CI/CD pipeline** — M
   - GitHub Actions workflow:
-    - Build `@kap10/ui` → build plugin → `./gradlew buildPlugin`
+    - Build `@unerr/ui` → build plugin → `./gradlew buildPlugin`
     - Run plugin tests
     - On tag: publish to JetBrains Marketplace via `publishPlugin` Gradle task
   - **Test:** CI builds .zip artifact. Marketplace publish succeeds (staging first).
@@ -861,7 +861,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 
 ## 2.5 Frontend / UI Layer
 
-### `@kap10/ui` Components
+### `@unerr/ui` Components
 
 - [ ] **P11-UI-01: Build `ImpactGraph` component** — L
   - Force-directed graph using d3-force:
@@ -926,19 +926,19 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 
 - [ ] **P11-UI-05: Implement VS Code Blueprint panel** — M
   - `packages/vscode-extension/src/blueprint-panel.ts`:
-    - Creates WebView panel with `@kap10/ui` bundle
+    - Creates WebView panel with `@unerr/ui` bundle
     - Fetches blueprint data via `show_blueprint` MCP tool or API
     - Sends data to WebView via postMessage
     - Handles node clicks → file navigation
     - Refreshes on `index_complete` SSE event
-  - **Test:** Command `kap10.showBlueprint` → panel opens. Data renders. Node click → file opens. SSE event → panel refreshes.
+  - **Test:** Command `unerr.showBlueprint` → panel opens. Data renders. Node click → file opens. SSE event → panel refreshes.
   - **Depends on:** P11-ADAPT-02, P11-UI-02
   - **Files:** `packages/vscode-extension/src/blueprint-panel.ts` (new)
   - Notes: _____
 
 - [ ] **P11-UI-06: Implement VS Code Impact Graph panel** — M
   - `packages/vscode-extension/src/impact-panel.ts`:
-    - Creates WebView panel with `@kap10/ui` bundle
+    - Creates WebView panel with `@unerr/ui` bundle
     - Fetches graph data via `show_impact_graph` MCP tool or API
     - Accepts entity selection from context menu or command
     - Sends graph data to WebView
@@ -950,7 +950,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 
 - [ ] **P11-UI-07: Implement VS Code Timeline panel** — M
   - `packages/vscode-extension/src/timeline-panel.ts`:
-    - Creates WebView panel with `@kap10/ui` bundle
+    - Creates WebView panel with `@unerr/ui` bundle
     - Fetches timeline data via `show_timeline` MCP tool or API
     - Handles entry clicks → file navigation to affected entity
     - Refreshes on `ledger_entry` SSE event
@@ -961,7 +961,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 
 - [ ] **P11-UI-08: Implement VS Code Diff panel** — M
   - `packages/vscode-extension/src/diff-panel.ts`:
-    - Creates WebView panel with `@kap10/ui` bundle
+    - Creates WebView panel with `@unerr/ui` bundle
     - Fetches diff data via `show_diff` MCP tool or API
     - Handles line clicks → file navigation
     - Refreshes on `workspace_sync` SSE event
@@ -975,14 +975,14 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 - [ ] **P11-UI-09: Implement JetBrains tool windows (Blueprint, Impact, Timeline, Diff)** — L
   - `BlueprintToolWindow.kt`, `ImpactToolWindow.kt`, `TimelineToolWindow.kt`, `DiffToolWindow.kt`:
     - Each implements `ToolWindowFactory`
-    - Creates `JBCefBrowser` with `@kap10/ui` HTML bundle
+    - Creates `JBCefBrowser` with `@unerr/ui` HTML bundle
     - Uses `CefMessageRouter` for bidirectional communication
     - Handles JS→Kotlin messages (node clicks → `OpenFileDescriptor`)
     - Handles Kotlin→JS data updates (via `executeJavaScript`)
-  - All four share a common `Kap10DataHandler` for message routing
+  - All four share a common `UnerrDataHandler` for message routing
   - **Test:** Each tool window opens with JCEF. Data renders. Click node → file opens in editor. JCEF not supported → fallback message.
   - **Depends on:** P11-ADAPT-04, P11-UI-01..04
-  - **Files:** `packages/jetbrains-plugin/src/main/kotlin/com/kap10/plugin/` (4 new Kotlin files)
+  - **Files:** `packages/jetbrains-plugin/src/main/kotlin/com/unerr/plugin/` (4 new Kotlin files)
   - Notes: _____
 
 ### MCP renderHint Integration
@@ -1007,7 +1007,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 
 ### Unit Tests
 
-- [ ] **P11-TEST-01: `@kap10/ui` ImpactGraph component tests** — M
+- [ ] **P11-TEST-01: `@unerr/ui` ImpactGraph component tests** — M
   - Renders with 10 nodes → all nodes in DOM
   - Click node → `onNodeClick` callback fires with correct id
   - 0 nodes → empty state message
@@ -1017,7 +1017,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
   - **Files:** `packages/ui/src/__tests__/ImpactGraph.test.tsx`
   - Notes: _____
 
-- [ ] **P11-TEST-02: `@kap10/ui` BlueprintDashboard component tests** — M
+- [ ] **P11-TEST-02: `@unerr/ui` BlueprintDashboard component tests** — M
   - Renders with 5 modules → all module nodes visible
   - Dependency edges rendered between correct modules
   - Click module → expansion callback fires
@@ -1027,7 +1027,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
   - **Files:** `packages/ui/src/__tests__/BlueprintDashboard.test.tsx`
   - Notes: _____
 
-- [ ] **P11-TEST-03: `@kap10/ui` LedgerTimeline component tests** — S
+- [ ] **P11-TEST-03: `@unerr/ui` LedgerTimeline component tests** — S
   - Renders 10 entries → all entries in DOM
   - Branch point → fork visualization rendered
   - Click entry → callback fires
@@ -1036,7 +1036,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
   - **Files:** `packages/ui/src/__tests__/LedgerTimeline.test.tsx`
   - Notes: _____
 
-- [ ] **P11-TEST-04: `@kap10/ui` DiffViewer component tests** — S
+- [ ] **P11-TEST-04: `@unerr/ui` DiffViewer component tests** — S
   - Renders diff with 3 files → all files visible
   - Toggle inline/side-by-side → mode changes
   - Click line → callback fires
@@ -1079,14 +1079,14 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 - [ ] **P11-TEST-08: VS Code extension integration test** — L
   - Use `@vscode/test-electron` to launch VS Code with extension:
     - Extension activates → sidebar views registered
-    - Command `kap10.showBlueprint` → panel opens
+    - Command `unerr.showBlueprint` → panel opens
     - Mock API data → graph renders in WebView
     - Node click in WebView → file opens in editor
   - **Depends on:** P11-UI-05..08
   - **Files:** `packages/vscode-extension/src/__tests__/extension.integration.test.ts`
   - Notes: _____
 
-- [ ] **P11-TEST-09: `@kap10/ui` bundle integration test** — M
+- [ ] **P11-TEST-09: `@unerr/ui` bundle integration test** — M
   - Build bundle → load in minimal HTML page → all 4 components render
   - Verify: no Next.js imports, no Node.js APIs, no CSR hydration errors
   - Bundle size assertion: < 100 KB gzipped
@@ -1128,7 +1128,7 @@ Phase 11 is designed so that Phase 12 (Multiplayer Collaboration & Collision Det
 ## Dependency Graph
 
 ```
-P11-INFRA-01 (@kap10/ui package) ─── independent
+P11-INFRA-01 (@unerr/ui package) ─── independent
 P11-INFRA-02 (VS Code scaffold) ──── independent
 P11-INFRA-03 (JetBrains scaffold) ── independent
 P11-INFRA-04 (graph viz deps) ─────── depends on P11-INFRA-01
@@ -1165,9 +1165,9 @@ P11-TEST-01..12 ── depend on corresponding implementation items
 
 **Recommended implementation order:**
 
-1. **Infrastructure** (P11-INFRA-01..04) — `@kap10/ui` package, VS Code scaffold, JetBrains scaffold, graph visualization deps
+1. **Infrastructure** (P11-INFRA-01..04) — `@unerr/ui` package, VS Code scaffold, JetBrains scaffold, graph visualization deps
 2. **Types** (P11-DB-01) — render data type definitions
-3. **`@kap10/ui` components** (P11-UI-01..04) — ImpactGraph, BlueprintDashboard, LedgerTimeline, DiffViewer
+3. **`@unerr/ui` components** (P11-UI-01..04) — ImpactGraph, BlueprintDashboard, LedgerTimeline, DiffViewer
 4. **MCP tools** (P11-API-01..04) — show_blueprint, show_impact_graph, show_timeline, show_diff
 5. **SSE** (P11-API-05..06) — Event types, publishing hooks
 6. **VS Code adapters** (P11-ADAPT-01..03) — API client, panel manager, SSE client
@@ -1196,7 +1196,7 @@ packages/ui/
 packages/vscode-extension/
   src/
     extension.ts                   ← VS Code extension entry point
-    api-client.ts                  ← kap10 API client for extension host
+    api-client.ts                  ← unerr API client for extension host
     panel-manager.ts               ← WebView panel factory + postMessage protocol
     sse-client.ts                  ← SSE event stream client + reconnection
     blueprint-panel.ts             ← Blueprint Dashboard panel
@@ -1207,13 +1207,13 @@ packages/vscode-extension/
   package.json                     ← VS Code extension manifest
 
 packages/jetbrains-plugin/
-  src/main/kotlin/com/kap10/plugin/
+  src/main/kotlin/com/unerr/plugin/
     BlueprintToolWindow.kt         ← JCEF Blueprint panel
     ImpactToolWindow.kt            ← JCEF Impact Graph panel
     TimelineToolWindow.kt          ← JCEF Timeline panel
     DiffToolWindow.kt              ← JCEF Diff panel
-    Kap10ApiClient.kt              ← HTTP API client
-    Kap10DataHandler.kt            ← CefMessageRouter handler
+    UnerrApiClient.kt              ← HTTP API client
+    UnerrDataHandler.kt            ← CefMessageRouter handler
   build.gradle.kts                 ← IntelliJ Platform plugin config
   src/main/resources/META-INF/
     plugin.xml                     ← Plugin descriptor
