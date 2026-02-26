@@ -1,6 +1,6 @@
 import { Suspense } from "react"
-import { Skeleton } from "@/components/ui/skeleton"
 import { TimelineView } from "@/components/timeline/timeline-view"
+import { Skeleton } from "@/components/ui/skeleton"
 
 export default async function TimelinePage(props: { params: Promise<{ repoId: string }> }) {
   const { repoId } = await props.params

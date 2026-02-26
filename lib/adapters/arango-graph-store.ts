@@ -1990,7 +1990,7 @@ export class ArangoGraphStore implements IGraphStore {
 
     // Build UNION of all entity collections
     const unionParts = uniqueCollections.map((coll, i) => {
-      const collVar = `@coll${i}`
+      const _collVar = `@coll${i}`
       bindVars[`coll${i}`] = coll
       return `(FOR doc IN @@coll${i} FILTER ${entityFilters.join(" AND ")} RETURN doc)`
     })
@@ -2069,7 +2069,7 @@ export class ArangoGraphStore implements IGraphStore {
         justification?: import("@/lib/ports/types").JustificationDoc
       }
       if (_justification) {
-        const { _key: jKey, _id: jId, ...jRest } = _justification as {
+        const { _key: jKey, _id: _jId, ...jRest } = _justification as {
           _key: string
           _id: string
           [k: string]: unknown

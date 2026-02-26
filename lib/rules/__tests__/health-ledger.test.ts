@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { incrementRuleHealth, getRuleHealthSummary } from "@/lib/rules/health-ledger"
+import { beforeEach, describe, expect, it } from "vitest"
 import { createTestContainer } from "@/lib/di/container"
-import { InMemoryGraphStore } from "@/lib/di/fakes"
 import type { Container } from "@/lib/di/container"
+import { InMemoryGraphStore } from "@/lib/di/fakes"
+import { getRuleHealthSummary, incrementRuleHealth } from "@/lib/rules/health-ledger"
 
 describe("health-ledger", () => {
   let container: Container

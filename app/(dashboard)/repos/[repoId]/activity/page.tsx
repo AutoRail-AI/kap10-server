@@ -1,6 +1,6 @@
 import { Suspense } from "react"
-import { Skeleton } from "@/components/ui/skeleton"
 import { ActivityFeed } from "@/components/activity/activity-feed"
+import { Skeleton } from "@/components/ui/skeleton"
 
 export default async function ActivityPage(props: { params: Promise<{ repoId: string }> }) {
   const { repoId } = await props.params

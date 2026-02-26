@@ -2,8 +2,8 @@ import { NextRequest } from "next/server"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 import { withAuth } from "@/lib/middleware/api-handler"
-import { errorResponse, successResponse } from "@/lib/utils/api-response"
 import { CreateRuleExceptionSchema } from "@/lib/rules/schema"
+import { errorResponse, successResponse } from "@/lib/utils/api-response"
 
 export const GET = withAuth(async (req: NextRequest) => {
   const path = req.nextUrl.pathname

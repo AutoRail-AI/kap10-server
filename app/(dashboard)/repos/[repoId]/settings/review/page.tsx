@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
 import { useParams } from "next/navigation"
+import { useEffect, useState } from "react"
 import { ReviewConfigForm } from "@/components/repo/review-config-form"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { ReviewConfig } from "@/lib/ports/types"

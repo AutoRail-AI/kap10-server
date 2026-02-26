@@ -4,7 +4,7 @@
  */
 
 import type { IGraphStore } from "@/lib/ports/graph-store"
-import type { EdgeDoc, EntityDiff } from "@/lib/ports/types"
+import type { EntityDiff } from "@/lib/ports/types"
 
 export interface EdgeRepairResult {
   edgesCreated: number
@@ -25,7 +25,7 @@ export async function repairEdges(
   graphStore: IGraphStore
 ): Promise<EdgeRepairResult> {
   let edgesDeleted = 0
-  let edgesCreated = 0
+  const edgesCreated = 0
 
   // Step 1: Delete edges for removed entities
   const deletedKeys = entityDiff.deleted.map((e) => e.id)

@@ -18,7 +18,7 @@ export function registerPushCommand(program: Command): void {
     .command("push")
     .description("Upload local repository for indexing")
     .option("--local-parse", "Use local AST extraction (requires unerr-parse binary)")
-    .action(async (opts: { localParse?: boolean }) => {
+    .action(async (_opts: { localParse?: boolean }) => {
       try {
         const config = loadConfig()
         if (!config) {

@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
+import { beforeEach, describe, expect, it } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
+import type { EntityDoc, RuleDoc } from "@/lib/ports/types"
 import { evaluateRulesHybrid } from "../hybrid-evaluator"
-import type { RuleDoc, EntityDoc } from "@/lib/ports/types"
 
 let container: Container
 

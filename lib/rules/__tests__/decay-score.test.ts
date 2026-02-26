@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
-import { calculateDecayScore, shouldDeprecate } from "@/lib/rules/decay-score"
+import { describe, expect, it } from "vitest"
 import type { RuleHealthDoc } from "@/lib/ports/types"
+import { calculateDecayScore, shouldDeprecate } from "@/lib/rules/decay-score"
 
 function makeHealth(overrides?: Partial<RuleHealthDoc>): RuleHealthDoc {
   return {

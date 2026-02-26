@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
-import { reciprocalRankFusion, tokenizeQuery, hybridSearch } from "../hybrid-search"
+import { describe, expect, it } from "vitest"
 import { createTestContainer } from "@/lib/di/container"
+import { hybridSearch, reciprocalRankFusion, tokenizeQuery } from "../hybrid-search"
 
 describe("tokenizeQuery", () => {
   it("removes stop words", () => {

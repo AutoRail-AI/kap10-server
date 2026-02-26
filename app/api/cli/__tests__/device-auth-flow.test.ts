@@ -346,7 +346,7 @@ describe("GET /api/cli/context", () => {
     // Create a valid API key first
     const { hash } = await seedApiKey("org-ctx", testContainer)
 
-    const req = new Request("http://localhost/api/cli/context", {
+    const _req = new Request("http://localhost/api/cli/context", {
       headers: { Authorization: `Bearer placeholder` },
     })
     // We need to use the real key, but authenticateMcpRequest hashes the raw key

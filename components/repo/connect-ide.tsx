@@ -1,6 +1,5 @@
 "use client"
 
-import { useState } from "react"
 import {
   Check,
   ChevronDown,
@@ -11,6 +10,7 @@ import {
   Settings2,
   Terminal,
 } from "lucide-react"
+import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ApiKeyManager } from "./api-key-manager"
@@ -74,7 +74,7 @@ const clients: ClientOption[] = [
 
 export function ConnectIde({
   repoId,
-  repoName,
+  repoName: _repoName,
   mcpServerUrl,
   mcpEnvironment,
   apiKeys,

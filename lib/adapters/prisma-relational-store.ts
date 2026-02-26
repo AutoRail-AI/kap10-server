@@ -17,7 +17,7 @@ import type {
   RepoRecord,
   WorkspaceRecord,
 } from "@/lib/ports/relational-store"
-import type { PrReviewRecord, PrReviewCommentRecord, ReviewConfig } from "@/lib/ports/types"
+import type { PrReviewCommentRecord, PrReviewRecord, ReviewConfig } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG } from "@/lib/ports/types"
 
 let prismaInstance: PrismaClient | null = null

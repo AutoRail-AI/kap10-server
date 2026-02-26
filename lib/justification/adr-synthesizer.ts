@@ -3,10 +3,10 @@
  * from feature aggregations using LLM analysis.
  */
 
-import type { ILLMProvider } from "@/lib/ports/llm-provider"
-import type { FeatureAggregation, JustificationDoc, ADRDoc } from "@/lib/ports/types"
-import { randomUUID } from "node:crypto"
 import { z } from "zod"
+import { randomUUID } from "node:crypto"
+import type { ILLMProvider } from "@/lib/ports/llm-provider"
+import type { ADRDoc, FeatureAggregation, JustificationDoc } from "@/lib/ports/types"
 
 const ADRResponseSchema = z.object({
   title: z.string(),

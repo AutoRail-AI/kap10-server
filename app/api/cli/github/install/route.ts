@@ -12,8 +12,8 @@
  * installation and signals completion via the cliPollToken in Redis.
  */
 
-import { randomBytes } from "node:crypto"
 import { NextResponse } from "next/server"
+import { randomBytes } from "node:crypto"
 import { getContainer } from "@/lib/di/container"
 import { authenticateMcpRequest, isAuthError } from "@/lib/mcp/auth"
 

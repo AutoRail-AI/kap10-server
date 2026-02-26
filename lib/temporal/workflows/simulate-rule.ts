@@ -3,8 +3,8 @@
  */
 
 import { proxyActivities } from "@temporalio/workflow"
-import type * as simulation from "../activities/rule-simulation"
 import type { ImpactReportDoc } from "@/lib/ports/types"
+import type * as simulation from "../activities/rule-simulation"
 
 const heavyActivities = proxyActivities<typeof simulation>({
   taskQueue: "heavy-compute-queue",

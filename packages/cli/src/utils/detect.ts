@@ -2,9 +2,9 @@
  * Smart detection utilities for git host and IDE type.
  */
 
+import { execSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
-import { execSync } from "node:child_process"
 
 export type GitHost = "github" | "gitlab" | "bitbucket" | "other"
 

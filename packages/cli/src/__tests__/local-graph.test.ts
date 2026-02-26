@@ -2,11 +2,10 @@
  * Phase 10b TEST-01: CozoDB rules/patterns integration tests.
  */
 
-import { describe, expect, it, beforeEach } from "vitest"
-import { initSchema } from "../cozo-schema.js"
+import { beforeEach, describe, expect, it } from "vitest"
 import type { CozoDb } from "../cozo-schema.js"
 import { CozoGraphStore } from "../local-graph.js"
-import type { CompactRule, CompactPattern, SnapshotEnvelope } from "../local-graph.js"
+import type { CompactPattern, CompactRule, SnapshotEnvelope } from "../local-graph.js"
 
 function createInMemoryDb(): CozoDb {
   // Minimal CozoDB mock using in-memory maps

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { scrubSecrets, scrubMCPPayload, shannonEntropy } from "../scrubber"
+import { scrubMCPPayload, scrubSecrets, shannonEntropy } from "../scrubber"
 
 describe("scrubSecrets", () => {
   it("redacts AWS access keys", () => {

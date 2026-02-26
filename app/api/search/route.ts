@@ -10,8 +10,8 @@
  * Auth: Better Auth session required. Verifies user has access to the repo's org.
  */
 
-import { createHash } from "crypto"
 import { NextRequest } from "next/server"
+import { createHash } from "crypto"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 import { hybridSearch, type SearchMode } from "@/lib/embeddings/hybrid-search"

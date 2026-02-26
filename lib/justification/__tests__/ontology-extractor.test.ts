@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
-import { splitIdentifier, extractDomainTerms, buildOntologyPrompt } from "../ontology-extractor"
+import { describe, expect, it } from "vitest"
 import type { EntityDoc } from "@/lib/ports/types"
+import { buildOntologyPrompt, extractDomainTerms, splitIdentifier } from "../ontology-extractor"
 
 describe("splitIdentifier", () => {
   it("splits camelCase", () => {

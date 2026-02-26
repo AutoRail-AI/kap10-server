@@ -1,14 +1,14 @@
-import { describe, it, expect } from "vitest"
+import { describe, expect, it } from "vitest"
 import {
-  TaxonomySchema,
-  JustificationResultSchema,
+  ADRSchema,
   DomainOntologySchema,
   DriftScoreSchema,
-  HealthReportSchema,
-  SemanticTripleSchema,
-  ModelRouteSchema,
   GraphContextSchema,
-  ADRSchema,
+  HealthReportSchema,
+  JustificationResultSchema,
+  ModelRouteSchema,
+  SemanticTripleSchema,
+  TaxonomySchema,
 } from "../schemas"
 
 describe("Phase 4 Schemas", () => {

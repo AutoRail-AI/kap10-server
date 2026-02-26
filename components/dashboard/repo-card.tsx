@@ -1,8 +1,8 @@
 "use client"
 
-import { useState } from "react"
-import { ArrowRight, Download, ExternalLink, FolderGit2, GitPullRequest, RotateCw, Shield, Square, AlertCircle, Loader2 } from "lucide-react"
+import { AlertCircle, ArrowRight, Download, ExternalLink, FolderGit2, GitPullRequest, Loader2, RotateCw, Square } from "lucide-react"
 import Link from "next/link"
+import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"

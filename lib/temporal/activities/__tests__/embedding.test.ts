@@ -34,7 +34,7 @@ const {
   processAndEmbedBatch,
   deleteOrphanedEmbeddings,
   setEmbeddingStatus,
-  setReadyStatus,
+  setReadyStatus: _setReadyStatus,
   setEmbedFailedStatus,
 } = await import("../embedding")
 

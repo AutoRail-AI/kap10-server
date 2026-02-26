@@ -9,8 +9,8 @@ import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
 
 const DEFAULT_TTL = 30 // seconds
-const DEFAULT_DEBOUNCE = 2000 // ms
-const DEFAULT_PARSE_TIMEOUT = 500 // ms
+const _DEFAULT_DEBOUNCE = 2000 // ms
+const _DEFAULT_PARSE_TIMEOUT = 500 // ms
 
 export const SYNC_DIRTY_BUFFER_SCHEMA = {
   name: "sync_dirty_buffer",

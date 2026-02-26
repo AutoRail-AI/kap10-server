@@ -7,7 +7,7 @@
 
 import { Command } from "commander"
 import { createHash } from "node:crypto"
-import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { getCredentials } from "./auth.js"

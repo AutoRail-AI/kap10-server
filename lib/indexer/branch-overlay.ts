@@ -4,7 +4,7 @@
  */
 
 import type { IGraphStore } from "@/lib/ports/graph-store"
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 
 /**
  * Check if branch indexing is enabled and the branch matches the pattern.

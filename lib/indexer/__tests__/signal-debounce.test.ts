@@ -4,7 +4,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { debounceSignal, clearPendingSignals } from "@/lib/indexer/signal-debounce"
+import { clearPendingSignals, debounceSignal } from "@/lib/indexer/signal-debounce"
 
 describe("debounceSignal", () => {
   afterEach(() => {

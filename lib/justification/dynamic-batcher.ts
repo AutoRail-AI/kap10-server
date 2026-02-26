@@ -6,7 +6,7 @@
  * to prevent truncated LLM responses.
  */
 
-import type { EntityDoc, DomainOntologyDoc, JustificationDoc } from "@/lib/ports/types"
+import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
 import type { GraphContext } from "./schemas"
 
 /** A single entity prepared for batching with its context */

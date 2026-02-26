@@ -6,7 +6,7 @@
  */
 import { execFile } from "node:child_process"
 import { existsSync, readFileSync, unlinkSync } from "node:fs"
-import { join, relative } from "node:path"
+import { join } from "node:path"
 import { promisify } from "node:util"
 
 import { entityHash } from "../../entity-hash"

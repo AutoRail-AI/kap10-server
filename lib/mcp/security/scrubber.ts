@@ -86,7 +86,7 @@ const ENTROPY_THRESHOLD = 4.5
 const MIN_ENTROPY_LENGTH = 20
 
 /** Common non-secret high-entropy patterns to skip */
-const ENTROPY_ALLOWLIST = new Set([
+const _ENTROPY_ALLOWLIST = new Set([
   // Base64 encoded common strings, UUIDs, etc. are fine
 ])
 

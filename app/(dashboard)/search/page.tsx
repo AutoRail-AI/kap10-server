@@ -1,10 +1,9 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
+import { useCallback, useEffect, useState } from "react"
 import { SearchInput } from "@/components/dashboard/search-input"
 import { SearchResults } from "@/components/dashboard/search-results"
-import { Skeleton } from "@/components/ui/skeleton"
 import {
   Select,
   SelectContent,
@@ -12,6 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
 
 interface SearchResult {
   entityKey: string
@@ -67,7 +67,7 @@ export default function SearchPage() {
       }
     }
     void fetchRepos()
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [])
 
   // Debounced search
   useEffect(() => {
@@ -82,7 +82,7 @@ export default function SearchPage() {
     }, 300)
 
     return () => clearTimeout(timer)
-  }, [query, mode, repoId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [query, mode, repoId])
 
   const performSearch = useCallback(async (q: string, m: string, rid: string) => {
     setLoading(true)

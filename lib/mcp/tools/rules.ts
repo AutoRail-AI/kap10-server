@@ -4,9 +4,9 @@
 
 import type { Container } from "@/lib/di/container"
 import { LLM_MODELS } from "@/lib/llm/config"
+import { resolveRules } from "@/lib/rules/resolver"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
-import { resolveRules } from "@/lib/rules/resolver"
 
 // ── get_rules ──────────────────────────────────────────────
 

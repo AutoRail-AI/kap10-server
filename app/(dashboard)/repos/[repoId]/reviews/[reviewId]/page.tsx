@@ -1,13 +1,13 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { useParams, useRouter } from "next/navigation"
 import { ArrowLeft, ExternalLink, RotateCcw } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { ReviewStatusBadge, AutoApprovedBadge } from "@/components/repo/review-status-badge"
-import { ReviewCommentCard } from "@/components/repo/review-comment-card"
-import { Skeleton } from "@/components/ui/skeleton"
 import Link from "next/link"
+import { useParams, useRouter } from "next/navigation"
+import { useEffect, useState } from "react"
+import { ReviewCommentCard } from "@/components/repo/review-comment-card"
+import { AutoApprovedBadge, ReviewStatusBadge } from "@/components/repo/review-status-badge"
+import { Button } from "@/components/ui/button"
+import { Skeleton } from "@/components/ui/skeleton"
 
 interface Review {
   id: string

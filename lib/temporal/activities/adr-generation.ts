@@ -4,8 +4,8 @@
 
 import { getContainer } from "@/lib/di/container"
 import { LLM_MODELS } from "@/lib/llm/config"
-import { AdrSchema, renderAdrMarkdown, formatAdrFilename } from "@/lib/review/adr-schema"
 import type { AdrContent } from "@/lib/ports/types"
+import { AdrSchema, formatAdrFilename, renderAdrMarkdown } from "@/lib/review/adr-schema"
 
 export interface SignificanceAssessment {
   significant: boolean

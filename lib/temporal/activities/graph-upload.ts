@@ -8,8 +8,8 @@
  */
 
 import { heartbeat } from "@temporalio/activity"
-import { getContainer } from "@/lib/di/container"
 import { getPrisma } from "@/lib/db/prisma"
+import { getContainer } from "@/lib/di/container"
 import { logger } from "@/lib/utils/logger"
 
 export interface UploadInput {

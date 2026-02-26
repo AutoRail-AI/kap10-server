@@ -1,4 +1,4 @@
-import { FileCode, HeartPulse, LayoutGrid, BookOpen, BookText } from "lucide-react"
+import { BookOpen, BookText, FileCode, HeartPulse, LayoutGrid } from "lucide-react"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
@@ -17,7 +17,7 @@ const GRADE_COLORS: Record<string, string> = {
   F: "text-red-400 border-red-500/30 bg-red-500/10",
 }
 
-const SEVERITY_COLORS: Record<string, string> = {
+const _SEVERITY_COLORS: Record<string, string> = {
   low: "bg-muted text-muted-foreground border-border",
   medium: "bg-amber-500/20 text-amber-400 border-amber-500/30",
   high: "bg-red-500/20 text-red-400 border-red-500/30",

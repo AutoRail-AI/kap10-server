@@ -3,7 +3,7 @@
  * Maps riskType → human-readable title, fix guidance, and pre-filled rule template.
  */
 
-import type { RuleType, RuleEnforcement } from "@/lib/ports/types"
+import type { RuleEnforcement, RuleType } from "@/lib/ports/types"
 
 export interface FixGuidance {
   title: string

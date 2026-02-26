@@ -6,28 +6,27 @@
 import { heartbeat } from "@temporalio/activity"
 import { randomUUID } from "node:crypto"
 import { getContainer } from "@/lib/di/container"
-import { writeEntitiesToGraph } from "@/lib/temporal/activities/graph-writer"
-import { buildEmbeddableDocuments } from "@/lib/temporal/activities/embedding"
-import { diffEntitySets } from "@/lib/indexer/incremental"
-import { repairEdges } from "@/lib/indexer/edge-repair"
 import { buildCascadeQueue } from "@/lib/indexer/cascade"
 import { clearCallerCountCache } from "@/lib/indexer/centrality"
-import { withQuarantine } from "@/lib/indexer/quarantine"
+import { repairEdges } from "@/lib/indexer/edge-repair"
 import { entityHash } from "@/lib/indexer/entity-hash"
+import { withQuarantine } from "@/lib/indexer/quarantine"
+import { detectDeadCode } from "@/lib/justification/dead-code-detector"
 import { buildGraphContexts } from "@/lib/justification/graph-context-builder"
+import { computeHeuristicHint } from "@/lib/justification/model-router"
+import { normalizeJustifications } from "@/lib/justification/post-processor"
 import {
   buildJustificationPrompt,
   JUSTIFICATION_SYSTEM_PROMPT,
 } from "@/lib/justification/prompt-builder"
-import { JustificationResultSchema } from "@/lib/justification/schemas"
-import { computeHeuristicHint } from "@/lib/justification/model-router"
-import { computeBodyHash } from "@/lib/justification/staleness-checker"
 import { scoreJustification } from "@/lib/justification/quality-scorer"
-import { normalizeJustifications } from "@/lib/justification/post-processor"
+import { JustificationResultSchema } from "@/lib/justification/schemas"
+import { computeBodyHash } from "@/lib/justification/staleness-checker"
 import { buildTestContext } from "@/lib/justification/test-context-extractor"
-import { detectDeadCode } from "@/lib/justification/dead-code-detector"
-import type { ChangedFile, EntityDiff, EntityDoc, EdgeDoc, IndexEventDoc, JustificationDoc } from "@/lib/ports/types"
 import { LLM_MODELS } from "@/lib/llm/config"
+import type { ChangedFile, EntityDiff, EntityDoc, IndexEventDoc, JustificationDoc } from "@/lib/ports/types"
+import { buildEmbeddableDocuments } from "@/lib/temporal/activities/embedding"
+import { writeEntitiesToGraph } from "@/lib/temporal/activities/graph-writer"
 
 export interface PullAndDiffInput {
   orgId: string

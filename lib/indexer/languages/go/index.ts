@@ -1,9 +1,9 @@
 /**
  * Go language plugin.
  */
-import type { LanguagePlugin, SCIPOptions, TreeSitterOptions } from "../types"
 import { runSCIPGo } from "./scip"
 import { parseGoFile } from "./tree-sitter"
+import type { LanguagePlugin, SCIPOptions, TreeSitterOptions } from "../types"
 
 export const goPlugin: LanguagePlugin = {
   id: "go",

@@ -1,10 +1,10 @@
 /**
  * P1-TEST-05: Monorepo detection — pnpm, yarn, npm, nx, lerna workspaces.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
-import { tmpdir } from "node:os"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import { detectWorkspaceRoots } from "../monorepo"
 

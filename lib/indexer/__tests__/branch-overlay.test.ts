@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
-import { shouldIndexBranch, applyBranchOverlay, applyBranchEdgeOverlay } from "@/lib/indexer/branch-overlay"
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import { beforeEach, describe, expect, it } from "vitest"
+import { applyBranchEdgeOverlay, applyBranchOverlay, shouldIndexBranch } from "@/lib/indexer/branch-overlay"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 
 describe("branch-overlay", () => {
   beforeEach(() => {

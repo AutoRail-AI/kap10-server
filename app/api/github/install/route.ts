@@ -8,7 +8,7 @@ import { logger } from "@/lib/utils/logger"
 
 const log = logger.child({ service: "github-install" })
 
-const BASE_URL = process.env.BETTER_AUTH_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
+const _BASE_URL = process.env.BETTER_AUTH_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"
 const GITHUB_APP_SLUG = process.env.GITHUB_APP_SLUG ?? "unerr-dev"
 const STATE_TTL_SECONDS = 600
 

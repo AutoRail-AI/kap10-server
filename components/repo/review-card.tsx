@@ -1,8 +1,8 @@
 "use client"
 
+import { ExternalLink, GitPullRequest } from "lucide-react"
 import Link from "next/link"
-import { GitPullRequest, ExternalLink } from "lucide-react"
-import { ReviewStatusBadge, AutoApprovedBadge } from "./review-status-badge"
+import { AutoApprovedBadge, ReviewStatusBadge } from "./review-status-badge"
 
 interface ReviewCardProps {
   review: {

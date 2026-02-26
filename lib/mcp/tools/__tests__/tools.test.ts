@@ -1,26 +1,26 @@
 import { beforeEach, describe, expect, it } from "vitest"
-import { handleSearchCode } from "../search"
-import { handleGetFunction, handleGetClass, handleGetFile } from "../inspect"
-import { handleGetCallers, handleGetCallees, handleGetImports } from "../graph"
-import { handleGetProjectStats } from "../stats"
-import { filterDiff, parseDiffHunks } from "../diff-filter"
-import { dispatchToolCall, getToolSchemas, TOOL_DEFINITIONS } from "../index"
-import type { McpAuthContext } from "../../auth"
 import type { Container } from "@/lib/di/container"
 import {
-  InMemoryGraphStore,
-  InMemoryRelationalStore,
-  InMemoryCacheStore,
-  InlineWorkflowEngine,
-  FakeGitHost,
-  InMemoryVectorSearch,
-  NoOpBillingProvider,
-  InMemoryObservability,
-  MockLLMProvider,
   FakeCodeIntelligence,
+  FakeGitHost,
   FakePatternEngine,
+  InlineWorkflowEngine,
+  InMemoryCacheStore,
+  InMemoryGraphStore,
+  InMemoryObservability,
+  InMemoryRelationalStore,
+  InMemoryVectorSearch,
+  MockLLMProvider,
+  NoOpBillingProvider,
 } from "@/lib/di/fakes"
 import type { EntityDoc } from "@/lib/ports/types"
+import type { McpAuthContext } from "../../auth"
+import { filterDiff, parseDiffHunks } from "../diff-filter"
+import { handleGetCallees, handleGetCallers, handleGetImports } from "../graph"
+import { dispatchToolCall, getToolSchemas, TOOL_DEFINITIONS } from "../index"
+import { handleGetClass, handleGetFile, handleGetFunction } from "../inspect"
+import { handleSearchCode } from "../search"
+import { handleGetProjectStats } from "../stats"
 
 function makeContainer(overrides?: Partial<Container>): Container {
   return {

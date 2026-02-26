@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { createException, isExempt, revokeException, getActiveExceptions } from "@/lib/rules/exception-ledger"
+import { beforeEach, describe, expect, it } from "vitest"
 import { createTestContainer } from "@/lib/di/container"
-import { InMemoryGraphStore } from "@/lib/di/fakes"
 import type { Container } from "@/lib/di/container"
+import { InMemoryGraphStore } from "@/lib/di/fakes"
 import type { RuleExceptionDoc } from "@/lib/ports/types"
+import { createException, getActiveExceptions, isExempt, revokeException } from "@/lib/rules/exception-ledger"
 
 describe("exception-ledger", () => {
   let container: Container

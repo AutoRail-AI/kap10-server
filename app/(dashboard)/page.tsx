@@ -5,7 +5,7 @@ import { OverviewAddRepoCard } from "@/components/dashboard/overview-add-repo-ca
 import { OverviewRepoCard } from "@/components/dashboard/overview-repo-card"
 import { StatCard } from "@/components/dashboard/overview-stats"
 import { Skeleton } from "@/components/ui/skeleton"
-import { getSessionCached, getOrgsCached } from "@/lib/api/get-active-org"
+import { getOrgsCached, getSessionCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 
 async function OverviewContent() {
@@ -36,7 +36,7 @@ async function OverviewContent() {
   const installHref = `/api/github/install?orgId=${encodeURIComponent(activeOrgId)}`
 
   // Calculate aggregated stats
-  const totalFiles = repos.reduce((sum, r) => sum + (r.fileCount ?? 0), 0)
+  const _totalFiles = repos.reduce((sum, r) => sum + (r.fileCount ?? 0), 0)
   const totalEntities = repos.reduce(
     (sum, r) => sum + (r.functionCount ?? 0) + (r.classCount ?? 0),
     0

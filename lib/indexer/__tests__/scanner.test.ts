@@ -5,10 +5,10 @@
  * Note: scanWorkspace requires a real git repo, so we test detectLanguages
  * and getLanguageForExtension which are pure functions.
  */
+import { afterEach, describe, expect, it } from "vitest"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { describe, expect, it, afterEach } from "vitest"
+import { join } from "node:path"
 
 import { detectLanguages, getLanguageForExtension, scanWorkspace } from "../scanner"
 import type { ScannedFile } from "../types"

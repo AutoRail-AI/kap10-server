@@ -7,9 +7,9 @@
 import * as crypto from "node:crypto"
 import type { Container } from "@/lib/di/container"
 import type { LedgerChange, LedgerEntry } from "@/lib/ports/types"
+import { filterDiff, parseDiffHunks } from "./diff-filter"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
-import { filterDiff, parseDiffHunks } from "./diff-filter"
 
 const MAX_DIFF_SIZE = 50 * 1024 // 50 KB after lockfile stripping
 const LOCK_TTL = 30 // seconds

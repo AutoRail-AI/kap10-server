@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { resolveRules } from "@/lib/rules/resolver"
-import type { ResolveRulesInput } from "@/lib/rules/resolver"
+import { beforeEach, describe, expect, it } from "vitest"
 import { createTestContainer } from "@/lib/di/container"
-import { InMemoryGraphStore } from "@/lib/di/fakes"
 import type { Container } from "@/lib/di/container"
+import { InMemoryGraphStore } from "@/lib/di/fakes"
 import type { RuleDoc } from "@/lib/ports/types"
+import type { ResolveRulesInput } from "@/lib/rules/resolver"
+import { resolveRules } from "@/lib/rules/resolver"
 
 let testId = 0
 

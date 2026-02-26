@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
-import { AdrSchema, renderAdrMarkdown, formatAdrFilename } from "@/lib/review/adr-schema"
+import { describe, expect, it } from "vitest"
 import type { AdrContent } from "@/lib/ports/types"
+import { AdrSchema, formatAdrFilename, renderAdrMarkdown } from "@/lib/review/adr-schema"
 
 function makeValidAdr(): AdrContent {
   return {

@@ -5,7 +5,7 @@
  * and errors are recorded. On error, the CLI prints the log file path.
  */
 
-import { mkdirSync, appendFileSync } from "node:fs"
+import { appendFileSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 
 let logFilePath: string | null = null

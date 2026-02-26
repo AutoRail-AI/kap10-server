@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
-import { handleMarkWorking } from "../timeline"
-import { handleRevertToWorking } from "../rewind"
-import type { McpAuthContext } from "../../auth"
+import { beforeEach, describe, expect, it } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
 import type { LedgerEntry } from "@/lib/ports/types"
+import type { McpAuthContext } from "../../auth"
+import { handleRevertToWorking } from "../rewind"
+import { handleMarkWorking } from "../timeline"
 
 function makeLedgerEntry(overrides: Partial<LedgerEntry> = {}): LedgerEntry {
   return {

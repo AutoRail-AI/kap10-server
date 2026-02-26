@@ -3,7 +3,7 @@
  * and extracts assertion descriptions to boost justification confidence.
  */
 
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 import type { TestContext } from "./types"
 
 const TEST_FILE_PATTERNS = [

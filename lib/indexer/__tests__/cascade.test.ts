@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
+import { InMemoryGraphStore, InMemoryVectorSearch } from "@/lib/di/fakes"
 import { buildCascadeQueue } from "@/lib/indexer/cascade"
 import { clearCallerCountCache } from "@/lib/indexer/centrality"
-import { InMemoryGraphStore, InMemoryVectorSearch } from "@/lib/di/fakes"
 import type { EntityDoc } from "@/lib/ports/types"
 
 // buildCascadeQueue passes "" as orgId to graphStore methods,
@@ -19,11 +19,11 @@ function makeEntity(id: string, orgId = ""): EntityDoc {
 
 describe("buildCascadeQueue", () => {
   let graphStore: InMemoryGraphStore
-  let vectorSearch: InMemoryVectorSearch
+  let _vectorSearch: InMemoryVectorSearch
 
   beforeEach(() => {
     graphStore = new InMemoryGraphStore()
-    vectorSearch = new InMemoryVectorSearch()
+    _vectorSearch = new InMemoryVectorSearch()
     clearCallerCountCache()
   })
 

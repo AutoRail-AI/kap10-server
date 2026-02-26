@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
+import { describe, expect, it } from "vitest"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 import { topologicalSortEntities, topologicalSortEntityIds } from "../topological-sort"
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
 
 function makeEntity(id: string): EntityDoc {
   return { id, org_id: "o", repo_id: "r", kind: "function", name: id, file_path: "a.ts" }

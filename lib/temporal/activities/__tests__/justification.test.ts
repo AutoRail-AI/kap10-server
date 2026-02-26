@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@temporalio/activity", () => ({
   heartbeat: vi.fn(),
@@ -12,8 +12,7 @@ vi.mock("@/lib/llm/config", () => ({
   MODEL_COST_FALLBACK: { input: 0, output: 0 },
 }))
 
-import { createTestContainer, type Container } from "@/lib/di/container"
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import { type Container, createTestContainer } from "@/lib/di/container"
 
 // We need to set up the container before importing activities
 let container: Container

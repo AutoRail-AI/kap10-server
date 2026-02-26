@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
-import { handleGetBusinessContext, handleSearchByPurpose, handleAnalyzeImpact, handleGetBlueprint } from "../business"
-import type { McpAuthContext } from "../../auth"
+import { beforeEach, describe, expect, it } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
 import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
+import type { McpAuthContext } from "../../auth"
+import { handleAnalyzeImpact, handleGetBlueprint, handleGetBusinessContext, handleSearchByPurpose } from "../business"
 
 let container: Container
 let ctx: McpAuthContext

@@ -2,12 +2,12 @@
  * Trust Boundary Check (G1) — detects source→sink paths bypassing validation/auth middleware.
  */
 
+import type { IGraphStore } from "@/lib/ports/graph-store"
 import type {
   EntityDoc,
   ReviewConfig,
   TrustBoundaryFinding,
 } from "@/lib/ports/types"
-import type { IGraphStore } from "@/lib/ports/graph-store"
 
 const AUTH_PATTERNS = /auth|valid|sanitiz|middleware|guard|protect|verify|permission/i
 const DB_MUTATION_PATTERNS = /insert|update|delete|upsert|save|create|remove|destroy|drop|write/i

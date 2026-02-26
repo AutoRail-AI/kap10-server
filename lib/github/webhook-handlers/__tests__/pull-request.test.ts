@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
-import { handlePullRequestEvent, type PullRequestPayload } from "../pull-request"
+import { beforeEach, describe, expect, it } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
 import type { ReviewConfig } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG } from "@/lib/ports/types"
+import { handlePullRequestEvent, type PullRequestPayload } from "../pull-request"
 
 const ORG = "org-pr-webhook"
 const GITHUB_REPO_ID = 999001

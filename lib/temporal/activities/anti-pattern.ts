@@ -112,7 +112,7 @@ Generate a concise anti-pattern rule with name, description, pattern (code patte
     if (rewindEntry) {
       // Best-effort: store rule_generated reference
       try {
-        const db = require("arangojs") as typeof import("arangojs")
+        const _db = require("arangojs") as typeof import("arangojs")
         // Update via graphStore isn't available for arbitrary fields, but rule_generated is on the doc
       } catch {
         // ok
@@ -155,7 +155,7 @@ export async function vectorizeAntiPatternRule(input: {
     const relevantMatches = matches.filter((m) => m.score > 0.75)
 
     // 3. Store the rule embedding in pgvector
-    const crypto = require("node:crypto") as typeof import("node:crypto")
+    const _crypto = require("node:crypto") as typeof import("node:crypto")
     await container.vectorSearch.upsert(
       [`rule:${input.ruleId}`],
       [embeddings[0]],

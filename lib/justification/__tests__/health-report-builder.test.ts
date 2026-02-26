@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
+import { describe, expect, it } from "vitest"
+import type { FeatureAggregation, JustificationDoc } from "@/lib/ports/types"
 import { buildHealthReport } from "../health-report-builder"
-import type { JustificationDoc, FeatureAggregation } from "@/lib/ports/types"
 
 function makeJust(id: string, opts: { taxonomy?: "VERTICAL" | "HORIZONTAL" | "UTILITY"; confidence?: number } = {}): JustificationDoc {
   return {

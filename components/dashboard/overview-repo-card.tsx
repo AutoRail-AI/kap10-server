@@ -21,7 +21,7 @@ interface OverviewRepoCardProps {
  */
 export function OverviewRepoCard({ repo }: OverviewRepoCardProps) {
   const isReady = repo.status === "ready"
-  const isLive = isReady && repo.lastIndexedAt
+  const _isLive = isReady && repo.lastIndexedAt
   const lastIndexed = repo.lastIndexedAt
     ? new Date(repo.lastIndexedAt)
     : null

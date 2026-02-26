@@ -7,9 +7,9 @@
  */
 
 import { ParentClosePolicy, proxyActivities, startChild, workflowInfo } from "@temporalio/workflow"
+import { justifyRepoWorkflow } from "./justify-repo"
 import type * as ontologyActivities from "../activities/ontology"
 import type * as pipelineLogs from "../activities/pipeline-logs"
-import { justifyRepoWorkflow } from "./justify-repo"
 
 const activities = proxyActivities<typeof ontologyActivities>({
   taskQueue: "light-llm-queue",

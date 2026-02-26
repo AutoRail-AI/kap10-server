@@ -23,11 +23,10 @@
 
 // Load .env.local / .env (no-op in Docker where env is injected by compose)
 import { config } from "dotenv"
+import { createServer } from "http"
 import path from "node:path"
 config({ path: path.resolve(process.cwd(), ".env.local"), quiet: true })
 config({ path: path.resolve(process.cwd(), ".env"), quiet: true })
-
-import { createServer } from "http"
 
 // Force environment before container loads
 if (!process.env.NODE_ENV) {

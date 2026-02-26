@@ -9,8 +9,8 @@
  * Safety patterns route to premium tier.
  */
 
-import type { EntityDoc } from "@/lib/ports/types"
 import { LLM_MODELS } from "@/lib/llm/config"
+import type { EntityDoc } from "@/lib/ports/types"
 import type { ModelRoute, ModelTier, Taxonomy } from "./schemas"
 import type { HeuristicResult } from "./types"
 

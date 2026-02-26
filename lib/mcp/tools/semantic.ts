@@ -9,10 +9,10 @@
  */
 
 import type { Container } from "@/lib/di/container"
-import type { McpAuthContext } from "../auth"
-import { formatToolError, formatToolResponse } from "../formatter"
 import { hybridSearch, type SearchMode } from "@/lib/embeddings/hybrid-search"
 import { getPrefetchedContext } from "@/lib/use-cases/prefetch-context"
+import type { McpAuthContext } from "../auth"
+import { formatToolError, formatToolResponse } from "../formatter"
 
 // ── semantic_search ───────────────────────────────────────────────────────────
 

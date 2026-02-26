@@ -2,9 +2,9 @@
  * Rule Compiler — uses LLM generateObject() with Zod schema to draft rules.
  */
 
+import { z } from "zod"
 import type { Container } from "@/lib/di/container"
 import { LLM_MODELS } from "@/lib/llm/config"
-import { z } from "zod"
 
 const DraftedRuleSchema = z.object({
   title: z.string(),

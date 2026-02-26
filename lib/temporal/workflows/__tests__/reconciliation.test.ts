@@ -7,10 +7,10 @@
  * would use, plus test the workflow contract itself.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 import { createTestContainer } from "@/lib/di/container"
 import type { Container } from "@/lib/di/container"
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import type { EntityDoc } from "@/lib/ports/types"
 
 function makeEntity(overrides: Partial<EntityDoc> & { id: string; name: string }): EntityDoc {
   return {

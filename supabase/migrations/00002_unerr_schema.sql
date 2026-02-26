@@ -285,9 +285,13 @@ INSERT INTO storage.buckets (id, name, public, file_size_limit)
 VALUES ('graph-snapshots', 'graph-snapshots', false, 104857600)
 ON CONFLICT (id) DO NOTHING;
 
-CREATE POLICY "Org members can download graph snapshots"
-  ON storage.objects FOR SELECT
-  USING (bucket_id = 'graph-snapshots');
+DO $$
+BEGIN
+  CREATE POLICY "Org members can download graph snapshots"
+    ON storage.objects FOR SELECT
+    USING (bucket_id = 'graph-snapshots');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 -- CLI uploads bucket (private, 500 MB max)
 DO $$

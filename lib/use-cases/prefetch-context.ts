@@ -5,8 +5,8 @@
  * and caches in Redis for fast subsequent MCP tool lookups.
  */
 
-import type { Container } from "@/lib/di/container"
 import { env } from "@/env.mjs"
+import type { Container } from "@/lib/di/container"
 
 export interface PrefetchInput {
   orgId: string

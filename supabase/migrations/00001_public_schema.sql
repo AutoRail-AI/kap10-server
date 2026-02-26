@@ -1,98 +1,18 @@
 -- =============================================================================
--- Consolidated public schema: Better Auth + Application tables
+-- Consolidated public schema: Application support tables
 -- =============================================================================
 -- Single migration replacing 15 incremental files (pre-launch consolidation).
--- Better Auth tables use camelCase columns (quoted). App tables use snake_case.
+--
+-- NOTE: Better Auth tables (user, session, account, verification, organization,
+-- member, invitation) are NOT created here. They are managed exclusively by
+-- Better Auth's own migrate CLI (`@better-auth/cli migrate`), which runs as
+-- the second step of `pnpm migrate`. Do not add Better Auth tables here —
+-- doing so causes "relation already exists" errors.
 -- =============================================================================
 
 -- ── Extensions ────────────────────────────────────────────────────────
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA extensions;
-
--- ═════════════════════════════════════════════════════════════════════════
--- Better Auth: Core tables
--- ═════════════════════════════════════════════════════════════════════════
-
-CREATE TABLE IF NOT EXISTS public."user" (
-  "id"            TEXT PRIMARY KEY,
-  "name"          TEXT NOT NULL,
-  "email"         TEXT NOT NULL,
-  "emailVerified" BOOLEAN NOT NULL,
-  "image"         TEXT,
-  "createdAt"     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  "updatedAt"     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  "tier"          TEXT NOT NULL DEFAULT 'free'
-);
-
-CREATE TABLE IF NOT EXISTS public."session" (
-  "id"                     TEXT PRIMARY KEY,
-  "userId"                 TEXT NOT NULL REFERENCES public."user"("id") ON DELETE CASCADE,
-  "token"                  TEXT NOT NULL UNIQUE,
-  "expiresAt"              TIMESTAMPTZ NOT NULL,
-  "ipAddress"              TEXT,
-  "userAgent"              TEXT,
-  "createdAt"              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  "updatedAt"              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  "activeOrganizationId"   TEXT
-);
-
-CREATE TABLE IF NOT EXISTS public."account" (
-  "id"                      TEXT PRIMARY KEY,
-  "userId"                  TEXT NOT NULL REFERENCES public."user"("id") ON DELETE CASCADE,
-  "accountId"               TEXT NOT NULL,
-  "providerId"              TEXT NOT NULL,
-  "accessToken"             TEXT,
-  "refreshToken"            TEXT,
-  "accessTokenExpiresAt"    TIMESTAMPTZ,
-  "refreshTokenExpiresAt"   TIMESTAMPTZ,
-  "scope"                   TEXT,
-  "idToken"                 TEXT,
-  "password"                TEXT,
-  "createdAt"               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  "updatedAt"               TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS public."verification" (
-  "id"         TEXT PRIMARY KEY,
-  "identifier" TEXT NOT NULL,
-  "value"      TEXT NOT NULL,
-  "expiresAt"  TIMESTAMPTZ NOT NULL,
-  "createdAt"  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  "updatedAt"  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ═════════════════════════════════════════════════════════════════════════
--- Better Auth: Organization plugin
--- ═════════════════════════════════════════════════════════════════════════
-
-CREATE TABLE IF NOT EXISTS public."organization" (
-  "id"        TEXT PRIMARY KEY,
-  "name"      TEXT NOT NULL,
-  "slug"      TEXT NOT NULL UNIQUE,
-  "logo"      TEXT,
-  "metadata"  TEXT,
-  "createdAt" TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  "updatedAt" TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS public."member" (
-  "id"             TEXT PRIMARY KEY,
-  "userId"         TEXT NOT NULL REFERENCES public."user"("id") ON DELETE CASCADE,
-  "organizationId" TEXT NOT NULL REFERENCES public."organization"("id") ON DELETE CASCADE,
-  "role"           TEXT NOT NULL DEFAULT 'member',
-  "createdAt"      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS public."invitation" (
-  "id"             TEXT PRIMARY KEY,
-  "email"          TEXT NOT NULL,
-  "inviterId"      TEXT NOT NULL REFERENCES public."user"("id") ON DELETE CASCADE,
-  "organizationId" TEXT NOT NULL REFERENCES public."organization"("id") ON DELETE CASCADE,
-  "role"           TEXT NOT NULL,
-  "status"         TEXT NOT NULL DEFAULT 'pending',
-  "createdAt"      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  "expiresAt"      TIMESTAMPTZ NOT NULL
-);
 
 -- ═════════════════════════════════════════════════════════════════════════
 -- Application tables (snake_case)
@@ -290,12 +210,8 @@ CREATE TABLE IF NOT EXISTS public.agent_conversations (
 -- Indexes
 -- ═════════════════════════════════════════════════════════════════════════
 
--- Better Auth
-CREATE INDEX IF NOT EXISTS session_userId_idx             ON public."session"("userId");
-CREATE INDEX IF NOT EXISTS account_userId_idx             ON public."account"("userId");
-CREATE INDEX IF NOT EXISTS member_organizationId_idx      ON public."member"("organizationId");
-CREATE INDEX IF NOT EXISTS member_userId_idx              ON public."member"("userId");
-CREATE INDEX IF NOT EXISTS invitation_organizationId_idx  ON public."invitation"("organizationId");
+-- NOTE: Better Auth indexes (session, account, member, invitation) are managed
+-- by Better Auth's own migrate CLI. Do not add them here.
 
 -- Subscriptions
 CREATE INDEX IF NOT EXISTS idx_subscriptions_user_id         ON public.subscriptions(user_id);

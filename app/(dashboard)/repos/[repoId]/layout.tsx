@@ -6,7 +6,6 @@ import {
   GitBranch,
   Layers,
   Plug,
-  RefreshCw,
   Shield,
 } from "lucide-react"
 import Link from "next/link"

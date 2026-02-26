@@ -1,8 +1,8 @@
 import { NextRequest } from "next/server"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
-import { buildHealthReport } from "@/lib/justification/health-report-builder"
 import { aggregateFeatures } from "@/lib/justification/feature-aggregator"
+import { buildHealthReport } from "@/lib/justification/health-report-builder"
 import { withAuth } from "@/lib/middleware/api-handler"
 import { errorResponse, successResponse } from "@/lib/utils/api-response"
 

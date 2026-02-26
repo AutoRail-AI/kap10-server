@@ -2,7 +2,7 @@
  * Impact Report generation — summarizes blast radius of a rule.
  */
 
-import type { ImpactReportDoc, AstGrepResult } from "@/lib/ports/types"
+import type { AstGrepResult, ImpactReportDoc } from "@/lib/ports/types"
 
 export function generateImpactReport(
   orgId: string,

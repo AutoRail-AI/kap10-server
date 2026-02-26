@@ -9,11 +9,11 @@
  * for Phase 2 (Shadow Workspace overlay).
  */
 
-import type { ICodeIntelligence, Definition, Reference } from "@/lib/ports/code-intelligence"
-import { initializeRegistry, getPluginsForExtensions } from "@/lib/indexer/languages/registry"
-import { scanWorkspace, detectLanguages } from "@/lib/indexer/scanner"
+import { getPluginsForExtensions, initializeRegistry } from "@/lib/indexer/languages/registry"
 import { detectWorkspaceRoots } from "@/lib/indexer/monorepo"
-import type { ParsedEntity, ParsedEdge } from "@/lib/indexer/types"
+import { detectLanguages, scanWorkspace } from "@/lib/indexer/scanner"
+import type { ParsedEdge, ParsedEntity } from "@/lib/indexer/types"
+import type { Definition, ICodeIntelligence, Reference } from "@/lib/ports/code-intelligence"
 
 export interface IndexWorkspaceResult {
   filesProcessed: number

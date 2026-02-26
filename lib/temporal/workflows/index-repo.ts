@@ -1,10 +1,10 @@
 import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild, workflowInfo } from "@temporalio/workflow"
+import { detectPatternsWorkflow } from "./detect-patterns"
+import { embedRepoWorkflow } from "./embed-repo"
+import { syncLocalGraphWorkflow } from "./sync-local-graph"
 import type * as heavy from "../activities/indexing-heavy"
 import type * as light from "../activities/indexing-light"
 import type * as pipelineLogs from "../activities/pipeline-logs"
-import { embedRepoWorkflow } from "./embed-repo"
-import { syncLocalGraphWorkflow } from "./sync-local-graph"
-import { detectPatternsWorkflow } from "./detect-patterns"
 
 const heavyActivities = proxyActivities<typeof heavy>({
   taskQueue: "heavy-compute-queue",

@@ -59,6 +59,10 @@ export const env = createEnv({
 
     // ── LLM (Phase 4 — Business Justification) ────────────────────
     // Primary provider: Google Gemini. Model config in lib/llm/config.ts.
+    LLM_PROVIDER: z.string().optional(),
+    LLM_BASE_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
+    LLM_API_KEY: z.string().optional(),
+    LLM_MODEL: z.string().optional(),
     GEMINI_API_KEY: z.string().optional(),
     OPENAI_API_KEY: z.string().optional(),
     ANTHROPIC_API_KEY: z.string().optional(),
@@ -199,6 +203,10 @@ export const env = createEnv({
     // Sentry
     SENTRY_DSN: process.env.SENTRY_DSN,
     // LLM
+    LLM_PROVIDER: process.env.LLM_PROVIDER,
+    LLM_BASE_URL: process.env.LLM_BASE_URL,
+    LLM_API_KEY: process.env.LLM_API_KEY,
+    LLM_MODEL: process.env.LLM_MODEL,
     GEMINI_API_KEY: process.env.GEMINI_API_KEY,
     OPENAI_API_KEY: process.env.OPENAI_API_KEY,
     ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,

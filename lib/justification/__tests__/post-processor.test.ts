@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
-import { normalizeJustifications, extractSemanticTriples, deduplicateFeatures } from "../post-processor"
+import { describe, expect, it } from "vitest"
 import type { JustificationDoc } from "@/lib/ports/types"
+import { deduplicateFeatures, extractSemanticTriples, normalizeJustifications } from "../post-processor"
 
 function makeJustification(overrides: Partial<JustificationDoc> = {}): JustificationDoc {
   return {

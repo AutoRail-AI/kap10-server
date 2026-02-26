@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
 import { MockLLMProvider } from "@/lib/di/fakes"
 import type { LedgerEntry } from "@/lib/ports/types"
 

@@ -3,7 +3,7 @@
  * Runs on the light-llm-queue after first successful indexing.
  */
 
-import { getContainer, type Container } from "@/lib/di/container"
+import { type Container, getContainer } from "@/lib/di/container"
 import { createOnboardingPr } from "@/lib/onboarding/auto-pr"
 
 let _testContainer: Container | null = null

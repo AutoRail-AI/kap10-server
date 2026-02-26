@@ -6,12 +6,12 @@
  */
 
 import { Command } from "commander"
-import { readFileSync, existsSync, readdirSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { getCredentials } from "./auth.js"
 import { getManifest } from "./pull.js"
-import { isSnapshotStale, getStalenessInfo } from "../auto-sync.js"
+import { getStalenessInfo } from "../auto-sync.js"
 
 const UNERR_DIR = join(homedir(), ".unerr")
 const SNAPSHOTS_DIR = join(UNERR_DIR, "snapshots")

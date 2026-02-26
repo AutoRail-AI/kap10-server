@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
-import { runTestCheck } from "../test-check"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { ReviewConfig } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG } from "@/lib/ports/types"
 import type { DiffFile } from "../../diff-analyzer"
+import { runTestCheck } from "../test-check"
 
 // Mock node:fs so tests don't touch the real filesystem
 vi.mock("node:fs", () => ({

@@ -7,7 +7,7 @@
  * We mock the workflow imports and test the orchestration logic.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
 import type { IncrementalIndexInput } from "@/lib/temporal/workflows/incremental-index"
 
 // Track activity calls in order
@@ -84,7 +84,7 @@ describe("incrementalIndexWorkflow — activity orchestration", () => {
 
     // Step 3: Re-index batches
     steps.push("reIndexBatch")
-    const reindexResult = defaultReIndexResult
+    const _reindexResult = defaultReIndexResult
 
     // Step 4: Apply entity diffs
     steps.push("applyEntityDiffs")

@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { handleGetRecentChanges } from "@/lib/mcp/tools/changes"
-import { InMemoryGraphStore } from "@/lib/di/fakes"
+import { beforeEach, describe, expect, it } from "vitest"
 import type { Container } from "@/lib/di/container"
+import { InMemoryGraphStore } from "@/lib/di/fakes"
+import { handleGetRecentChanges } from "@/lib/mcp/tools/changes"
 import type { IndexEventDoc } from "@/lib/ports/types"
 
 describe("handleGetRecentChanges", () => {

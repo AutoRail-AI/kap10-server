@@ -263,8 +263,8 @@ function countPythonParams(params: string): number {
 function estimatePythonComplexity(body: string): number {
   let complexity = 1
   const pattern = /\b(if|elif|for|while|except|and|or)\b/g
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(body)) !== null) {
+  let _match: RegExpExecArray | null
+  while ((_match = pattern.exec(body)) !== null) {
     complexity++
   }
   return complexity

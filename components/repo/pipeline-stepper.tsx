@@ -1,6 +1,6 @@
 "use client"
 
-import { Check, AlertCircle } from "lucide-react"
+import { AlertCircle, Check } from "lucide-react"
 
 interface PipelineStepperProps {
   status: string

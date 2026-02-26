@@ -1,6 +1,6 @@
 import { Suspense } from "react"
-import { Skeleton } from "@/components/ui/skeleton"
 import { IssuesView } from "@/components/issues/issues-view"
+import { Skeleton } from "@/components/ui/skeleton"
 
 export default async function RepoDefaultPage({
   params,

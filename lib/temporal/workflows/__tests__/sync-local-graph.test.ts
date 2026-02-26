@@ -12,7 +12,7 @@ vi.mock("@temporalio/workflow", () => {
   const activities: Record<string, (...args: unknown[]) => Promise<unknown>> = {}
 
   return {
-    proxyActivities: (opts: { taskQueue: string }) => {
+    proxyActivities: (_opts: { taskQueue: string }) => {
       return new Proxy({}, {
         get: (_target, prop: string) => {
           if (!activities[prop]) {

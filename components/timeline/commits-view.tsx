@@ -1,8 +1,8 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { FileText, GitCommit, RotateCcw, Sparkles } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
-import { GitCommit, FileText, RotateCcw, Sparkles } from "lucide-react"
 import type { LedgerSummary } from "@/lib/ports/types"
 
 function truncateSha(sha: string): string {

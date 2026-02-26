@@ -16,21 +16,21 @@
  *  9. Done
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from "node:fs"
-import { join } from "node:path"
 import { execSync } from "node:child_process"
-import { getCredentials, saveCredentials, deviceAuthFlow } from "./auth.js"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { deviceAuthFlow, getCredentials, saveCredentials } from "./auth.js"
 import {
   detectGitContext,
   detectIde,
-  ideDisplayName,
-  isGitRepo,
-  IDE_CHOICES,
-  type IdeType,
   type GitContext,
+  IDE_CHOICES,
+  ideDisplayName,
+  type IdeType,
+  isGitRepo,
 } from "../utils/detect.js"
-import { banner, section, success, fail, info, detail, warn, blank, done, pc } from "../utils/ui.js"
-import { initLogFile, logInfo, logError, logApi, getLogFilePath } from "../utils/log.js"
+import { getLogFilePath, initLogFile, logApi, logError, logInfo } from "../utils/log.js"
+import { banner, blank, detail, done, fail, info, pc, section, success, warn } from "../utils/ui.js"
 
 const DEFAULT_SERVER = "https://app.unerr.dev"
 

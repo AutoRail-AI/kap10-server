@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useSyncExternalStore } from "react"
+import { useSyncExternalStore } from "react"
 
 /**
  * Returns `true` when the browser tab/window is visible.

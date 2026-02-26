@@ -11,6 +11,9 @@
  *   OPENAI_API_KEY           — OpenAI key (used for embeddings, or as primary)
  *   ANTHROPIC_API_KEY        — Anthropic key
  *   OLLAMA_BASE_URL          — Ollama endpoint (default: http://localhost:11434/v1)
+ *   LLM_BASE_URL             — Generic OpenAI-compatible endpoint (overrides OLLAMA_BASE_URL)
+ *   LLM_API_KEY              — API key for remote endpoints (default: "ollama" for local)
+ *   LLM_MODEL                — Single model for all tiers (overrides per-tier defaults)
  *   LLM_MODEL_FAST           — Model for simple/cheap tasks (variables, constants)
  *   LLM_MODEL_STANDARD       — Default model for most entities
  *   LLM_MODEL_PREMIUM        — Model for high-centrality / complex entities
@@ -27,9 +30,16 @@ export type LLMProviderType = "google" | "openai" | "anthropic" | "ollama"
 export const LLM_PROVIDER: LLMProviderType =
   (process.env.LLM_PROVIDER as LLMProviderType | undefined) ?? "google"
 
-/** Ollama API base URL (OpenAI-compatible endpoint). */
+/** Unified base URL for OpenAI-compatible endpoints (Ollama, Lightning AI, vLLM, etc.). */
 export const OLLAMA_BASE_URL: string =
-  process.env.OLLAMA_BASE_URL ?? "http://localhost:11434/v1"
+  process.env.LLM_BASE_URL ?? process.env.OLLAMA_BASE_URL ?? "http://localhost:11434/v1"
+
+/** API key for OpenAI-compatible endpoints (Ollama ignores it, Lightning AI needs it). */
+export const LLM_API_KEY: string =
+  process.env.LLM_API_KEY ?? "ollama"
+
+/** Single-model override: when set, all 3 tiers use this model. */
+const LLM_MODEL = process.env.LLM_MODEL
 
 /** API key for the active text-generation provider. */
 export function getLLMApiKey(): string | undefined {
@@ -41,8 +51,7 @@ export function getLLMApiKey(): string | undefined {
     case "anthropic":
       return process.env.ANTHROPIC_API_KEY
     case "ollama":
-      // Ollama doesn't need an API key, but the SDK requires a non-empty value
-      return "ollama"
+      return LLM_API_KEY
   }
 }
 
@@ -66,9 +75,9 @@ const PROVIDER_MODEL_DEFAULTS: Record<LLMProviderType, { fast: string; standard:
     premium: "claude-sonnet-4-20250514",
   },
   ollama: {
-    fast: "qwen3:8b",
-    standard: "qwen3:8b",
-    premium: "qwen3-coder",
+    fast: LLM_MODEL ?? "qwen3:8b",
+    standard: LLM_MODEL ?? "qwen3:8b",
+    premium: LLM_MODEL ?? "qwen3-coder",
   },
 }
 
@@ -102,6 +111,8 @@ export const MODEL_COSTS: Record<string, { input: number; output: number }> = {
   "qwen3-coder": { input: 0, output: 0 },
   "llama3.1:8b": { input: 0, output: 0 },
   "nomic-embed-text": { input: 0, output: 0 },
+  // Lightning AI
+  "lightning-ai/gpt-oss-20b": { input: 0, output: 0 },
 }
 
 export const MODEL_COST_FALLBACK = { input: 1 / 1_000_000, output: 3 / 1_000_000 }
@@ -121,6 +132,8 @@ export const MODEL_LIMITS: Record<string, { contextWindow: number; maxOutput: nu
   "qwen3-coder": { contextWindow: 262_144, maxOutput: 8192 },
   "llama3.1:8b": { contextWindow: 131_072, maxOutput: 4096 },
   "nomic-embed-text": { contextWindow: 8192, maxOutput: 0 },
+  // Lightning AI
+  "lightning-ai/gpt-oss-20b": { contextWindow: 32_000, maxOutput: 4096 },
 }
 
 export const MODEL_LIMITS_FALLBACK = { contextWindow: 32_000, maxOutput: 4096 }

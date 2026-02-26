@@ -160,7 +160,7 @@ async function loadJustificationMap(
 async function embedAndStore(
   container: Container,
   docs: EmbeddableDocument[],
-  log: ReturnType<typeof logger.child>,
+  _log: ReturnType<typeof logger.child>,
 ): Promise<number> {
   const upsertBatchSize = 10
   const totalBatches = Math.ceil(docs.length / upsertBatchSize)

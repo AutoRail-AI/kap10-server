@@ -1,7 +1,7 @@
 import { Suspense } from "react"
 import { GitHubConnectionsList } from "@/components/dashboard/github-connections-list"
 import { Skeleton } from "@/components/ui/skeleton"
-import { getSessionCached, getOrgsCached } from "@/lib/api/get-active-org"
+import { getOrgsCached, getSessionCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 
 async function ConnectionsContent() {

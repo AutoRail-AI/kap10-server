@@ -6,8 +6,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import { entityHash, edgeHash } from "@/lib/indexer/entity-hash"
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import { edgeHash, entityHash } from "@/lib/indexer/entity-hash"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 
 // Mock the DI container
 const mockBulkUpsertEntities = vi.fn().mockResolvedValue(undefined)

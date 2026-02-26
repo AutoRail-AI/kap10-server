@@ -4,12 +4,12 @@
  */
 
 import { heartbeat } from "@temporalio/activity"
-import { readFileSync } from "node:fs"
 import { randomUUID } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { getContainer } from "@/lib/di/container"
-import { extractDomainTerms, buildOntologyPrompt } from "@/lib/justification/ontology-extractor"
+import { buildOntologyPrompt, extractDomainTerms } from "@/lib/justification/ontology-extractor"
 import { DomainOntologySchema } from "@/lib/justification/schemas"
-import type { EntityDoc, DomainOntologyDoc } from "@/lib/ports/types"
+import type { DomainOntologyDoc, EntityDoc } from "@/lib/ports/types"
 import { logger } from "@/lib/utils/logger"
 
 export interface OntologyInput {

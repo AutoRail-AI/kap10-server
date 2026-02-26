@@ -4,10 +4,10 @@
  * If a repo's lastIndexedSha doesn't match, triggers re-index.
  */
 
-import { proxyActivities, sleep } from "@temporalio/workflow"
+import { proxyActivities } from "@temporalio/workflow"
 import type * as light from "../activities/indexing-light"
 
-const lightActivities = proxyActivities<typeof light>({
+const _lightActivities = proxyActivities<typeof light>({
   taskQueue: "light-llm-queue",
   startToCloseTimeout: "5m",
   heartbeatTimeout: "1m",

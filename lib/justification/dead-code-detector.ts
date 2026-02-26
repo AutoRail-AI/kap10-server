@@ -5,7 +5,7 @@
  * Dead code entities get auto-classified as UTILITY with feature_tag "dead_code".
  */
 
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 
 const TEST_FILE_PATTERNS = [
   /\.test\./,

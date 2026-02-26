@@ -49,7 +49,7 @@ export async function cleanupEphemeralRepo(
  * Activity: Find all expired ephemeral repos across orgs.
  */
 export async function findExpiredEphemeralRepos(
-  container: Container
+  _container: Container
 ): Promise<DeletionAuditInput[]> {
   // This would normally query across all orgs, but our relational store
   // is org-scoped. In production, this would be a direct Prisma query.

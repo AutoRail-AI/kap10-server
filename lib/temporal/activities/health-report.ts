@@ -6,9 +6,9 @@
 
 import { heartbeat } from "@temporalio/activity"
 import { getContainer } from "@/lib/di/container"
+import { synthesizeADRs } from "@/lib/justification/adr-synthesizer"
 import { aggregateFeatures } from "@/lib/justification/feature-aggregator"
 import { buildHealthReport } from "@/lib/justification/health-report-builder"
-import { synthesizeADRs } from "@/lib/justification/adr-synthesizer"
 import type { FeatureAggregation } from "@/lib/ports/types"
 
 export interface HealthReportInput {

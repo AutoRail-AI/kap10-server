@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { MockLLMProvider } from "@/lib/di/fakes"
 import { LLM_MODELS } from "@/lib/llm/config"
 import { summarizeLedger } from "../summarizer"

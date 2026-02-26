@@ -6,7 +6,7 @@
  */
 import { extractJSDocComment } from "../../doc-extractor"
 import { entityHash } from "../../entity-hash"
-import type { EntityKind, ParsedEdge, ParsedEntity } from "../../types"
+import type { ParsedEdge, ParsedEntity } from "../../types"
 import { MAX_BODY_LINES } from "../../types"
 import type { TreeSitterOptions } from "../types"
 
@@ -393,8 +393,8 @@ function extractReturnType(line: string): string | undefined {
 function estimateComplexity(body: string): number {
   let complexity = 1
   const pattern = /\b(if|else\s+if|for|while|case|catch)\b|\?\s*[^:?]|&&|\|\|/g
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(body)) !== null) {
+  let _match: RegExpExecArray | null
+  while ((_match = pattern.exec(body)) !== null) {
     complexity++
   }
   return complexity

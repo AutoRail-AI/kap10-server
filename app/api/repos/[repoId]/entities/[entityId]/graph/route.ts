@@ -6,8 +6,8 @@
 
 import { headers } from "next/headers"
 import { NextResponse } from "next/server"
-import { auth } from "@/lib/auth"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
+import { auth } from "@/lib/auth"
 import { getContainer } from "@/lib/di/container"
 
 export async function GET(
@@ -20,7 +20,7 @@ export async function GET(
   }
 
   const orgId = await getActiveOrgId()
-  const { repoId, entityId } = await params
+  const { repoId: _repoId, entityId } = await params
   const container = getContainer()
 
   const url = new URL(request.url)

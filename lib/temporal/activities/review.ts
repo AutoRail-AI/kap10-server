@@ -3,6 +3,19 @@
  */
 
 import { getContainer } from "@/lib/di/container"
+import type {
+  BlastRadiusSummary,
+  ComplexityFinding,
+  ContractFinding,
+  DependencyFinding,
+  EntityDoc,
+  EnvFinding,
+  IdempotencyFinding,
+  ImpactFinding,
+  PatternFinding,
+  TestFinding,
+  TrustBoundaryFinding,
+} from "@/lib/ports/types"
 import { buildBlastRadiusSummary } from "@/lib/review/blast-radius"
 import { buildCheckRunOutput } from "@/lib/review/check-run-builder"
 import { runComplexityCheck } from "@/lib/review/checks/complexity-check"
@@ -16,21 +29,8 @@ import { runTestCheck } from "@/lib/review/checks/test-check"
 import { runTrustBoundaryCheck } from "@/lib/review/checks/trust-boundary-check"
 import { buildReviewResult } from "@/lib/review/comment-builder"
 import { analyzeDiff } from "@/lib/review/diff-analyzer"
-import { evaluateSemanticLgtm } from "@/lib/review/semantic-lgtm"
-import type {
-  BlastRadiusSummary,
-  ComplexityFinding,
-  ContractFinding,
-  DependencyFinding,
-  EnvFinding,
-  EntityDoc,
-  IdempotencyFinding,
-  ImpactFinding,
-  PatternFinding,
-  TestFinding,
-  TrustBoundaryFinding,
-} from "@/lib/ports/types"
 import type { DiffFile } from "@/lib/review/diff-analyzer"
+import { evaluateSemanticLgtm } from "@/lib/review/semantic-lgtm"
 
 /**
  * Combined activity: fetch diff + run all checks in one step.
@@ -60,7 +60,7 @@ export async function fetchDiffAndRunChecks(input: {
   filePaths: string[]
 }> {
   const container = getContainer()
-  const token = await container.gitHost.getInstallationToken(input.installationId)
+  const _token = await container.gitHost.getInstallationToken(input.installationId)
   const rawDiff = await container.gitHost.getDiff(input.owner, input.repo, input.baseSha, input.headSha)
   const result = await analyzeDiff(rawDiff, input.orgId, input.repoId, container.graphStore)
 
@@ -168,7 +168,7 @@ export async function fetchDiff(input: {
   blastRadius: BlastRadiusSummary[]
 }> {
   const container = getContainer()
-  const token = await container.gitHost.getInstallationToken(input.installationId)
+  const _token = await container.gitHost.getInstallationToken(input.installationId)
 
   // Fetch diff via git host
   const rawDiff = await container.gitHost.getDiff(input.owner, input.repo, input.baseSha, input.headSha)

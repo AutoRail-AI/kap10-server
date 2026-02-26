@@ -3,7 +3,7 @@
  * extracts semantic triples, and adds bi-temporal metadata.
  */
 
-import type { JustificationDoc, FeatureAggregation } from "@/lib/ports/types"
+import type { FeatureAggregation, JustificationDoc } from "@/lib/ports/types"
 import type { SemanticTriple } from "./schemas"
 
 /**

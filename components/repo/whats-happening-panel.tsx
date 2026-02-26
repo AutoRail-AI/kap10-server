@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
 import { Activity, Check, Clock, FileCode, GitFork, Layers } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
 import type { PipelineLogEntry } from "@/hooks/use-pipeline-logs"
 
 interface WhatsHappeningPanelProps {
@@ -11,8 +11,8 @@ interface WhatsHappeningPanelProps {
   indexingStartedAt?: number | null
 }
 
-const PHASE_ORDER = ["indexing", "embedding", "ontology", "justifying"] as const
-type Phase = (typeof PHASE_ORDER)[number]
+const _PHASE_ORDER = ["indexing", "embedding", "ontology", "justifying"] as const
+type _Phase = (typeof _PHASE_ORDER)[number]
 
 const PHASE_LABELS: Record<string, string> = {
   pending: "Queued",

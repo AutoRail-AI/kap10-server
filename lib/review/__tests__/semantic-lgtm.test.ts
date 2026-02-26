@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { evaluateSemanticLgtm } from "@/lib/review/semantic-lgtm"
-import type { ReviewComment } from "@/lib/review/comment-builder"
+import { beforeEach, describe, expect, it } from "vitest"
 import { createTestContainer } from "@/lib/di/container"
 import type { Container } from "@/lib/di/container"
 import type { EntityDoc, JustificationDoc, ReviewConfig } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG } from "@/lib/ports/types"
+import type { ReviewComment } from "@/lib/review/comment-builder"
+import { evaluateSemanticLgtm } from "@/lib/review/semantic-lgtm"
 
 const ORG_ID = "org-lgtm"
 const REPO_ID = "repo-lgtm"

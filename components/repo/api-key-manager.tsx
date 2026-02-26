@@ -1,7 +1,7 @@
 "use client"
 
-import { useState } from "react"
 import { Copy, Key, Plus, RotateCw, ShieldCheck, Trash2 } from "lucide-react"
+import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"

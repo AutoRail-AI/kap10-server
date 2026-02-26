@@ -2,9 +2,9 @@
  * Summarizer — LLM narrative synthesis for ledger merge summaries.
  */
 
-import type { ILLMProvider } from "@/lib/ports/llm-provider"
-import { LLM_MODELS } from "@/lib/llm/config"
 import { z } from "zod"
+import { LLM_MODELS } from "@/lib/llm/config"
+import type { ILLMProvider } from "@/lib/ports/llm-provider"
 
 const SummarySchema = z.object({
   narrative: z.string().max(2000),

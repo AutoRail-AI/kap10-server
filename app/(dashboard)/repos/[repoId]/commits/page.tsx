@@ -1,6 +1,6 @@
 import { Suspense } from "react"
-import { Skeleton } from "@/components/ui/skeleton"
 import { CommitsView } from "@/components/timeline/commits-view"
+import { Skeleton } from "@/components/ui/skeleton"
 
 export default async function CommitsPage(props: { params: Promise<{ repoId: string }> }) {
   const { repoId } = await props.params

@@ -2,12 +2,12 @@
  * Idempotency Risk Check (G8) — detects webhook/trigger handlers that mutate state without idempotency guards.
  */
 
+import type { IGraphStore } from "@/lib/ports/graph-store"
 import type {
   EntityDoc,
   IdempotencyFinding,
   ReviewConfig,
 } from "@/lib/ports/types"
-import type { IGraphStore } from "@/lib/ports/graph-store"
 
 const TRIGGER_PATTERNS = /webhook|handler|on[A-Z]\w*Event|trigger|consumer|listener|subscriber/i
 const TRIGGER_FILE_PATTERNS = /webhook|handler|trigger|consumer|listener|subscriber/i

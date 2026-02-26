@@ -7,8 +7,7 @@
  * - Semgrep/LLM rules: Skipped (require cloud)
  */
 
-import type { CompactRule } from "./local-graph.js"
-import type { CozoGraphStore } from "./local-graph.js"
+import type { CompactRule , CozoGraphStore } from "./local-graph.js"
 
 export interface RuleViolation {
   ruleKey: string

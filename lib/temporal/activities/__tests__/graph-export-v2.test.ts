@@ -2,7 +2,7 @@
  * Phase 10b TEST-10: v2 graph export with rules and patterns.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 // Mock Temporal heartbeat
 vi.mock("@temporalio/activity", () => ({
@@ -36,8 +36,8 @@ vi.mock("@/lib/use-cases/graph-serializer", () => ({
 }))
 
 import { getContainer } from "@/lib/di/container"
-import { queryCompactGraph, serializeToMsgpack } from "../graph-export"
 import { serializeSnapshot } from "@/lib/use-cases/graph-serializer"
+import { queryCompactGraph, serializeToMsgpack } from "../graph-export"
 
 describe("queryCompactGraph v2 — rules + patterns export", () => {
   beforeEach(() => {

@@ -24,7 +24,7 @@
     "temporal:worker:heavy": "tsx scripts/temporal-worker-heavy.ts",
     "temporal:worker:light": "tsx scripts/temporal-worker-light.ts",
     "seed": "tsx scripts/seed.ts",
-    "migrate": "tsx scripts/migrate.ts && pnpm dlx dotenv-cli -e .env.local -- pnpm dlx @better-auth/cli@latest migrate --config ./lib/auth/better-auth.cli.ts --yes",
+    "migrate": "tsx scripts/migrate.ts",
     "reset-db": "tsx scripts/reset-db.ts",
     "predev": "pnpm run migrate",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",

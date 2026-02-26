@@ -1,7 +1,7 @@
 "use client"
 
+import { AlertTriangle, ArrowDownCircle, ArrowUpCircle, GitCommit, RefreshCw } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { GitCommit, ArrowUpCircle, ArrowDownCircle, RefreshCw, AlertTriangle } from "lucide-react"
 
 interface IndexEvent {
   push_sha: string

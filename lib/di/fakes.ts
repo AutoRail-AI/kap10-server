@@ -14,7 +14,7 @@ import type { CostBreakdown, IObservability, ModelUsageEntry } from "@/lib/ports
 import type { IPatternEngine, PatternMatch } from "@/lib/ports/pattern-engine"
 import type { ApiKeyRecord, DeletionLogRecord, GitHubInstallationRecord, IRelationalStore, RepoRecord, WorkspaceRecord } from "@/lib/ports/relational-store"
 import type { IStorageProvider } from "@/lib/ports/storage-provider"
-import type { ADRDoc, BlueprintData, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, PrReviewCommentRecord, PrReviewRecord, ProjectStats, ReviewConfig, RuleDoc, RuleExceptionDoc, RuleHealthDoc, SearchResult, SnippetDoc, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "@/lib/ports/types"
+import type { ADRDoc, BlueprintData, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, ProjectStats, PrReviewCommentRecord, PrReviewRecord, ReviewConfig, RuleDoc, RuleExceptionDoc, RuleHealthDoc, SearchResult, SnippetDoc, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG, validateLedgerTransition } from "@/lib/ports/types"
 import type { IVectorSearch } from "@/lib/ports/vector-search"
 import type { IWorkflowEngine } from "@/lib/ports/workflow-engine"

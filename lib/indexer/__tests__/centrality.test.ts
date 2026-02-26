@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest"
+import { beforeEach, describe, expect, it } from "vitest"
+import { InMemoryGraphStore } from "@/lib/di/fakes"
 import {
+  clearCallerCountCache,
   getInboundCallerCount,
   isHubNode,
-  clearCallerCountCache,
 } from "@/lib/indexer/centrality"
-import { InMemoryGraphStore } from "@/lib/di/fakes"
 import type { EntityDoc } from "@/lib/ports/types"
 
 function makeEntity(id: string, orgId = "org-1"): EntityDoc {

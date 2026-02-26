@@ -4,11 +4,11 @@
  * Validates shapes, writes to ArangoDB, triggers embedding workflow.
  */
 
-import { auth } from "@/lib/auth"
-import { getActiveOrgId } from "@/lib/api/get-active-org"
-import { getContainer } from "@/lib/di/container"
 import { headers } from "next/headers"
 import { NextResponse } from "next/server"
+import { getActiveOrgId } from "@/lib/api/get-active-org"
+import { auth } from "@/lib/auth"
+import { getContainer } from "@/lib/di/container"
 import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 import { logger } from "@/lib/utils/logger"
 

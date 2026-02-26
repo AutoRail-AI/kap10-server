@@ -3,7 +3,7 @@
  * identifies entry points and hot paths for feature map visualization.
  */
 
-import type { JustificationDoc, FeatureAggregation, EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import type { EdgeDoc, EntityDoc, FeatureAggregation, JustificationDoc } from "@/lib/ports/types"
 
 /**
  * Aggregate justifications into feature groups.

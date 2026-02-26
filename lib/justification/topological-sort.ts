@@ -7,7 +7,7 @@
  * Handles cycles by breaking them and placing cyclic nodes in the last level.
  */
 
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 
 /**
  * Topologically sort entities into levels.

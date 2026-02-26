@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest"
-import { runComplexityCheck } from "../complexity-check"
+import { describe, expect, it } from "vitest"
 import type { EntityDoc, ReviewConfig } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG } from "@/lib/ports/types"
+import { runComplexityCheck } from "../complexity-check"
 
 const ORG = "org-complexity"
 const REPO = "repo-complexity"

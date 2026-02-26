@@ -6,8 +6,8 @@
 
 import { randomBytes } from "crypto"
 import type { ICacheStore } from "@/lib/ports/cache-store"
-import { createJwt } from "../auth"
 import { consumeAuthCode, isConsumeError } from "./authorize"
+import { createJwt } from "../auth"
 
 export interface TokenRequest {
   grant_type: string

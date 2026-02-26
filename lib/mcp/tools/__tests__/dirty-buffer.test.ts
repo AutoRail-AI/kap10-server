@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
-import { handleSyncDirtyBuffer, resolveEntityWithOverlay } from "../dirty-buffer"
+import { beforeEach, describe, expect, it } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
 import type { McpAuthContext } from "../../auth"
+import { handleSyncDirtyBuffer, resolveEntityWithOverlay } from "../dirty-buffer"
 
 describe("sync_dirty_buffer", () => {
   let container: Container

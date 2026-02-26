@@ -5,8 +5,8 @@
  * Cloud tools (4): require vector DB, aggregations, or server-side state
  */
 
-import type { CozoGraphStore } from "./local-graph.js"
 import type { CloudProxy } from "./cloud-proxy.js"
+import type { CozoGraphStore } from "./local-graph.js"
 import type { evaluateRules as EvaluateRulesFn } from "./rule-evaluator.js"
 
 export type ToolSource = "local" | "cloud"

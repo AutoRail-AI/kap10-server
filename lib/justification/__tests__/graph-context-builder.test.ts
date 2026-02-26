@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
+import { describe, expect, it } from "vitest"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 import { computeApproxCentrality, summarizeSubgraph } from "../graph-context-builder"
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
 
 describe("computeApproxCentrality", () => {
   it("returns 0 for single entity", () => {

@@ -4,8 +4,8 @@
  */
 
 import type { Container } from "@/lib/di/container"
-import type { RepoRecord } from "@/lib/ports/relational-store"
 import { generateApiKey } from "@/lib/mcp/auth"
+import type { RepoRecord } from "@/lib/ports/relational-store"
 import { generateBootstrapRule } from "./bootstrap-rule"
 
 const MCP_SERVER_URL = process.env.MCP_SERVER_URL ?? "https://mcp.unerr.dev"

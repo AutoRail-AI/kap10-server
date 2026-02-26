@@ -1,12 +1,12 @@
 "use client"
 
 import {
-  Command as CommandPrimitive,
   CommandEmpty as CommandEmptyPrimitive,
   CommandGroup as CommandGroupPrimitive,
   CommandInput as CommandInputPrimitive,
   CommandItem as CommandItemPrimitive,
   CommandList as CommandListPrimitive,
+  Command as CommandPrimitive,
   CommandSeparator as CommandSeparatorPrimitive,
 } from "cmdk"
 import { Search } from "lucide-react"

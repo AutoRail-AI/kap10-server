@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation"
 import { Suspense } from "react"
-import { Skeleton } from "@/components/ui/skeleton"
 import { EntityBrowseView } from "@/components/entity/entity-browse-view"
+import { Skeleton } from "@/components/ui/skeleton"
 import { getSessionCached } from "@/lib/api/get-active-org"
 
 export default async function EntitiesPage({

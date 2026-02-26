@@ -1,16 +1,16 @@
 "use client"
 
+import { ArrowRight, RefreshCw, Square } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useEffect, useRef, useState } from "react"
-import { ArrowRight, RefreshCw, Square } from "lucide-react"
+import { PipelineLogViewer } from "@/components/repo/pipeline-log-viewer"
+import { PipelineStepper } from "@/components/repo/pipeline-stepper"
+import { WhatsHappeningPanel } from "@/components/repo/whats-happening-panel"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
-import { PipelineStepper } from "@/components/repo/pipeline-stepper"
-import { PipelineLogViewer } from "@/components/repo/pipeline-log-viewer"
-import { WhatsHappeningPanel } from "@/components/repo/whats-happening-panel"
-import { useRepoStatus } from "@/hooks/use-repo-status"
 import { usePipelineLogs } from "@/hooks/use-pipeline-logs"
 import { useRepoEvents } from "@/hooks/use-repo-events"
+import { useRepoStatus } from "@/hooks/use-repo-status"
 
 interface RepoOnboardingConsoleProps {
   repoId: string
@@ -28,7 +28,7 @@ export function RepoOnboardingConsole({
   initialStatus,
   initialProgress,
   repoName,
-  fullName,
+  fullName: _fullName,
   errorMessage,
 }: RepoOnboardingConsoleProps) {
   const router = useRouter()
@@ -43,7 +43,7 @@ export function RepoOnboardingConsole({
   const prevStatusRef = useRef(initialStatus)
 
   // SSE for real-time updates during active pipeline
-  const { status: sseStatus, logs: sseLogs } = useRepoEvents(repoId, { enabled: isActive })
+  const { status: sseStatus, logs: _sseLogs } = useRepoEvents(repoId, { enabled: isActive })
 
   // Sync SSE status into local state
   useEffect(() => {

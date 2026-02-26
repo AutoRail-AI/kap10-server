@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { truncateToolResult, formatToolResponse, formatToolError } from "../formatter"
+import { formatToolError, formatToolResponse, truncateToolResult } from "../formatter"
 
 describe("truncateToolResult", () => {
   it("returns small results unchanged", () => {

@@ -19,9 +19,9 @@
  */
 
 import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild, workflowInfo } from "@temporalio/workflow"
+import { discoverOntologyWorkflow } from "./discover-ontology"
 import type * as embeddingActivities from "../activities/embedding"
 import type * as pipelineLogs from "../activities/pipeline-logs"
-import { discoverOntologyWorkflow } from "./discover-ontology"
 
 const activities = proxyActivities<typeof embeddingActivities>({
   taskQueue: "light-llm-queue",

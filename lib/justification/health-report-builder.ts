@@ -5,11 +5,11 @@
  * Expanded from 4 to 13 risk types using entities + edges for graph analysis.
  */
 
-import type { JustificationDoc, FeatureAggregation, HealthReportDoc, EntityDoc, EdgeDoc } from "@/lib/ports/types"
-import type { HealthRisk } from "./schemas"
+import { randomUUID } from "node:crypto"
+import type { EdgeDoc, EntityDoc, FeatureAggregation, HealthReportDoc, JustificationDoc } from "@/lib/ports/types"
 import { detectDeadCode } from "./dead-code-detector"
 import { scoreJustification } from "./quality-scorer"
-import { randomUUID } from "node:crypto"
+import type { HealthRisk } from "./schemas"
 
 /**
  * Build a health report for a repository from its justifications.

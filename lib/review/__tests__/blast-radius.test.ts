@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { buildBlastRadiusSummary } from "@/lib/review/blast-radius"
+import { beforeEach, describe, expect, it } from "vitest"
 import { createTestContainer } from "@/lib/di/container"
 import type { Container } from "@/lib/di/container"
 import type { EntityDoc } from "@/lib/ports/types"
+import { buildBlastRadiusSummary } from "@/lib/review/blast-radius"
 
 const ORG_ID = "org-blast"
 const REPO_ID = "repo-blast"

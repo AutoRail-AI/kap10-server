@@ -1,7 +1,7 @@
+import { ChevronRight } from "lucide-react"
 import Link from "next/link"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
-import { ChevronRight } from "lucide-react"
 import { EntityDetail } from "@/components/entity/entity-detail"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getActiveOrgId, getSessionCached } from "@/lib/api/get-active-org"

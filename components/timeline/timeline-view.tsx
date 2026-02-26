@@ -1,16 +1,16 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
-import { Skeleton } from "@/components/ui/skeleton"
-import { Button } from "@/components/ui/button"
 import {
-  GitBranch,
-  Clock,
-  CheckCircle2,
-  XCircle,
   AlertCircle,
+  CheckCircle2,
   ChevronDown,
+  Clock,
+  GitBranch,
+  XCircle,
 } from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { Button } from "@/components/ui/button"
+import { Skeleton } from "@/components/ui/skeleton"
 import type { LedgerEntry, LedgerEntryStatus } from "@/lib/ports/types"
 
 interface TimelineResponse {
@@ -143,7 +143,6 @@ export function TimelineView({ repoId }: { repoId: string }) {
   // Reset and re-fetch when filters change
   useEffect(() => {
     fetchTimeline(true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branch, statusFilter])
 
   if (loading) {

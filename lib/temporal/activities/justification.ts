@@ -9,24 +9,24 @@
 import { heartbeat } from "@temporalio/activity"
 import { randomUUID } from "node:crypto"
 import { getContainer } from "@/lib/di/container"
-import { logger } from "@/lib/utils/logger"
+import { detectDeadCode } from "@/lib/justification/dead-code-detector"
+import { createBatches, getBatcherConfigForModel } from "@/lib/justification/dynamic-batcher"
 import { buildGraphContexts } from "@/lib/justification/graph-context-builder"
 import { computeHeuristicHint, routeModel } from "@/lib/justification/model-router"
-import { normalizeJustifications, deduplicateFeatures, clusterFeatureAreas } from "@/lib/justification/post-processor"
+import { clusterFeatureAreas, deduplicateFeatures, normalizeJustifications } from "@/lib/justification/post-processor"
 import {
-  buildJustificationPrompt,
   buildBatchJustificationPrompt,
+  buildJustificationPrompt,
   JUSTIFICATION_SYSTEM_PROMPT,
 } from "@/lib/justification/prompt-builder"
-import { JustificationResultSchema, BatchJustificationResultSchema } from "@/lib/justification/schemas"
+import { scoreJustification } from "@/lib/justification/quality-scorer"
+import { BatchJustificationResultSchema, JustificationResultSchema } from "@/lib/justification/schemas"
+import type { GraphContext } from "@/lib/justification/schemas"
+import { checkStaleness, computeBodyHash } from "@/lib/justification/staleness-checker"
 import { buildTestContext } from "@/lib/justification/test-context-extractor"
 import { topologicalSortEntityIds } from "@/lib/justification/topological-sort"
-import { createBatches, getBatcherConfigForModel } from "@/lib/justification/dynamic-batcher"
-import { checkStaleness, computeBodyHash } from "@/lib/justification/staleness-checker"
-import { detectDeadCode } from "@/lib/justification/dead-code-detector"
-import { scoreJustification } from "@/lib/justification/quality-scorer"
 import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
-import type { GraphContext } from "@/lib/justification/schemas"
+import { logger } from "@/lib/utils/logger"
 
 export interface JustificationInput {
   orgId: string
@@ -392,7 +392,7 @@ export async function justifyBatch(
 
         // Attempt batch with exponential backoff (2s, 8s, 30s) before falling to individual retries
         const BATCH_BACKOFF_DELAYS = [2_000, 8_000, 30_000]
-        let batchSuccess = false
+        let _batchSuccess = false
 
         for (let attempt = 0; attempt <= BATCH_BACKOFF_DELAYS.length; attempt++) {
           try {
@@ -436,7 +436,7 @@ export async function justifyBatch(
                 await retrySingleEntity(container, input, be, ontology, tierEntities, entityNameMap, prevJustMap, modelToUse, tier, results, now)
               }
             }
-            batchSuccess = true
+            _batchSuccess = true
             break // Batch succeeded, exit retry loop
           } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error)
@@ -473,7 +473,7 @@ export async function justifyBatch(
               }
               await retrySingleEntity(container, input, be, ontology, tierEntities, entityNameMap, prevJustMap, modelToUse, tier, results, now)
             }
-            batchSuccess = true // Handled via individual retries
+            _batchSuccess = true // Handled via individual retries
             break
           }
         }

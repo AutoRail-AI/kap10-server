@@ -3,9 +3,9 @@
  */
 
 import type { Container } from "@/lib/di/container"
+import { resolveEntityWithOverlay } from "./dirty-buffer"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
-import { resolveEntityWithOverlay } from "./dirty-buffer"
 
 // ── get_callers ─────────────────────────────────────────────────
 

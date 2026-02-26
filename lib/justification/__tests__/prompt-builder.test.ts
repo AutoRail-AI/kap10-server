@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
+import { describe, expect, it } from "vitest"
+import type { DomainOntologyDoc, EntityDoc, JustificationDoc } from "@/lib/ports/types"
 import { buildJustificationPrompt } from "../prompt-builder"
-import type { EntityDoc, DomainOntologyDoc, JustificationDoc } from "@/lib/ports/types"
 import type { GraphContext } from "../schemas"
 
 describe("buildJustificationPrompt", () => {

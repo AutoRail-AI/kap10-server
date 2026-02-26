@@ -3,7 +3,7 @@
  * Phase 2: API keys, workspaces, repo onboarding fields.
  */
 
-import type { PrReviewRecord, PrReviewCommentRecord, ReviewConfig } from "./types"
+import type { PrReviewCommentRecord, PrReviewRecord, ReviewConfig } from "./types"
 
 export interface RepoRecord {
   id: string

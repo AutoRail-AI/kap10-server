@@ -10,16 +10,16 @@
  *  - Exponential backoff with jitter for 429 / rate-limit errors
  */
 
+import { getLLMApiKey, LLM_PROVIDER } from "@/lib/llm/config"
+import { RateLimiter } from "@/lib/llm/rate-limiter"
 import type { ILLMProvider } from "@/lib/ports/llm-provider"
 import type { OrgContext, TokenUsage } from "@/lib/ports/types"
-import { LLM_PROVIDER, getLLMApiKey } from "@/lib/llm/config"
-import { RateLimiter } from "@/lib/llm/rate-limiter"
 
-/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/no-explicit-any */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 /** Dynamic require that hides the module path from webpack static analysis. */
 function dynamicRequire(mod: string): any {
-  // eslint-disable-next-line no-eval
+   
   return eval("require")(mod)
 }
 

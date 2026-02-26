@@ -1,9 +1,9 @@
 /**
  * Python language plugin.
  */
-import type { LanguagePlugin, SCIPOptions, TreeSitterOptions } from "../types"
 import { runSCIPPython } from "./scip"
 import { parsePythonFile } from "./tree-sitter"
+import type { LanguagePlugin, SCIPOptions, TreeSitterOptions } from "../types"
 
 export const pythonPlugin: LanguagePlugin = {
   id: "python",

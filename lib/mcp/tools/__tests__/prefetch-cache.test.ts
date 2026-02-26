@@ -2,7 +2,7 @@
  * Phase 10b TEST-09: Pre-fetch cache hit in semantic search tests.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 // Mock the prefetch context module
 vi.mock("@/lib/use-cases/prefetch-context", () => ({
@@ -29,10 +29,10 @@ vi.mock("@/lib/embeddings/hybrid-search", () => ({
   }),
 }))
 
-import { handleSemanticSearch } from "../semantic"
-import { getPrefetchedContext } from "@/lib/use-cases/prefetch-context"
 import type { Container } from "@/lib/di/container"
+import { getPrefetchedContext } from "@/lib/use-cases/prefetch-context"
 import type { McpAuthContext } from "../../auth"
+import { handleSemanticSearch } from "../semantic"
 
 function createMockContainer(): Container {
   return {} as Container

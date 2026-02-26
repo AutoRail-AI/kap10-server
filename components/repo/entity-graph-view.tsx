@@ -1,18 +1,18 @@
 "use client"
 
 import {
-  ReactFlow,
   Background,
   Controls,
-  MiniMap,
-  useNodesState,
-  useEdgesState,
-  type Node,
   type Edge,
-  type NodeProps,
   Handle,
-  Position,
   MarkerType,
+  MiniMap,
+  type Node,
+  type NodeProps,
+  Position,
+  ReactFlow,
+  useEdgesState,
+  useNodesState,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 import { Loader2, Minus, X } from "lucide-react"

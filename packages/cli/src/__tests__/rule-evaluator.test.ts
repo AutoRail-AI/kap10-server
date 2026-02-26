@@ -15,9 +15,8 @@ vi.mock("web-tree-sitter", () => ({
   },
 }))
 
+import type { CompactRule , CozoGraphStore } from "../local-graph.js"
 import { evaluateRules } from "../rule-evaluator.js"
-import type { CompactRule } from "../local-graph.js"
-import type { CozoGraphStore } from "../local-graph.js"
 
 function createMockLocalGraph(entities: Array<{ key: string; kind: string; name: string; file_path: string; start_line: number; signature: string; body: string }> = []): CozoGraphStore {
   return {

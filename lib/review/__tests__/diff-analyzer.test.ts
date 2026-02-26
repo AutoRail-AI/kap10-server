@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { analyzeDiff, isLineInChangedRange } from "@/lib/review/diff-analyzer"
-import type { DiffFile } from "@/lib/review/diff-analyzer"
+import { beforeEach, describe, expect, it } from "vitest"
 import { createTestContainer } from "@/lib/di/container"
 import type { Container } from "@/lib/di/container"
+import { analyzeDiff, isLineInChangedRange } from "@/lib/review/diff-analyzer"
+import type { DiffFile } from "@/lib/review/diff-analyzer"
 
 describe("isLineInChangedRange", () => {
   const files: DiffFile[] = [

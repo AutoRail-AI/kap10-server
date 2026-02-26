@@ -6,10 +6,10 @@
  * to maximize justification quality per entity kind.
  */
 
-import type { EntityDoc, DomainOntologyDoc, JustificationDoc } from "@/lib/ports/types"
+import type { DomainOntologyDoc, EntityDoc, JustificationDoc } from "@/lib/ports/types"
+import { extractCommentSignals, formatCommentSignalsForPrompt } from "./comment-signals"
 import type { GraphContext } from "./schemas"
 import type { TestContext } from "./types"
-import { extractCommentSignals, formatCommentSignalsForPrompt } from "./comment-signals"
 
 /**
  * System prompt preamble for justification LLM calls.
@@ -175,7 +175,7 @@ function buildFileSection(
   entity: EntityDoc,
   graphContext: GraphContext,
   maxBodyChars: number,
-  options?: PromptBuilderOptions
+  _options?: PromptBuilderOptions
 ): string {
   const lines: string[] = []
   lines.push(`## Module Under Analysis`)
@@ -219,7 +219,7 @@ function buildInterfaceSection(
   entity: EntityDoc,
   graphContext: GraphContext,
   maxBodyChars: number,
-  options?: PromptBuilderOptions
+  _options?: PromptBuilderOptions
 ): string {
   const lines: string[] = []
   lines.push(`## Interface Under Analysis`)
@@ -258,7 +258,7 @@ function buildGenericSection(
   entity: EntityDoc,
   graphContext: GraphContext,
   maxBodyChars: number,
-  options?: PromptBuilderOptions
+  _options?: PromptBuilderOptions
 ): string {
   const metadataLines: string[] = []
   if (entity.is_async) metadataLines.push("- **Async**: yes")

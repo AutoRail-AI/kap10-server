@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { checkRateLimit, formatRateLimitError } from "../rate-limiter"
 import { InMemoryCacheStore } from "@/lib/di/fakes"
+import { checkRateLimit, formatRateLimitError } from "../rate-limiter"
 
 describe("checkRateLimit", () => {
   it("allows calls within limit", async () => {

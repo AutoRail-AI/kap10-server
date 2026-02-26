@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
+import { beforeEach, describe, expect, it } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
 import {
-  recordBrokenEntry,
-  isCircuitTripped,
-  resetCircuitBreaker,
   checkCircuitBreakers,
+  isCircuitTripped,
+  recordBrokenEntry,
+  resetCircuitBreaker,
 } from "../circuit-breaker"
 
 describe("Circuit Breaker", () => {

@@ -3,32 +3,32 @@
  */
 
 import type { Container } from "@/lib/di/container"
-import type { McpAuthContext } from "../auth"
-import { hasScope } from "../auth"
-import { formatToolError } from "../formatter"
-import { GET_CALLERS_SCHEMA, GET_CALLEES_SCHEMA, GET_IMPORTS_SCHEMA, handleGetCallers, handleGetCallees, handleGetImports } from "./graph"
-import { GET_CLASS_SCHEMA, GET_FILE_SCHEMA, GET_FUNCTION_SCHEMA, handleGetClass, handleGetFile, handleGetFunction } from "./inspect"
-import { SEARCH_CODE_SCHEMA, handleSearchCode } from "./search"
-import { SEMANTIC_SEARCH_SCHEMA, FIND_SIMILAR_SCHEMA, handleSemanticSearch, handleFindSimilar } from "./semantic"
-import { GET_PROJECT_STATS_SCHEMA, handleGetProjectStats } from "./stats"
-import { SYNC_LOCAL_DIFF_SCHEMA, handleSyncLocalDiff } from "./sync"
 import {
-  GET_BUSINESS_CONTEXT_SCHEMA, handleGetBusinessContext,
-  SEARCH_BY_PURPOSE_SCHEMA, handleSearchByPurpose,
-  ANALYZE_IMPACT_SCHEMA, handleAnalyzeImpact,
-  GET_BLUEPRINT_SCHEMA, handleGetBlueprint,
+  ANALYZE_IMPACT_SCHEMA, GET_BLUEPRINT_SCHEMA,
+  GET_BUSINESS_CONTEXT_SCHEMA, handleAnalyzeImpact,
+  handleGetBlueprint, handleGetBusinessContext,
+  handleSearchByPurpose, SEARCH_BY_PURPOSE_SCHEMA,
 } from "./business"
 import { GET_RECENT_CHANGES_SCHEMA, handleGetRecentChanges } from "./changes"
+import { handleSyncDirtyBuffer, SYNC_DIRTY_BUFFER_SCHEMA } from "./dirty-buffer"
+import { GET_CALLEES_SCHEMA, GET_CALLERS_SCHEMA, GET_IMPORTS_SCHEMA, handleGetCallees, handleGetCallers, handleGetImports } from "./graph"
+import { GET_CLASS_SCHEMA, GET_FILE_SCHEMA, GET_FUNCTION_SCHEMA, handleGetClass, handleGetFile, handleGetFunction } from "./inspect"
+import { CHECK_PATTERNS_SCHEMA, GET_CONVENTIONS_SCHEMA, handleCheckPatterns, handleGetConventions, handleSuggestApproach, SUGGEST_APPROACH_SCHEMA } from "./patterns"
+import { handleReviewPrStatus, REVIEW_PR_STATUS_SCHEMA } from "./review"
+import { handleRevertToWorking, REVERT_TO_WORKING_SCHEMA } from "./rewind"
+import { CHECK_RULES_SCHEMA, DRAFT_ARCHITECTURE_RULE_SCHEMA, GET_RELEVANT_RULES_SCHEMA, GET_RULES_SCHEMA, handleCheckRules, handleDraftArchitectureRule, handleGetRelevantRules, handleGetRules } from "./rules"
+import { handleSearchCode, SEARCH_CODE_SCHEMA } from "./search"
+import { FIND_SIMILAR_SCHEMA, handleFindSimilar, handleSemanticSearch, SEMANTIC_SEARCH_SCHEMA } from "./semantic"
+import { GET_PROJECT_STATS_SCHEMA, handleGetProjectStats } from "./stats"
+import { handleSyncLocalDiff, SYNC_LOCAL_DIFF_SCHEMA } from "./sync"
 // Phase 5.5: Prompt Ledger & Rewind
-import { GET_TIMELINE_SCHEMA, handleGetTimeline, MARK_WORKING_SCHEMA, handleMarkWorking } from "./timeline"
-import { REVERT_TO_WORKING_SCHEMA, handleRevertToWorking } from "./rewind"
+import { GET_TIMELINE_SCHEMA, handleGetTimeline, handleMarkWorking, MARK_WORKING_SCHEMA } from "./timeline"
 // Phase 5.6: Dirty state overlay
-import { SYNC_DIRTY_BUFFER_SCHEMA, handleSyncDirtyBuffer } from "./dirty-buffer"
 // Phase 6: Pattern Enforcement & Rules Engine
-import { GET_RULES_SCHEMA, handleGetRules, CHECK_RULES_SCHEMA, handleCheckRules, GET_RELEVANT_RULES_SCHEMA, handleGetRelevantRules, DRAFT_ARCHITECTURE_RULE_SCHEMA, handleDraftArchitectureRule } from "./rules"
-import { CHECK_PATTERNS_SCHEMA, handleCheckPatterns, GET_CONVENTIONS_SCHEMA, handleGetConventions, SUGGEST_APPROACH_SCHEMA, handleSuggestApproach } from "./patterns"
 // Phase 7: PR Review Integration
-import { REVIEW_PR_STATUS_SCHEMA, handleReviewPrStatus } from "./review"
+import { hasScope } from "../auth"
+import type { McpAuthContext } from "../auth"
+import { formatToolError } from "../formatter"
 
 export interface ToolDefinition {
   name: string

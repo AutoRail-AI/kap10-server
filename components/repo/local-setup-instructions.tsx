@@ -1,7 +1,7 @@
 "use client"
 
-import { useState } from "react"
 import { Check, Copy, Download, Terminal } from "lucide-react"
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
 
 interface LocalSetupInstructionsProps {
@@ -42,7 +42,7 @@ function CodeBlock({ code }: { code: string }) {
   )
 }
 
-export function LocalSetupInstructions({ repoId, repoName, serverUrl }: LocalSetupInstructionsProps) {
+export function LocalSetupInstructions({ repoId, repoName: _repoName, serverUrl }: LocalSetupInstructionsProps) {
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState<string | null>(null)
 

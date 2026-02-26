@@ -6,7 +6,7 @@
  * - Converts ArangoDB _id → bare _key, _from/_to → bare keys
  */
 
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 
 const MAX_BODY_LINES = 50
 

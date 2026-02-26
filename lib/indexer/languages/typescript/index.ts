@@ -4,9 +4,9 @@
  * Provides SCIP-based precise indexing with tree-sitter regex fallback
  * for files that SCIP doesn't cover.
  */
-import type { LanguagePlugin, SCIPOptions, TreeSitterOptions } from "../types"
 import { runSCIPTypeScript } from "./scip"
 import { parseTypeScriptFile } from "./tree-sitter"
+import type { LanguagePlugin, SCIPOptions, TreeSitterOptions } from "../types"
 
 export const typescriptPlugin: LanguagePlugin = {
   id: "typescript",

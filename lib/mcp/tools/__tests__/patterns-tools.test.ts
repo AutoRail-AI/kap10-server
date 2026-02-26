@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
+import { beforeEach, describe, expect, it } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
+import type { EntityDoc, PatternDoc, RuleDoc } from "@/lib/ports/types"
+import type { McpAuthContext } from "../../auth"
 import {
   handleCheckPatterns,
   handleGetConventions,
   handleSuggestApproach,
 } from "../patterns"
-import type { McpAuthContext } from "../../auth"
-import type { PatternDoc, RuleDoc, EntityDoc } from "@/lib/ports/types"
 
 let container: Container
 let ctx: McpAuthContext

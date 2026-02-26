@@ -1,6 +1,6 @@
 import { headers } from "next/headers"
-import { auth } from "@/lib/auth"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
+import { auth } from "@/lib/auth"
 import { getContainer } from "@/lib/di/container"
 
 /**

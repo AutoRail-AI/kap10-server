@@ -1,8 +1,8 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
 import { Search } from "lucide-react"
 import { useRouter } from "next/navigation"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 
 export function GlobalSearch() {

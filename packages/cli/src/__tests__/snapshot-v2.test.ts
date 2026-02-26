@@ -3,7 +3,7 @@
  */
 
 import { describe, expect, it } from "vitest"
-import type { SnapshotEnvelope, CompactRule, CompactPattern } from "../local-graph.js"
+import type { CompactPattern, CompactRule, SnapshotEnvelope } from "../local-graph.js"
 
 describe("SnapshotEnvelope v2", () => {
   it("supports version 2 with rules and patterns", () => {

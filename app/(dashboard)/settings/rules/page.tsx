@@ -1,8 +1,7 @@
 "use client"
 
+import { Shield } from "lucide-react"
 import { useEffect, useState } from "react"
-import { Shield, Plus } from "lucide-react"
-import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 
 interface Rule {

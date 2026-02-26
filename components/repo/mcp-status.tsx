@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useState } from "react"
 import { Radio } from "lucide-react"
+import { useEffect, useState } from "react"
 import { useVisibility } from "@/hooks/use-visibility"
 
 interface McpStatusProps {

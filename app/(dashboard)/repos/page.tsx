@@ -2,7 +2,7 @@ import { Suspense } from "react"
 import { EmptyStateRepos } from "@/components/dashboard/empty-state-repos"
 import { ReposList } from "@/components/dashboard/repos-list"
 import { Skeleton } from "@/components/ui/skeleton"
-import { getSessionCached, getOrgsCached } from "@/lib/api/get-active-org"
+import { getOrgsCached, getSessionCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 
 async function ReposContent() {

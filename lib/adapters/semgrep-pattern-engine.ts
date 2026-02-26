@@ -95,7 +95,7 @@ export class SemgrepPatternEngine implements IPatternEngine {
 
   async scanWithAstGrep(workspacePath: string, pattern: string, language: string): Promise<AstGrepResult[]> {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
+       
       const astGrep = require("@ast-grep/napi") as { Lang: Record<string, string>; parse: (lang: string, src: string) => { root: () => { findAll: (pattern: string) => Array<{ range: () => { start: { line: number; column: number }; end: { line: number; column: number } }; text: () => string }> } } }
       const fs = require("node:fs") as typeof import("node:fs")
       const path = require("node:path") as typeof import("node:path")

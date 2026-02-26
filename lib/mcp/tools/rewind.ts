@@ -5,9 +5,9 @@
 
 import * as crypto from "node:crypto"
 import type { Container } from "@/lib/di/container"
+import { simulateShadowRewind } from "@/lib/use-cases/shadow-rewind"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
-import { simulateShadowRewind } from "@/lib/use-cases/shadow-rewind"
 
 export const REVERT_TO_WORKING_SCHEMA = {
   name: "revert_to_working_state",

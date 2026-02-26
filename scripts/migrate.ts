@@ -10,8 +10,10 @@
 import "./load-env"
 
 import { Pool } from "pg"
+import { execSync } from "node:child_process"
 import { readdir, readFile } from "node:fs/promises"
 import path from "node:path"
+
 
 const MIGRATIONS_DIR = path.join(process.cwd(), "supabase", "migrations")
 const MIGRATION_TABLE = "schema_migrations"
@@ -24,7 +26,7 @@ function createPool(connectionString: string, dbUrl: string): Pool {
   return new Pool({
     connectionString,
     ssl: dbUrl.includes("supabase.co") ? { rejectUnauthorized: false } : undefined,
-    connectionTimeoutMillis: 10000,
+    connectionTimeoutMillis: 30000,
   })
 }
 
@@ -124,11 +126,36 @@ async function main(): Promise<void> {
     } else {
       console.log(`Applied ${appliedCount} migration(s).`)
     }
+
+    // Better Auth tables: only run Better Auth migrate if its tables don't exist yet.
+    // Better Auth's CLI uses CREATE TABLE (not IF NOT EXISTS), so it fails on re-runs.
+    const { rows: authCheck } = await pool.query(`
+      SELECT 1 FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = 'user'
+      LIMIT 1
+    `)
+    if (authCheck.length === 0) {
+      console.log("Better Auth tables not found — running Better Auth migrate...")
+      await pool.end()
+      try {
+        execSync(
+          'pnpm dlx dotenv-cli -e .env.local -- pnpm dlx @better-auth/cli@latest migrate --config ./lib/auth/better-auth.cli.ts --yes',
+          { stdio: "inherit", cwd: process.cwd() }
+        )
+        console.log("Better Auth migration completed.")
+      } catch (err: unknown) {
+        console.error("Better Auth migration failed:", err instanceof Error ? err.message : String(err))
+        process.exit(1)
+      }
+    } else {
+      console.log("Better Auth tables already exist — skipping Better Auth migrate.")
+    }
   } catch (err) {
     console.error("Migration failed:", err)
     process.exit(1)
   } finally {
-    await pool.end()
+    // Pool may already be ended if Better Auth migrate ran
+    await pool.end().catch(() => {})
   }
 }
 

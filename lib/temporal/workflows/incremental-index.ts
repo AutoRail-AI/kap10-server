@@ -10,14 +10,10 @@ import {
   defineSignal,
   proxyActivities,
   setHandler,
-  sleep,
-  startChild,
-  ParentClosePolicy,
 } from "@temporalio/workflow"
+import type * as driftAlert from "../activities/drift-alert"
 import type * as incremental from "../activities/incremental"
 import type * as light from "../activities/indexing-light"
-import type * as driftAlert from "../activities/drift-alert"
-import { embedRepoWorkflow } from "./embed-repo"
 
 const heavyActivities = proxyActivities<typeof incremental>({
   taskQueue: "heavy-compute-queue",
@@ -42,7 +38,7 @@ const lightWriteActivities = proxyActivities<Pick<typeof light, "writeToArango" 
   retry: { maximumAttempts: 3 },
 })
 
-const driftActivities = proxyActivities<typeof driftAlert>({
+const _driftActivities = proxyActivities<typeof driftAlert>({
   taskQueue: "light-llm-queue",
   startToCloseTimeout: "5m",
   heartbeatTimeout: "1m",

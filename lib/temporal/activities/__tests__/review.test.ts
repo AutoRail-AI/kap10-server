@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
 import { FakeGitHost, MockLLMProvider } from "@/lib/di/fakes"
 
 // Mock @temporalio/activity so heartbeat never throws
@@ -95,7 +95,7 @@ describe("review activities", () => {
 
       expect(result.files.length).toBeGreaterThanOrEqual(0)
       // files array should contain src/handler.ts if diff was parsed
-      const files = result.files.map((f) => f.filePath)
+      const _files = result.files.map((f) => f.filePath)
       // The important assertion is that the structure is correct
       expect(Array.isArray(result.affectedEntities)).toBe(true)
     })

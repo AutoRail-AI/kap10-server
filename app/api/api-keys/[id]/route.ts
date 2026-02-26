@@ -4,8 +4,8 @@
 
 import { headers } from "next/headers"
 import { NextResponse } from "next/server"
-import { auth } from "@/lib/auth"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
+import { auth } from "@/lib/auth"
 import { getContainer } from "@/lib/di/container"
 import { logger } from "@/lib/utils/logger"
 

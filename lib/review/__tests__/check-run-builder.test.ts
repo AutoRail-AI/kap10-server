@@ -1,5 +1,4 @@
-import { describe, it, expect } from "vitest"
-import { buildCheckRunOutput } from "@/lib/review/check-run-builder"
+import { describe, expect, it } from "vitest"
 import type {
   BlastRadiusSummary,
   ComplexityFinding,
@@ -8,6 +7,7 @@ import type {
   PatternFinding,
   TestFinding,
 } from "@/lib/ports/types"
+import { buildCheckRunOutput } from "@/lib/review/check-run-builder"
 
 function makePatternFinding(severity: "info" | "warning" | "error"): PatternFinding {
   return {

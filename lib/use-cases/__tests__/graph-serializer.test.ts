@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { serializeSnapshot, deserializeSnapshot, computeChecksum } from "../graph-serializer"
+import { computeChecksum, deserializeSnapshot, serializeSnapshot } from "../graph-serializer"
 
 describe("graph-serializer", () => {
   const sampleData = {

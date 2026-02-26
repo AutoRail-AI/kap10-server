@@ -3,7 +3,7 @@
  * Each prompt includes what the issue is, affected files, fix steps, and expected outcome.
  */
 
-import { FIX_GUIDANCE } from "./fix-guidance"
+import { FIX_GUIDANCE as _FIX_GUIDANCE } from "./fix-guidance"
 
 interface AgentPromptEntity {
   name: string
@@ -146,7 +146,7 @@ const RISK_OUTCOMES: Record<string, (count: number) => string> = {
     `${n} business-critical entities protected by tests, reducing regression risk.`,
   single_entity_feature: (n) =>
     `Cleaner feature boundaries with ${n} fewer orphan features in the blueprint view.`,
-  high_utility_ratio: (n) =>
+  high_utility_ratio: (_n) =>
     `More accurate taxonomy with better distinction between business logic and utilities.`,
   architectural_violation: (n) =>
     `${n} entities with clean separation of concerns, improving testability and maintainability.`,

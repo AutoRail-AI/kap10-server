@@ -5,7 +5,6 @@
  */
 
 import type { Container } from "@/lib/di/container"
-import type { PatternMatch } from "@/lib/ports/pattern-engine"
 import type { RuleDoc } from "@/lib/ports/types"
 
 export interface HybridViolation {

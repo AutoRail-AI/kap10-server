@@ -3,12 +3,12 @@
 import { Play, RefreshCw, Square } from "lucide-react"
 import { usePathname } from "next/navigation"
 import { useCallback, useEffect, useState } from "react"
-import { useRepoEvents } from "@/hooks/use-repo-events"
 import { PipelineHistoryTable } from "@/components/repo/pipeline-history-table"
 import { PipelineLogViewer } from "@/components/repo/pipeline-log-viewer"
 import { Button } from "@/components/ui/button"
-import { Spinner } from "@/components/ui/spinner"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Spinner } from "@/components/ui/spinner"
+import { useRepoEvents } from "@/hooks/use-repo-events"
 
 interface IndexEvent {
   event_type: string
@@ -93,7 +93,7 @@ export default function PipelinePage() {
     if (!isProcessing && !loading) {
       fetchEvents()
     }
-  }, [isProcessing]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isProcessing])
 
   const handleReindex = async () => {
     if (reindexing || rateLimited) return

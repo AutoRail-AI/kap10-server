@@ -1,10 +1,10 @@
 "use client"
 
-import { useState, useEffect, useCallback, useRef } from "react"
-import { useVisibility } from "@/hooks/use-visibility"
-import { Skeleton } from "@/components/ui/skeleton"
-import { IndexEventCard } from "./index-event-card"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Progress } from "@/components/ui/progress"
+import { Skeleton } from "@/components/ui/skeleton"
+import { useVisibility } from "@/hooks/use-visibility"
+import { IndexEventCard } from "./index-event-card"
 
 interface IndexEvent {
   push_sha: string

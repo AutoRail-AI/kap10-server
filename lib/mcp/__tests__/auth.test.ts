@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { InMemoryCacheStore, InMemoryRelationalStore } from "@/lib/di/fakes"
 import {
-  hashApiKey,
-  generateApiKey,
-  createJwt,
   authenticateMcpRequest,
+  createJwt,
+  generateApiKey,
+  hashApiKey,
   hasScope,
   isAuthError,
 } from "../auth"
-import { InMemoryCacheStore, InMemoryRelationalStore } from "@/lib/di/fakes"
 
 describe("hashApiKey", () => {
   it("returns consistent hash for same input", () => {

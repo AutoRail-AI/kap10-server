@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
-import { handleSyncLocalDiff } from "../sync"
+import { beforeEach, describe, expect, it } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
 import type { McpAuthContext } from "../../auth"
+import { handleSyncLocalDiff } from "../sync"
 
 describe("sync_local_diff with ledger", () => {
   let container: Container

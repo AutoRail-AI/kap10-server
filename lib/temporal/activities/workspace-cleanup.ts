@@ -3,7 +3,7 @@
  * Removes expired workspace overlays from ArangoDB and Supabase.
  */
 
-import { getContainer, type Container } from "@/lib/di/container"
+import { type Container, getContainer } from "@/lib/di/container"
 
 let _testContainer: Container | null = null
 

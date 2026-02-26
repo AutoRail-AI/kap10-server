@@ -1,6 +1,6 @@
-import { describe, it, expect } from "vitest"
+import { describe, expect, it } from "vitest"
+import type { EdgeDoc, EntityDoc, JustificationDoc } from "@/lib/ports/types"
 import { aggregateFeatures } from "../feature-aggregator"
-import type { JustificationDoc, EntityDoc, EdgeDoc } from "@/lib/ports/types"
 
 function makeJust(id: string, entityId: string, featureTag: string, taxonomy: "VERTICAL" | "HORIZONTAL" | "UTILITY" = "VERTICAL"): JustificationDoc {
   return {

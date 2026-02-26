@@ -1,5 +1,4 @@
-import { describe, it, expect } from "vitest"
-import { buildReviewResult } from "@/lib/review/comment-builder"
+import { describe, expect, it } from "vitest"
 import type {
   ComplexityFinding,
   DependencyFinding,
@@ -9,6 +8,7 @@ import type {
   TestFinding,
 } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG } from "@/lib/ports/types"
+import { buildReviewResult } from "@/lib/review/comment-builder"
 
 function makeConfig(overrides?: Partial<ReviewConfig>): ReviewConfig {
   return { ...DEFAULT_REVIEW_CONFIG, ...overrides }

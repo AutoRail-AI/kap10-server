@@ -1,9 +1,9 @@
 import { NextRequest } from "next/server"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
+import { detectDeadCode } from "@/lib/justification/dead-code-detector"
 import { withAuth } from "@/lib/middleware/api-handler"
 import { errorResponse, successResponse } from "@/lib/utils/api-response"
-import { detectDeadCode } from "@/lib/justification/dead-code-detector"
 
 function computeHealthGrade(risks: Array<{ severity: string }>): "A" | "B" | "C" | "D" | "F" {
   const high = risks.filter((r) => r.severity === "high").length

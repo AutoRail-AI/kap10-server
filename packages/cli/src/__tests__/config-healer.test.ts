@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
@@ -151,7 +151,7 @@ describe("Config Healer (P5.6-ADV-04)", () => {
   })
 
   it("silent mode still shows errors", () => {
-    const silent = true
+    const _silent = true
     const issues = ["cursor: No unerr MCP server configured"]
     const output: string[] = []
 

@@ -2,7 +2,7 @@
  * Phase 10b TEST-08: Pre-fetch context expansion use case tests.
  */
 
-import { describe, expect, it, vi, beforeEach } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 // Mock env before imports
 vi.mock("@/env.mjs", () => ({
@@ -12,8 +12,8 @@ vi.mock("@/env.mjs", () => ({
   },
 }))
 
-import { prefetchContext, getPrefetchedContext } from "../prefetch-context"
 import type { Container } from "@/lib/di/container"
+import { getPrefetchedContext, prefetchContext } from "../prefetch-context"
 
 function createMockContainer(): Container {
   return {

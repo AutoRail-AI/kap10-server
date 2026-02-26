@@ -5,7 +5,7 @@
 
 import { heartbeat } from "@temporalio/activity"
 import { getContainer } from "@/lib/di/container"
-import type { DriftAlert, EntityDoc } from "@/lib/ports/types"
+import type { DriftAlert } from "@/lib/ports/types"
 
 export interface DriftEvaluationInput {
   orgId: string

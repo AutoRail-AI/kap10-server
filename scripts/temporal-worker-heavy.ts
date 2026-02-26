@@ -12,10 +12,10 @@ import "./load-env"
 
 import { NativeConnection, Worker } from "@temporalio/worker"
 import path from "node:path"
+import * as incremental from "@/lib/temporal/activities/incremental"
 import * as indexingHeavy from "@/lib/temporal/activities/indexing-heavy"
 import * as patternDetection from "@/lib/temporal/activities/pattern-detection"
 import * as patternMining from "@/lib/temporal/activities/pattern-mining"
-import * as incremental from "@/lib/temporal/activities/incremental"
 import * as review from "@/lib/temporal/activities/review"
 import * as ruleSimulation from "@/lib/temporal/activities/rule-simulation"
 

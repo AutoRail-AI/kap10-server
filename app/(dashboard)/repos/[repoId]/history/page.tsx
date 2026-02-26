@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { useParams } from "next/navigation"
 import { GitMerge } from "lucide-react"
+import { useParams } from "next/navigation"
+import { useEffect, useState } from "react"
 import { MergeHistoryCard } from "@/components/repo/merge-history-card"
 import { Skeleton } from "@/components/ui/skeleton"
 

@@ -25,7 +25,7 @@ export class SupabaseStorageAdapter implements IStorageProvider {
   async generateUploadUrl(
     bucket: string,
     path: string,
-    expiresInSeconds = 3600
+    _expiresInSeconds = 3600
   ): Promise<{ url: string; token: string }> {
     const client = getClient()
     const { data, error } = await client.storage

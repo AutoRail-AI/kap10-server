@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
-import { LLM_MODELS } from "@/lib/llm/config"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
 import { FakeGitHost, MockLLMProvider } from "@/lib/di/fakes"
+import { LLM_MODELS } from "@/lib/llm/config"
 import type { AdrContent } from "@/lib/ports/types"
 import type { SignificanceAssessment } from "@/lib/temporal/activities/adr-generation"
 
@@ -257,7 +257,7 @@ describe("adr-generation activities", () => {
 
       const { commitAdrPr } = await import("@/lib/temporal/activities/adr-generation")
 
-      const result = await commitAdrPr({
+      const _result = await commitAdrPr({
         orgId: "org-1",
         repoId: "repo-1",
         owner: "acme",

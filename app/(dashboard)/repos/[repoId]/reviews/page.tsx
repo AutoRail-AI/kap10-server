@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useState } from "react"
-import { useParams } from "next/navigation"
 import { GitPullRequest } from "lucide-react"
+import { useParams } from "next/navigation"
+import { useEffect, useState } from "react"
 import { ReviewCard } from "@/components/repo/review-card"
 import { Skeleton } from "@/components/ui/skeleton"
 

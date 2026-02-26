@@ -1,7 +1,7 @@
 "use client"
 
+import { CheckCircle2, Terminal, XCircle } from "lucide-react"
 import { useState } from "react"
-import { Terminal, CheckCircle2, XCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { authorizeDevice } from "./actions"
 

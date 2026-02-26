@@ -1,5 +1,5 @@
-import { cache } from "react"
 import { headers } from "next/headers"
+import { cache } from "react"
 import { auth, listOrganizations } from "@/lib/auth"
 import type { OrgListItem, Session } from "@/lib/auth"
 

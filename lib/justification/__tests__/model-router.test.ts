@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest"
-import { applyHeuristics, routeModel } from "../model-router"
+import { describe, expect, it } from "vitest"
 import { LLM_MODELS } from "@/lib/llm/config"
 import type { EntityDoc } from "@/lib/ports/types"
+import { applyHeuristics, routeModel } from "../model-router"
 
 function makeEntity(overrides: Partial<EntityDoc> = {}): EntityDoc {
   return {

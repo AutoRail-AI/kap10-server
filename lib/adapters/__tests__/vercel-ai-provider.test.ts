@@ -5,7 +5,7 @@
  * through the ILLMProvider interface contract with the MockLLMProvider,
  * and test that the VercelAIProvider constructor and method signatures are correct.
  */
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import { MockLLMProvider } from "@/lib/di/fakes"
 
 describe("VercelAIProvider contract", () => {

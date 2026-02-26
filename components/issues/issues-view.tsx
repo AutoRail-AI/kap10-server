@@ -1,8 +1,8 @@
 "use client"
 
+import { CircleAlert, Loader2, PartyPopper } from "lucide-react"
+import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useEffect, useState } from "react"
-import { useSearchParams, useRouter, usePathname } from "next/navigation"
-import { Loader2, CircleAlert, PartyPopper } from "lucide-react"
 import { IssueCard } from "./issue-card"
 import type { IssueCardProps } from "./issue-card"
 

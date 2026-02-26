@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { createTestContainer } from "@/lib/di/container"
-import { handleSemanticSearch, handleFindSimilar } from "../semantic"
 import type { McpAuthContext } from "../../auth"
+import { handleFindSimilar, handleSemanticSearch } from "../semantic"
 
 const mockCtx: McpAuthContext = {
   authMode: "api_key",

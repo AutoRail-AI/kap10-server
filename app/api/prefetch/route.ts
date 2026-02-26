@@ -5,12 +5,12 @@
  * and caches the result in Redis for fast subsequent lookups.
  */
 
-import { NextRequest, NextResponse } from "next/server"
-import { withAuth } from "@/lib/middleware/api-handler"
-import { errorResponse, successResponse } from "@/lib/utils/api-response"
+import { NextRequest } from "next/server"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
+import { withAuth } from "@/lib/middleware/api-handler"
 import { prefetchContext } from "@/lib/use-cases/prefetch-context"
+import { errorResponse, successResponse } from "@/lib/utils/api-response"
 
 const PrefetchBodySchema = {
   validate(body: unknown): { filePath: string; line?: number; entityKey?: string; repoId: string } | null {

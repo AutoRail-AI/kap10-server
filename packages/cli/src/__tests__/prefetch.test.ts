@@ -2,7 +2,7 @@
  * Phase 10b TEST-05: Pre-fetch debounce module tests.
  */
 
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { PrefetchManager } from "../prefetch.js"
 
 describe("PrefetchManager", () => {

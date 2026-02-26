@@ -2,14 +2,14 @@
  * Phase 4: TypeScript interfaces for the Business Justification & Taxonomy layer.
  */
 
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 import type {
-  Taxonomy,
-  SemanticTriple,
   DriftCategory,
+  GraphContext,
   HealthRisk,
   ModelTier,
-  GraphContext,
+  SemanticTriple,
+  Taxonomy,
 } from "./schemas"
 
 // ── Justification Document (stored in ArangoDB) ─────────────────

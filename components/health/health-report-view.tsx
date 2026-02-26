@@ -1,22 +1,22 @@
 "use client"
 
-import { useEffect, useState } from "react"
 import {
-  HeartPulse,
-  RefreshCw,
-  DollarSign,
-  Trash2,
-  Layers,
-  BadgeCheck,
   Activity,
+  BadgeCheck,
+  DollarSign,
+  HeartPulse,
+  Layers,
+  RefreshCw,
   Tag,
+  Trash2,
 } from "lucide-react"
+import { useEffect, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { InsightCard } from "./insight-card"
-import { FIX_GUIDANCE, CATEGORY_INFO } from "@/lib/health/fix-guidance"
+import { CATEGORY_INFO, FIX_GUIDANCE } from "@/lib/health/fix-guidance"
 import type { HealthReportDoc, TokenUsageSummary } from "@/lib/ports/types"
+import { InsightCard } from "./insight-card"
 
 const SEVERITY_COLORS: Record<string, string> = {
   low: "bg-muted text-muted-foreground border-border",

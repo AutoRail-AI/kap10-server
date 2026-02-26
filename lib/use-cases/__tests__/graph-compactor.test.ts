@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { compactEntity, compactEdge } from "../graph-compactor"
-import type { EntityDoc, EdgeDoc } from "@/lib/ports/types"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
+import { compactEdge, compactEntity } from "../graph-compactor"
 
 describe("graph-compactor", () => {
   describe("compactEntity", () => {

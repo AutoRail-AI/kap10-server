@@ -21,9 +21,9 @@
  */
 
 import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild, workflowInfo } from "@temporalio/workflow"
+import { generateHealthReportWorkflow } from "./generate-health-report"
 import type * as justificationActivities from "../activities/justification"
 import type * as pipelineLogs from "../activities/pipeline-logs"
-import { generateHealthReportWorkflow } from "./generate-health-report"
 
 const activities = proxyActivities<typeof justificationActivities>({
   taskQueue: "light-llm-queue",

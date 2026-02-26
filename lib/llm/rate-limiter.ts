@@ -55,7 +55,7 @@ export class RateLimiter {
   async waitForSlot(): Promise<void> {
     if (this.rpm <= 0) return
 
-    // eslint-disable-next-line no-constant-condition
+     
     while (true) {
       this.pruneWindow()
 

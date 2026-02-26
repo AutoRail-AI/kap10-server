@@ -1,12 +1,11 @@
-import { Suspense } from "react"
 import { redirect } from "next/navigation"
+import { Suspense } from "react"
 import { DashboardAccountProvider } from "@/components/dashboard/dashboard-account-provider"
 import { DashboardHeader } from "@/components/dashboard/dashboard-header"
 import { DashboardNav } from "@/components/dashboard/dashboard-nav"
 import { UserProfileMenu } from "@/components/dashboard/user-profile-menu"
-import { getSessionCached, getOrgsCached } from "@/lib/api/get-active-org"
-import { getContainer } from "@/lib/di/container"
 import { Skeleton } from "@/components/ui/skeleton"
+import { getOrgsCached, getSessionCached } from "@/lib/api/get-active-org"
 
 export default async function DashboardLayout({
   children,

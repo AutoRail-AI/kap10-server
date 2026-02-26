@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { repairEdges } from "@/lib/indexer/edge-repair"
+import { beforeEach, describe, expect, it } from "vitest"
 import { InMemoryGraphStore } from "@/lib/di/fakes"
-import type { EntityDoc, EntityDiff } from "@/lib/ports/types"
+import { repairEdges } from "@/lib/indexer/edge-repair"
+import type { EntityDiff, EntityDoc } from "@/lib/ports/types"
 
 function makeEntity(id: string): EntityDoc {
   return {

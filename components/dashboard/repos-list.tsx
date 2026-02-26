@@ -93,7 +93,7 @@ function formatSyncAge(date: Date | string | null): string {
 export function ReposList({
   repos,
   hasInstallation,
-  githubAccounts = [],
+  githubAccounts: _githubAccounts = [],
   installHref = "/api/github/install",
 }: {
   repos: RepoRecord[]
@@ -414,7 +414,7 @@ function RepoRow({ repo }: { repo: RepoRecord }) {
 
   const cfg = statusConfig[repo.status] ?? statusConfig.pending!
   const entities = (repo.functionCount ?? 0) + (repo.classCount ?? 0)
-  const isReady = repo.status === "ready"
+  const _isReady = repo.status === "ready"
   const isError =
     repo.status === "error" ||
     repo.status === "embed_failed" ||

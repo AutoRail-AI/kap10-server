@@ -6,7 +6,7 @@
 import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getPrisma } from "@/lib/db/prisma"
 import { withAuth } from "@/lib/middleware/api-handler"
-import { successResponse, errorResponse } from "@/lib/utils/api-response"
+import { errorResponse, successResponse } from "@/lib/utils/api-response"
 
 export const GET = withAuth(async () => {
   const orgId = await getActiveOrgId()

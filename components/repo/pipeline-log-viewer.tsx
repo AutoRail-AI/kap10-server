@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
 import { ChevronDown, ChevronRight, Copy, Download, Terminal } from "lucide-react"
+import { useEffect, useRef, useState } from "react"
 import { usePipelineLogs } from "@/hooks/use-pipeline-logs"
 import type { PipelineLogEntry } from "@/hooks/use-pipeline-logs"
 

@@ -8,7 +8,7 @@
  */
 
 import { createHash } from "crypto"
-import type { CompactEntity, CompactEdge } from "./graph-compactor"
+import type { CompactEdge, CompactEntity } from "./graph-compactor"
 
 export interface SnapshotEnvelope {
   version: number
@@ -51,7 +51,7 @@ export function serializeSnapshot(data: {
   rules?: SnapshotEnvelope["rules"]
   patterns?: SnapshotEnvelope["patterns"]
 }): Buffer {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+   
   const { pack } = require("msgpackr") as typeof import("msgpackr")
   const hasRulesOrPatterns = (data.rules && data.rules.length > 0) || (data.patterns && data.patterns.length > 0)
   const envelope: SnapshotEnvelope = {
@@ -72,7 +72,7 @@ export function serializeSnapshot(data: {
  * Validates version field.
  */
 export function deserializeSnapshot(buf: Buffer): SnapshotEnvelope {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+   
   const { unpack } = require("msgpackr") as typeof import("msgpackr")
   const data = unpack(buf) as SnapshotEnvelope
   if (!data || (data.version !== 1 && data.version !== 2)) {

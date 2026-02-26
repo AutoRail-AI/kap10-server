@@ -3,9 +3,9 @@
  */
 
 import { describe, expect, it, vi } from "vitest"
-import { QueryRouter } from "../query-router.js"
-import type { CozoGraphStore } from "../local-graph.js"
 import type { CloudProxy } from "../cloud-proxy.js"
+import type { CozoGraphStore } from "../local-graph.js"
+import { QueryRouter } from "../query-router.js"
 
 function createMockLocalGraph(hasRules = true): CozoGraphStore {
   return {

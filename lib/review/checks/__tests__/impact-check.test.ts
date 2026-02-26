@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { createTestContainer, type Container } from "@/lib/di/container"
-import { runImpactCheck } from "../impact-check"
+import { beforeEach, describe, expect, it } from "vitest"
+import { type Container, createTestContainer } from "@/lib/di/container"
 import type { EntityDoc, ReviewConfig } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG } from "@/lib/ports/types"
+import { runImpactCheck } from "../impact-check"
 
 const ORG = "org-impact-check"
 const REPO = "repo-impact"

@@ -6,10 +6,10 @@
  */
 
 import { Command } from "commander"
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
-import { join } from "node:path"
 import { execSync } from "node:child_process"
-import { getCredentials, saveCredentials, deviceAuthFlow } from "./auth.js"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { deviceAuthFlow, getCredentials, saveCredentials } from "./auth.js"
 
 interface GitContext {
   remote: string
