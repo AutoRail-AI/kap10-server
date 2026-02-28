@@ -25,12 +25,37 @@ export const GET = withAuth(async (req: NextRequest) => {
     return errorResponse("No organization", 400)
   }
 
+  const runId = req.nextUrl.searchParams.get("runId")
+
   // Try Redis first (live logs)
   try {
     const { getRedis } = require("@/lib/queue/redis") as typeof import("@/lib/queue/redis")
     const redis = getRedis()
-    const key = `unerr:pipeline-logs:${repoId}`
-    const raw = await redis.lrange(key, 0, 2000)
+
+    // Try run-specific key first, then latest pointer, then legacy key
+    let key: string | null = null
+    if (runId) {
+      key = `unerr:pipeline-logs:${repoId}:${runId}`
+    } else {
+      // Check if there's a latest pointer
+      const latestRunId = await redis.get(`unerr:pipeline-logs:${repoId}:latest`)
+      if (latestRunId) {
+        key = `unerr:pipeline-logs:${repoId}:${latestRunId}`
+      }
+    }
+
+    // Try the run-specific key first
+    if (key) {
+      const raw = await redis.lrange(key, 0, 2000)
+      if (raw.length > 0) {
+        const logs: PipelineLogEntry[] = raw.map((r) => JSON.parse(r) as PipelineLogEntry)
+        return successResponse({ source: "live" as const, logs, count: logs.length })
+      }
+    }
+
+    // Fall back to legacy key
+    const legacyKey = `unerr:pipeline-logs:${repoId}`
+    const raw = await redis.lrange(legacyKey, 0, 2000)
 
     if (raw.length > 0) {
       const logs: PipelineLogEntry[] = raw.map((r) => JSON.parse(r) as PipelineLogEntry)

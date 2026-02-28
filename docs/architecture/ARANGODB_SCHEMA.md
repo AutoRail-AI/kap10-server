@@ -26,7 +26,7 @@ All collections are created by `bootstrapGraphSchema()` at startup. Every docume
 | `drift_scores` | Architecture drift scores | tenant |
 | `adrs` | Architecture Decision Records | tenant |
 | `token_usage_log` | LLM token usage tracking | tenant |
-| `index_events` | Indexing event log | `(repo_id, org_id, created_at)`, TTL: 90 days on `created_at` |
+| `index_events` | Indexing event log. Optional fields: `run_id`, `trigger_type`, `started_at`, `status` for cross-referencing with PostgreSQL `pipeline_runs` | `(repo_id, org_id, created_at)`, TTL: 90 days on `created_at` |
 | `ledger_summaries` | Prompt ledger summaries | tenant, `(org_id, repo_id, branch, created_at)`, `(commit_sha)` |
 | `working_snapshots` | Working-state snapshots | tenant |
 | `rule_health` | Rule health metrics | tenant, `(org_id, rule_id)` |
@@ -95,6 +95,9 @@ Entity documents (`files`, `functions`, `classes`, `interfaces`, `variables`) ad
 - `start_line`: Starting line number (note: NOT `line`)
 - `kind`: Entity kind (singular form)
 - `content` / `signature`: Code content or signature
+- `fan_in`: (optional) Number of inbound `calls` edges — pre-computed by `precomputeBlastRadius` activity
+- `fan_out`: (optional) Number of outbound `calls` edges — pre-computed by `precomputeBlastRadius` activity
+- `risk_level`: (optional) `"high"` (≥10), `"medium"` (≥5), or `"normal"` — pre-computed by `precomputeBlastRadius` activity
 
 Edge documents additionally include:
 - `_from`: Source vertex (`collection/key` format)

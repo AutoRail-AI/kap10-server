@@ -1,8 +1,8 @@
 "use client"
 
-import { ArrowRight, RefreshCw, Square } from "lucide-react"
+import { ArrowRight, ChevronDown, ChevronRight, FileDown, FileText, RefreshCw, Save, Square } from "lucide-react"
 import { useRouter } from "next/navigation"
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { PipelineLogViewer } from "@/components/repo/pipeline-log-viewer"
 import { PipelineStepper } from "@/components/repo/pipeline-stepper"
 import { WhatsHappeningPanel } from "@/components/repo/whats-happening-panel"
@@ -32,15 +32,20 @@ export function RepoOnboardingConsole({
   errorMessage,
 }: RepoOnboardingConsoleProps) {
   const router = useRouter()
-  const { status, progress, setStatus, indexingStartedAt } = useRepoStatus(repoId, initialStatus, initialProgress)
+  const { status, progress, setStatus, indexingStartedAt, currentRunId, steps } = useRepoStatus(repoId, initialStatus, initialProgress)
   const isActive = ["indexing", "embedding", "justifying", "ontology", "pending"].includes(status)
   const isError = ERROR_STATUSES.includes(status)
   const isReady = status === "ready"
-  const { logs } = usePipelineLogs(repoId, isActive || isError || isReady)
+  const { logs } = usePipelineLogs(repoId, isActive || isError || isReady, currentRunId)
   const [retrying, setRetrying] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [showCelebration, setShowCelebration] = useState(false)
   const prevStatusRef = useRef(initialStatus)
+  const [contextOpen, setContextOpen] = useState(false)
+  const [contextText, setContextText] = useState("")
+  const [contextSaved, setContextSaved] = useState(false)
+  const [contextSaving, setContextSaving] = useState(false)
+  const contextLoaded = useRef(false)
 
   // SSE for real-time updates during active pipeline
   const { status: sseStatus, logs: _sseLogs } = useRepoEvents(repoId, { enabled: isActive })
@@ -51,6 +56,38 @@ export function RepoOnboardingConsole({
       setStatus(sseStatus.status)
     }
   }, [sseStatus, setStatus])
+
+  // Load existing context documents on mount
+  useEffect(() => {
+    if (contextLoaded.current) return
+    contextLoaded.current = true
+    fetch(`/api/repos/${repoId}/context`)
+      .then((r) => r.json())
+      .then((json) => {
+        const doc = (json as { data?: { contextDocuments?: string | null } })?.data?.contextDocuments
+        if (doc) {
+          setContextText(doc)
+          setContextSaved(true)
+        }
+      })
+      .catch(() => {})
+  }, [repoId])
+
+  const handleSaveContext = useCallback(async () => {
+    setContextSaving(true)
+    try {
+      const res = await fetch(`/api/repos/${repoId}/context`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: contextText }),
+      })
+      if (res.ok) {
+        setContextSaved(true)
+      }
+    } finally {
+      setContextSaving(false)
+    }
+  }, [repoId, contextText])
 
   // Detect transition to ready
   useEffect(() => {
@@ -112,8 +149,70 @@ export function RepoOnboardingConsole({
         </div>
       )}
 
+      {/* Context Seeding — visible before justification completes */}
+      {["pending", "indexing", "embedding"].includes(status) && (
+        <div className="rounded-lg border border-white/10 bg-white/[0.015] overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setContextOpen((v) => !v)}
+            className="flex items-center gap-2 w-full px-4 py-2.5 text-left hover:bg-white/[0.02] transition-colors"
+          >
+            {contextOpen ? (
+              <ChevronDown className="h-3.5 w-3.5 text-white/30" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 text-white/30" />
+            )}
+            <FileText className="h-3.5 w-3.5 text-primary/60" />
+            <span className="text-xs font-medium text-foreground">Context Seeding</span>
+            <span className="text-[10px] text-muted-foreground ml-1">
+              — Provide docs to anchor AI classifications
+            </span>
+            {contextSaved && (
+              <span className="ml-auto text-[10px] text-emerald-400/70">Saved</span>
+            )}
+          </button>
+          {contextOpen && (
+            <div className="px-4 pb-4 space-y-2 border-t border-white/[0.06]">
+              <p className="text-[11px] text-muted-foreground pt-2">
+                Paste your ARCHITECTURE.md, PRD, or project description. This context anchors
+                the AI&apos;s feature tags and business purpose classifications to your team&apos;s vocabulary.
+              </p>
+              <textarea
+                value={contextText}
+                onChange={(e) => {
+                  setContextText(e.target.value)
+                  setContextSaved(false)
+                }}
+                placeholder="Paste your ARCHITECTURE.md, PRD, or project description here..."
+                className="w-full h-32 rounded-md border border-white/10 bg-[#08080D] px-3 py-2 text-xs text-foreground font-mono placeholder:text-white/20 focus:outline-none focus:border-primary/30 resize-y"
+                maxLength={10000}
+              />
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] text-white/20 font-mono">
+                  {contextText.length.toLocaleString()} / 10,000 chars
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 gap-1.5 text-xs border-primary/30 text-primary hover:bg-primary/10"
+                  onClick={handleSaveContext}
+                  disabled={contextSaving || contextSaved}
+                >
+                  {contextSaving ? (
+                    <Spinner className="h-3 w-3" />
+                  ) : (
+                    <Save className="h-3 w-3" />
+                  )}
+                  {contextSaved ? "Saved" : "Save Context"}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Pipeline Stepper */}
-      <PipelineStepper status={status} progress={progress} />
+      <PipelineStepper status={status} progress={progress} steps={steps} />
 
       {/* Error state */}
       {isError && (
@@ -156,14 +255,26 @@ export function RepoOnboardingConsole({
             <p className="text-sm text-muted-foreground mt-1">
               {repoName} has been fully indexed and analyzed.
             </p>
-            <Button
-              size="sm"
-              className="bg-rail-fade hover:opacity-90 mt-4"
-              onClick={handleViewBlueprint}
-            >
-              View Codebase Blueprint
-              <ArrowRight className="ml-2 h-3.5 w-3.5" />
-            </Button>
+            <div className="flex items-center gap-2 mt-4">
+              <Button
+                size="sm"
+                className="bg-rail-fade hover:opacity-90"
+                onClick={handleViewBlueprint}
+              >
+                View Codebase Blueprint
+                <ArrowRight className="ml-2 h-3.5 w-3.5" />
+              </Button>
+              <a href={`/api/repos/${repoId}/export/context`} download>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border-white/20 text-muted-foreground hover:text-foreground"
+                >
+                  <FileDown className="mr-2 h-3.5 w-3.5" />
+                  Download Intelligence Report
+                </Button>
+              </a>
+            </div>
           </div>
           {/* Particle-like decorations */}
           <div className="celebration-particle celebration-particle-1" />

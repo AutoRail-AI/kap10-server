@@ -37,13 +37,29 @@ const TTL_AFTER_ARCHIVE = 60 * 60 // 1 hour
 /**
  * Activity callable from workflows via proxyActivities.
  * Pushes a log entry to the Redis list for this repo.
+ * If meta.runId is set, also writes to a run-specific key.
  */
 export async function appendPipelineLog(entry: PipelineLogEntry): Promise<void> {
   try {
     const redis = getRedis()
-    const key = `${REDIS_KEY_PREFIX}${entry.meta?.["repoId"] ?? "unknown"}`
-    await redis.rpush(key, JSON.stringify(entry))
-    await redis.expire(key, TTL_LIVE)
+    const repoId = entry.meta?.["repoId"] ?? "unknown"
+    const runId = entry.meta?.["runId"] as string | undefined
+    const legacyKey = `${REDIS_KEY_PREFIX}${repoId}`
+
+    // Always write to legacy key for backward compatibility
+    await redis.rpush(legacyKey, JSON.stringify(entry))
+    await redis.expire(legacyKey, TTL_LIVE)
+
+    // If runId present, also write to run-specific key
+    if (runId) {
+      const runKey = `${REDIS_KEY_PREFIX}${repoId}:${runId}`
+      await redis.rpush(runKey, JSON.stringify(entry))
+      await redis.expire(runKey, TTL_LIVE)
+      // Update the latest pointer
+      const latestKey = `${REDIS_KEY_PREFIX}${repoId}:latest`
+      await redis.set(latestKey, runId)
+      await redis.expire(latestKey, TTL_LIVE)
+    }
   } catch {
     // Best-effort — logging must never fail the pipeline
   }
@@ -54,8 +70,9 @@ export async function appendPipelineLog(entry: PipelineLogEntry): Promise<void> 
 /**
  * Creates a pipeline logger for use inside activities (not sandboxed).
  * Returns a `log` function that RPUSH entries to Redis. Best-effort.
+ * Accepts optional runId for run-specific log binding.
  */
-export function createPipelineLogger(repoId: string, phase: PipelineLogEntry["phase"]) {
+export function createPipelineLogger(repoId: string, phase: PipelineLogEntry["phase"], runId?: string) {
   return {
     log(
       level: PipelineLogEntry["level"],
@@ -69,17 +86,24 @@ export function createPipelineLogger(repoId: string, phase: PipelineLogEntry["ph
         phase,
         step,
         message,
-        meta: { ...meta, repoId },
+        meta: { ...meta, repoId, ...(runId && { runId }) },
       }
       try {
         const redis = getRedis()
-        const key = `${REDIS_KEY_PREFIX}${repoId}`
+        const legacyKey = `${REDIS_KEY_PREFIX}${repoId}`
         redis
-          .rpush(key, JSON.stringify(entry))
-          .then(() => redis.expire(key, TTL_LIVE))
-          .catch(() => {
-            // swallow
-          })
+          .rpush(legacyKey, JSON.stringify(entry))
+          .then(() => redis.expire(legacyKey, TTL_LIVE))
+          .catch(() => {})
+
+        // Also write to run-specific key if runId present
+        if (runId) {
+          const runKey = `${REDIS_KEY_PREFIX}${repoId}:${runId}`
+          redis
+            .rpush(runKey, JSON.stringify(entry))
+            .then(() => redis.expire(runKey, TTL_LIVE))
+            .catch(() => {})
+        }
       } catch {
         // swallow
       }
@@ -92,6 +116,7 @@ export function createPipelineLogger(repoId: string, phase: PipelineLogEntry["ph
 export interface ArchivePipelineLogsInput {
   orgId: string
   repoId: string
+  runId?: string
 }
 
 /**
@@ -107,7 +132,10 @@ export async function archivePipelineLogs(input: ArchivePipelineLogsInput): Prom
 
   try {
     const redis = getRedis()
-    const key = `${REDIS_KEY_PREFIX}${input.repoId}`
+    // Use run-specific key if runId present, otherwise legacy key
+    const key = input.runId
+      ? `${REDIS_KEY_PREFIX}${input.repoId}:${input.runId}`
+      : `${REDIS_KEY_PREFIX}${input.repoId}`
     const raw = await redis.lrange(key, 0, -1)
 
     if (raw.length === 0) {
@@ -128,9 +156,11 @@ export async function archivePipelineLogs(input: ArchivePipelineLogsInput): Prom
     // Build JSON archive
     const jsonContent = JSON.stringify(entries, null, 2)
 
-    // Upload to Supabase Storage
+    // Upload to Supabase Storage — include runId in path if available
     const { supabase } = require("@/lib/db") as typeof import("@/lib/db")
-    const basePath = `${input.orgId}/${input.repoId}/${timestamp}`
+    const basePath = input.runId
+      ? `${input.orgId}/${input.repoId}/${input.runId}/${timestamp}`
+      : `${input.orgId}/${input.repoId}/${timestamp}`
 
     const { error: textError } = await supabase.storage
       .from("pipeline-logs")
@@ -156,6 +186,11 @@ export async function archivePipelineLogs(input: ArchivePipelineLogsInput): Prom
 
     // Shorten Redis TTL so logs stick around briefly for UI transition
     await redis.expire(key, TTL_AFTER_ARCHIVE)
+    // Also shorten legacy key TTL if we used a run-specific key
+    if (input.runId) {
+      const legacyKey = `${REDIS_KEY_PREFIX}${input.repoId}`
+      await redis.expire(legacyKey, TTL_AFTER_ARCHIVE)
+    }
     log.info("Pipeline logs archived", { entryCount: entries.length, path: basePath })
   } catch (error: unknown) {
     log.warn("Failed to archive pipeline logs", {

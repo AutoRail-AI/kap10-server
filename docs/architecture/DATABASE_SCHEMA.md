@@ -56,6 +56,8 @@ Managed by **Prisma** (ORM) and Supabase migrations (raw SQL). All models use `@
 | `RepoProvider` | `github`, `local_cli` |
 | `DeletionLogStatus` | `pending`, `in_progress`, `completed`, `failed` |
 | `SnapshotStatus` | `generating`, `available`, `failed` |
+| `PipelineRunStatus` | `running`, `completed`, `failed`, `cancelled` |
+| `PipelineTriggerType` | `initial`, `retry`, `reindex`, `webhook` |
 
 **Tables:**
 
@@ -74,6 +76,7 @@ Managed by **Prisma** (ORM) and Supabase migrations (raw SQL). All models use `@
 | `active_vector_versions` | Blue/green embedding version tracking | FK → `repos` |
 | `ledger_snapshots` | Prompt ledger file snapshots | FK → `repos` |
 | `rule_embeddings` | Anti-pattern rule embeddings (pgvector 768d) | — |
+| `pipeline_runs` | Pipeline run history & per-step tracking | FK → `repos` |
 
 **Vector indexes** (HNSW, cosine distance):
 - `entity_embeddings.embedding` — m=16, ef_construction=64
@@ -104,6 +107,7 @@ organization (public.organization)
         ├── pr_reviews (unerr.pr_reviews)
         │     └── pr_review_comments (unerr.pr_review_comments)
         ├── ledger_snapshots (unerr.ledger_snapshots)
+        ├── pipeline_runs (unerr.pipeline_runs)
         └── active_vector_versions (unerr.active_vector_versions)
 ```
 
@@ -113,6 +117,8 @@ organization (public.organization)
 |---|---|
 | `supabase/migrations/00001_public_schema.sql` | Better Auth + app support tables in `public` |
 | `supabase/migrations/00002_unerr_schema.sql` | All `unerr` schema tables, enums, indexes, storage |
+| `supabase/migrations/00003_pipeline_runs.sql` | Pipeline run tracking table |
+| `supabase/migrations/00004_context_documents.sql` | Context seeding column on `repos` table |
 
 Migrations are applied by `scripts/migrate.ts` (custom runner), not by Prisma. Prisma is used only as an ORM (`prisma generate`); there is no `prisma/migrations/` directory.
 

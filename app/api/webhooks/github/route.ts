@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { NextRequest, NextResponse } from "next/server"
 import { getContainer } from "@/lib/di/container"
 import { handlePullRequestEvent, type PullRequestPayload } from "@/lib/github/webhook-handlers/pull-request"
@@ -171,15 +172,26 @@ async function handlePushEvent(
       lastIndexedSha: lastSha?.slice(0, 8),
       pushBeforeSha: payload.before?.slice(0, 8),
     })
+    const gapRunId = randomUUID()
+    const gapWorkflowId = `reindex-${orgId}-${repoId}-${Date.now()}`
+    await container.relationalStore.createPipelineRun({
+      id: gapRunId,
+      repoId,
+      organizationId: orgId,
+      workflowId: gapWorkflowId,
+      triggerType: "webhook",
+      pipelineType: "full",
+    })
     await container.workflowEngine.startWorkflow({
       workflowFn: "indexRepoWorkflow",
-      workflowId: `reindex-${orgId}-${repoId}-${Date.now()}`,
+      workflowId: gapWorkflowId,
       args: [{
         orgId,
         repoId,
         installationId,
         cloneUrl: payload.repository.clone_url,
         defaultBranch: payload.repository.default_branch,
+        runId: gapRunId,
       }],
       taskQueue: "heavy-compute-queue",
     })
@@ -197,8 +209,17 @@ async function handlePushEvent(
 
   // Use signalWithStart pattern: fixed workflow ID per repo
   const workflowId = `incremental-${orgId}-${repoId}`
+  const incrRunId = randomUUID()
   try {
-    pushLog.info("Starting incremental index workflow", { workflowId, afterSha: payload.after?.slice(0, 8) })
+    await container.relationalStore.createPipelineRun({
+      id: incrRunId,
+      repoId,
+      organizationId: orgId,
+      workflowId,
+      triggerType: "webhook",
+      pipelineType: "incremental",
+    })
+    pushLog.info("Starting incremental index workflow", { workflowId, runId: incrRunId, afterSha: payload.after?.slice(0, 8) })
     await container.workflowEngine.startWorkflow({
       workflowFn: "incrementalIndexWorkflow",
       workflowId,
@@ -209,6 +230,7 @@ async function handlePushEvent(
         cloneUrl: payload.repository.clone_url,
         defaultBranch: payload.repository.default_branch,
         workspacePath,
+        runId: incrRunId,
         initialPush: {
           afterSha: payload.after,
           beforeSha: payload.before,

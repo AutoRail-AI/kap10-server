@@ -28,7 +28,8 @@ const POLL_INTERVAL_MS = 4_000
  */
 export function usePipelineLogs(
   repoId: string,
-  enabled: boolean
+  enabled: boolean,
+  runId?: string | null
 ): UsePipelineLogsResult {
   const [logs, setLogs] = useState<PipelineLogEntry[]>([])
   const [loading, setLoading] = useState(true)
@@ -38,7 +39,10 @@ export function usePipelineLogs(
 
   const fetchLogs = useCallback(async () => {
     try {
-      const res = await fetch(`/api/repos/${repoId}/logs`)
+      const url = runId
+        ? `/api/repos/${repoId}/logs?runId=${runId}`
+        : `/api/repos/${repoId}/logs`
+      const res = await fetch(url)
       if (!res.ok) return
       const body = (await res.json()) as {
         data?: { source?: string; logs?: PipelineLogEntry[] }
@@ -57,7 +61,7 @@ export function usePipelineLogs(
     } catch {
       setLoading(false)
     }
-  }, [repoId])
+  }, [repoId, runId])
 
   useEffect(() => {
     if (!enabled) return

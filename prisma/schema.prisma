@@ -13,6 +13,24 @@ datasource db {
   extensions = [vector(map: "vector", schema: "extensions")]
 }
 
+enum PipelineRunStatus {
+  running
+  completed
+  failed
+  cancelled
+
+  @@schema("unerr")
+}
+
+enum PipelineTriggerType {
+  initial
+  retry
+  reindex
+  webhook
+
+  @@schema("unerr")
+}
+
 enum RepoStatus {
   pending
   indexing
@@ -86,12 +104,16 @@ model Repo {
   // Phase 5.6: Ephemeral sandbox
   ephemeral          Boolean  @default(false)
   ephemeralExpiresAt DateTime? @map("ephemeral_expires_at")
+  // Context seeding: user-provided docs for anchoring LLM taxonomy
+  contextDocuments   String?  @map("context_documents")
   // Phase 2: Relations
   apiKeys           ApiKey[]
   // Phase 3: Embeddings relation
   entityEmbeddings  EntityEmbedding[]
   // Phase 5.5: Ledger snapshots relation
   ledgerSnapshots   LedgerSnapshot[]
+  // Pipeline run tracking
+  pipelineRuns      PipelineRun[]
 
   @@unique([organizationId, provider, providerId])
   @@index([organizationId])
@@ -282,5 +304,38 @@ model RuleEmbedding {
   @@index([orgId, repoId])
   @@index([ruleType])
   @@map("rule_embeddings")
+  @@schema("unerr")
+}
+
+// Pipeline run tracking — every indexing execution gets a unique run with per-step tracking
+model PipelineRun {
+  id              String              @id @default(uuid())
+  repoId          String              @map("repo_id")
+  organizationId  String              @map("organization_id")
+  workflowId      String?             @map("workflow_id")
+  temporalRunId   String?             @map("temporal_run_id")
+  status          PipelineRunStatus   @default(running)
+  triggerType     PipelineTriggerType @map("trigger_type")
+  triggerUserId   String?             @map("trigger_user_id")
+  pipelineType    String              @default("full") @map("pipeline_type")
+  indexVersion    String?             @map("index_version")
+  startedAt       DateTime            @default(now()) @map("started_at")
+  completedAt     DateTime?           @map("completed_at")
+  durationMs      Int?                @map("duration_ms")
+  errorMessage    String?             @map("error_message")
+  steps           Json                @default("[]")
+  fileCount       Int?                @map("file_count")
+  functionCount   Int?                @map("function_count")
+  classCount      Int?                @map("class_count")
+  entitiesWritten Int?                @map("entities_written")
+  edgesWritten    Int?                @map("edges_written")
+
+  repo            Repo                @relation(fields: [repoId], references: [id])
+
+  @@index([repoId])
+  @@index([organizationId])
+  @@index([status])
+  @@index([repoId, startedAt(sort: Desc)])
+  @@map("pipeline_runs")
   @@schema("unerr")
 }

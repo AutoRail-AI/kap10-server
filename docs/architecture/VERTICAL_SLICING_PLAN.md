@@ -2618,14 +2618,19 @@ Full re-indexing now uses a **shadow index** approach: the pipeline writes to a 
 - `IGraphStore.deleteByIndexVersion()` cleans up old-version data after the swap
 - The dashboard remains fully functional during the entire reindex process
 
-### Pipeline Tab (Repo Detail)
+### Activity Tab (Repo Detail) — Unified Pipeline & History
 
-All reindexing controls, history, and logs are consolidated into a dedicated **Pipeline** tab at `app/(dashboard)/repos/[repoId]/pipeline/page.tsx`:
+> **Update (Feb 2026):** The separate Pipeline, Timeline, Commits, and History tabs were consolidated into a single **Activity** tab. See [PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](./PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md) — Phase 2.6.
 
-- **Controls:** Re-index button, Stop button, rate-limit feedback
-- **Run History:** Table of `IndexEventDoc` entries (from `getIndexEvents`) — Date, Type (Full/Incremental/Force), Duration, Files Changed, Entities Added/Updated/Deleted, Edges Repaired, SHA
-- **Logs:** Pipeline log viewer (Redis live → Supabase Storage archive)
-- **API:** `GET /api/repos/[repoId]/history/indexing` returns `IndexEventDoc[]` from graph store
+All reindexing controls, pipeline run history, index events, and logs are consolidated into the **Activity** tab at `app/(dashboard)/repos/[repoId]/activity/page.tsx`:
+
+- **Controls:** Re-index button, Stop button, Restart button, rate-limit feedback, processing banner
+- **Section switcher:** Pipeline Runs | Index Events | Logs
+- **Pipeline Runs:** Table of `PipelineRun` records — Run ID (clickable → opens detail in new tab), When, Trigger, Status, Duration, Files, Entities, Edges
+- **Index Events:** Table of `IndexEventDoc` entries (from `getIndexEvents`) — Date, Type (Full/Incremental/Force), Duration, Files Changed, Entities Added/Updated/Deleted, Edges Repaired, SHA
+- **Logs:** Pipeline log viewer (Redis live → Supabase Storage archive), supports run-specific log binding via `runId`
+- **Run Detail Page:** `app/(dashboard)/repos/[repoId]/activity/[runId]/page.tsx` — status, meta grid, per-step visualization, result metrics, run-specific logs
+- **API:** `GET /api/repos/[repoId]/history/indexing` returns `IndexEventDoc[]` + `PipelineRun[]`
 
 ### Embedding OOM Prevention
 
@@ -2678,7 +2683,7 @@ All Temporal workflows follow a "keep heavy data in the worker" principle to avo
 - **Manual** — Full re-index while repo is "ready" → dashboard stays functional → data swaps seamlessly
 - **Temporal UI** — `incrementalIndexWorkflow` shows each file processed as a separate activity
 - `e2e` — Dashboard activity feed shows "Indexed 3 files from push abc123" with entity diff counts
-- `e2e` — Pipeline tab shows run history table with correct metrics per run
+- `e2e` — Activity tab shows pipeline run history table with correct metrics per run
 
 ---
 

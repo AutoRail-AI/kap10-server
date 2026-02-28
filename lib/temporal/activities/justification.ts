@@ -25,12 +25,14 @@ import type { GraphContext } from "@/lib/justification/schemas"
 import { checkStaleness, computeBodyHash } from "@/lib/justification/staleness-checker"
 import { buildTestContext } from "@/lib/justification/test-context-extractor"
 import { topologicalSortEntityIds } from "@/lib/justification/topological-sort"
+import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
 import { logger } from "@/lib/utils/logger"
 
 export interface JustificationInput {
   orgId: string
   repoId: string
+  runId?: string
 }
 
 export async function setJustifyingStatus(input: JustificationInput): Promise<void> {
@@ -166,6 +168,7 @@ export async function justifyBatch(
 ): Promise<{ justifiedCount: number; changedEntityIds: string[] }> {
   const container = getContainer()
   const results: JustificationDoc[] = []
+  const pipelineLog = createPipelineLogger(input.repoId, "justifying", input.runId)
 
   // Fetch all data needed for this batch from ArangoDB
   heartbeat(`fetching data for ${entityIds.length} entities`)
@@ -173,6 +176,17 @@ export async function justifyBatch(
   const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
   const ontology = await container.graphStore.getDomainOntology(input.orgId, input.repoId)
   const previousJustifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
+
+  // Fetch user-provided context documents for prompt anchoring (context seeding)
+  let contextDocuments: string | undefined
+  try {
+    const repo = await container.relationalStore.getRepo(input.orgId, input.repoId)
+    if (repo?.contextDocuments) {
+      contextDocuments = repo.contextDocuments
+    }
+  } catch {
+    // Best-effort — don't fail justification if context fetch fails
+  }
 
   // Filter to just the entities in this batch
   const entityIdSet = new Set(entityIds)
@@ -289,6 +303,11 @@ export async function justifyBatch(
     }
   }
 
+  // Fatal error detection: abort early if LLM endpoint is fundamentally broken
+  // (e.g., 405 Method Not Allowed, 401 Unauthorized, 403 Forbidden)
+  let consecutiveFatalErrors = 0
+  const FATAL_ERROR_THRESHOLD = 5
+
   for (const tier of Array.from(byTier.keys())) {
     const tierEntities = byTier.get(tier)!
     const modelToUse = tierEntities[0]?.route.model ?? defaultModel
@@ -334,6 +353,7 @@ export async function justifyBatch(
             callerJustifications: teInfo.callerJustifications,
             heuristicHint: teInfo.heuristicHint,
             isDeadCode: teInfo.isDeadCode,
+            contextDocuments,
           }
         )
 
@@ -367,9 +387,27 @@ export async function justifyBatch(
           }
           ;(singleResult as Record<string, unknown>).reasoning = llmResult.object.reasoning
           results.push(singleResult)
+          // Chain-of-thought: emit reasoning to pipeline logs
+          const purposeTruncated = singleResult.business_purpose.length > 100
+            ? singleResult.business_purpose.slice(0, 100) + "…"
+            : singleResult.business_purpose
+          pipelineLog.log(
+            "info",
+            "Justification",
+            `Analyzed ${be.entity.name}. Tagged as ${singleResult.taxonomy} (${Math.round(singleResult.confidence * 100)}%) — ${purposeTruncated}`
+          )
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error)
           console.warn(`[justifyBatch] LLM failed for ${be.entity.name}: ${message}`)
+          if (isFatalLLMError(message)) {
+            consecutiveFatalErrors++
+            pipelineLog.log("error", "Justification", `Fatal LLM error (${consecutiveFatalErrors}/${FATAL_ERROR_THRESHOLD}): ${message.slice(0, 120)}`)
+            if (consecutiveFatalErrors >= FATAL_ERROR_THRESHOLD) {
+              throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${FATAL_ERROR_THRESHOLD} consecutive fatal errors. Check LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL env vars.`)
+            }
+          } else {
+            consecutiveFatalErrors = 0
+          }
           results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
         }
       } else {
@@ -430,6 +468,15 @@ export async function justifyBatch(
                 }
                 ;(batchItem as Record<string, unknown>).reasoning = match.reasoning
                 results.push(batchItem)
+                // Chain-of-thought: emit reasoning to pipeline logs
+                const purposeTruncated = batchItem.business_purpose.length > 100
+                  ? batchItem.business_purpose.slice(0, 100) + "…"
+                  : batchItem.business_purpose
+                pipelineLog.log(
+                  "info",
+                  "Justification",
+                  `Analyzed ${be.entity.name}. Tagged as ${batchItem.taxonomy} (${Math.round(batchItem.confidence * 100)}%) — ${purposeTruncated}`
+                )
               } else {
                 // Entity not found in batch response — retry individually
                 console.warn(`[justifyBatch] Entity ${be.entity.name} missing from batch response, retrying individually`)
@@ -440,6 +487,22 @@ export async function justifyBatch(
             break // Batch succeeded, exit retry loop
           } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error)
+
+            // Fatal errors: abort immediately — don't retry or create fallbacks
+            if (isFatalLLMError(message)) {
+              consecutiveFatalErrors += batch.entities.length
+              pipelineLog.log("error", "Justification", `Fatal LLM error on batch of ${batch.entities.length}: ${message.slice(0, 120)}`)
+              if (consecutiveFatalErrors >= FATAL_ERROR_THRESHOLD) {
+                throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${consecutiveFatalErrors} consecutive fatal errors. Check LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL env vars.`)
+              }
+              // Create fallbacks for this batch but continue (might hit threshold soon)
+              for (const be of batch.entities) {
+                results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
+              }
+              break
+            }
+
+            consecutiveFatalErrors = 0
             const isRetryable =
               message.includes("429") ||
               message.toLowerCase().includes("resource exhausted") ||
@@ -590,6 +653,29 @@ async function retrySingleEntity(
     console.warn(`[justifyBatch] Individual retry failed for ${be.entity.name}: ${message}`)
     results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
   }
+}
+
+/**
+ * Detect fatal (non-retryable) LLM errors that indicate endpoint misconfiguration.
+ * These should abort the justification batch early rather than producing thousands
+ * of fallback stubs.
+ */
+function isFatalLLMError(message: string): boolean {
+  const lower = message.toLowerCase()
+  return (
+    lower.includes("405") ||
+    lower.includes("method not allowed") ||
+    lower.includes("401") ||
+    lower.includes("unauthorized") ||
+    lower.includes("403") ||
+    lower.includes("forbidden") ||
+    lower.includes("404") ||
+    lower.includes("not found") ||
+    lower.includes("invalid api key") ||
+    lower.includes("invalid_api_key") ||
+    lower.includes("model_not_found") ||
+    lower.includes("model not found")
+  )
 }
 
 /** Create a fallback justification when LLM fails */
@@ -835,6 +921,7 @@ export async function setJustifyDoneStatus(input: JustificationInput): Promise<v
   const container = getContainer()
   await container.relationalStore.updateRepoStatus(input.repoId, {
     status: "ready",
+    lastIndexedAt: new Date(),
   })
 }
 

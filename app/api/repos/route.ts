@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+import { revalidatePath } from "next/cache"
 import { NextRequest } from "next/server"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
@@ -98,7 +100,18 @@ export const POST = withAuth(async (req: NextRequest) => {
 
     const installationId = meta?.installationId ?? installations[0]?.installationId ?? 0
     const workflowId = `index-${orgId}-${repo.id}`
+    const runId = randomUUID()
     try {
+      // Create pipeline run record before starting workflow
+      await container.relationalStore.createPipelineRun({
+        id: runId,
+        repoId: repo.id,
+        organizationId: orgId,
+        workflowId,
+        triggerType: "initial",
+        pipelineType: "full",
+      })
+
       await workflowEngine.startWorkflow({
         workflowId,
         workflowFn: "indexRepoWorkflow",
@@ -108,6 +121,7 @@ export const POST = withAuth(async (req: NextRequest) => {
           installationId,
           cloneUrl: `https://github.com/${fullName}.git`,
           defaultBranch: repo.defaultBranch ?? "main",
+          runId,
         }],
         taskQueue: "heavy-compute-queue",
       })
@@ -128,6 +142,7 @@ export const POST = withAuth(async (req: NextRequest) => {
     }
   }
 
+  revalidatePath("/repos")
   return successResponse({
     repos: await container.relationalStore.getRepos(orgId),
     created,

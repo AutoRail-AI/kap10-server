@@ -3,19 +3,15 @@
 import {
   Activity,
   BookOpen,
-  BookText,
   Brain,
-  CircleAlert,
-  Clock,
   Code,
   Fingerprint,
-  GitCommit,
   GitPullRequest,
   HeartPulse,
   History,
+  Home,
   Layers,
   LayoutGrid,
-  Settings2,
   Shield,
   TrendingDown,
   Zap,
@@ -24,7 +20,7 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 
 const tabs = [
-  { label: "Issues", href: "", icon: CircleAlert },
+  { label: "Overview", href: "", icon: Home },
   { label: "Code", href: "/code", icon: Code },
   { label: "Entities", href: "/entities", icon: Layers },
   { label: "Blueprint", href: "/blueprint", icon: LayoutGrid },
@@ -36,12 +32,8 @@ const tabs = [
   { label: "Drift", href: "/drift", icon: TrendingDown },
   { label: "Intelligence", href: "/intelligence", icon: Brain },
   { label: "ADRs", href: "/adrs", icon: BookOpen },
-  { label: "Glossary", href: "/glossary", icon: BookText },
+  { label: "Ledger", href: "/ledger", icon: History },
   { label: "Activity", href: "/activity", icon: Activity },
-  { label: "Timeline", href: "/timeline", icon: Clock },
-  { label: "Commits", href: "/commits", icon: GitCommit },
-  { label: "History", href: "/history", icon: History },
-  { label: "Pipeline", href: "/pipeline", icon: Settings2 },
 ] as const
 
 export function RepoTabs({ repoId }: { repoId: string }) {

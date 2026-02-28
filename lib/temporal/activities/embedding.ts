@@ -216,6 +216,7 @@ export async function setReadyStatus(input: EmbeddingInput & { lastIndexedSha?: 
     progress: 100,
     errorMessage: null,
     lastIndexedSha: input.lastIndexedSha ?? null,
+    lastIndexedAt: new Date(),
   })
 }
 

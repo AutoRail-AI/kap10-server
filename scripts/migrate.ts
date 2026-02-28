@@ -73,7 +73,84 @@ async function runMigration(client: Pool, name: string, sql: string): Promise<vo
   }
 }
 
+async function bootstrapArangoDB(): Promise<void> {
+  const url = process.env.ARANGODB_URL ?? "http://localhost:8529"
+  const password = process.env.ARANGO_ROOT_PASSWORD ?? "firstPassword12345"
+  const databaseName = process.env.ARANGODB_DATABASE ?? "unerr_db"
+
+  let Database: typeof import("arangojs").Database
+  try {
+    ;({ Database } = require("arangojs") as typeof import("arangojs"))
+  } catch {
+    console.log("ArangoDB: arangojs not installed — skipping bootstrap.")
+    return
+  }
+
+  // Check if ArangoDB is reachable
+  const base = new Database({ url, auth: { username: "root", password } })
+  try {
+    await base.version()
+  } catch {
+    console.log("ArangoDB: not reachable at", url, "— skipping bootstrap.")
+    return
+  }
+
+  // Create database if needed
+  try {
+    await base.createDatabase(databaseName)
+    console.log(`ArangoDB: created database "${databaseName}".`)
+  } catch {
+    // already exists
+  }
+
+  const db = base.database(databaseName)
+
+  const DOC_COLLECTIONS = [
+    "repos", "files", "functions", "classes", "interfaces", "variables",
+    "patterns", "rules", "snippets", "ledger",
+    "justifications", "features_agg", "health_reports", "domain_ontologies",
+    "drift_scores", "adrs", "token_usage_log", "index_events",
+    "ledger_summaries", "working_snapshots", "rule_health", "mined_patterns", "impact_reports",
+  ]
+  const EDGE_COLLECTIONS = [
+    "contains", "calls", "imports", "extends", "implements",
+    "rule_exceptions", "language_implementations",
+  ]
+
+  let created = 0
+  for (const name of DOC_COLLECTIONS) {
+    const col = db.collection(name)
+    try {
+      await col.create()
+      created++
+    } catch { /* exists */ }
+    try {
+      await col.ensureIndex({ type: "persistent", fields: ["org_id", "repo_id"], name: `idx_${name}_org_repo` })
+    } catch { /* exists */ }
+  }
+
+  for (const name of EDGE_COLLECTIONS) {
+    const col = db.collection(name)
+    try {
+      await col.create({ type: 3 })
+      created++
+    } catch { /* exists */ }
+    try {
+      await col.ensureIndex({ type: "persistent", fields: ["org_id", "repo_id"], name: `idx_${name}_org_repo` })
+    } catch { /* exists */ }
+  }
+
+  if (created === 0) {
+    console.log("ArangoDB: all collections already exist — up to date.")
+  } else {
+    console.log(`ArangoDB: created ${created} collection(s).`)
+  }
+}
+
 async function main(): Promise<void> {
+  // ── ArangoDB bootstrap (non-blocking — skips if unreachable) ──
+  await bootstrapArangoDB()
+
   const dbUrl = getDbUrl()
   if (!dbUrl) {
     console.error("Missing SUPABASE_DB_URL or DATABASE_URL. Set it in .env.local")

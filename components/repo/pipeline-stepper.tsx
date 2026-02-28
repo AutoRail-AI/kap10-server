@@ -1,10 +1,12 @@
 "use client"
 
 import { AlertCircle, Check } from "lucide-react"
+import type { PipelineStepRecord } from "@/lib/ports/types"
 
 interface PipelineStepperProps {
   status: string
   progress: number
+  steps?: PipelineStepRecord[]
 }
 
 interface Stage {
@@ -20,9 +22,47 @@ const STAGES: Stage[] = [
   { label: "Ready", description: "Your codebase blueprint is ready!" },
 ]
 
+// Map pipeline step names to stage indices
+const STEP_TO_STAGE: Record<string, number> = {
+  clone: 0,
+  scip: 1,
+  parse: 1,
+  finalize: 1,
+  embed: 2,
+  graphSync: 3,
+  patternDetection: 3,
+}
+
 const ERROR_STATUSES = ["error", "embed_failed", "justify_failed"]
 
-function getActiveStageIndex(status: string, progress: number): number {
+function getActiveStageFromSteps(steps: PipelineStepRecord[]): number {
+  // Find the last running or completed step
+  for (let i = steps.length - 1; i >= 0; i--) {
+    const step = steps[i]!
+    if (step.status === "running" || step.status === "failed") {
+      return STEP_TO_STAGE[step.name] ?? 0
+    }
+    if (step.status === "completed") {
+      const stageIdx = STEP_TO_STAGE[step.name] ?? 0
+      // If this is the last step, show Ready
+      if (step.name === "patternDetection") return 4
+      return stageIdx
+    }
+  }
+  return 0
+}
+
+function getActiveStageIndex(status: string, progress: number, steps?: PipelineStepRecord[]): number {
+  // Use real step data if available
+  if (steps && steps.length > 0) {
+    const allCompleted = steps.every((s) => s.status === "completed" || s.status === "skipped")
+    if (allCompleted || status === "ready") return 4
+    const hasFailed = steps.some((s) => s.status === "failed")
+    if (hasFailed) return getActiveStageFromSteps(steps)
+    return getActiveStageFromSteps(steps)
+  }
+
+  // Fallback: derive from status/progress
   if (status === "ready") return 4
   if (status === "embedding") return 2
   if (status === "ontology" || status === "justifying") return 3
@@ -34,8 +74,8 @@ function getActiveStageIndex(status: string, progress: number): number {
   return 1
 }
 
-export function PipelineStepper({ status, progress }: PipelineStepperProps) {
-  const activeIndex = getActiveStageIndex(status, progress)
+export function PipelineStepper({ status, progress, steps }: PipelineStepperProps) {
+  const activeIndex = getActiveStageIndex(status, progress, steps)
   const isError = ERROR_STATUSES.includes(status)
   const isReady = status === "ready"
 

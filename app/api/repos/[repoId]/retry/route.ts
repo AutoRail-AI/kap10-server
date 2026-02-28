@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+import { revalidatePath } from "next/cache"
 import { NextRequest } from "next/server"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
@@ -64,7 +66,19 @@ export const POST = withAuth(async (req: NextRequest, { userId }) => {
     // may not be running
   }
   const workflowId = `index-${orgId}-${repoId}-${Date.now()}`
+  const runId = randomUUID()
   try {
+    // Create pipeline run record
+    await container.relationalStore.createPipelineRun({
+      id: runId,
+      repoId,
+      organizationId: orgId,
+      workflowId,
+      triggerType: "retry",
+      triggerUserId: userId,
+      pipelineType: "full",
+    })
+
     await container.workflowEngine.startWorkflow({
       workflowId,
       workflowFn: "indexRepoWorkflow",
@@ -74,6 +88,7 @@ export const POST = withAuth(async (req: NextRequest, { userId }) => {
         installationId: installation.installationId,
         cloneUrl: `https://github.com/${repo.fullName ?? repo.githubFullName ?? "unknown/repo"}.git`,
         defaultBranch: repo.defaultBranch ?? "main",
+        runId,
       }],
       taskQueue: "heavy-compute-queue",
     })
@@ -81,7 +96,6 @@ export const POST = withAuth(async (req: NextRequest, { userId }) => {
       status: "indexing",
       workflowId,
       errorMessage: null,
-      indexingStartedAt: new Date(),
     })
     logger.info("Retry started: indexing workflow launched", { ...ctx, workflowId, previousStatus: repo.status })
   } catch (err: unknown) {
@@ -89,5 +103,6 @@ export const POST = withAuth(async (req: NextRequest, { userId }) => {
     logger.error("Retry failed: workflow start error", err instanceof Error ? err : undefined, { ...ctx, workflowId })
     return errorResponse(message, 500)
   }
-  return successResponse({ status: "indexing", workflowId })
+  revalidatePath("/repos")
+  return successResponse({ status: "indexing", workflowId, runId })
 })

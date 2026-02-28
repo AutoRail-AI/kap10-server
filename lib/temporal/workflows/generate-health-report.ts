@@ -19,6 +19,7 @@ const activities = proxyActivities<typeof healthActivities>({
 export interface HealthReportInput {
   orgId: string
   repoId: string
+  runId?: string
 }
 
 export async function generateHealthReportWorkflow(input: HealthReportInput): Promise<void> {

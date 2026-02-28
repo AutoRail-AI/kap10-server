@@ -27,6 +27,7 @@ import * as onboarding from "@/lib/temporal/activities/onboarding"
 import * as ontology from "@/lib/temporal/activities/ontology"
 import * as patternDetection from "@/lib/temporal/activities/pattern-detection"
 import * as pipelineLogs from "@/lib/temporal/activities/pipeline-logs"
+import * as pipelineRun from "@/lib/temporal/activities/pipeline-run"
 import * as review from "@/lib/temporal/activities/review"
 import * as ruleDecay from "@/lib/temporal/activities/rule-decay"
 import * as workspaceCleanup from "@/lib/temporal/activities/workspace-cleanup"
@@ -87,8 +88,9 @@ async function createWorkerWithRetry(): Promise<Worker> {
           ...workspaceCleanup,
           // Onboarding
           ...onboarding,
-          // Pipeline logging
+          // Pipeline logging & run tracking
           ...pipelineLogs,
+          ...pipelineRun,
         },
       })
       return worker

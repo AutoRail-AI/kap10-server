@@ -10,6 +10,7 @@ import {
   defineSignal,
   proxyActivities,
   setHandler,
+  workflowInfo,
 } from "@temporalio/workflow"
 import type * as driftAlert from "../activities/drift-alert"
 import type * as incremental from "../activities/incremental"
@@ -56,6 +57,7 @@ export interface IncrementalIndexInput {
   cloneUrl: string
   defaultBranch: string
   workspacePath: string
+  runId?: string
   initialPush: {
     afterSha: string
     beforeSha: string
@@ -101,6 +103,7 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
   }
 
   const startTime = Date.now()
+  const wfId = workflowInfo().workflowId
 
   try {
     // Step 1: Pull and diff
@@ -135,7 +138,7 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
         cascade_status: "skipped" as const,
         cascade_entities: 0,
         duration_ms: Date.now() - startTime,
-        workflow_id: "",
+        workflow_id: wfId,
         created_at: new Date().toISOString(),
       }
       await lightActivities.writeIndexEvent({ orgId: input.orgId, repoId: input.repoId, event })

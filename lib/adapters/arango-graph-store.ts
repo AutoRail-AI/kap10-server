@@ -12,6 +12,9 @@
 
 import type { Database } from "arangojs"
 import type { IGraphStore } from "@/lib/ports/graph-store"
+import { logger } from "@/lib/utils/logger"
+
+const arangoLog = logger.child({ service: "arango-graph-store" })
 import type {
   ADRDoc,
   BlueprintData,
@@ -707,6 +710,8 @@ export class ArangoGraphStore implements IGraphStore {
   }
   async bulkUpsertEntities(orgId: string, entities: EntityDoc[]): Promise<void> {
     if (entities.length === 0) return
+    const start = Date.now()
+    arangoLog.info("Bulk upserting entities", { orgId, count: entities.length })
     const db = await getDbAsync()
     const byKind = new Map<string, EntityDoc[]>()
     for (const e of entities) {
@@ -725,11 +730,15 @@ export class ArangoGraphStore implements IGraphStore {
         })
         await col.import(batch, { onDuplicate: "update" })
       }
+      arangoLog.info("Entities upserted into collection", { collection: collName, count: list.length })
     }
+    arangoLog.info("Bulk upsert entities complete", { orgId, total: entities.length, durationMs: Date.now() - start })
   }
 
   async bulkUpsertEdges(orgId: string, edges: EdgeDoc[]): Promise<void> {
     if (edges.length === 0) return
+    const start = Date.now()
+    arangoLog.info("Bulk upserting edges", { orgId, count: edges.length })
     const db = await getDbAsync()
     const byKind = new Map<string, EdgeDoc[]>()
     for (const e of edges) {
@@ -742,15 +751,19 @@ export class ArangoGraphStore implements IGraphStore {
       const col = db.collection(collName)
       for (let i = 0; i < list.length; i += BATCH_SIZE) {
         const batch = list.slice(i, i + BATCH_SIZE).map((e) => ({
+          _key: (e as EdgeDoc & { _key?: string })._key,
           _from: qualifyVertexHandle(e._from),
           _to: qualifyVertexHandle(e._to),
           org_id: e.org_id,
           repo_id: e.repo_id,
           kind: e.kind,
+          ...(e.index_version && { index_version: e.index_version }),
         }))
         await col.import(batch, { onDuplicate: "update" })
       }
+      arangoLog.info("Edges upserted into collection", { collection: collName, count: list.length })
     }
+    arangoLog.info("Bulk upsert edges complete", { orgId, total: edges.length, durationMs: Date.now() - start })
   }
 
   async getFilePaths(orgId: string, repoId: string): Promise<{ path: string }[]> {
@@ -763,23 +776,32 @@ export class ArangoGraphStore implements IGraphStore {
   }
 
   async deleteRepoData(orgId: string, repoId: string): Promise<void> {
+    const start = Date.now()
+    arangoLog.info("Deleting all repo graph data", { orgId, repoId, docCollections: DOC_COLLECTIONS.length, edgeCollections: EDGE_COLLECTIONS.length })
     const db = await getDbAsync()
     const docCols = [...DOC_COLLECTIONS]
     const edgeCols = [...EDGE_COLLECTIONS]
     for (const name of docCols) {
       const cursor = await db.query(
-        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId REMOVE doc IN @@coll`,
+        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId REMOVE doc IN @@coll RETURN 1`,
         { "@coll": name, orgId, repoId }
       )
-      await cursor.all()
+      const removed = await cursor.all()
+      if (removed.length > 0) {
+        arangoLog.info("Removed docs from collection", { collection: name, count: removed.length, repoId })
+      }
     }
     for (const name of edgeCols) {
       const cursor = await db.query(
-        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId REMOVE doc IN @@coll`,
+        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId REMOVE doc IN @@coll RETURN 1`,
         { "@coll": name, orgId, repoId }
       )
-      await cursor.all()
+      const removed = await cursor.all()
+      if (removed.length > 0) {
+        arangoLog.info("Removed edges from collection", { collection: name, count: removed.length, repoId })
+      }
     }
+    arangoLog.info("Repo graph data deleted", { orgId, repoId, durationMs: Date.now() - start })
   }
 
   async healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }> {

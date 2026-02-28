@@ -8,6 +8,7 @@ import type { PipelineLogEntry } from "@/hooks/use-pipeline-logs"
 interface PipelineLogViewerProps {
   repoId: string
   status: string
+  runId?: string
 }
 
 const ACTIVE_STATUSES = ["indexing", "embedding", "justifying", "ontology"]
@@ -16,10 +17,10 @@ function formatLogLine(entry: PipelineLogEntry): string {
   return `[${entry.timestamp}] [${entry.level.toUpperCase().padEnd(5)}] [${entry.phase}] ${entry.step ? `${entry.step} — ` : ""}${entry.message}`
 }
 
-export function PipelineLogViewer({ repoId, status }: PipelineLogViewerProps) {
+export function PipelineLogViewer({ repoId, status, runId }: PipelineLogViewerProps) {
   const isActive = ACTIVE_STATUSES.includes(status)
   const isError = status === "error" || status === "embed_failed" || status === "justify_failed"
-  const { logs, source } = usePipelineLogs(repoId, isActive || isError || status === "ready")
+  const { logs, source } = usePipelineLogs(repoId, isActive || isError || status === "ready", runId)
   const [expanded, setExpanded] = useState(isActive || isError)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [copied, setCopied] = useState(false)

@@ -33,6 +33,12 @@ export default function PipelinePage() {
   const repoId = pathname.match(/\/repos\/([^/]+)/)?.[1] ?? ""
 
   const [events, setEvents] = useState<IndexEvent[]>([])
+  const [runs, setRuns] = useState<Array<{
+    id: string; status: string; triggerType: string; pipelineType: string
+    startedAt: string; completedAt: string | null; durationMs: number | null
+    errorMessage: string | null; fileCount: number | null; functionCount: number | null
+    entitiesWritten: number | null; edgesWritten: number | null
+  }>>([])
   const [loading, setLoading] = useState(true)
   const [reindexing, setReindexing] = useState(false)
   const [restarting, setRestarting] = useState(false)
@@ -57,9 +63,10 @@ export default function PipelinePage() {
       const res = await fetch(`/api/repos/${repoId}/history/indexing`)
       if (res.ok) {
         const json = (await res.json()) as {
-          data: { events: IndexEvent[] }
+          data: { events: IndexEvent[]; runs?: typeof runs }
         }
         setEvents(json.data.events)
+        if (json.data.runs) setRuns(json.data.runs)
       }
     } catch {
       // Fail silently
@@ -230,7 +237,7 @@ export default function PipelinePage() {
         {loading ? (
           <Skeleton className="h-[200px] w-full" />
         ) : (
-          <PipelineHistoryTable events={events} />
+          <PipelineHistoryTable events={events} runs={runs} />
         )}
       </div>
 

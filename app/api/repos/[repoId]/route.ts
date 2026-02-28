@@ -1,3 +1,4 @@
+import { revalidatePath } from "next/cache"
 import { NextRequest } from "next/server"
 import { getActiveOrgId } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
@@ -53,5 +54,6 @@ export const DELETE = withAuth(async (req: NextRequest) => {
     const message = err instanceof Error ? err.message : String(err)
     return errorResponse(message, 500)
   }
+  revalidatePath("/repos")
   return successResponse({ status: "deleting" })
 })

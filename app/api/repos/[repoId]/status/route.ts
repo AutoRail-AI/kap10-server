@@ -22,6 +22,21 @@ export const GET = withAuth(async (req: NextRequest) => {
     return errorResponse("Repo not found", 404)
   }
 
+  // Fetch latest pipeline run for step tracking + indexing start time
+  let currentRunId: string | null = null
+  let steps: unknown[] = []
+  let indexingStartedAt: number | null = null
+  try {
+    const latestRun = await container.relationalStore.getLatestPipelineRun(orgId, repoId)
+    if (latestRun) {
+      currentRunId = latestRun.id
+      steps = latestRun.steps
+      indexingStartedAt = new Date(latestRun.startedAt).getTime()
+    }
+  } catch {
+    // Best-effort — step tracking is supplementary
+  }
+
   const base = {
     status: repo.status,
     progress: repo.indexProgress ?? 0,
@@ -29,7 +44,9 @@ export const GET = withAuth(async (req: NextRequest) => {
     functionCount: repo.functionCount,
     classCount: repo.classCount,
     errorMessage: repo.errorMessage,
-    indexingStartedAt: repo.indexingStartedAt ? new Date(repo.indexingStartedAt).getTime() : null,
+    indexingStartedAt,
+    currentRunId,
+    steps,
   }
 
   if (repo.status !== "indexing" || !repo.workflowId) {

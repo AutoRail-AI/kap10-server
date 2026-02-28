@@ -3,7 +3,7 @@
  * Phase 2: API keys, workspaces, repo onboarding fields.
  */
 
-import type { PrReviewCommentRecord, PrReviewRecord, ReviewConfig } from "./types"
+import type { PipelineStepRecord, PrReviewCommentRecord, PrReviewRecord, ReviewConfig } from "./types"
 
 export interface RepoRecord {
   id: string
@@ -34,12 +34,12 @@ export interface RepoRecord {
   localCliUploadPath?: string | null
   ephemeral?: boolean
   ephemeralExpiresAt?: Date | null
+  // Context seeding
+  contextDocuments?: string | null
   // Shadow reindexing
   currentIndexVersion?: string | null
   pendingIndexVersion?: string | null
   reindexStatus?: string | null
-  // Pipeline timing
-  indexingStartedAt?: Date | null
 }
 
 export interface GitHubInstallationRecord {
@@ -80,6 +80,30 @@ export interface ApiKeyRecord {
   revokedAt: Date | null
   createdAt: Date
   updatedAt: Date
+}
+
+// Pipeline run record
+export interface PipelineRunRecord {
+  id: string
+  repoId: string
+  organizationId: string
+  workflowId: string | null
+  temporalRunId: string | null
+  status: string
+  triggerType: string
+  triggerUserId: string | null
+  pipelineType: string
+  indexVersion: string | null
+  startedAt: Date
+  completedAt: Date | null
+  durationMs: number | null
+  errorMessage: string | null
+  steps: PipelineStepRecord[]
+  fileCount: number | null
+  functionCount: number | null
+  classCount: number | null
+  entitiesWritten: number | null
+  edgesWritten: number | null
 }
 
 // Phase 2: Workspace record
@@ -136,7 +160,7 @@ export interface IRelationalStore {
       classCount?: number
       errorMessage?: string | null
       lastIndexedSha?: string | null
-      indexingStartedAt?: Date | null
+      lastIndexedAt?: Date | null
     }
   ): Promise<void>
   getRepoByGithubId(orgId: string, githubRepoId: number): Promise<RepoRecord | null>
@@ -171,11 +195,54 @@ export interface IRelationalStore {
   updateWorkspaceSync(id: string, baseSha?: string): Promise<void>
   deleteExpiredWorkspaces(): Promise<WorkspaceRecord[]>
 
+  // Context seeding
+  updateRepoContextDocuments(repoId: string, contextDocuments: string | null): Promise<void>
+
   // Phase 5.6: Ephemeral sandbox
   promoteRepo(repoId: string): Promise<void>
 
   // Phase 2: Repo onboarding
   updateRepoOnboardingPr(repoId: string, prUrl: string, prNumber: number): Promise<void>
+
+  // Pipeline run tracking
+  createPipelineRun(data: {
+    id: string
+    repoId: string
+    organizationId: string
+    workflowId?: string
+    triggerType: string
+    triggerUserId?: string
+    pipelineType?: string
+    indexVersion?: string
+    steps?: PipelineStepRecord[]
+  }): Promise<PipelineRunRecord>
+  getPipelineRun(runId: string): Promise<PipelineRunRecord | null>
+  updatePipelineRun(
+    runId: string,
+    data: Partial<
+      Pick<
+        PipelineRunRecord,
+        | "workflowId"
+        | "temporalRunId"
+        | "status"
+        | "completedAt"
+        | "durationMs"
+        | "errorMessage"
+        | "steps"
+        | "fileCount"
+        | "functionCount"
+        | "classCount"
+        | "entitiesWritten"
+        | "edgesWritten"
+      >
+    >
+  ): Promise<void>
+  getPipelineRunsForRepo(
+    orgId: string,
+    repoId: string,
+    opts?: { limit?: number; status?: string }
+  ): Promise<PipelineRunRecord[]>
+  getLatestPipelineRun(orgId: string, repoId: string): Promise<PipelineRunRecord | null>
 
   // Phase 7: PR Review Integration
   createPrReview(data: {

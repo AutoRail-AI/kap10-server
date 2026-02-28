@@ -77,15 +77,6 @@ export async function writeToArango(input: WriteToArangoInput): Promise<WriteToA
     await container.graphStore.bulkUpsertEdges(input.orgId, allEdges)
   }
 
-  // Shadow reindex: delete old version entities/edges (those without this index_version)
-  if (input.indexVersion) {
-    plog.log("info", "Step 4/7", "Shadow swap: cleaning up previous index version…")
-    // Delete entities/edges that belong to a different (or no) index_version
-    // We keep only entities with the current indexVersion or no version at all (non-indexed data like rules)
-    await container.graphStore.deleteByIndexVersion(input.orgId, input.repoId, "__old__")
-      .catch(() => {})
-  }
-
   await container.relationalStore.updateRepoStatus(input.repoId, {
     status: "indexing",
     progress: 90,
@@ -137,12 +128,6 @@ export async function finalizeIndexing(input: FinalizeIndexingInput): Promise<vo
 
   await container.graphStore.bootstrapGraphSchema()
 
-  if (input.indexVersion) {
-    plog.log("info", "Step 4/7", "Shadow swap: cleaning up previous index version…")
-    await container.graphStore.deleteByIndexVersion(input.orgId, input.repoId, "__old__")
-      .catch(() => {})
-  }
-
   await container.relationalStore.updateRepoStatus(input.repoId, {
     status: "indexing",
     progress: 90,
@@ -161,10 +146,23 @@ export async function updateRepoError(repoId: string, errorMessage: string): Pro
   await container.relationalStore.updateRepoStatus(repoId, { status: "error", errorMessage })
 }
 
+export async function wipeRepoGraphData(input: { orgId: string; repoId: string }): Promise<void> {
+  const log = logger.child({ service: "indexing-light", organizationId: input.orgId, repoId: input.repoId })
+  log.info("Wiping existing graph data for clean reindex")
+  const container = getContainer()
+  const start = Date.now()
+  await container.graphStore.deleteRepoData(input.orgId, input.repoId)
+  log.info("Graph data wiped", { durationMs: Date.now() - start })
+}
+
 export async function deleteRepoData(input: DeleteRepoDataInput): Promise<void> {
+  const log = logger.child({ service: "indexing-light", organizationId: input.orgId, repoId: input.repoId })
+  log.info("Deleting repo data (graph + relational)")
   const container = getContainer()
   await container.graphStore.deleteRepoData(input.orgId, input.repoId)
+  log.info("Graph data deleted")
   await container.relationalStore.deleteRepo(input.repoId)
+  log.info("Relational repo record deleted")
 }
 
 /**

@@ -38,6 +38,46 @@ export function buildHealthReport(
     ? totalConfidence / justifications.length
     : 0
 
+  // ──────────────── Fallback guard ────────────────
+  // Detect when all justifications are fallback stubs (LLM was broken)
+  const fallbackCount = justifications.filter(
+    (j) => j.confidence <= 0.3 && j.feature_tag === "unclassified" && j.taxonomy === "UTILITY"
+  ).length
+  const allAreFallbacks = justifications.length > 0 && fallbackCount === justifications.length
+  const mostlyFallbacks = justifications.length > 0 && fallbackCount / justifications.length > 0.8
+
+  if (allAreFallbacks) {
+    risks.push({
+      riskType: "llm_failure",
+      description: `All ${justifications.length} justifications are fallback stubs — the LLM endpoint was unreachable or misconfigured during indexing. Re-index with a working LLM configuration to get real classifications.`,
+      severity: "high",
+      category: "quality",
+      entities: [],
+    })
+
+    return {
+      id: randomUUID(),
+      org_id: orgId,
+      repo_id: repoId,
+      total_entities: entities?.length ?? justifications.length,
+      justified_entities: 0,
+      average_confidence: 0,
+      taxonomy_breakdown: taxonomyBreakdown,
+      risks,
+      generated_at: new Date().toISOString(),
+    }
+  }
+
+  if (mostlyFallbacks) {
+    risks.push({
+      riskType: "llm_partial_failure",
+      description: `${fallbackCount} of ${justifications.length} justifications (${Math.round(fallbackCount / justifications.length * 100)}%) are fallback stubs. The LLM may have been intermittently failing. Consider re-indexing.`,
+      severity: "high",
+      category: "quality",
+      entities: [],
+    })
+  }
+
   // ──────────────── Original 4 risks ────────────────
 
   // Risk 1: Low confidence justifications

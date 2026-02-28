@@ -21,8 +21,11 @@ export async function GET(
   const container = getContainer()
 
   try {
-    const events = await container.graphStore.getIndexEvents(orgId, repoId, 50)
-    return NextResponse.json({ data: { events } })
+    const [events, runs] = await Promise.all([
+      container.graphStore.getIndexEvents(orgId, repoId, 50),
+      container.relationalStore.getPipelineRunsForRepo(orgId, repoId, { limit: 50 }),
+    ])
+    return NextResponse.json({ data: { events, runs } })
   } catch (error: unknown) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to fetch indexing history" },

@@ -53,6 +53,8 @@ export interface PromptBuilderOptions {
   heuristicHint?: { taxonomy: string; featureTag: string; reason: string }
   /** Whether this entity has zero inbound references (potential dead code) */
   isDeadCode?: boolean
+  /** User-provided project context (ARCHITECTURE.md, PRD, etc.) for anchoring taxonomy */
+  contextDocuments?: string
 }
 
 // ── Entity-Specific Section Builders ──────────────────────────────────────────
@@ -322,6 +324,14 @@ export function buildJustificationPrompt(
     if (ontology.project_domain) projectLines.push(`Domain: ${ontology.project_domain}`)
     if (ontology.tech_stack && ontology.tech_stack.length > 0) projectLines.push(`Tech stack: ${ontology.tech_stack.join(", ")}`)
     sections.push(`## Project Context\n${projectLines.join("\n")}`)
+  }
+
+  // Section 0.25: User-provided context documents (context seeding)
+  if (options?.contextDocuments) {
+    const truncatedContext = options.contextDocuments.length > 3000
+      ? options.contextDocuments.slice(0, 3000) + "\n... (truncated)"
+      : options.contextDocuments
+    sections.push(`## Project Context (provided by the team)\n${truncatedContext}`)
   }
 
   // Section 0.5: Preliminary analysis hints (from static analysis)

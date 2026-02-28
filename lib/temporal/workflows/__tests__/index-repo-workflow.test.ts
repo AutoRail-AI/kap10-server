@@ -3,7 +3,7 @@
  *
  * Tests the workflow orchestration logic by mocking Temporal APIs.
  * Verifies:
- * - Activity call order (prepareWorkspace → runSCIP → parseRest → finalizeIndexing)
+ * - Activity call order (prepareRepoIntelligenceSpace → runSCIP → parseRest → finalizeIndexing)
  * - Progress updates at each stage
  * - Error handling: activity failure → updateRepoError called → error re-thrown
  * - Only lightweight data (counts, coveredFiles) crosses Temporal boundary
@@ -18,6 +18,7 @@ const mockRunSCIP = vi.fn()
 const mockParseRest = vi.fn()
 const mockFinalizeIndexing = vi.fn()
 const mockUpdateRepoError = vi.fn()
+const mockPrecomputeBlastRadius = vi.fn()
 
 vi.mock("@temporalio/workflow", () => ({
   defineQuery: vi.fn((_name: string) => Symbol("query")),
@@ -33,13 +34,17 @@ vi.mock("@temporalio/workflow", () => ({
       {
         get(_target, prop: string) {
           const map: Record<string, (...args: unknown[]) => unknown> = {
-            prepareWorkspace: (...args: unknown[]) => { activityCalls.push({ name: "prepareWorkspace", args }); return mockPrepareWorkspace(...args) },
+            prepareRepoIntelligenceSpace: (...args: unknown[]) => { activityCalls.push({ name: "prepareRepoIntelligenceSpace", args }); return mockPrepareWorkspace(...args) },
             runSCIP: (...args: unknown[]) => { activityCalls.push({ name: "runSCIP", args }); return mockRunSCIP(...args) },
             parseRest: (...args: unknown[]) => { activityCalls.push({ name: "parseRest", args }); return mockParseRest(...args) },
             finalizeIndexing: (...args: unknown[]) => { activityCalls.push({ name: "finalizeIndexing", args }); return mockFinalizeIndexing(...args) },
             updateRepoError: (...args: unknown[]) => { activityCalls.push({ name: "updateRepoError", args }); return mockUpdateRepoError(...args) },
+            precomputeBlastRadius: (...args: unknown[]) => { activityCalls.push({ name: "precomputeBlastRadius", args }); return mockPrecomputeBlastRadius(...args) },
             appendPipelineLog: () => Promise.resolve(),
             archivePipelineLogs: () => Promise.resolve(),
+            initPipelineRun: () => Promise.resolve(),
+            updatePipelineStep: () => Promise.resolve(),
+            completePipelineRun: () => Promise.resolve(),
           }
           return map[prop]
         },
@@ -78,29 +83,37 @@ describe("indexRepoWorkflow", () => {
       entityCount: 5,
       edgeCount: 3,
       coveredFiles: ["src/index.ts"],
+      fileCount: 1,
+      functionCount: 3,
+      classCount: 1,
     })
 
     mockParseRest.mockResolvedValue({
       entityCount: 2,
       edgeCount: 1,
+      fileCount: 2,
+      functionCount: 1,
+      classCount: 0,
     })
 
     mockFinalizeIndexing.mockResolvedValue(undefined)
     mockUpdateRepoError.mockResolvedValue(undefined)
+    mockPrecomputeBlastRadius.mockResolvedValue({ updatedCount: 5, highRiskCount: 1 })
   })
 
   it("calls activities in correct order", async () => {
     await indexRepoWorkflow(DEFAULT_INPUT)
 
     expect(activityCalls.map((c) => c.name)).toEqual([
-      "prepareWorkspace",
+      "prepareRepoIntelligenceSpace",
       "runSCIP",
       "parseRest",
       "finalizeIndexing",
+      "precomputeBlastRadius",
     ])
   })
 
-  it("passes correct arguments to prepareWorkspace", async () => {
+  it("passes correct arguments to prepareRepoIntelligenceSpace", async () => {
     await indexRepoWorkflow(DEFAULT_INPUT)
 
     expect(mockPrepareWorkspace).toHaveBeenCalledWith({
@@ -112,7 +125,7 @@ describe("indexRepoWorkflow", () => {
     })
   })
 
-  it("passes workspace info from prepareWorkspace to runSCIP", async () => {
+  it("passes workspace info from prepareRepoIntelligenceSpace to runSCIP", async () => {
     await indexRepoWorkflow(DEFAULT_INPUT)
 
     expect(mockRunSCIP).toHaveBeenCalledWith(
@@ -158,12 +171,12 @@ describe("indexRepoWorkflow", () => {
 
     mockRunSCIP.mockImplementation(async () => {
       if (progressHandler) progressValues.push(progressHandler())
-      return { entityCount: 0, edgeCount: 0, coveredFiles: [] }
+      return { entityCount: 0, edgeCount: 0, coveredFiles: [], fileCount: 0, functionCount: 0, classCount: 0 }
     })
 
     mockParseRest.mockImplementation(async () => {
       if (progressHandler) progressValues.push(progressHandler())
-      return { entityCount: 0, edgeCount: 0 }
+      return { entityCount: 0, edgeCount: 0, fileCount: 0, functionCount: 0, classCount: 0 }
     })
 
     mockFinalizeIndexing.mockImplementation(async () => {

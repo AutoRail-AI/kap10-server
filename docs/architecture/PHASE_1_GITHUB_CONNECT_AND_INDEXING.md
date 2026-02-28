@@ -1593,6 +1593,50 @@ app/api/repos/route.ts                     ← Add POST handler
 
 ---
 
+## Pipeline Run Tracking
+
+Every pipeline execution (initial, retry, reindex, webhook) gets a unique **Run ID** (UUID) with persistent tracking in PostgreSQL.
+
+### Run ID Lifecycle
+
+1. **API route** generates `runId = randomUUID()` and creates a `PipelineRun` record in PostgreSQL (`unerr.pipeline_runs`)
+2. `runId` is passed as a workflow argument to the Temporal workflow
+3. At workflow start, `initPipelineRun` activity records `workflowId` + `temporalRunId` (bi-directional Temporal ↔ DB link)
+4. Before/after each step, `updatePipelineStep` activity updates the step status in the `steps` JSON column
+5. On success/failure, `completePipelineRun` activity finalizes the run with status, duration, metrics, and error message
+
+### Pipeline Steps (7 total)
+
+| Step Name | Label | Queue |
+|---|---|---|
+| `clone` | Preparing workspace | heavy-compute |
+| `scip` | Running SCIP indexers | heavy-compute |
+| `parse` | Parsing remaining files | heavy-compute |
+| `finalize` | Finalizing index | light-llm |
+| `embed` | Generating embeddings | light-llm |
+| `graphSync` | Syncing graph snapshot | light-llm |
+| `patternDetection` | Detecting patterns | heavy-compute |
+
+Steps are stored as a JSON array in `PipelineRun.steps` — each step has: `name`, `label`, `status` (pending/running/completed/failed/skipped), `startedAt`, `completedAt`, `durationMs`, `errorMessage`.
+
+### Trigger Types
+
+| Type | Source |
+|---|---|
+| `initial` | `POST /api/repos` — first-time repo import |
+| `retry` | `POST /api/repos/[repoId]/retry` — retry after failure |
+| `reindex` | `POST /api/repos/[repoId]/reindex` — manual re-index |
+| `webhook` | Push webhook — incremental indexing |
+
+### Backward Compatibility
+
+- `runId` is **optional** in all workflow inputs — in-flight workflows without it continue working
+- All run-tracking code guards on `if (input.runId)`
+- Redis log keys fall back to legacy `unerr:pipeline-logs:{repoId}` format
+- `IndexEventDoc` changes are additive (optional fields: `run_id`, `trigger_type`, `started_at`, `status`)
+
+---
+
 ## Revision Log
 
 | Date | Author | Change |

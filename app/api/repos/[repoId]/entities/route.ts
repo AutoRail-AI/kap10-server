@@ -25,6 +25,51 @@ export const GET = withAuth(async (req: NextRequest) => {
   const file = req.nextUrl.searchParams.get("file")
   if (file) {
     const entities = await container.graphStore.getEntitiesByFile(orgId, repoId, file)
+
+    // Enriched mode: include justifications for the annotated code viewer
+    const enrich = req.nextUrl.searchParams.get("enrich") === "true"
+    if (enrich) {
+      const justifications = await Promise.all(
+        entities.map((e) =>
+          container.graphStore.getJustification(orgId, e.id).catch(() => null)
+        )
+      )
+      return successResponse({
+        entities: entities.map((e, i) => {
+          const j = justifications[i]
+          return {
+            id: e.id,
+            name: e.name,
+            kind: e.kind,
+            line: (e as { start_line?: number }).start_line ?? 0,
+            signature: (e as { signature?: string }).signature,
+            exported: (e as { exported?: boolean }).exported ?? false,
+            fan_in: e.fan_in ?? null,
+            fan_out: e.fan_out ?? null,
+            risk_level: e.risk_level ?? null,
+            justification: j
+              ? {
+                  taxonomy: j.taxonomy,
+                  confidence: j.confidence,
+                  businessPurpose: j.business_purpose,
+                  featureTag: j.feature_tag,
+                  domainConcepts: j.domain_concepts,
+                  semanticTriples: j.semantic_triples,
+                  complianceTags: j.compliance_tags,
+                  architecturalPattern:
+                    (j.architectural_pattern as string) ?? null,
+                  reasoning:
+                    ((j as Record<string, unknown>).reasoning as string) ??
+                    null,
+                  modelTier: j.model_tier,
+                  modelUsed: j.model_used ?? null,
+                }
+              : null,
+          }
+        }),
+      })
+    }
+
     return successResponse({
       entities: entities.map((e) => ({
         id: e.id,

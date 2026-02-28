@@ -16,7 +16,7 @@ import { writeEntitiesToGraph } from "@/lib/temporal/activities/graph-writer"
 import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
-export interface PrepareWorkspaceInput {
+export interface PrepareRepoIntelligenceSpaceInput {
   orgId: string
   repoId: string
   installationId: number
@@ -26,14 +26,14 @@ export interface PrepareWorkspaceInput {
   uploadPath?: string
 }
 
-export interface PrepareWorkspaceResult {
+export interface PrepareRepoIntelligenceSpaceResult {
   workspacePath: string
   languages: string[]
   workspaceRoots: string[]
   lastSha?: string
 }
 
-export async function prepareWorkspace(input: PrepareWorkspaceInput): Promise<PrepareWorkspaceResult> {
+export async function prepareRepoIntelligenceSpace(input: PrepareRepoIntelligenceSpaceInput): Promise<PrepareRepoIntelligenceSpaceResult> {
   const log = logger.child({ service: "indexing-heavy", organizationId: input.orgId, repoId: input.repoId })
   const plog = createPipelineLogger(input.repoId, "indexing")
   log.info("Preparing workspace", { cloneUrl: input.cloneUrl, defaultBranch: input.defaultBranch, provider: input.provider ?? "github" })
@@ -99,7 +99,7 @@ async function prepareLocalCliWorkspace(
     zipBuffer = await container.storageProvider.downloadFile("cli_uploads", uploadPath)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`[prepareWorkspace] Failed to download local_cli upload from storage: ${message}`)
+    throw new Error(`[prepareRepoIntelligenceSpace] Failed to download local_cli upload from storage: ${message}`)
   }
 
   heartbeat("extracting local_cli upload")
@@ -119,7 +119,7 @@ async function prepareLocalCliWorkspace(
     }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
-    throw new Error(`[prepareWorkspace] Failed to extract local_cli upload: ${message}`)
+    throw new Error(`[prepareRepoIntelligenceSpace] Failed to extract local_cli upload: ${message}`)
   }
 }
 
@@ -129,6 +129,7 @@ export interface RunSCIPInput {
   repoId: string
   languages: string[]
   workspaceRoots: string[]
+  indexVersion?: string
 }
 
 /** @deprecated Use RunSCIPLightResult instead — full arrays no longer cross Temporal. */
@@ -142,6 +143,9 @@ export interface RunSCIPLightResult {
   entityCount: number
   edgeCount: number
   coveredFiles: string[]
+  fileCount: number
+  functionCount: number
+  classCount: number
 }
 
 /**
@@ -194,14 +198,18 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
     input.repoId,
     toEntityDocs(allEntities, input.orgId, input.repoId),
     toEdgeDocs(allEdges, input.orgId, input.repoId),
+    input.indexVersion,
   )
 
   log.info("SCIP indexing complete", { entityCount: writeResult.entitiesWritten, edgeCount: writeResult.edgesWritten, coveredFiles: allCoveredFiles.length })
-  plog.log("info", "Step 2/7", `SCIP complete — wrote ${writeResult.entitiesWritten} entities, ${writeResult.edgesWritten} edges`)
+  plog.log("info", "Step 2/7", `SCIP complete — wrote ${writeResult.entitiesWritten} entities, ${writeResult.edgesWritten} edges (${writeResult.fileCount} files, ${writeResult.functionCount} functions, ${writeResult.classCount} classes)`)
   return {
     entityCount: writeResult.entitiesWritten,
     edgeCount: writeResult.edgesWritten,
     coveredFiles: allCoveredFiles,
+    fileCount: writeResult.fileCount,
+    functionCount: writeResult.functionCount,
+    classCount: writeResult.classCount,
   }
 }
 
@@ -210,6 +218,7 @@ export interface ParseRestInput {
   orgId: string
   repoId: string
   coveredFiles: string[]
+  indexVersion?: string
 }
 
 /** @deprecated Use ParseRestLightResult instead — full arrays no longer cross Temporal. */
@@ -221,6 +230,9 @@ export interface ParseRestResult {
 export interface ParseRestLightResult {
   entityCount: number
   edgeCount: number
+  fileCount: number
+  functionCount: number
+  classCount: number
 }
 
 /**
@@ -287,13 +299,17 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestLightRe
     input.repoId,
     toEntityDocs(allEntities, input.orgId, input.repoId),
     toEdgeDocs(allEdges, input.orgId, input.repoId),
+    input.indexVersion,
   )
 
   log.info("File parsing complete", { entityCount: writeResult.entitiesWritten, edgeCount: writeResult.edgesWritten, uncoveredFiles: uncoveredFiles.length })
-  plog.log("info", "Step 3/7", `Parsing complete — wrote ${writeResult.entitiesWritten} entities from ${uncoveredFiles.length} uncovered files`)
+  plog.log("info", "Step 3/7", `Parsing complete — wrote ${writeResult.entitiesWritten} entities from ${uncoveredFiles.length} uncovered files (${writeResult.fileCount} files, ${writeResult.functionCount} functions, ${writeResult.classCount} classes)`)
   return {
     entityCount: writeResult.entitiesWritten,
     edgeCount: writeResult.edgesWritten,
+    fileCount: writeResult.fileCount,
+    functionCount: writeResult.functionCount,
+    classCount: writeResult.classCount,
   }
 }
 

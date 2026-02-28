@@ -90,9 +90,7 @@ export async function GET(
           const statusPayload = {
             status: repo.status,
             progress: repo.indexProgress ?? 0,
-            indexingStartedAt: repo.indexingStartedAt
-              ? new Date(repo.indexingStartedAt).getTime()
-              : null,
+            indexingStartedAt: null,
             errorMessage: repo.errorMessage ?? null,
             fileCount: repo.fileCount,
             functionCount: repo.functionCount,

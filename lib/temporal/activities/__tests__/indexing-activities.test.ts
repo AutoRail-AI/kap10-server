@@ -40,7 +40,7 @@ vi.mock("@temporalio/activity", () => ({
 }))
 
 // Import after mock is set up
-const { prepareWorkspace, runSCIP, parseRest } = await import("../indexing-heavy")
+const { prepareRepoIntelligenceSpace, runSCIP, parseRest } = await import("../indexing-heavy")
 const { writeToArango, updateRepoError, deleteRepoData } = await import("../indexing-light")
 const { __resetTestContainer } = await import("@/lib/di/container") as typeof import("@/lib/di/container") & {
   __resetTestContainer: () => void
@@ -51,9 +51,9 @@ describe("indexing-heavy activities", () => {
     __resetTestContainer()
   })
 
-  describe("prepareWorkspace", () => {
+  describe("prepareRepoIntelligenceSpace", () => {
     it("returns workspace path based on orgId and repoId", async () => {
-      const result = await prepareWorkspace({
+      const result = await prepareRepoIntelligenceSpace({
         orgId: "org-1",
         repoId: "repo-1",
         installationId: 123,
@@ -72,7 +72,7 @@ describe("indexing-heavy activities", () => {
       }
       __setTestContainer(container)
 
-      await prepareWorkspace({
+      await prepareRepoIntelligenceSpace({
         orgId: "org-1",
         repoId: "repo-1",
         installationId: 456,
@@ -88,7 +88,7 @@ describe("indexing-heavy activities", () => {
     })
 
     it("returns languages and workspaceRoots", async () => {
-      const result = await prepareWorkspace({
+      const result = await prepareRepoIntelligenceSpace({
         orgId: "org-1",
         repoId: "repo-1",
         installationId: 123,

@@ -45,8 +45,24 @@ export function buildFileTree(paths: { path: string }[]): TreeNode[] {
     const first = p.split("/")[0]
     if (first) topLevel.add(first)
   }
-  return Array.from(topLevel)
+  const tree = Array.from(topLevel)
     .sort()
     .map((name) => root.get(name)!)
     .filter(Boolean)
+
+  sortTree(tree)
+  return tree
+}
+
+/** Recursively sort: directories first (alphabetical), then files (alphabetical). */
+function sortTree(nodes: TreeNode[]): void {
+  nodes.sort((a, b) => {
+    if (a.type !== b.type) return a.type === "dir" ? -1 : 1
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+  })
+  for (const node of nodes) {
+    if (node.children && node.children.length > 0) {
+      sortTree(node.children)
+    }
+  }
 }

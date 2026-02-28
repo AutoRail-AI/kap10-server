@@ -27,6 +27,7 @@ const logActivities = proxyActivities<typeof pipelineLogs>({
 export interface DiscoverOntologyInput {
   orgId: string
   repoId: string
+  runId?: string
 }
 
 /** Workflow-safe log helper */
@@ -34,9 +35,11 @@ function wfLog(level: string, msg: string, ctx: Record<string, unknown>, step?: 
   const ts = new Date().toISOString()
   const orgId = ctx.organizationId ?? "-"
   const repoId = ctx.repoId ?? "-"
+  const runId = ctx.runId as string | undefined
   const extra = { ...ctx }
   delete extra.organizationId
   delete extra.repoId
+  delete extra.runId
   const extraStr = Object.keys(extra).length > 0 ? ` ${JSON.stringify(extra)}` : ""
   console.log(`[${ts}] [${level.padEnd(5)}] [wf:discover-ontology] [${orgId}/${repoId}] ${msg}${extraStr}`)
 
@@ -47,13 +50,13 @@ function wfLog(level: string, msg: string, ctx: Record<string, unknown>, step?: 
       phase: "ontology",
       step: step ?? "",
       message: msg,
-      meta: { ...extra, repoId: String(repoId) },
+      meta: { ...extra, repoId: String(repoId), ...(runId && { runId }) },
     })
     .catch(() => {})
 }
 
 export async function discoverOntologyWorkflow(input: DiscoverOntologyInput): Promise<void> {
-  const ctx = { organizationId: input.orgId, repoId: input.repoId }
+  const ctx = { organizationId: input.orgId, repoId: input.repoId, runId: input.runId }
   wfLog("INFO", "Ontology discovery workflow started", ctx, "Start")
 
   // Step 1: Discover, refine, and store ontology (all in one activity — no large payloads)
@@ -69,7 +72,7 @@ export async function discoverOntologyWorkflow(input: DiscoverOntologyInput): Pr
   await startChild(justifyRepoWorkflow, {
     workflowId: `justify-${input.orgId}-${input.repoId}-${workflowInfo().runId.slice(0, 8)}`,
     taskQueue: "light-llm-queue",
-    args: [{ orgId: input.orgId, repoId: input.repoId }],
+    args: [{ orgId: input.orgId, repoId: input.repoId, runId: input.runId }],
     parentClosePolicy: ParentClosePolicy.ABANDON,
   })
 
@@ -79,8 +82,8 @@ export async function discoverOntologyWorkflow(input: DiscoverOntologyInput): Pr
     phase: "ontology",
     step: "Complete",
     message: "Ontology discovery workflow complete",
-    meta: { repoId: input.repoId },
+    meta: { repoId: input.repoId, ...(input.runId && { runId: input.runId }) },
   })
-  await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId })
+  await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId, runId: input.runId })
   console.log(`[${new Date().toISOString()}] [INFO ] [wf:discover-ontology] [${input.orgId}/${input.repoId}] Ontology discovery workflow complete`)
 }

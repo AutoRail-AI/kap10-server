@@ -31,8 +31,14 @@ function TaxonomyBar({ breakdown }: { breakdown: Record<string, number> }) {
 
 function confidenceColor(confidence: number): string {
   if (confidence < 0.5) return "text-red-400"
-  if (confidence < 0.8) return "text-amber-400"
+  if (confidence < 0.7) return "text-amber-400"
   return "text-emerald-400"
+}
+
+function confidenceGlow(confidence: number): string {
+  if (confidence < 0.5) return "ring-1 ring-red-500/20 shadow-[0_0_12px_rgba(239,68,68,0.08)]"
+  if (confidence < 0.7) return "ring-1 ring-amber-500/20 shadow-[0_0_12px_rgba(245,158,11,0.06)]"
+  return ""
 }
 
 interface BlueprintData {
@@ -126,7 +132,7 @@ export function BlueprintView({ repoId }: { repoId: string }) {
       {/* Feature grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {data.features.map((feature) => (
-          <div key={feature.id} className="glass-card border-border rounded-lg border p-4 space-y-3">
+          <div key={feature.id} className={`glass-card border-border rounded-lg border p-4 space-y-3 ${confidenceGlow(feature.average_confidence)}`}>
             <div className="flex items-center justify-between">
               <Badge variant="outline" className="text-xs bg-primary/10 text-primary border-primary/30">
                 {feature.feature_tag}

@@ -11,6 +11,12 @@ export interface EntityDoc {
   name: string
   file_path: string
   index_version?: string
+  /** Pre-computed blast radius: number of inbound `calls` edges */
+  fan_in?: number
+  /** Pre-computed blast radius: number of outbound `calls` edges */
+  fan_out?: number
+  /** Risk classification based on fan-in/fan-out thresholds */
+  risk_level?: "high" | "medium" | "normal"
   [key: string]: unknown
 }
 
@@ -415,6 +421,33 @@ export interface IndexEventDoc {
   workflow_id: string
   extraction_errors?: Array<{ filePath: string; reason: string; quarantined: boolean }>
   created_at: string
+  // Pipeline run tracking (optional, additive)
+  run_id?: string
+  trigger_type?: string
+  started_at?: string
+  status?: string
+}
+
+// Pipeline run tracking types
+
+export type PipelineStepName =
+  | "clone"
+  | "wipe"
+  | "scip"
+  | "parse"
+  | "finalize"
+  | "embed"
+  | "graphSync"
+  | "patternDetection"
+
+export interface PipelineStepRecord {
+  name: PipelineStepName
+  label: string
+  status: "pending" | "running" | "completed" | "failed" | "skipped"
+  startedAt?: string
+  completedAt?: string
+  durationMs?: number
+  errorMessage?: string
 }
 
 export interface DriftAlert {

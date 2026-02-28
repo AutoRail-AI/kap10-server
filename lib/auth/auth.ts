@@ -358,6 +358,7 @@ function getAuth(): AuthInstance {
       "options=-c%20search_path%3Dpublic"
     const pool = new Pool({
       connectionString,
+      max: 3,
       ssl: dbUrl?.includes("supabase.co")
         ? { rejectUnauthorized: false }
         : undefined,

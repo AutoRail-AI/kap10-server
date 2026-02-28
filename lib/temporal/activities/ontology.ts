@@ -98,6 +98,21 @@ async function extractAndRefineOntologyInternal(
   // Extract project-level context from workspace manifest files
   const projectContext = extractProjectContext(input.orgId, input.repoId)
 
+  // Incorporate user-provided context documents (context seeding)
+  let enrichedDescription = projectContext.project_description
+  try {
+    const repo = await container.relationalStore.getRepo(input.orgId, input.repoId)
+    if (repo?.contextDocuments) {
+      const userContext = repo.contextDocuments
+      // Append user context to the project description for LLM anchoring
+      enrichedDescription = enrichedDescription
+        ? `${enrichedDescription}\n\nUser-provided context:\n${userContext}`
+        : userContext
+    }
+  } catch {
+    // Best-effort — don't fail ontology if context fetch fails
+  }
+
   return {
     id: randomUUID(),
     org_id: input.orgId,
@@ -105,6 +120,7 @@ async function extractAndRefineOntologyInternal(
     terms,
     ubiquitous_language: ubiquitousLanguage,
     ...projectContext,
+    ...(enrichedDescription && { project_description: enrichedDescription }),
     generated_at: new Date().toISOString(),
   }
 }

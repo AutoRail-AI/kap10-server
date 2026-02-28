@@ -43,6 +43,7 @@ export const getJustifyProgressQuery = defineQuery<number>("getJustifyProgress")
 export interface JustifyRepoInput {
   orgId: string
   repoId: string
+  runId?: string
 }
 
 /** Workflow-safe log helper */
@@ -50,9 +51,11 @@ function wfLog(level: string, msg: string, ctx: Record<string, unknown>, step?: 
   const ts = new Date().toISOString()
   const orgId = ctx.organizationId ?? "-"
   const repoId = ctx.repoId ?? "-"
+  const runId = ctx.runId as string | undefined
   const extra = { ...ctx }
   delete extra.organizationId
   delete extra.repoId
+  delete extra.runId
   const extraStr = Object.keys(extra).length > 0 ? ` ${JSON.stringify(extra)}` : ""
   console.log(`[${ts}] [${level.padEnd(5)}] [wf:justify-repo] [${orgId}/${repoId}] ${msg}${extraStr}`)
 
@@ -63,7 +66,7 @@ function wfLog(level: string, msg: string, ctx: Record<string, unknown>, step?: 
       phase: "justifying",
       step: step ?? "",
       message: msg,
-      meta: { ...extra, repoId: String(repoId) },
+      meta: { ...extra, repoId: String(repoId), ...(runId && { runId }) },
     })
     .catch(() => {})
 }
@@ -72,7 +75,7 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
   entitiesJustified: number
   embeddingsStored: number
 }> {
-  const ctx = { organizationId: input.orgId, repoId: input.repoId }
+  const ctx = { organizationId: input.orgId, repoId: input.repoId, runId: input.runId }
   let progress = 0
   setHandler(getJustifyProgressQuery, () => progress)
 
@@ -178,7 +181,7 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
     await startChild(generateHealthReportWorkflow, {
       workflowId: `health-${input.orgId}-${input.repoId}-${workflowInfo().runId.slice(0, 8)}`,
       taskQueue: "light-llm-queue",
-      args: [{ orgId: input.orgId, repoId: input.repoId }],
+      args: [{ orgId: input.orgId, repoId: input.repoId, runId: input.runId }],
       parentClosePolicy: ParentClosePolicy.ABANDON,
     })
 
@@ -193,9 +196,9 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
       phase: "justifying",
       step: "Complete",
       message: "Justification workflow complete",
-      meta: { entitiesJustified: totalJustified, embeddingsStored, repoId: input.repoId },
+      meta: { entitiesJustified: totalJustified, embeddingsStored, repoId: input.repoId, ...(input.runId && { runId: input.runId }) },
     })
-    await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId })
+    await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId, runId: input.runId })
     console.log(`[${new Date().toISOString()}] [INFO ] [wf:justify-repo] [${input.orgId}/${input.repoId}] Justification workflow complete ${JSON.stringify({ entitiesJustified: totalJustified, embeddingsStored })}`)
     return {
       entitiesJustified: totalJustified,
@@ -205,7 +208,7 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
     const message = err instanceof Error ? err.message : String(err)
     wfLog("ERROR", "Justification workflow failed", { ...ctx, errorMessage: message }, "Error")
     // Best-effort archive on failure — don't block the error throw
-    logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
+    logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId, runId: input.runId }).catch(() => {})
     await activities.setJustifyFailedStatus(input.repoId, message)
     throw err
   }

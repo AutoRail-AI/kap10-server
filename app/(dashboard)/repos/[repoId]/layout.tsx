@@ -16,6 +16,11 @@ import { RepoTabs } from "@/components/repo/repo-tabs"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { getActiveOrgId, getSessionCached } from "@/lib/api/get-active-org"
+import {
+  getActiveRulesCached,
+  getPatternsCached,
+  getProjectStatsCached,
+} from "@/lib/api/cached-queries"
 import { getContainer } from "@/lib/di/container"
 
 /**
@@ -139,12 +144,19 @@ async function TelemetryChips({
   repo: { fileCount?: number | null; defaultBranch: string | null }
   syncAge: number | null
 }) {
-  const { getProjectStatsCached, getActiveRulesCached, getPatternsCached } = require("@/lib/api/cached-queries") as typeof import("@/lib/api/cached-queries")
-  const [projectStats, activeRules, patterns] = await Promise.all([
-    getProjectStatsCached(orgId, repoId),
-    getActiveRulesCached(orgId, repoId),
-    getPatternsCached(orgId, repoId),
-  ])
+  let projectStats: Awaited<ReturnType<typeof getProjectStatsCached>> = null
+  let activeRules: Awaited<ReturnType<typeof getActiveRulesCached>> = []
+  let patterns: Awaited<ReturnType<typeof getPatternsCached>> = []
+
+  try {
+    ;[projectStats, activeRules, patterns] = await Promise.all([
+      getProjectStatsCached(orgId, repoId),
+      getActiveRulesCached(orgId, repoId),
+      getPatternsCached(orgId, repoId),
+    ])
+  } catch {
+    // Non-critical — telemetry chips degrade gracefully
+  }
 
   const totalEntities =
     (projectStats?.functions ?? 0) +

@@ -7,41 +7,19 @@
  * connection so Prisma finds unerr tables first.
  */
 
-import { PrismaPg } from "@prisma/adapter-pg"
-import { PrismaClient } from "@prisma/client"
+import type { PrismaClient } from "@prisma/client"
 import type {
   ApiKeyRecord,
   DeletionLogRecord,
   GitHubInstallationRecord,
   IRelationalStore,
+  PipelineRunRecord,
   RepoRecord,
   WorkspaceRecord,
 } from "@/lib/ports/relational-store"
-import type { PrReviewCommentRecord, PrReviewRecord, ReviewConfig } from "@/lib/ports/types"
+import type { PipelineStepRecord, PrReviewCommentRecord, PrReviewRecord, ReviewConfig } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG } from "@/lib/ports/types"
-
-let prismaInstance: PrismaClient | null = null
-
-function getPrisma(): PrismaClient {
-  if (!prismaInstance) {
-    const connectionString =
-      process.env.SUPABASE_DB_URL ?? process.env.DATABASE_URL
-    if (!connectionString) {
-      throw new Error(
-        "PrismaClient requires SUPABASE_DB_URL or DATABASE_URL. Set it in .env.local."
-      )
-    }
-    // Set search_path so Prisma resolves unerr-schema tables (repos, deletion_logs)
-    // alongside public-schema tables (Better Auth). See: prisma/prisma#28611
-    const searchPath = "unerr,public"
-    const separator = connectionString.includes("?") ? "&" : "?"
-    const connWithSchema =
-      connectionString + separator + "options=-c%20search_path%3D" + encodeURIComponent(searchPath)
-    const adapter = new PrismaPg({ connectionString: connWithSchema })
-    prismaInstance = new PrismaClient({ adapter })
-  }
-  return prismaInstance
-}
+import { getPrisma } from "@/lib/db/prisma"
 
 export class PrismaRelationalStore implements IRelationalStore {
   private prisma = getPrisma()
@@ -103,12 +81,13 @@ export class PrismaRelationalStore implements IRelationalStore {
       workflowId: r.workflowId ?? undefined,
       onboardingPrUrl: r.onboardingPrUrl ?? undefined,
       onboardingPrNumber: r.onboardingPrNumber ?? undefined,
+      contextDocuments: (r as { contextDocuments?: string | null }).contextDocuments ?? undefined,
     }
   }
 
   async getRepos(orgId: string): Promise<RepoRecord[]> {
     const rows = await this.prisma.repo.findMany({
-      where: { organizationId: orgId },
+      where: { organizationId: orgId, status: { not: "deleting" } },
       orderBy: { createdAt: "desc" },
       take: 200,
     })
@@ -240,6 +219,7 @@ export class PrismaRelationalStore implements IRelationalStore {
       classCount?: number
       errorMessage?: string | null
       lastIndexedSha?: string | null
+      lastIndexedAt?: Date | null
     }
   ): Promise<void> {
     await this.prisma.repo.update({
@@ -253,6 +233,7 @@ export class PrismaRelationalStore implements IRelationalStore {
         ...(data.classCount !== undefined && { classCount: data.classCount }),
         ...(data.errorMessage !== undefined && { errorMessage: data.errorMessage }),
         ...(data.lastIndexedSha !== undefined && { lastIndexedSha: data.lastIndexedSha }),
+        ...(data.lastIndexedAt !== undefined && { lastIndexedAt: data.lastIndexedAt }),
       },
     })
   }
@@ -273,6 +254,11 @@ export class PrismaRelationalStore implements IRelationalStore {
 
   async deleteRepo(repoId: string): Promise<void> {
     await this.prisma.repo.delete({ where: { id: repoId } })
+  }
+
+  async updateRepoContextDocuments(repoId: string, contextDocuments: string | null): Promise<void> {
+    // Use raw query since Prisma client may not be regenerated yet with the new field
+    await this.prisma.$executeRaw`UPDATE repos SET context_documents = ${contextDocuments} WHERE id = ${repoId}`
   }
 
   async promoteRepo(repoId: string): Promise<void> {
@@ -527,6 +513,150 @@ export class PrismaRelationalStore implements IRelationalStore {
         onboardingPrNumber: prNumber,
       },
     })
+  }
+
+  // ── Pipeline run tracking ───────────────────────────────────────
+
+  private mapPipelineRun(row: {
+    id: string
+    repoId: string
+    organizationId: string
+    workflowId: string | null
+    temporalRunId: string | null
+    status: string
+    triggerType: string
+    triggerUserId: string | null
+    pipelineType: string
+    indexVersion: string | null
+    startedAt: Date
+    completedAt: Date | null
+    durationMs: number | null
+    errorMessage: string | null
+    steps: unknown
+    fileCount: number | null
+    functionCount: number | null
+    classCount: number | null
+    entitiesWritten: number | null
+    edgesWritten: number | null
+  }): PipelineRunRecord {
+    return {
+      id: row.id,
+      repoId: row.repoId,
+      organizationId: row.organizationId,
+      workflowId: row.workflowId,
+      temporalRunId: row.temporalRunId,
+      status: row.status,
+      triggerType: row.triggerType,
+      triggerUserId: row.triggerUserId,
+      pipelineType: row.pipelineType,
+      indexVersion: row.indexVersion,
+      startedAt: row.startedAt,
+      completedAt: row.completedAt,
+      durationMs: row.durationMs,
+      errorMessage: row.errorMessage,
+      steps: (Array.isArray(row.steps) ? row.steps : []) as PipelineStepRecord[],
+      fileCount: row.fileCount,
+      functionCount: row.functionCount,
+      classCount: row.classCount,
+      entitiesWritten: row.entitiesWritten,
+      edgesWritten: row.edgesWritten,
+    }
+  }
+
+  async createPipelineRun(data: {
+    id: string
+    repoId: string
+    organizationId: string
+    workflowId?: string
+    triggerType: string
+    triggerUserId?: string
+    pipelineType?: string
+    indexVersion?: string
+    steps?: PipelineStepRecord[]
+  }): Promise<PipelineRunRecord> {
+    const row = await this.prisma.pipelineRun.create({
+      data: {
+        id: data.id,
+        repoId: data.repoId,
+        organizationId: data.organizationId,
+        workflowId: data.workflowId ?? null,
+        triggerType: data.triggerType as "initial",
+        triggerUserId: data.triggerUserId ?? null,
+        pipelineType: data.pipelineType ?? "full",
+        indexVersion: data.indexVersion ?? null,
+        steps: JSON.parse(JSON.stringify(data.steps ?? [])) as object[],
+      },
+    })
+    return this.mapPipelineRun(row)
+  }
+
+  async getPipelineRun(runId: string): Promise<PipelineRunRecord | null> {
+    const row = await this.prisma.pipelineRun.findUnique({ where: { id: runId } })
+    return row ? this.mapPipelineRun(row) : null
+  }
+
+  async updatePipelineRun(
+    runId: string,
+    data: Partial<
+      Pick<
+        PipelineRunRecord,
+        | "workflowId"
+        | "temporalRunId"
+        | "status"
+        | "completedAt"
+        | "durationMs"
+        | "errorMessage"
+        | "steps"
+        | "fileCount"
+        | "functionCount"
+        | "classCount"
+        | "entitiesWritten"
+        | "edgesWritten"
+      >
+    >
+  ): Promise<void> {
+    await this.prisma.pipelineRun.update({
+      where: { id: runId },
+      data: {
+        ...(data.workflowId !== undefined && { workflowId: data.workflowId }),
+        ...(data.temporalRunId !== undefined && { temporalRunId: data.temporalRunId }),
+        ...(data.status !== undefined && { status: data.status as "running" }),
+        ...(data.completedAt !== undefined && { completedAt: data.completedAt }),
+        ...(data.durationMs !== undefined && { durationMs: data.durationMs }),
+        ...(data.errorMessage !== undefined && { errorMessage: data.errorMessage }),
+        ...(data.steps !== undefined && { steps: JSON.parse(JSON.stringify(data.steps)) as object[] }),
+        ...(data.fileCount !== undefined && { fileCount: data.fileCount }),
+        ...(data.functionCount !== undefined && { functionCount: data.functionCount }),
+        ...(data.classCount !== undefined && { classCount: data.classCount }),
+        ...(data.entitiesWritten !== undefined && { entitiesWritten: data.entitiesWritten }),
+        ...(data.edgesWritten !== undefined && { edgesWritten: data.edgesWritten }),
+      },
+    })
+  }
+
+  async getPipelineRunsForRepo(
+    orgId: string,
+    repoId: string,
+    opts?: { limit?: number; status?: string }
+  ): Promise<PipelineRunRecord[]> {
+    const rows = await this.prisma.pipelineRun.findMany({
+      where: {
+        organizationId: orgId,
+        repoId,
+        ...(opts?.status && { status: opts.status as "running" }),
+      },
+      orderBy: { startedAt: "desc" },
+      take: opts?.limit ?? 20,
+    })
+    return rows.map((r) => this.mapPipelineRun(r))
+  }
+
+  async getLatestPipelineRun(orgId: string, repoId: string): Promise<PipelineRunRecord | null> {
+    const row = await this.prisma.pipelineRun.findFirst({
+      where: { organizationId: orgId, repoId },
+      orderBy: { startedAt: "desc" },
+    })
+    return row ? this.mapPipelineRun(row) : null
   }
 
   // ── Phase 7: PR Review Integration ──────────────────────────────

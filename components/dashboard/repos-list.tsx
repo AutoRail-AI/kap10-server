@@ -91,7 +91,7 @@ function formatSyncAge(date: Date | string | null): string {
 }
 
 export function ReposList({
-  repos,
+  repos: serverRepos,
   hasInstallation,
   githubAccounts: _githubAccounts = [],
   installHref = "/api/github/install",
@@ -110,6 +110,32 @@ export function ReposList({
   const [searchQuery, setSearchQuery] = useState("")
   const [accountFilter, setAccountFilter] = useState<string>("all")
   const [page, setPage] = useState(0)
+  // Optimistic local state: track removed repo IDs so they disappear immediately
+  const [removedIds, setRemovedIds] = useState<Set<string>>(new Set())
+
+  // Merge server data with optimistic removals. When server catches up, removedIds auto-clear.
+  const repos = useMemo(() => {
+    if (removedIds.size === 0) return serverRepos
+    return serverRepos.filter((r) => !removedIds.has(r.id))
+  }, [serverRepos, removedIds])
+
+  // When server data changes (after router.refresh), clear stale optimistic removals
+  useEffect(() => {
+    if (removedIds.size === 0) return
+    const serverIds = new Set(serverRepos.map((r) => r.id))
+    setRemovedIds((prev) => {
+      const next = new Set<string>()
+      Array.from(prev).forEach((id) => {
+        // Keep optimistic removal only if server still has the repo
+        if (serverIds.has(id)) next.add(id)
+      })
+      return next.size === prev.size ? prev : next
+    })
+  }, [serverRepos]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const removeRepo = useCallback((repoId: string) => {
+    setRemovedIds((prev) => new Set(prev).add(repoId))
+  }, [])
 
   const handleConnect = async (
     selected: Array<{ githubRepoId: number; branch: string }>
@@ -345,7 +371,7 @@ export function ReposList({
           <tbody className="divide-y divide-white/6">
             {paginated.length > 0 ? (
               paginated.map((repo) => (
-                <RepoRow key={repo.id} repo={repo} />
+                <RepoRow key={repo.id} repo={repo} onRemove={removeRepo} />
               ))
             ) : (
               <tr>
@@ -407,7 +433,7 @@ export function ReposList({
   )
 }
 
-function RepoRow({ repo }: { repo: RepoRecord }) {
+function RepoRow({ repo, onRemove }: { repo: RepoRecord; onRemove: (id: string) => void }) {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [rateLimited, setRateLimited] = useState(false)
@@ -430,6 +456,9 @@ function RepoRow({ repo }: { repo: RepoRecord }) {
       if (res.status === 429) {
         setRateLimited(true)
         setTimeout(() => setRateLimited(false), 60_000)
+      } else if (res.ok) {
+        // Refresh server data after a short delay to allow status transition
+        setTimeout(() => router.refresh(), 500)
       }
       router.refresh()
     } finally {
@@ -559,7 +588,10 @@ function RepoRow({ repo }: { repo: RepoRecord }) {
                       "Remove this repository? This will delete all indexed data."
                     )
                   ) {
-                    await fetch(`/api/repos/${repo.id}`, { method: "DELETE" })
+                    const res = await fetch(`/api/repos/${repo.id}`, { method: "DELETE" })
+                    if (res.ok) {
+                      onRemove(repo.id)
+                    }
                     router.refresh()
                   }
                 }}

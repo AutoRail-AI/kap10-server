@@ -72,7 +72,7 @@ export class OllamaProvider implements ILLMProvider {
     const ai = require("ai") as any
     const provider = this.getProvider()
 
-    const result = await this.withRetry(() =>
+    const result: any = await this.withRetry(() =>
       ai.generateObject({
         model: provider(params.model),
         schema: params.schema,
@@ -121,7 +121,7 @@ export class OllamaProvider implements ILLMProvider {
     const ai = require("ai") as any
     const provider = this.getProvider()
 
-    const result = await this.withRetry(() =>
+    const result: any = await this.withRetry(() =>
       ai.embedMany({
         model: provider.embedding(params.model),
         values: params.texts,

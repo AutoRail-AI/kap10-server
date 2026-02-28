@@ -50,6 +50,7 @@ export interface EmbedRepoInput {
   orgId: string
   repoId: string
   lastIndexedSha?: string
+  runId?: string
 }
 
 /** Workflow-safe log helper (Temporal sandbox — no require/import of Node modules) */
@@ -57,9 +58,11 @@ function wfLog(level: string, msg: string, ctx: Record<string, unknown>, step?: 
   const ts = new Date().toISOString()
   const orgId = ctx.organizationId ?? "-"
   const repoId = ctx.repoId ?? "-"
+  const runId = ctx.runId as string | undefined
   const extra = { ...ctx }
   delete extra.organizationId
   delete extra.repoId
+  delete extra.runId
   const extraStr = Object.keys(extra).length > 0 ? ` ${JSON.stringify(extra)}` : ""
   console.log(`[${ts}] [${level.padEnd(5)}] [wf:embed-repo] [${orgId}/${repoId}] ${msg}${extraStr}`)
 
@@ -70,7 +73,7 @@ function wfLog(level: string, msg: string, ctx: Record<string, unknown>, step?: 
       phase: "embedding",
       step: step ?? "",
       message: msg,
-      meta: { ...extra, repoId: String(repoId) },
+      meta: { ...extra, repoId: String(repoId), ...(runId && { runId }) },
     })
     .catch(() => {})
 }
@@ -79,7 +82,7 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
   embeddingsStored: number
   orphansDeleted: number
 }> {
-  const ctx = { organizationId: input.orgId, repoId: input.repoId }
+  const ctx = { organizationId: input.orgId, repoId: input.repoId, runId: input.runId }
   let progress = 0
   setHandler(getEmbedProgressQuery, () => progress)
 
@@ -151,7 +154,7 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
     await startChild(discoverOntologyWorkflow, {
       workflowId: `ontology-${input.orgId}-${input.repoId}-${workflowInfo().runId.slice(0, 8)}`,
       taskQueue: "light-llm-queue",
-      args: [{ orgId: input.orgId, repoId: input.repoId }],
+      args: [{ orgId: input.orgId, repoId: input.repoId, runId: input.runId }],
       parentClosePolicy: ParentClosePolicy.ABANDON,
     })
     progress = 100
@@ -164,16 +167,16 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
       phase: "embedding",
       step: "Complete",
       message: "Embedding workflow complete",
-      meta: { embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount, repoId: input.repoId },
+      meta: { embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount, repoId: input.repoId, ...(input.runId && { runId: input.runId }) },
     })
-    await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId })
+    await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId, runId: input.runId })
     console.log(`[${new Date().toISOString()}] [INFO ] [wf:embed-repo] [${input.orgId}/${input.repoId}] Embedding workflow complete ${JSON.stringify({ embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount })}`)
     return { embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     wfLog("ERROR", "Embedding workflow failed", { ...ctx, errorMessage: message }, "Error")
     // Best-effort archive on failure — don't block the error throw
-    logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
+    logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId, runId: input.runId }).catch(() => {})
     await activities.setEmbedFailedStatus(input.repoId, message)
     throw err
   }

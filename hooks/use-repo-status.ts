@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
+import type { PipelineStepRecord } from "@/lib/ports/types"
 import { useVisibility } from "./use-visibility"
 
 const ACTIVE_STATUSES = ["indexing", "embedding", "justifying", "ontology", "pending"]
@@ -16,6 +17,8 @@ export function useRepoStatus(repoId: string, initialStatus: string, initialProg
   const [status, setStatus] = useState(initialStatus)
   const [progress, setProgress] = useState(initialProgress)
   const [indexingStartedAt, setIndexingStartedAt] = useState<number | null>(null)
+  const [currentRunId, setCurrentRunId] = useState<string | null>(null)
+  const [steps, setSteps] = useState<PipelineStepRecord[]>([])
   const visible = useVisibility()
 
   // Sync when server passes new initialStatus (e.g. after navigation)
@@ -37,6 +40,8 @@ export function useRepoStatus(repoId: string, initialStatus: string, initialProg
             status?: string
             progress?: number
             indexingStartedAt?: number | null
+            currentRunId?: string | null
+            steps?: PipelineStepRecord[]
           }
         }
         const data = body?.data
@@ -44,6 +49,8 @@ export function useRepoStatus(repoId: string, initialStatus: string, initialProg
           setStatus(data.status ?? status)
           setProgress(data.progress ?? 0)
           if (data.indexingStartedAt) setIndexingStartedAt(data.indexingStartedAt)
+          if (data.currentRunId) setCurrentRunId(data.currentRunId)
+          if (data.steps) setSteps(data.steps)
           if (!ACTIVE_STATUSES.includes(data.status ?? "")) clearInterval(interval)
         }
       } catch {
@@ -53,5 +60,5 @@ export function useRepoStatus(repoId: string, initialStatus: string, initialProg
     return () => clearInterval(interval)
   }, [repoId, status, visible])
 
-  return { status, progress, setStatus, indexingStartedAt }
+  return { status, progress, setStatus, indexingStartedAt, currentRunId, steps }
 }

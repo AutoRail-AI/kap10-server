@@ -7,6 +7,7 @@
  * Called by `unerr push`.
  */
 
+import { randomUUID } from "node:crypto"
 import { NextResponse } from "next/server"
 import { getContainer } from "@/lib/di/container"
 import { authenticateMcpRequest, isAuthError } from "@/lib/mcp/auth"
@@ -69,6 +70,17 @@ export async function POST(request: Request) {
 
     // Start indexing workflow
     const workflowId = `index-repo-${body.repoId}-${Date.now()}`
+    const runId = randomUUID()
+
+    await container.relationalStore.createPipelineRun({
+      id: runId,
+      repoId: body.repoId,
+      organizationId: orgId,
+      workflowId,
+      triggerType: "initial",
+      pipelineType: "full",
+    })
+
     const handle = await container.workflowEngine.startWorkflow({
       workflowFn: "indexRepoWorkflow",
       workflowId,
@@ -77,6 +89,7 @@ export async function POST(request: Request) {
         repoId: body.repoId,
         provider: "local_cli",
         uploadPath: body.uploadPath,
+        runId,
       }],
       taskQueue: "heavy-compute-queue",
     })

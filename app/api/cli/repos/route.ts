@@ -8,6 +8,7 @@
  * Mirrors POST /api/repos but uses API key auth.
  */
 
+import { randomUUID } from "node:crypto"
 import { NextResponse } from "next/server"
 import { getContainer } from "@/lib/di/container"
 import { authenticateMcpRequest, isAuthError } from "@/lib/mcp/auth"
@@ -128,8 +129,18 @@ export async function POST(request: Request) {
 
     const installationId = meta?.installationId ?? installations[0]?.installationId ?? 0
     const workflowId = `index-${orgId}-${repo.id}`
+    const runId = randomUUID()
 
     try {
+      await container.relationalStore.createPipelineRun({
+        id: runId,
+        repoId: repo.id,
+        organizationId: orgId,
+        workflowId,
+        triggerType: "initial",
+        pipelineType: "full",
+      })
+
       await workflowEngine.startWorkflow({
         workflowId,
         workflowFn: "indexRepoWorkflow",
@@ -139,6 +150,7 @@ export async function POST(request: Request) {
           installationId,
           cloneUrl: `https://github.com/${fullName}.git`,
           defaultBranch: repo.defaultBranch ?? "main",
+          runId,
         }],
         taskQueue: "heavy-compute-queue",
       })

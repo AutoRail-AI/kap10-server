@@ -337,14 +337,14 @@ Each feature links to:
 | **Key Code** | `lib/adapters/arango-graph-store.ts` |
 | **Data Stores** | ArangoDB (`calls` edge collection) |
 
-### 5.6 High Fan-In/Fan-Out
+### 5.6 High Fan-In/Fan-Out & Blast Radius
 
 | | |
 |---|---|
-| **Architecture Doc** | [PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md](PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md), [PHASE_5_INCREMENTAL_INDEXING_AND_GITHUB_WEBHOOKS.md](PHASE_5_INCREMENTAL_INDEXING_AND_GITHUB_WEBHOOKS.md) — hub node handling |
-| **Design Decisions** | Degree centrality on `calls` edges. Defaults: fan-in > 10, fan-out > 15. Hub nodes (≥50 callers) exempt from cascade re-justification to prevent thundering herd. PageRank-style centrality score used for importance ranking. |
-| **Key Code** | `lib/adapters/arango-graph-store.ts` |
-| **Data Stores** | ArangoDB (`calls` edges) |
+| **Architecture Doc** | [PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md](PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md), [INDEXING_PIPELINE.md](INDEXING_PIPELINE.md) — Stage 4b |
+| **Design Decisions** | **Pre-computed during indexing** (Step 4b `precomputeBlastRadius`): AQL COLLECT on `calls` edges computes `fan_in`, `fan_out` per entity. Risk levels: `"high"` (≥10), `"medium"` (≥5), `"normal"`. Results stored directly on entity documents. Hub nodes (≥50 callers) exempt from cascade re-justification to prevent thundering herd. |
+| **Key Code** | `lib/temporal/activities/graph-analysis.ts`, `lib/adapters/arango-graph-store.ts`, `components/code/annotated-code-viewer.tsx` (risk badge) |
+| **Data Stores** | ArangoDB (`calls` edges, `fan_in`/`fan_out`/`risk_level` on entity documents) |
 
 ### 5.7 Feature Blueprint
 
@@ -507,30 +507,31 @@ Each feature links to:
 
 ## 9. Dashboard & Visualization
 
-### 9.1 Entity Graph Visualization
+### 9.1 Annotated Code Viewer
 
 | | |
 |---|---|
-| **Architecture Doc** | [PHASE_11_NATIVE_IDE_INTEGRATIONS.md](PHASE_11_NATIVE_IDE_INTEGRATIONS.md) — shared `@unerr/ui` components, [PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md](PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md) — blast radius visualization |
-| **Key Code** | `app/(dashboard)/repos/[repoId]/code/page.tsx` |
-| **Data Stores** | ArangoDB (entity collections + all edge collections) |
+| **Architecture Doc** | [PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md) — Phase 2.5, [PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md](PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md) — blast radius visualization |
+| **Design Decisions** | **Business purpose leads before code** — designed for both developers and non-developers. Entity cards show taxonomy (human-readable: "Core Business"/"Shared Logic"/"Helper"), confidence with word labels, business purpose as hero text, then code signature. File tree uses IDE-like sorting (folders first, alphabetical). `?enrich=true` API parameter batch-fetches justifications per file. Progressive disclosure: reasoning and semantic triples hidden behind expandable section. |
+| **Key Code** | `components/code/annotated-code-viewer.tsx`, `app/(dashboard)/repos/[repoId]/code/page.tsx`, `app/api/repos/[repoId]/entities/route.ts` (enrich param), `lib/utils/file-tree-builder.ts` (sortTree) |
+| **Data Stores** | ArangoDB (entity collections + `justifications` collection) |
 
-### 9.2 Pipeline Monitor
+### 9.2 Pipeline Monitor & Unified Activity Tab
 
 | | |
 |---|---|
-| **Architecture Doc** | [PHASE_1_GITHUB_CONNECT_AND_INDEXING.md](PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) — progress tracking via Temporal query |
-| **Design Decisions** | SSE endpoint streams Temporal workflow status. Steps: clone, parse (SCIP), graph upload, embed, justify. Temporal `defineQuery('getProgress')` exposes workflow state (0/25/50/75/100%). Pipeline logs streamed via SSE and archived as downloadable files. |
-| **Key Code** | `app/api/repos/[repoId]/events/route.ts`, `app/api/repos/[repoId]/logs/route.ts`, `app/api/repos/[repoId]/logs/download/route.ts`, `lib/temporal/activities/pipeline-logs.ts` |
-| **Data Stores** | Temporal (workflow state + queries), PostgreSQL (`unerr.repos` — status) |
+| **Architecture Doc** | [PHASE_1_GITHUB_CONNECT_AND_INDEXING.md](PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) — progress tracking via Temporal query, [PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md) — Phase 2.6 |
+| **Design Decisions** | **5 tabs consolidated into 1 "Activity" tab** (removed Timeline, Commits, History, Pipeline — all overlapped). Activity page has section switcher: Pipeline Runs / Index Events / Logs. Pipeline runs table with clickable run IDs that open detail page in new tab (`/repos/{repoId}/activity/{runId}`). Run detail page shows status, meta grid, per-step visualization, result metrics, and run-specific logs. SSE endpoint streams Temporal workflow status. **Run ID tracking**: Every pipeline execution gets a UUID (`PipelineRun` record in PostgreSQL). Per-step status tracked via `PipelineRun.steps` JSON column. Run-bound Redis log keys: `unerr:pipeline-logs:{repoId}:{runId}`. |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/activity/page.tsx`, `app/(dashboard)/repos/[repoId]/activity/[runId]/page.tsx`, `components/repo/pipeline-history-table.tsx`, `components/repo/pipeline-log-viewer.tsx`, `app/api/repos/[repoId]/events/route.ts`, `app/api/repos/[repoId]/logs/route.ts`, `app/api/repos/[repoId]/runs/route.ts`, `app/api/repos/[repoId]/runs/[runId]/route.ts`, `lib/temporal/activities/pipeline-logs.ts`, `lib/temporal/activities/pipeline-run.ts` |
+| **Data Stores** | Temporal (workflow state + queries), PostgreSQL (`unerr.repos` — status, `unerr.pipeline_runs` — run history + per-step tracking), Redis (pipeline logs) |
 
 ### 9.3 Activity Feed
 
 | | |
 |---|---|
 | **Architecture Doc** | [PHASE_5_INCREMENTAL_INDEXING_AND_GITHUB_WEBHOOKS.md](PHASE_5_INCREMENTAL_INDEXING_AND_GITHUB_WEBHOOKS.md) |
-| **Design Decisions** | `index_events` ArangoDB collection with 90-day TTL. Each event records: `event_type`, `files_changed`, `entities_added/updated/deleted`, `duration_ms`. |
-| **Key Code** | `lib/adapters/arango-graph-store.ts` |
+| **Design Decisions** | `index_events` ArangoDB collection with 90-day TTL. Each event records: `event_type`, `files_changed`, `entities_added/updated/deleted`, `duration_ms`. Events now include optional `run_id` field for cross-referencing with PostgreSQL `pipeline_runs` records. Displayed as "Index Events" section within the unified Activity tab. |
+| **Key Code** | `lib/adapters/arango-graph-store.ts`, `components/activity/activity-feed.tsx` |
 | **Data Stores** | ArangoDB (`index_events` — TTL 90 days) |
 
 ### 9.4 Global Code Search
@@ -542,13 +543,43 @@ Each feature links to:
 | **Key Code** | `lib/adapters/llamaindex-vector-search.ts` |
 | **Data Stores** | PostgreSQL (`unerr.entity_embeddings`), ArangoDB (fulltext indexes) |
 
-### 9.5 Entity Browser
+### 9.5 Entity Browser & Overview Tab
 
 | | |
 |---|---|
 | **Architecture Doc** | [PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md) |
-| **Key Code** | `lib/adapters/arango-graph-store.ts` |
-| **Data Stores** | ArangoDB (entity collections + `justifications`) |
+| **Design Decisions** | "Issues" tab renamed to **"Overview"** (Home icon) — serves as the primary repo landing page. Shows hero stats (health grade, entities, features, insights), top insights, domain intelligence + language distribution side-by-side, quick navigation links, and Issues as a subsection. Code explorer moved to dedicated Code tab with annotated viewer. |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/page.tsx`, `app/api/repos/[repoId]/overview/route.ts`, `components/repo/repo-tabs.tsx`, `lib/adapters/arango-graph-store.ts` |
+| **Data Stores** | ArangoDB (entity collections + `justifications` + `health_reports` + `domain_ontology`) |
+
+### 9.6 Context Seeding
+
+| | |
+|---|---|
+| **Architecture Doc** | [INDEXING_PIPELINE.md](INDEXING_PIPELINE.md) — TBI-H-01 |
+| **Design Decisions** | Simple approach: raw text stored as `contextDocuments` on repo record (PostgreSQL, max 10k chars) rather than structured `ContextManifest` in ArangoDB. Injected into both ontology and justification LLM prompts to anchor vocabulary. Truncated to 3,000 chars in prompt. UI available during pending/indexing/embedding states. |
+| **Data Flow** | User pastes text in onboarding console → `PUT /api/repos/{repoId}/context` → stored in `unerr.repos.context_documents` → fetched by ontology + justification activities → injected into LLM prompts |
+| **Key Code** | `app/api/repos/[repoId]/context/route.ts`, `lib/temporal/activities/ontology.ts`, `lib/temporal/activities/justification.ts`, `lib/justification/prompt-builder.ts`, `components/repo/repo-onboarding-console.tsx` |
+| **Data Stores** | PostgreSQL (`unerr.repos.context_documents`) |
+
+### 9.7 UNERR_CONTEXT.md Export
+
+| | |
+|---|---|
+| **Architecture Doc** | [INDEXING_PIPELINE.md](INDEXING_PIPELINE.md) — TBI-H-04 |
+| **Design Decisions** | Generated on-demand (not stored) via `generateContextDocument()`. Compiles project stats, health report, features, ADRs, ontology, domain glossary, and ubiquitous language into structured markdown. Download via `GET /api/repos/{repoId}/export/context` with `Content-Disposition: attachment`. Available from overview page and celebration modal. |
+| **Key Code** | `lib/justification/context-document-generator.ts`, `app/api/repos/[repoId]/export/context/route.ts`, `app/(dashboard)/repos/[repoId]/page.tsx`, `components/repo/repo-onboarding-console.tsx` |
+| **Data Stores** | ArangoDB (reads `features_agg`, `health_reports`, `adrs`, `domain_ontologies`) |
+
+### 9.8 Human-in-the-Loop Corrections
+
+| | |
+|---|---|
+| **Architecture Doc** | [INDEXING_PIPELINE.md](INDEXING_PIPELINE.md) — TBI-H-02 |
+| **Design Decisions** | Inline correction editor in annotated code viewer (not a separate modal). Override sets `confidence: 1.0`, `model_used: "human_override"`, `model_tier: "heuristic"`. Uses existing `bulkUpsertJustifications` for persistence. Confidence heatmap: emerald ≥80%, amber ≥50%, red <50% with glow rings on blueprint feature cards. |
+| **Data Flow** | User clicks edit icon → fills taxonomy/feature_tag/purpose → `POST /api/repos/{repoId}/entities/{entityId}/override` → `bulkUpsertJustifications()` in ArangoDB |
+| **Key Code** | `app/api/repos/[repoId]/entities/[entityId]/override/route.ts`, `components/code/annotated-code-viewer.tsx`, `components/blueprint/blueprint-view.tsx` |
+| **Data Stores** | ArangoDB (`justifications`) |
 
 ---
 

@@ -12,9 +12,9 @@ import type { IGraphStore } from "@/lib/ports/graph-store"
 import type { ILLMProvider } from "@/lib/ports/llm-provider"
 import type { CostBreakdown, IObservability, ModelUsageEntry } from "@/lib/ports/observability"
 import type { IPatternEngine, PatternMatch } from "@/lib/ports/pattern-engine"
-import type { ApiKeyRecord, DeletionLogRecord, GitHubInstallationRecord, IRelationalStore, RepoRecord, WorkspaceRecord } from "@/lib/ports/relational-store"
+import type { ApiKeyRecord, DeletionLogRecord, GitHubInstallationRecord, IRelationalStore, PipelineRunRecord, RepoRecord, WorkspaceRecord } from "@/lib/ports/relational-store"
 import type { IStorageProvider } from "@/lib/ports/storage-provider"
-import type { ADRDoc, BlueprintData, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, ProjectStats, PrReviewCommentRecord, PrReviewRecord, ReviewConfig, RuleDoc, RuleExceptionDoc, RuleHealthDoc, SearchResult, SnippetDoc, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "@/lib/ports/types"
+import type { ADRDoc, BlueprintData, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, PipelineStepRecord, ProjectStats, PrReviewCommentRecord, PrReviewRecord, ReviewConfig, RuleDoc, RuleExceptionDoc, RuleHealthDoc, SearchResult, SnippetDoc, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG, validateLedgerTransition } from "@/lib/ports/types"
 import type { IVectorSearch } from "@/lib/ports/vector-search"
 import type { IWorkflowEngine } from "@/lib/ports/workflow-engine"
@@ -762,6 +762,13 @@ export class InMemoryRelationalStore implements IRelationalStore {
     this.repos = this.repos.filter((r) => r.id !== repoId)
   }
 
+  async updateRepoContextDocuments(repoId: string, contextDocuments: string | null): Promise<void> {
+    const repo = this.repos.find((r) => r.id === repoId)
+    if (repo) {
+      repo.contextDocuments = contextDocuments
+    }
+  }
+
   async promoteRepo(repoId: string): Promise<void> {
     const repo = this.repos.find((r) => r.id === repoId)
     if (repo) {
@@ -872,6 +879,90 @@ export class InMemoryRelationalStore implements IRelationalStore {
       r.onboardingPrUrl = prUrl
       r.onboardingPrNumber = prNumber
     }
+  }
+
+  // Pipeline run tracking
+  private pipelineRuns: PipelineRunRecord[] = []
+
+  async createPipelineRun(data: {
+    id: string
+    repoId: string
+    organizationId: string
+    workflowId?: string
+    triggerType: string
+    triggerUserId?: string
+    pipelineType?: string
+    indexVersion?: string
+    steps?: PipelineStepRecord[]
+  }): Promise<PipelineRunRecord> {
+    const rec: PipelineRunRecord = {
+      id: data.id,
+      repoId: data.repoId,
+      organizationId: data.organizationId,
+      workflowId: data.workflowId ?? null,
+      temporalRunId: null,
+      status: "running",
+      triggerType: data.triggerType,
+      triggerUserId: data.triggerUserId ?? null,
+      pipelineType: data.pipelineType ?? "full",
+      indexVersion: data.indexVersion ?? null,
+      startedAt: new Date(),
+      completedAt: null,
+      durationMs: null,
+      errorMessage: null,
+      steps: data.steps ?? [],
+      fileCount: null,
+      functionCount: null,
+      classCount: null,
+      entitiesWritten: null,
+      edgesWritten: null,
+    }
+    this.pipelineRuns.push(rec)
+    return rec
+  }
+
+  async getPipelineRun(runId: string): Promise<PipelineRunRecord | null> {
+    return this.pipelineRuns.find((r) => r.id === runId) ?? null
+  }
+
+  async updatePipelineRun(
+    runId: string,
+    data: Partial<Pick<PipelineRunRecord, "workflowId" | "temporalRunId" | "status" | "completedAt" | "durationMs" | "errorMessage" | "steps" | "fileCount" | "functionCount" | "classCount" | "entitiesWritten" | "edgesWritten">>
+  ): Promise<void> {
+    const r = this.pipelineRuns.find((x) => x.id === runId)
+    if (!r) return
+    if (data.workflowId !== undefined) r.workflowId = data.workflowId
+    if (data.temporalRunId !== undefined) r.temporalRunId = data.temporalRunId
+    if (data.status !== undefined) r.status = data.status
+    if (data.completedAt !== undefined) r.completedAt = data.completedAt
+    if (data.durationMs !== undefined) r.durationMs = data.durationMs
+    if (data.errorMessage !== undefined) r.errorMessage = data.errorMessage
+    if (data.steps !== undefined) r.steps = data.steps
+    if (data.fileCount !== undefined) r.fileCount = data.fileCount
+    if (data.functionCount !== undefined) r.functionCount = data.functionCount
+    if (data.classCount !== undefined) r.classCount = data.classCount
+    if (data.entitiesWritten !== undefined) r.entitiesWritten = data.entitiesWritten
+    if (data.edgesWritten !== undefined) r.edgesWritten = data.edgesWritten
+  }
+
+  async getPipelineRunsForRepo(
+    orgId: string,
+    repoId: string,
+    opts?: { limit?: number; status?: string }
+  ): Promise<PipelineRunRecord[]> {
+    let filtered = this.pipelineRuns.filter(
+      (r) => r.organizationId === orgId && r.repoId === repoId
+    )
+    if (opts?.status) filtered = filtered.filter((r) => r.status === opts.status)
+    filtered.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())
+    return filtered.slice(0, opts?.limit ?? 20)
+  }
+
+  async getLatestPipelineRun(orgId: string, repoId: string): Promise<PipelineRunRecord | null> {
+    const runs = this.pipelineRuns
+      .filter((r) => r.organizationId === orgId && r.repoId === repoId)
+      .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())
+    return runs[0] ?? null
   }
 
   // Phase 7: PR Review CRUD
