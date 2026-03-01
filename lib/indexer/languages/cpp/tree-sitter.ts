@@ -3,6 +3,7 @@
  *
  * Extracts functions, classes, structs, enums, namespaces, and methods.
  */
+import { computeComplexity } from "../../complexity"
 import { extractJSDocComment } from "../../doc-extractor"
 import { entityHash } from "../../entity-hash"
 import type { ParsedEdge, ParsedEntity } from "../../types"
@@ -205,19 +206,15 @@ function fillBraceMatchedBodies(entities: ParsedEntity[], lines: string[], langu
     if (bodyLines.length > 0) {
       entity.body = bodyLines.join("\n")
       if (entity.kind === "function" || entity.kind === "method") {
-        entity.complexity = estimateCppComplexity(entity.body)
+        const cx = computeComplexity(entity.body, "cpp")
+        entity.complexity = cx.cyclomatic
+        entity.cognitive_complexity = cx.cognitive
       }
     }
   }
 }
 
-function estimateCppComplexity(body: string): number {
-  let complexity = 1
-  const pattern = /\b(if|else\s+if|for|while|do|case|switch|catch)\b|&&|\|\||\?/g
-  let _match: RegExpExecArray | null
-  while ((_match = pattern.exec(body)) !== null) complexity++
-  return complexity
-}
+// L-06: estimateCppComplexity replaced by shared computeComplexity("cpp")
 
 function detectCallEdges(entities: ParsedEntity[], edges: ParsedEdge[]): void {
   const callableMap = new Map<string, string>()

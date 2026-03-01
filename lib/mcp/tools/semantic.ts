@@ -107,7 +107,7 @@ export async function handleSemanticSearch(
   )
 
   // Two-Step RAG: Return summaries only — no full bodies
-  const summaries = searchResult.results.map((r) => ({
+  const baseSummaries = searchResult.results.map((r) => ({
     entityKey: r.entityKey,
     entityName: r.entityName,
     entityType: r.entityType,
@@ -118,6 +118,31 @@ export async function handleSemanticSearch(
     callers: r.callers,
     callees: r.callees,
   }))
+
+  // L-14: Enrich summaries with cached entity profiles (best-effort)
+  let summaries = baseSummaries as Array<Record<string, unknown>>
+  try {
+    const { getEntityProfiles } = require("@/lib/mcp/entity-profile") as typeof import("@/lib/mcp/entity-profile")
+    const entityIds = baseSummaries.map((s) => s.entityKey).filter(Boolean)
+    if (entityIds.length > 0) {
+      const profiles = await getEntityProfiles(ctx.orgId, repoId, entityIds, container)
+      summaries = baseSummaries.map((s) => {
+        const profile = profiles.get(s.entityKey)
+        if (!profile) return s
+        return {
+          ...s,
+          business_purpose: profile.business_purpose,
+          feature_tag: profile.feature_tag,
+          taxonomy: profile.taxonomy,
+          confidence: profile.confidence.composite,
+          community: profile.community,
+          is_dead_code: profile.is_dead_code || undefined,
+        }
+      })
+    }
+  } catch {
+    // Profile enrichment is best-effort — return base summaries on failure
+  }
 
   return formatToolResponse({
     query: args.query,

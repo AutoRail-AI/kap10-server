@@ -147,6 +147,94 @@ describe("parseTypeScriptFile", () => {
   })
 })
 
+describe("parseTypeScriptFile with multi-line imports (L-04)", () => {
+  it("handles multi-line named imports", () => {
+    const content = `
+import {
+  Foo,
+  Bar,
+  Baz,
+} from './module'
+
+export function test() {}
+`
+    const { edges } = parseTypeScriptFile({
+      filePath: "src/test.ts",
+      content,
+      orgId: "org-1",
+      repoId: "repo-1",
+    })
+
+    const importEdge = edges.find((e) => e.kind === "imports" && !e.is_external)
+    expect(importEdge).toBeDefined()
+    expect(importEdge!.imported_symbols).toEqual(["Foo", "Bar", "Baz"])
+  })
+
+  it("handles multi-line type imports", () => {
+    const content = `
+import type {
+  UserType,
+  ConfigType,
+} from '@/lib/types'
+
+export function test() {}
+`
+    const { edges } = parseTypeScriptFile({
+      filePath: "src/test.ts",
+      content,
+      orgId: "org-1",
+      repoId: "repo-1",
+    })
+
+    const importEdge = edges.find((e) => e.kind === "imports" && !e.is_external)
+    expect(importEdge).toBeDefined()
+    expect(importEdge!.imported_symbols).toEqual(["UserType", "ConfigType"])
+    expect(importEdge!.is_type_only).toBe(true)
+  })
+
+  it("handles imports with aliases across lines", () => {
+    const content = `
+import {
+  Component as Comp,
+  useState,
+} from './react-utils'
+
+export function test() {}
+`
+    const { edges } = parseTypeScriptFile({
+      filePath: "src/test.ts",
+      content,
+      orgId: "org-1",
+      repoId: "repo-1",
+    })
+
+    const importEdge = edges.find((e) => e.kind === "imports" && !e.is_external)
+    expect(importEdge).toBeDefined()
+    // Should capture the original name, not the alias
+    expect(importEdge!.imported_symbols).toEqual(["Component", "useState"])
+  })
+
+  it("handles symbols on the same line as opening brace", () => {
+    const content = `
+import { Alpha,
+  Beta,
+  Gamma } from './utils'
+
+export function test() {}
+`
+    const { edges } = parseTypeScriptFile({
+      filePath: "src/test.ts",
+      content,
+      orgId: "org-1",
+      repoId: "repo-1",
+    })
+
+    const importEdge = edges.find((e) => e.kind === "imports" && !e.is_external)
+    expect(importEdge).toBeDefined()
+    expect(importEdge!.imported_symbols).toEqual(["Alpha", "Beta", "Gamma"])
+  })
+})
+
 describe("parseTypeScriptFile with class inheritance", () => {
   it("creates extends edges", () => {
     const content = `

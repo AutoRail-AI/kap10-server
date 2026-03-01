@@ -19,6 +19,7 @@ import { heartbeat } from "@temporalio/activity"
 import { getContainer } from "@/lib/di/container"
 import type { Container } from "@/lib/di/container"
 import { summarizeBody } from "@/lib/justification/ast-summarizer"
+import { buildFingerprintFromEntity, fingerprintToTokens } from "@/lib/justification/structural-fingerprint"
 import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
 import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
@@ -69,14 +70,25 @@ function formatKindLabel(kind: string): string {
   }
 }
 
+/** L-08: Embedding variant type — "semantic" includes justification context, "code" is pure structural. */
+export type EmbeddingVariant = "semantic" | "code"
+
+/** L-08: Suffix appended to entity key for code-only variant embeddings. */
+export const CODE_VARIANT_SUFFIX = "::code"
+
 /**
  * L-07: Build kind-aware embedding text for an entity.
  * Different entity kinds get different text strategies to maximize
  * embedding quality for semantic search.
+ *
+ * L-08: `variant` parameter controls what context is included:
+ * - "semantic" (default): includes justification, community, fingerprint — best for intent queries
+ * - "code": pure structural (name, signature, doc, body only) — best for "find similar code" queries
  */
 function buildKindAwareText(
   entity: EntityDoc,
   justification?: JustificationDoc | undefined,
+  variant: EmbeddingVariant = "semantic",
 ): string[] {
   const kindLabel = formatKindLabel(entity.kind)
   const name = entity.name ?? "unknown"
@@ -127,19 +139,28 @@ function buildKindAwareText(
     }
   }
 
-  // Justification context (available in Pass 2, empty in Pass 1)
-  if (justification) {
-    parts.push(`Purpose: ${justification.business_purpose}`)
-    if (justification.domain_concepts.length > 0) {
-      parts.push(`Domain: ${justification.domain_concepts.join(", ")}`)
+  // L-08: Justification, community, and fingerprint context only for "semantic" variant
+  if (variant === "semantic") {
+    // Justification context (available in Pass 2, empty in Pass 1)
+    if (justification) {
+      parts.push(`Purpose: ${justification.business_purpose}`)
+      if (justification.domain_concepts.length > 0) {
+        parts.push(`Domain: ${justification.domain_concepts.join(", ")}`)
+      }
+      parts.push(`Feature: ${justification.feature_tag}`)
     }
-    parts.push(`Feature: ${justification.feature_tag}`)
-  }
 
-  // Community label from entity metadata
-  const communityLabel = (entity as Record<string, unknown>).community_label as string | undefined
-  if (communityLabel) {
-    parts.push(`Community: ${communityLabel}`)
+    // Community label from entity metadata
+    const communityLabel = (entity as Record<string, unknown>).community_label as string | undefined
+    if (communityLabel) {
+      parts.push(`Community: ${communityLabel}`)
+    }
+
+    // L-22: Structural fingerprint tokens (available after Step 4b graph-analysis)
+    const fp = buildFingerprintFromEntity(entity)
+    if (fp) {
+      parts.push(fingerprintToTokens(fp))
+    }
   }
 
   // Code body (skip for modules/namespaces which embed export surface only)
@@ -175,12 +196,11 @@ export function buildEmbeddableDocuments(
     const filePath = entity.file_path ?? ""
     const justification = justificationMap.get(entity.id)
 
-    // L-07: Kind-aware text construction
-    const text = buildKindAwareText(entity, justification).join("\n")
-
+    // L-07 + L-08: Semantic variant (includes justification, community, fingerprint)
+    const semanticText = buildKindAwareText(entity, justification, "semantic").join("\n")
     docs.push({
       entityKey: entity.id,
-      text,
+      text: semanticText,
       metadata: {
         orgId: input.orgId,
         repoId: input.repoId,
@@ -188,7 +208,23 @@ export function buildEmbeddableDocuments(
         entityType: entity.kind,
         entityName: name,
         filePath,
-        textContent: text,
+        textContent: semanticText,
+      },
+    })
+
+    // L-08: Code-only variant (pure structural — name, signature, doc, body)
+    const codeText = buildKindAwareText(entity, undefined, "code").join("\n")
+    docs.push({
+      entityKey: `${entity.id}${CODE_VARIANT_SUFFIX}`,
+      text: codeText,
+      metadata: {
+        orgId: input.orgId,
+        repoId: input.repoId,
+        entityKey: `${entity.id}${CODE_VARIANT_SUFFIX}`,
+        entityType: entity.kind,
+        entityName: name,
+        filePath,
+        textContent: codeText,
       },
     })
   }
@@ -449,6 +485,8 @@ export async function deleteOrphanedEmbeddingsFromGraph(
       // L-07: modules/namespaces now get embeddings, only exclude file/directory
       if (entity.kind !== "file" && entity.kind !== "directory") {
         currentEntityKeys.push(entity.id)
+        // L-08: Code-only variant key
+        currentEntityKeys.push(`${entity.id}${CODE_VARIANT_SUFFIX}`)
       }
     }
 

@@ -3,6 +3,7 @@
  *
  * Extracts functions, structs, enums, traits, impls, and type aliases.
  */
+import { computeComplexity } from "../../complexity"
 import { entityHash } from "../../entity-hash"
 import type { ParsedEdge, ParsedEntity } from "../../types"
 import { MAX_BODY_LINES } from "../../types"
@@ -202,7 +203,9 @@ function fillBraceMatchedBodies(entities: ParsedEntity[], lines: string[]): void
     if (bodyLines.length > 0) {
       entity.body = bodyLines.join("\n")
       if (entity.kind === "function") {
-        entity.complexity = estimateRustComplexity(entity.body)
+        const cx = computeComplexity(entity.body, "rust")
+        entity.complexity = cx.cyclomatic
+        entity.cognitive_complexity = cx.cognitive
       }
     }
   }
@@ -233,13 +236,7 @@ function extractRustDocComment(lines: string[], entityLineIdx: number): string |
   return cleaned.length >= 10 ? cleaned : undefined
 }
 
-function estimateRustComplexity(body: string): number {
-  let complexity = 1
-  const pattern = /\b(if|else\s+if|for|while|loop|match|Ok\(|Err\()\b|&&|\|\||\?/g
-  let _match: RegExpExecArray | null
-  while ((_match = pattern.exec(body)) !== null) complexity++
-  return complexity
-}
+// L-06: estimateRustComplexity replaced by shared computeComplexity("rust")
 
 function detectCallEdges(entities: ParsedEntity[], edges: ParsedEdge[]): void {
   const callableMap = new Map<string, string>()

@@ -457,6 +457,7 @@ function toEntityDocs(entities: ParsedEntity[], orgId: string, repoId: string): 
     parameter_count: e.parameter_count,
     return_type: e.return_type,
     complexity: e.complexity,
+    cognitive_complexity: e.cognitive_complexity,
   }))
 }
 

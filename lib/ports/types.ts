@@ -460,6 +460,7 @@ export type PipelineStepName =
   | "parse"
   | "finalize"
   | "blastRadius"
+  | "temporalAnalysis"
   | "embed"
   | "ontology"
   | "justification"

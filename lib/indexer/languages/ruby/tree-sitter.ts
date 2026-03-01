@@ -3,6 +3,7 @@
  *
  * Extracts classes, modules, methods, and attributes.
  */
+import { computeComplexity } from "../../complexity"
 import { entityHash } from "../../entity-hash"
 import type { ParsedEdge, ParsedEntity } from "../../types"
 import { MAX_BODY_LINES } from "../../types"
@@ -178,7 +179,9 @@ function fillRubyEndLinesAndBodies(entities: ParsedEntity[], lines: string[]): v
     if (bodyLines.length > 0) {
       entity.body = bodyLines.join("\n")
       if (entity.kind === "function" || entity.kind === "method") {
-        entity.complexity = estimateRubyComplexity(entity.body)
+        const cx = computeComplexity(entity.body, "ruby")
+        entity.complexity = cx.cyclomatic
+        entity.cognitive_complexity = cx.cognitive
       }
     }
   }
@@ -205,13 +208,7 @@ function extractRubyComment(lines: string[], entityLineIdx: number): string | un
   return cleaned.length >= 10 ? cleaned : undefined
 }
 
-function estimateRubyComplexity(body: string): number {
-  let complexity = 1
-  const pattern = /\b(if|elsif|unless|for|while|until|when|rescue)\b|&&|\|\|/g
-  let _match: RegExpExecArray | null
-  while ((_match = pattern.exec(body)) !== null) complexity++
-  return complexity
-}
+// L-06: estimateRubyComplexity replaced by shared computeComplexity("ruby")
 
 function detectCallEdges(entities: ParsedEntity[], edges: ParsedEdge[]): void {
   const callableMap = new Map<string, string>()

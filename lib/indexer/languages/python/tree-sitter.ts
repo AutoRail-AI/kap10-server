@@ -4,6 +4,7 @@
  * Extracts functions, classes, methods, and decorators from Python files
  * when SCIP indexing is unavailable.
  */
+import { computeComplexity } from "../../complexity"
 import { extractPythonDocstring } from "../../doc-extractor"
 import { entityHash } from "../../entity-hash"
 import type { ParsedEdge, ParsedEntity } from "../../types"
@@ -225,7 +226,9 @@ function fillPythonEndLinesAndBodies(entities: ParsedEntity[], lines: string[]):
       entity.body = bodyLines.join("\n")
       // Estimate complexity for functions and methods
       if (entity.kind === "function" || entity.kind === "method") {
-        entity.complexity = estimatePythonComplexity(entity.body)
+        const cx = computeComplexity(entity.body, "python")
+        entity.complexity = cx.cyclomatic
+        entity.cognitive_complexity = cx.cognitive
       }
     }
   }
@@ -282,16 +285,7 @@ function countPythonParams(params: string): number {
   return parts.filter((p) => p !== "self" && p !== "cls" && !p.startsWith("*")).length
 }
 
-/** Estimate cyclomatic complexity for Python. Baseline = 1. */
-function estimatePythonComplexity(body: string): number {
-  let complexity = 1
-  const pattern = /\b(if|elif|for|while|except|and|or)\b/g
-  let _match: RegExpExecArray | null
-  while ((_match = pattern.exec(body)) !== null) {
-    complexity++
-  }
-  return complexity
-}
+// L-06: estimatePythonComplexity replaced by shared computeComplexity("python")
 
 /**
  * Detect Python import edges from relative imports.

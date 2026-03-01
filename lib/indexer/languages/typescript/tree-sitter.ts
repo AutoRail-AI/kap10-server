@@ -4,6 +4,7 @@
  * Extracts functions, classes, interfaces, methods, exports, and type aliases
  * from source files when SCIP indexing is unavailable or misses files.
  */
+import { computeComplexity } from "../../complexity"
 import { extractJSDocComment } from "../../doc-extractor"
 import { entityHash } from "../../entity-hash"
 import type { ParsedEdge, ParsedEntity } from "../../types"
@@ -29,11 +30,45 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
   const lines = opts.content.split("\n")
 
   // First pass: extract import edges with metadata
+  // L-04: Handles both single-line and multi-line imports
   const fileId = entityHash(opts.repoId, opts.filePath, "file", opts.filePath)
+
+  // State for multi-line import accumulation
+  let inImportBlock = false
+  let importBlockIsTypeOnly = false
+  let importBlockSymbols: string[] = []
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!.trim()
 
-    // import { Foo, Bar } from "./module"
+    // L-04: Handle multi-line import continuation
+    if (inImportBlock) {
+      // Check for closing brace + from: "} from './module'"
+      const closeMatch = line.match(/^[^}]*\}\s+from\s+["']([^"']+)["']/)
+      if (closeMatch) {
+        // Collect any remaining symbols before the closing brace
+        const beforeBrace = line.match(/^([^}]*)\}/)
+        if (beforeBrace && beforeBrace[1]) {
+          for (const sym of beforeBrace[1].split(",")) {
+            const trimmed = sym.trim().split(/\s+as\s+/)[0]!.trim()
+            if (trimmed) importBlockSymbols.push(trimmed)
+          }
+        }
+        const source = closeMatch[1]!
+        addImportEdge(fileId, importBlockSymbols, importBlockIsTypeOnly, source, opts, edges)
+        inImportBlock = false
+        importBlockSymbols = []
+        continue
+      }
+      // Accumulate symbols from continuation lines
+      for (const sym of line.replace(/,$/, "").split(",")) {
+        const trimmed = sym.trim().split(/\s+as\s+/)[0]!.trim()
+        if (trimmed) importBlockSymbols.push(trimmed)
+      }
+      continue
+    }
+
+    // Single-line import: import { Foo, Bar } from "./module"
     // import type { Baz } from "@/lib/types"
     // import DefaultExport from "./module"
     const importMatch = line.match(
@@ -54,35 +89,26 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
       }
       if (defaultImport) symbols.push(defaultImport)
 
-      // Internal imports (relative or alias) → create graph edges
-      if (source.startsWith(".") || source.startsWith("@/") || source.startsWith("~/")) {
-        const targetFileId = entityHash(opts.repoId, resolveImportPath(opts.filePath, source), "file", resolveImportPath(opts.filePath, source))
-        edges.push({
-          from_id: fileId,
-          to_id: targetFileId,
-          kind: "imports",
-          imported_symbols: symbols,
-          import_type: isTypeOnly ? "type" : "value",
-          is_type_only: isTypeOnly,
-        })
-      } else {
-        // I-03: External/third-party imports — capture with boundary metadata
-        const { extractExternalPackageName, classifyBoundary } = require("@/lib/indexer/boundary-classifier") as typeof import("@/lib/indexer/boundary-classifier")
-        const pkgName = extractExternalPackageName(source, "typescript")
-        if (pkgName) {
-          edges.push({
-            from_id: fileId,
-            to_id: `external:${pkgName}`,
-            kind: "imports",
-            imported_symbols: symbols,
-            import_type: isTypeOnly ? "type" : "value",
-            is_type_only: isTypeOnly,
-            is_external: true,
-            package_name: pkgName,
-            boundary_category: classifyBoundary(pkgName, "typescript"),
-          })
+      addImportEdge(fileId, symbols, isTypeOnly, source, opts, edges)
+      continue
+    }
+
+    // L-04: Start of multi-line import: import { or import type {
+    // Matches lines like: `import {` or `import type {` (no closing brace on same line)
+    const multiLineStart = line.match(/^import\s+(type\s+)?\{([^}]*)$/)
+    if (multiLineStart) {
+      inImportBlock = true
+      importBlockIsTypeOnly = !!multiLineStart[1]
+      importBlockSymbols = []
+      // Collect any symbols on the opening line after the brace
+      const afterBrace = multiLineStart[2]
+      if (afterBrace) {
+        for (const sym of afterBrace.replace(/,$/, "").split(",")) {
+          const trimmed = sym.trim().split(/\s+as\s+/)[0]!.trim()
+          if (trimmed) importBlockSymbols.push(trimmed)
         }
       }
+      continue
     }
   }
 
@@ -412,9 +438,12 @@ function fillEndLinesAndBodies(entities: ParsedEntity[], lines: string[]): void 
     const bodyLines = lines.slice(startLine - 1, Math.min(endIdx + 1, startLine - 1 + MAX_BODY_LINES))
     if (bodyLines.length > 0) {
       entity.body = bodyLines.join("\n")
-      // Estimate complexity for functions and methods
+      // L-06: Compute both cyclomatic and cognitive complexity
       if (entity.kind === "function" || entity.kind === "method") {
-        entity.complexity = estimateComplexity(entity.body)
+        const lang = detectLanguageFromPath(opts.filePath)
+        const cx = computeComplexity(entity.body, lang)
+        entity.complexity = cx.cyclomatic
+        entity.cognitive_complexity = cx.cognitive
       }
     }
   }
@@ -459,6 +488,44 @@ function findStatementEnd(lines: string[], lineIdx: number): number {
   return lineIdx
 }
 
+/** L-04: Create an import edge (shared between single-line and multi-line import handling). */
+function addImportEdge(
+  fileId: string,
+  symbols: string[],
+  isTypeOnly: boolean,
+  source: string,
+  opts: TreeSitterOptions,
+  edges: ParsedEdge[],
+): void {
+  if (source.startsWith(".") || source.startsWith("@/") || source.startsWith("~/")) {
+    const targetFileId = entityHash(opts.repoId, resolveImportPath(opts.filePath, source), "file", resolveImportPath(opts.filePath, source))
+    edges.push({
+      from_id: fileId,
+      to_id: targetFileId,
+      kind: "imports",
+      imported_symbols: symbols,
+      import_type: isTypeOnly ? "type" : "value",
+      is_type_only: isTypeOnly,
+    })
+  } else {
+    const { extractExternalPackageName, classifyBoundary } = require("@/lib/indexer/boundary-classifier") as typeof import("@/lib/indexer/boundary-classifier")
+    const pkgName = extractExternalPackageName(source, "typescript")
+    if (pkgName) {
+      edges.push({
+        from_id: fileId,
+        to_id: `external:${pkgName}`,
+        kind: "imports",
+        imported_symbols: symbols,
+        import_type: isTypeOnly ? "type" : "value",
+        is_type_only: isTypeOnly,
+        is_external: true,
+        package_name: pkgName,
+        boundary_category: classifyBoundary(pkgName, "typescript"),
+      })
+    }
+  }
+}
+
 /** Resolve a relative import path to an approximate file path. */
 function resolveImportPath(currentFile: string, importSource: string): string {
   if (importSource.startsWith("@/") || importSource.startsWith("~/")) {
@@ -491,17 +558,6 @@ function extractReturnType(line: string): string | undefined {
     return rt.length > 0 && rt.length < 100 ? rt : undefined
   }
   return undefined
-}
-
-/** Estimate cyclomatic complexity from a code body. Baseline = 1. */
-function estimateComplexity(body: string): number {
-  let complexity = 1
-  const pattern = /\b(if|else\s+if|for|while|case|catch)\b|\?\s*[^:?]|&&|\|\|/g
-  let _match: RegExpExecArray | null
-  while ((_match = pattern.exec(body)) !== null) {
-    complexity++
-  }
-  return complexity
 }
 
 /**

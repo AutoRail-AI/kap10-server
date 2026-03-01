@@ -3,6 +3,7 @@
  *
  * Extracts functions, structs, enums, typedefs, and global variables.
  */
+import { computeComplexity } from "../../complexity"
 import { extractJSDocComment } from "../../doc-extractor"
 import { entityHash } from "../../entity-hash"
 import type { ParsedEdge, ParsedEntity } from "../../types"
@@ -149,7 +150,9 @@ function fillCEndLinesAndBodies(entities: ParsedEntity[], lines: string[]): void
     if (bodyLines.length > 0) {
       entity.body = bodyLines.join("\n")
       if (entity.kind === "function") {
-        entity.complexity = estimateCComplexity(entity.body)
+        const cx = computeComplexity(entity.body, "c")
+        entity.complexity = cx.cyclomatic
+        entity.cognitive_complexity = cx.cognitive
       }
     }
   }
@@ -192,13 +195,7 @@ function countCParams(params: string): number {
   return params.split(",").filter((p) => p.trim().length > 0).length
 }
 
-function estimateCComplexity(body: string): number {
-  let complexity = 1
-  const pattern = /\b(if|else\s+if|for|while|do|case|switch)\b|&&|\|\||\?/g
-  let _match: RegExpExecArray | null
-  while ((_match = pattern.exec(body)) !== null) complexity++
-  return complexity
-}
+// L-06: estimateCComplexity replaced by shared computeComplexity("c")
 
 function detectCIncludeEdges(
   lines: string[],

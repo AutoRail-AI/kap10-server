@@ -3,6 +3,7 @@
  *
  * Extracts classes, interfaces, traits, functions, and methods.
  */
+import { computeComplexity } from "../../complexity"
 import { extractJSDocComment } from "../../doc-extractor"
 import { entityHash } from "../../entity-hash"
 import type { ParsedEdge, ParsedEntity } from "../../types"
@@ -223,19 +224,15 @@ function fillBraceMatchedBodies(entities: ParsedEntity[], lines: string[]): void
     if (bodyLines.length > 0) {
       entity.body = bodyLines.join("\n")
       if (entity.kind === "function" || entity.kind === "method") {
-        entity.complexity = estimateComplexity(entity.body)
+        const cx = computeComplexity(entity.body, "php")
+        entity.complexity = cx.cyclomatic
+        entity.cognitive_complexity = cx.cognitive
       }
     }
   }
 }
 
-function estimateComplexity(body: string): number {
-  let complexity = 1
-  const pattern = /\b(if|elseif|for|foreach|while|do|case|catch|switch|match)\b|&&|\|\||\?\?|\?/g
-  let _match: RegExpExecArray | null
-  while ((_match = pattern.exec(body)) !== null) complexity++
-  return complexity
-}
+// L-06: estimateComplexity replaced by shared computeComplexity("php")
 
 function detectCallEdges(entities: ParsedEntity[], edges: ParsedEdge[]): void {
   const callableMap = new Map<string, string>()

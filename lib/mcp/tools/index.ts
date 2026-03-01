@@ -27,6 +27,9 @@ import { GET_TIMELINE_SCHEMA, handleGetTimeline, handleMarkWorking, MARK_WORKING
 // Phase 5.6: Dirty state overlay
 // Phase 6: Pattern Enforcement & Rules Engine
 // Phase 7: PR Review Integration
+// Phase 8: Alpha-7 — Entity Profiles & Context Assembly
+import { ASSEMBLE_CONTEXT_SCHEMA, handleAssembleContext } from "./assemble-context"
+import { REFRESH_CONTEXT_SCHEMA, handleRefreshContext } from "./refresh-context"
 import { hasScope } from "../auth"
 import type { McpAuthContext } from "../auth"
 import { formatToolError } from "../formatter"
@@ -74,6 +77,9 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   { ...DRAFT_ARCHITECTURE_RULE_SCHEMA, requiredScope: "mcp:sync" },
   // Phase 7: PR Review Integration
   { ...REVIEW_PR_STATUS_SCHEMA, requiredScope: "mcp:read" },
+  // Phase 8: Alpha-7 — Entity Profiles & Context Assembly
+  { ...ASSEMBLE_CONTEXT_SCHEMA, requiredScope: "mcp:read" },
+  { ...REFRESH_CONTEXT_SCHEMA, requiredScope: "mcp:sync" },
 ]
 
 type ToolHandler = (
@@ -118,6 +124,9 @@ const TOOL_HANDLERS: Record<string, { handler: ToolHandler; scope: string }> = {
   draft_architecture_rule: { handler: handleDraftArchitectureRule as ToolHandler, scope: "mcp:sync" },
   // Phase 7: PR Review Integration
   review_pr_status: { handler: handleReviewPrStatus as ToolHandler, scope: "mcp:read" },
+  // Phase 8: Alpha-7 — Entity Profiles & Context Assembly
+  assemble_context: { handler: handleAssembleContext as ToolHandler, scope: "mcp:read" },
+  refresh_context: { handler: handleRefreshContext as ToolHandler, scope: "mcp:sync" },
 }
 
 /**

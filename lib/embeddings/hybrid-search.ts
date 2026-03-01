@@ -15,6 +15,9 @@
 import type { Container } from "@/lib/di/container"
 import type { EntityDoc } from "@/lib/ports/types"
 
+/** L-08: Suffix appended to entity key for code-only variant embeddings. Must match embedding.ts. */
+const CODE_VARIANT_SUFFIX = "::code"
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type SearchMode = "hybrid" | "semantic" | "keyword"
@@ -64,28 +67,78 @@ interface RankedItem {
 }
 
 /**
+ * L-15: Compute adaptive k-parameter based on inter-source rank agreement.
+ *
+ * When multiple retrieval sources agree on entity rankings (high overlap),
+ * use a lower k to amplify top results. When sources disagree (low overlap),
+ * use a higher k to smooth out disagreement and give lower-ranked items more chance.
+ *
+ * @param rankings - Array of ranked result lists from different sources
+ * @param baseK - Base k value (default 30)
+ * @returns Adaptive k in range [baseK * 0.5, baseK * 2.0]
+ */
+export function computeAdaptiveK(rankings: RankedItem[][], baseK = 30): number {
+  if (rankings.length < 2) return baseK
+
+  // Build per-source top-N entity sets (top 10 from each)
+  const topN = 10
+  const entitySets = rankings.map((r) =>
+    new Set(r.slice(0, topN).map((item) => item.entityKey))
+  )
+
+  // Compute pairwise Jaccard similarity between source top-N sets
+  let totalJaccard = 0
+  let pairCount = 0
+  for (let i = 0; i < entitySets.length; i++) {
+    for (let j = i + 1; j < entitySets.length; j++) {
+      const setA = entitySets[i]!
+      const setB = entitySets[j]!
+      let intersection = 0
+      for (const key of setA) {
+        if (setB.has(key)) intersection++
+      }
+      const union = setA.size + setB.size - intersection
+      totalJaccard += union > 0 ? intersection / union : 0
+      pairCount++
+    }
+  }
+
+  const avgJaccard = pairCount > 0 ? totalJaccard / pairCount : 0
+
+  // High agreement (Jaccard > 0.5) → lower k (sharper ranking, amplify consensus)
+  // Low agreement (Jaccard < 0.1) → higher k (smoother ranking, reduce noise)
+  // Linear interpolation: k = baseK * (2.0 - 1.5 * jaccard)
+  // Jaccard=0 → k=2*baseK, Jaccard=1 → k=0.5*baseK
+  const factor = 2.0 - 1.5 * avgJaccard
+  return Math.round(baseK * Math.max(0.5, Math.min(2.0, factor)))
+}
+
+/**
  * Weighted Reciprocal Rank Fusion with Exact Match Boost.
  *
  * Weighted RRF: score = Σ weight_i / (k + rank_i) for each source
  * Code search favors exact lexical matches — keyword leg gets higher weight.
- * Lower k (default 30) creates steeper rank degradation, giving more influence
- * to top-ranked exact keyword matches.
+ *
+ * L-15: When k is not explicitly provided, uses adaptive k based on
+ * inter-source agreement (high overlap → lower k, low overlap → higher k).
  *
  * Exact match boost: entities with name exactly matching a query token get score = 1.0
  *
  * @param rankings - Array of ranked result lists (one per retrieval source)
  * @param queryTokens - Tokenized query terms for exact match detection
- * @param k - Smoothing constant (default 30 — tuned for code search)
+ * @param k - Smoothing constant (default: adaptive, falls back to 30)
  * @param limit - Max results to return
  * @param weights - Per-source weight multipliers (default all 1.0)
  */
 export function reciprocalRankFusion(
   rankings: RankedItem[][],
   queryTokens: string[],
-  k = 30,
+  k?: number,
   limit = 10,
   weights?: number[]
 ): RankedItem[] {
+  // L-15: Use adaptive k when not explicitly provided
+  const effectiveK = k ?? computeAdaptiveK(rankings)
   // Phase 1: Weighted RRF scoring
   const scores = new Map<string, { item: RankedItem; score: number }>()
 
@@ -95,7 +148,7 @@ export function reciprocalRankFusion(
 
     for (let rank = 0; rank < ranking.length; rank++) {
       const item = ranking[rank]!
-      const rrfScore = weight / (k + rank + 1)
+      const rrfScore = weight / (effectiveK + rank + 1)
 
       const existing = scores.get(item.entityKey)
       if (existing) {
@@ -238,9 +291,9 @@ export async function hybridSearch(
     weights.push(0.5) // Justification leg weight — business purpose context
   }
 
-  // If only one leg, just use that ranking directly
+  // L-15: Use adaptive k (undefined → auto-computed from inter-source agreement)
   const merged = rankings.length > 0
-    ? reciprocalRankFusion(rankings, queryTokens, 30, input.limit, weights)
+    ? reciprocalRankFusion(rankings, queryTokens, undefined, input.limit, weights)
     : []
 
   // Graph enrichment with timeout
@@ -293,7 +346,10 @@ async function runSemanticLeg(
   )
 
   return results.map((r) => ({
-    entityKey: r.id,
+    // L-08: Normalize entity key — strip ::code variant suffix so RRF merges both variants
+    entityKey: r.id.endsWith(CODE_VARIANT_SUFFIX)
+      ? r.id.slice(0, -CODE_VARIANT_SUFFIX.length)
+      : r.id,
     entityName: (r.metadata?.entityName as string) ?? r.id,
     entityType: (r.metadata?.entityType as string) ?? "unknown",
     filePath: (r.metadata?.filePath as string) ?? "",

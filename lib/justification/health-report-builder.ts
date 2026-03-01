@@ -149,25 +149,26 @@ export function buildHealthReport(
       justMap.set(j.entity_id, j)
     }
 
-    // Risk 5: Dead code
-    const deadIds = detectDeadCode(entities, edges)
-    if (deadIds.size > 0) {
-      const deadEntities = Array.from(deadIds)
+    // Risk 5: Dead code (L-17: now includes reason per entity)
+    const deadCodeMap = detectDeadCode(entities, edges)
+    if (deadCodeMap.size > 0) {
+      const deadEntities = Array.from(deadCodeMap.keys())
         .map((id) => entityMap.get(id))
         .filter((e): e is EntityDoc => !!e)
         .slice(0, 20)
 
-      const pct = entities.length > 0 ? deadIds.size / entities.length : 0
+      const pct = entities.length > 0 ? deadCodeMap.size / entities.length : 0
       risks.push({
         riskType: "dead_code",
-        description: `${deadIds.size} entities appear to be dead code (no inbound references, not exported, not entry points).`,
+        description: `${deadCodeMap.size} entities appear to be dead code (no inbound references, not exported, not entry points).`,
         severity: pct > 0.05 ? "high" : "medium",
         category: "dead_code",
-        affectedCount: deadIds.size,
+        affectedCount: deadCodeMap.size,
         entities: deadEntities.map((e) => ({
           id: e.id,
           name: e.name,
           filePath: e.file_path,
+          detail: deadCodeMap.get(e.id),
         })),
       })
     }

@@ -7,6 +7,7 @@ import type * as heavy from "../activities/indexing-heavy"
 import type * as light from "../activities/indexing-light"
 import type * as pipelineLogs from "../activities/pipeline-logs"
 import type * as pipelineRun from "../activities/pipeline-run"
+import type * as temporalAnalysis from "../activities/temporal-analysis"
 import type * as workspaceCleanup from "../activities/workspace-cleanup"
 
 const heavyActivities = proxyActivities<typeof heavy>({
@@ -38,6 +39,13 @@ const runActivities = proxyActivities<typeof pipelineRun>({
 const graphAnalysisActivities = proxyActivities<typeof graphAnalysis>({
   taskQueue: "light-llm-queue",
   startToCloseTimeout: "10m",
+  heartbeatTimeout: "2m",
+  retry: { maximumAttempts: 2 },
+})
+
+const temporalAnalysisActivities = proxyActivities<typeof temporalAnalysis>({
+  taskQueue: "heavy-compute-queue",
+  startToCloseTimeout: "15m",
   heartbeatTimeout: "2m",
   retry: { maximumAttempts: 2 },
 })
@@ -194,6 +202,17 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     })
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "blastRadius", status: "completed", meta: { updatedCount: blastRadius.updatedCount, highRiskCount: blastRadius.highRiskCount } })
     wfLog("INFO", "Step 4b complete: blast radius computed", { ...ctx, updated: blastRadius.updatedCount, highRisk: blastRadius.highRiskCount }, "Step 4b")
+
+    // Step 4c: L-24 temporal analysis (git co-change mining)
+    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "temporalAnalysis", status: "running" })
+    wfLog("INFO", "Step 4c: Mining temporal intent vectors", ctx, "Step 4c")
+    const temporal = await temporalAnalysisActivities.computeTemporalAnalysis({
+      orgId: input.orgId,
+      repoId: input.repoId,
+      workspacePath: workspace.workspacePath,
+    })
+    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "temporalAnalysis", status: "completed", meta: { coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated } })
+    wfLog("INFO", "Step 4c complete: temporal analysis done", { ...ctx, coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated, filesAnalyzed: temporal.filesAnalyzed }, "Step 4c")
 
     // Child workflow IDs use stable orgId+repoId (no runId suffix).
     // Previously we used wfInfo.runId.slice(0,8) as suffix, which changes

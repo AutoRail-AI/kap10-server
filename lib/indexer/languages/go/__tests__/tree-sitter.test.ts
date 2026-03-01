@@ -210,6 +210,60 @@ func Process(ctx context.Context, data []byte, opts ...Option) (Result, error) {
     expect(funcs[0]!.signature).toContain("ctx context.Context")
   })
 
+  it("extracts struct member fields (L-04)", () => {
+    const content = `package models
+
+type User struct {
+	Name  string
+	Email string
+	Age   int
+}
+
+type Config struct {
+	Host string
+	Port int
+}
+`
+    const result = parseGoFile({ filePath: "models.go", content, ...OPTS })
+
+    const userStruct = result.entities.find((e) => e.name === "User" && e.kind === "struct")
+    expect(userStruct).toBeDefined()
+    expect(userStruct!.members).toEqual(["Name", "Email", "Age"])
+
+    const configStruct = result.entities.find((e) => e.name === "Config" && e.kind === "struct")
+    expect(configStruct).toBeDefined()
+    expect(configStruct!.members).toEqual(["Host", "Port"])
+  })
+
+  it("handles empty struct (L-04)", () => {
+    const content = `package types
+
+type Empty struct{}
+`
+    const result = parseGoFile({ filePath: "empty.go", content, ...OPTS })
+
+    const empty = result.entities.find((e) => e.name === "Empty" && e.kind === "struct")
+    expect(empty).toBeDefined()
+    expect(empty!.members).toBeUndefined()
+  })
+
+  it("skips comments inside struct fields (L-04)", () => {
+    const content = `package models
+
+type Server struct {
+	// Host is the server hostname
+	Host string
+	// Port is the server port
+	Port int
+}
+`
+    const result = parseGoFile({ filePath: "server.go", content, ...OPTS })
+
+    const server = result.entities.find((e) => e.name === "Server" && e.kind === "struct")
+    expect(server).toBeDefined()
+    expect(server!.members).toEqual(["Host", "Port"])
+  })
+
   it("handles mixed entity types in one file", () => {
     const content = `package api
 

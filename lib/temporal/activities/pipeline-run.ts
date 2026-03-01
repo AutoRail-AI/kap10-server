@@ -18,6 +18,7 @@ const INITIAL_STEPS: PipelineStepRecord[] = [
   { name: "parse", label: "Parsing remaining files", status: "pending" },
   { name: "finalize", label: "Finalizing index", status: "pending" },
   { name: "blastRadius", label: "Computing blast radius", status: "pending" },
+  { name: "temporalAnalysis", label: "Mining temporal patterns", status: "pending" },
   { name: "embed", label: "Generating embeddings", status: "pending" },
   { name: "ontology", label: "Extracting domain ontology", status: "pending" },
   { name: "justification", label: "Justifying entities", status: "pending" },

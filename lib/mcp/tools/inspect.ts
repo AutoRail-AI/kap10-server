@@ -133,6 +133,32 @@ export async function handleGetFunction(
     container.graphStore.getEntityWarnings(ctx.orgId, entity.id).catch(() => []),
   ])
 
+  // L-14: Enrich with entity profile (best-effort)
+  let profileData: Record<string, unknown> = {}
+  try {
+    const { getEntityProfile } = require("@/lib/mcp/entity-profile") as typeof import("@/lib/mcp/entity-profile")
+    const profile = await getEntityProfile(ctx.orgId, repoId, entity.id, container)
+    if (profile) {
+      profileData = {
+        profile: {
+          business_purpose: profile.business_purpose,
+          feature_tag: profile.feature_tag,
+          taxonomy: profile.taxonomy,
+          confidence: profile.confidence,
+          community: profile.community,
+          blast_radius: profile.blast_radius,
+          architectural_pattern: profile.architectural_pattern,
+          is_dead_code: profile.is_dead_code,
+          domain_concepts: profile.domain_concepts,
+          change_frequency: profile.change_frequency,
+          stability_score: profile.stability_score,
+        },
+      }
+    }
+  } catch {
+    // Profile enrichment is best-effort
+  }
+
   return formatToolResponse({
     function: {
       name: entity.name,
@@ -163,6 +189,7 @@ export async function handleGetFunction(
         reverted_at: w.reverted_at,
       })),
     } : {}),
+    ...profileData,
   })
 }
 
@@ -275,6 +302,30 @@ export async function handleGetClass(
   // I-01: Fetch warnings for this class entity
   const classWarnings = await container.graphStore.getEntityWarnings(ctx.orgId, classEntity.id).catch(() => [])
 
+  // L-14: Enrich with entity profile (best-effort)
+  let classProfileData: Record<string, unknown> = {}
+  try {
+    const { getEntityProfile } = require("@/lib/mcp/entity-profile") as typeof import("@/lib/mcp/entity-profile")
+    const profile = await getEntityProfile(ctx.orgId, repoId, classEntity.id, container)
+    if (profile) {
+      classProfileData = {
+        profile: {
+          business_purpose: profile.business_purpose,
+          feature_tag: profile.feature_tag,
+          taxonomy: profile.taxonomy,
+          confidence: profile.confidence,
+          community: profile.community,
+          blast_radius: profile.blast_radius,
+          architectural_pattern: profile.architectural_pattern,
+          is_dead_code: profile.is_dead_code,
+          domain_concepts: profile.domain_concepts,
+        },
+      }
+    }
+  } catch {
+    // Profile enrichment is best-effort
+  }
+
   return formatToolResponse({
     class: {
       name: classEntity.name,
@@ -300,6 +351,7 @@ export async function handleGetClass(
         reverted_at: w.reverted_at,
       })),
     } : {}),
+    ...classProfileData,
   })
 }
 

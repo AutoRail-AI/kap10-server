@@ -453,8 +453,8 @@ export async function cascadeReJustify(input: CascadeReJustifyInput): Promise<Ca
     }
   }
 
-  // Dead code detection on the affected subgraph
-  const deadCodeIds = detectDeadCode(allEntities, edges)
+  // Dead code detection on the affected subgraph (L-17: Map with reasons)
+  const deadCodeMap = detectDeadCode(allEntities, edges)
 
   // Filter to entities in the cascade queue
   const cascadeEntities = allKeys
@@ -476,7 +476,7 @@ export async function cascadeReJustify(input: CascadeReJustifyInput): Promise<Ca
 
       // Compute heuristic hint (context for LLM, not a skip)
       const heuristicHint = computeHeuristicHint(entity)
-      const isDeadCode = deadCodeIds.has(entity.id)
+      const isDeadCode = deadCodeMap.has(entity.id)
 
       // Build test context
       const testContext = buildTestContext(entity.id, allEntities, edges)
@@ -679,6 +679,8 @@ export async function invalidateCaches(input: InvalidateCachesInput): Promise<vo
       `search:${input.orgId}:${input.repoId}:`,
       `prefetch:ctx:${input.orgId}:${input.repoId}:`,
       `rules:resolved:${input.orgId}:${input.repoId}:`,
+      // L-14: Invalidate entity profile cache
+      `profile:${input.orgId}:${input.repoId}:`,
     ]
 
     for (const prefix of prefixes) {

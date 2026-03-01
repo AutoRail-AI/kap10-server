@@ -293,13 +293,15 @@ export function routeModel(
     }
   }
 
-  // Premium tier: high centrality, complex dependency graphs, high callerCount, or high cyclomatic complexity
+  // Premium tier: high centrality, complex dependency graphs, high callerCount, or high complexity
   const entityComplexity = entity.complexity as number | undefined
+  const cognitiveComplexity = (entity as Record<string, unknown>).cognitive_complexity as number | undefined
   const callerCount = opts?.callerCount
   if (
     (opts?.centrality ?? 0) > 0.8 ||
     opts?.hasComplexDependencies ||
     (entityComplexity != null && entityComplexity >= 10) ||
+    (cognitiveComplexity != null && cognitiveComplexity >= 15) ||
     (callerCount != null && callerCount >= 8)
   ) {
     return {
@@ -307,9 +309,11 @@ export function routeModel(
       model: LLM_MODELS.premium,
       reason: callerCount != null && callerCount >= 8
         ? `high caller count (${callerCount} callers)`
-        : entityComplexity != null && entityComplexity >= 10
-          ? `high cyclomatic complexity (${entityComplexity})`
-          : "high centrality or complex dependencies",
+        : cognitiveComplexity != null && cognitiveComplexity >= 15
+          ? `high cognitive complexity (${cognitiveComplexity})`
+          : entityComplexity != null && entityComplexity >= 10
+            ? `high cyclomatic complexity (${entityComplexity})`
+            : "high centrality or complex dependencies",
     }
   }
 

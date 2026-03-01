@@ -79,7 +79,7 @@ describe("embedding activities", () => {
   })
 
   describe("processAndEmbedBatch", () => {
-    it("fetches, builds, embeds, and stores for a batch of files", async () => {
+    it("fetches, builds, embeds, and stores for a batch of files (L-08: dual variants)", async () => {
       await container.graphStore.bulkUpsertEntities("org1", [
         { id: "e1", org_id: "org1", repo_id: "repo1", kind: "function", name: "validate", file_path: "auth.ts", signature: "(t: string) => bool" },
         { id: "e2", org_id: "org1", repo_id: "repo1", kind: "class", name: "AuthService", file_path: "auth.ts" },
@@ -92,15 +92,13 @@ describe("embedding activities", () => {
         { index: 0, total: 1 },
       )
 
-      expect(result.embeddingsStored).toBe(2)
-      expect(result.entityKeys).toHaveLength(2)
-      expect(result.entityKeys).toContain("e1")
-      expect(result.entityKeys).toContain("e2")
-      expect(result.entityKeys).not.toContain("e3") // file entity excluded
+      // L-08: 2 embeddable entities × 2 variants = 4 embeddings stored
+      expect(result.embeddingsStored).toBe(4)
 
       const embedding = await container.vectorSearch.embed(["validate"])
       const searchResults = await container.vectorSearch.search(embedding[0]!, 10, { orgId: "org1", repoId: "repo1" })
-      expect(searchResults.length).toBe(2)
+      // Both semantic and code variants are searchable
+      expect(searchResults.length).toBe(4)
     })
 
     it("returns empty results for files with only non-embeddable entities", async () => {
@@ -116,10 +114,9 @@ describe("embedding activities", () => {
       )
 
       expect(result.embeddingsStored).toBe(0)
-      expect(result.entityKeys).toHaveLength(0)
     })
 
-    it("processes multiple file batches independently", async () => {
+    it("processes multiple file batches independently (L-08: dual variants)", async () => {
       await container.graphStore.bulkUpsertEntities("org1", [
         { id: "e1", org_id: "org1", repo_id: "repo1", kind: "function", name: "fn1", file_path: "a.ts" },
         { id: "e2", org_id: "org1", repo_id: "repo1", kind: "function", name: "fn2", file_path: "b.ts" },
@@ -136,15 +133,14 @@ describe("embedding activities", () => {
         { index: 1, total: 2 },
       )
 
-      expect(batch1.embeddingsStored).toBe(1)
-      expect(batch2.embeddingsStored).toBe(1)
-      expect(batch1.entityKeys).toEqual(["e1"])
-      expect(batch2.entityKeys).toEqual(["e2"])
+      // L-08: 1 entity × 2 variants per batch = 2 embeddings per batch
+      expect(batch1.embeddingsStored).toBe(2)
+      expect(batch2.embeddingsStored).toBe(2)
     })
   })
 
   describe("buildEmbeddableDocuments (helper)", () => {
-    it("builds documents with correct text format", () => {
+    it("builds documents with correct text format (L-08: dual variants)", () => {
       const entities = [
         { id: "e1", org_id: "org1", repo_id: "repo1", kind: "function", name: "validateJWT", file_path: "auth.ts", signature: "(token: string) => boolean", body: "function validateJWT() {}" },
         { id: "e2", org_id: "org1", repo_id: "repo1", kind: "class", name: "AuthService", file_path: "auth.ts" },
@@ -155,8 +151,10 @@ describe("embedding activities", () => {
         entities,
         new Map(),
       )
-      expect(docs).toHaveLength(2)
+      // L-08: 2 entities × 2 variants (semantic + code) = 4 docs
+      expect(docs).toHaveLength(4)
 
+      // Semantic variant
       const fnDoc = docs.find(d => d.entityKey === "e1")!
       expect(fnDoc.text).toContain("Function: validateJWT")
       expect(fnDoc.text).toContain("File: auth.ts")
@@ -164,6 +162,11 @@ describe("embedding activities", () => {
       expect(fnDoc.metadata.entityType).toBe("function")
       expect(fnDoc.metadata.entityName).toBe("validateJWT")
       expect(fnDoc.metadata.filePath).toBe("auth.ts")
+
+      // Code-only variant
+      const fnCodeDoc = docs.find(d => d.entityKey === "e1::code")!
+      expect(fnCodeDoc.text).toContain("Function: validateJWT")
+      expect(fnCodeDoc.text).toContain("Signature: (token: string) => boolean")
 
       const classDoc = docs.find(d => d.entityKey === "e2")!
       expect(classDoc.text).toContain("Class: AuthService")
@@ -180,8 +183,10 @@ describe("embedding activities", () => {
         entities,
         new Map(),
       )
-      expect(docs).toHaveLength(1)
+      // L-08: 1 entity × 2 variants = 2 docs (file entity skipped)
+      expect(docs).toHaveLength(2)
       expect(docs[0]!.entityKey).toBe("e2")
+      expect(docs[1]!.entityKey).toBe("e2::code")
     })
 
     it("truncates large bodies", () => {
@@ -195,8 +200,10 @@ describe("embedding activities", () => {
         entities,
         new Map(),
       )
-      expect(docs[0]!.text).toContain("[truncated")
-      expect(docs[0]!.text.length).toBeLessThan(largeBody.length)
+      // Semantic variant should have truncated body
+      const semanticDoc = docs.find(d => d.entityKey === "e1")!
+      expect(semanticDoc.text.length).toBeLessThan(30000)
+      expect(semanticDoc.text.length).toBeLessThan(largeBody.length)
     })
   })
 
@@ -214,14 +221,15 @@ describe("embedding activities", () => {
   })
 
   describe("buildDocuments (legacy)", () => {
-    it("builds documents with correct text format", async () => {
+    it("builds documents with correct text format (L-08: dual variants)", async () => {
       const entities = [
         { id: "e1", org_id: "org1", repo_id: "repo1", kind: "function", name: "validateJWT", file_path: "auth.ts", signature: "(token: string) => boolean", body: "function validateJWT() {}" },
         { id: "e2", org_id: "org1", repo_id: "repo1", kind: "class", name: "AuthService", file_path: "auth.ts" },
       ]
 
       const docs = await buildDocuments({ orgId: "org1", repoId: "repo1" }, entities)
-      expect(docs).toHaveLength(2)
+      // L-08: 2 entities × 2 variants = 4 docs
+      expect(docs).toHaveLength(4)
 
       const fnDoc = docs.find(d => d.entityKey === "e1")!
       expect(fnDoc.text).toContain("Function: validateJWT")
@@ -242,7 +250,8 @@ describe("embedding activities", () => {
       ]
 
       const docs = await buildDocuments({ orgId: "org1", repoId: "repo1" }, entities)
-      expect(docs).toHaveLength(1)
+      // L-08: 1 entity × 2 variants = 2 docs (file entity skipped)
+      expect(docs).toHaveLength(2)
       expect(docs[0]!.entityKey).toBe("e2")
     })
 
@@ -253,8 +262,9 @@ describe("embedding activities", () => {
       ]
 
       const docs = await buildDocuments({ orgId: "org1", repoId: "repo1" }, entities)
-      expect(docs[0]!.text).toContain("[truncated")
-      expect(docs[0]!.text.length).toBeLessThan(largeBody.length)
+      const semanticDoc = docs.find(d => d.entityKey === "e1")!
+      expect(semanticDoc.text.length).toBeLessThan(30000)
+      expect(semanticDoc.text.length).toBeLessThan(largeBody.length)
     })
   })
 

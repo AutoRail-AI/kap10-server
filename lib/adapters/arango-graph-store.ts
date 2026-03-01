@@ -85,7 +85,7 @@ const DOC_COLLECTIONS = [
   "entity_warnings",
 ] as const
 
-const EDGE_COLLECTIONS = ["contains", "calls", "imports", "extends", "implements", "rule_exceptions", "language_implementations"] as const
+const EDGE_COLLECTIONS = ["contains", "calls", "imports", "extends", "implements", "rule_exceptions", "language_implementations", "logically_coupled"] as const
 
 const TENANT_INDEX_FIELDS = ["org_id", "repo_id"]
 const FILE_PATH_INDEX_FIELDS = ["org_id", "repo_id", "file_path"]

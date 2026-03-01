@@ -5,6 +5,7 @@
  * and annotations from Java files. Also detects extends/implements edges,
  * import edges, and within-file call edges.
  */
+import { computeComplexity } from "../../complexity"
 import { extractJSDocComment } from "../../doc-extractor"
 import { entityHash } from "../../entity-hash"
 import type { ParsedEdge, ParsedEntity } from "../../types"
@@ -383,7 +384,9 @@ function fillJavaEndLinesAndBodies(entities: ParsedEntity[], lines: string[]): v
       entity.body = bodyLines.join("\n")
       // Estimate complexity for methods
       if (entity.kind === "method") {
-        entity.complexity = estimateJavaComplexity(entity.body)
+        const cx = computeComplexity(entity.body, "java")
+        entity.complexity = cx.cyclomatic
+        entity.cognitive_complexity = cx.cognitive
       }
     }
   }
@@ -504,13 +507,4 @@ function countJavaParams(params: string): number {
   return count
 }
 
-/** Estimate cyclomatic complexity for Java. Baseline = 1. */
-function estimateJavaComplexity(body: string): number {
-  let complexity = 1
-  const pattern = /\b(if|else\s+if|for|while|do|case|catch|switch)\b|&&|\|\||\?/g
-  let _match: RegExpExecArray | null
-  while ((_match = pattern.exec(body)) !== null) {
-    complexity++
-  }
-  return complexity
-}
+// L-06: estimateJavaComplexity replaced by shared computeComplexity("java")

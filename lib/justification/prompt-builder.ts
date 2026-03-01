@@ -54,6 +54,8 @@ export interface PromptBuilderOptions {
   heuristicHint?: { taxonomy: string; featureTag: string; reason: string }
   /** Whether this entity has zero inbound references (potential dead code) */
   isDeadCode?: boolean
+  /** L-17: Specific reason why this entity was flagged as dead code */
+  deadCodeReason?: string
   /** User-provided project context (ARCHITECTURE.md, PRD, etc.) for anchoring taxonomy */
   contextDocuments?: string
   /** I-02: Git commit history for the entity's file (recent commit subjects/bodies) */
@@ -90,7 +92,9 @@ function buildFunctionSection(
   if (entity.return_type) lines.push(`- **Return type**: ${entity.return_type as string}`)
   if (entity.complexity != null) {
     const c = entity.complexity as number
-    lines.push(`- **Complexity**: ${c}${c >= 10 ? " (high — likely orchestrates multiple paths)" : c >= 5 ? " (moderate)" : ""}`)
+    const cog = (entity as Record<string, unknown>).cognitive_complexity as number | undefined
+    const cogLabel = cog != null ? `, cognitive: ${cog}${cog >= 15 ? " (deeply nested)" : cog >= 8 ? " (moderately nested)" : ""}` : ""
+    lines.push(`- **Complexity**: cyclomatic ${c}${c >= 10 ? " (high — likely orchestrates multiple paths)" : c >= 5 ? " (moderate)" : ""}${cogLabel}`)
   }
 
   // Call graph emphasis for functions
@@ -346,7 +350,8 @@ export function buildJustificationPrompt(
       hintLines.push(`Static analysis suggests this entity is **${options.heuristicHint.taxonomy}** in the **${options.heuristicHint.featureTag}** area because: ${options.heuristicHint.reason}.`)
     }
     if (options?.isDeadCode) {
-      hintLines.push(`This entity has zero inbound references and may be dead code.`)
+      const reason = options.deadCodeReason ?? "zero inbound references"
+      hintLines.push(`This entity may be dead code: ${reason}.`)
     }
     // C-01: Include decorator/annotation metadata
     const decorators = (entity as Record<string, unknown>).decorators as string[] | undefined
@@ -382,6 +387,36 @@ export function buildJustificationPrompt(
     }
     if (structLines.length > 0) {
       sections.push(`## Structural Signal\n${structLines.join("\n")}`)
+    }
+  }
+
+  // L-24: TEMPORAL CONTEXT — git history patterns
+  {
+    const temporalLines: string[] = []
+    const ext = entity as Record<string, unknown>
+    const changeFreq = ext.change_frequency as number | undefined
+    const stability = ext.stability_score as number | undefined
+    const authorConc = ext.author_concentration as number | undefined
+    const authorCount = ext.author_count as number | undefined
+    const commitIntents = ext.commit_intents as string[] | undefined
+
+    if (changeFreq != null) {
+      const recentFreq = ext.recent_change_frequency as number | undefined
+      temporalLines.push(`- Change frequency: ${changeFreq} commits total${recentFreq ? `, ${recentFreq} in last 90 days` : ""}`)
+    }
+    if (stability != null) {
+      const label = stability > 0.8 ? "stable" : stability > 0.5 ? "moderately active" : "volatile"
+      temporalLines.push(`- Stability: ${Math.round(stability * 100)}% (${label})`)
+    }
+    if (authorCount != null && authorConc != null) {
+      const ownership = authorConc > 0.7 ? "single-owner" : authorConc > 0.4 ? "small-team" : "broadly-owned"
+      temporalLines.push(`- Authors: ${authorCount} (${ownership})`)
+    }
+    if (commitIntents && commitIntents.length > 0) {
+      temporalLines.push(`- Recent intent: ${commitIntents.join(", ")}`)
+    }
+    if (temporalLines.length > 0) {
+      sections.push(`## Temporal Context\n${temporalLines.join("\n")}`)
     }
   }
 
@@ -617,6 +652,7 @@ export function buildBatchJustificationPrompt(
     calleeJustifications?: JustificationDoc[]
     heuristicHint?: { taxonomy: string; featureTag: string; reason: string }
     isDeadCode?: boolean
+    deadCodeReason?: string
     intentSignals?: IntentSignals
   }>,
   ontology: DomainOntologyDoc | null,
@@ -678,7 +714,7 @@ Respond with a JSON array of objects, one per entity, in the same order. Each ob
 
   // Each entity as a compact section
   for (let i = 0; i < entities.length; i++) {
-    const { entity, graphContext, parentJustification, calleeJustifications, heuristicHint, isDeadCode, intentSignals } = entities[i]!
+    const { entity, graphContext, parentJustification, calleeJustifications, heuristicHint, isDeadCode, deadCodeReason, intentSignals } = entities[i]!
     const body = entity.body as string | undefined
     // L-23: Use semantic summarization for batch mode (cap at ~2000 chars)
     const truncatedBody = body
@@ -697,7 +733,8 @@ ${entity.doc ? `- **Documentation**: ${entity.doc as string}` : ""}
       entitySection += `\n- **Static hint**: ${heuristicHint.taxonomy} / ${heuristicHint.featureTag} (${heuristicHint.reason})`
     }
     if (isDeadCode) {
-      entitySection += `\n- **Warning**: Zero inbound references — potential dead code`
+      const reason = deadCodeReason ?? "zero inbound references"
+      entitySection += `\n- **Warning**: Potential dead code — ${reason}`
     }
 
     const batchSignals = extractCommentSignals(body ?? null)
@@ -751,6 +788,18 @@ ${entity.doc ? `- **Documentation**: ${entity.doc as string}` : ""}
       }
       if (signalParts.length > 0) {
         entitySection += `\n- **Signals**: ${signalParts.join(" | ")}`
+      }
+    }
+
+    // L-24: Compact temporal line for batch prompts
+    {
+      const changeFreq = (entity as Record<string, unknown>).change_frequency as number | undefined
+      const stability = (entity as Record<string, unknown>).stability_score as number | undefined
+      if (changeFreq != null || stability != null) {
+        const parts: string[] = []
+        if (changeFreq != null) parts.push(`${changeFreq} commits`)
+        if (stability != null) parts.push(`stability: ${Math.round(stability * 100)}%`)
+        entitySection += `\n- **Temporal**: ${parts.join(", ")}`
       }
     }
 

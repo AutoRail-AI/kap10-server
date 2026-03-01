@@ -368,11 +368,25 @@ export async function justifyBatch(
     prevJustMap.set(j.entity_id, j)
   }
 
-  // Staleness detection: skip unchanged entities
+  // Staleness detection: skip unchanged entities (L-09: change-type aware)
   const calleeChangedSet = new Set(calleeChangedIds)
-  const { stale, fresh } = checkStaleness(entities, prevJustMap, calleeChangedSet, edges)
+  const { stale, fresh, staleReasons } = checkStaleness(entities, prevJustMap, calleeChangedSet, edges)
   if (fresh.length > 0) {
     heartbeat(`skipping ${fresh.length} fresh entities (unchanged since last justification)`)
+  }
+  // L-09: Log staleness classification reasons for observability
+  if (staleReasons.size > 0) {
+    const reasonCounts = new Map<string, number>()
+    staleReasons.forEach((reason) => {
+      // Extract reason category (before colon or full reason)
+      const category = reason.includes(":") ? reason.split(":")[0]!.trim() : reason
+      reasonCounts.set(category, (reasonCounts.get(category) ?? 0) + 1)
+    })
+    log.info("Staleness classification", {
+      staleCount: stale.length,
+      freshCount: fresh.length,
+      reasonBreakdown: Object.fromEntries(Array.from(reasonCounts.entries())),
+    })
   }
   entities = stale
 
@@ -390,8 +404,8 @@ export async function justifyBatch(
   const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
   const defaultModel = LLM_MODELS.standard
 
-  // Dead code detection: auto-classify entities with zero inbound references
-  const deadCodeIds = detectDeadCode(allEntities, edges)
+  // Dead code detection: auto-classify entities with zero inbound references (L-17: Map with reasons)
+  const deadCodeMap = detectDeadCode(allEntities, edges)
 
   // I-02: Fetch git history per unique file path (grouped to avoid redundant git log calls)
   const fileHistoryMap = new Map<string, string[]>()
@@ -442,6 +456,7 @@ export async function justifyBatch(
     siblingNames?: string[]
     heuristicHint?: { taxonomy: string; featureTag: string; reason: string }
     isDeadCode?: boolean
+    deadCodeReason?: string
     historicalContext?: string[]
     intentSignals?: IntentSignals
   }> = []
@@ -454,7 +469,8 @@ export async function justifyBatch(
 
     // Compute heuristic hint (passed as context to LLM, not used to skip)
     const heuristicHint = computeHeuristicHint(entity)
-    const isDeadCode = deadCodeIds.has(entity.id)
+    const isDeadCode = deadCodeMap.has(entity.id)
+    const deadCodeReason = deadCodeMap.get(entity.id)
 
     // Route model — all entities go to LLM
     // Count inbound callers for tier routing (high callers → premium)
@@ -534,6 +550,7 @@ export async function justifyBatch(
       siblingNames: siblingMap.get(entity.id),
       heuristicHint: heuristicHint ? { taxonomy: heuristicHint.taxonomy, featureTag: heuristicHint.featureTag, reason: heuristicHint.reason } : undefined,
       isDeadCode,
+      deadCodeReason,
       historicalContext: fileHistoryMap.get(entity.file_path),
       intentSignals,
     })
@@ -602,6 +619,7 @@ export async function justifyBatch(
             callerJustifications: teInfo.callerJustifications,
             heuristicHint: teInfo.heuristicHint,
             isDeadCode: teInfo.isDeadCode,
+            deadCodeReason: teInfo.deadCodeReason,
             contextDocuments,
             historicalContext: teInfo.historicalContext,
             intentSignals: teInfo.intentSignals,
@@ -674,6 +692,7 @@ export async function justifyBatch(
               calleeJustifications: teInfo?.depJustifications,
               heuristicHint: teInfo?.heuristicHint,
               isDeadCode: teInfo?.isDeadCode,
+              deadCodeReason: teInfo?.deadCodeReason,
               intentSignals: teInfo?.intentSignals,
             }
           }),
@@ -1246,4 +1265,26 @@ export async function setJustifyFailedStatus(
     status: "justify_failed",
     errorMessage,
   })
+}
+
+/**
+ * L-14: Warm the entity profile cache in Redis after justification completes.
+ * Builds profiles for all entities and stores them with 24h TTL.
+ */
+export async function warmEntityProfileCache(
+  input: JustificationInput,
+): Promise<{ profilesWarmed: number }> {
+  const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
+  const container = getContainer()
+
+  const { buildEntityProfiles, cacheEntityProfiles } = require("@/lib/mcp/entity-profile") as typeof import("@/lib/mcp/entity-profile")
+
+  heartbeat("building entity profiles for cache")
+  const profiles = await buildEntityProfiles(input.orgId, input.repoId, container)
+
+  heartbeat(`caching ${profiles.size} profiles`)
+  const cached = await cacheEntityProfiles(input.orgId, input.repoId, profiles, container)
+
+  log.info("Entity profile cache warmed", { profilesWarmed: cached })
+  return { profilesWarmed: cached }
 }

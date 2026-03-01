@@ -18,6 +18,7 @@ import * as patternDetection from "@/lib/temporal/activities/pattern-detection"
 import * as patternMining from "@/lib/temporal/activities/pattern-mining"
 import * as review from "@/lib/temporal/activities/review"
 import * as ruleSimulation from "@/lib/temporal/activities/rule-simulation"
+import * as temporalAnalysis from "@/lib/temporal/activities/temporal-analysis"
 import * as workspaceCleanup from "@/lib/temporal/activities/workspace-cleanup"
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233"
@@ -56,6 +57,8 @@ async function createWorkerWithRetry(): Promise<Worker> {
           ...ruleSimulation,
           // PR review (heavy: runChecksHeavy)
           ...review,
+          // L-24: Temporal analysis (git co-change mining)
+          ...temporalAnalysis,
           // Workspace cleanup (K-01)
           ...workspaceCleanup,
         },

@@ -34,8 +34,12 @@ export interface ParsedEntity {
   return_type?: string
   /** Cyclomatic complexity estimate (baseline = 1) */
   complexity?: number
+  /** L-06: Cognitive complexity (Sonar-style, weights nested conditions higher) */
+  cognitive_complexity?: number
   /** C-01: Decorators/annotations attached to this entity (e.g., ["@Injectable()", "@Controller('/api')"]) */
   decorators?: string[]
+  /** L-04: Struct/class member field names (e.g., Go struct fields) */
+  members?: string[]
 }
 
 /** Maximum number of source lines to store per entity body */
@@ -76,6 +80,7 @@ export type EdgeKind =
   | "returns"
   | "parameter_of"
   | "member_of"
+  | "logically_coupled"  // L-24: git co-change coupling
 
 /** Result from a language plugin's SCIP indexing */
 export interface SCIPResult {

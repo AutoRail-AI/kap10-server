@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { createTestContainer } from "@/lib/di/container"
-import { hybridSearch, reciprocalRankFusion, tokenizeQuery } from "../hybrid-search"
+import { computeAdaptiveK, hybridSearch, reciprocalRankFusion, tokenizeQuery } from "../hybrid-search"
 
 describe("tokenizeQuery", () => {
   it("removes stop words", () => {
@@ -89,6 +89,50 @@ describe("reciprocalRankFusion", () => {
     }))
     const result = reciprocalRankFusion([ranking], [], 60, 5)
     expect(result).toHaveLength(5)
+  })
+})
+
+describe("computeAdaptiveK", () => {
+  const makeItems = (keys: string[]) =>
+    keys.map((k) => ({
+      entityKey: k, entityName: k, entityType: "function", filePath: `${k}.ts`, score: 0.5,
+    }))
+
+  it("returns baseK for single ranking source", () => {
+    expect(computeAdaptiveK([makeItems(["a", "b", "c"])], 30)).toBe(30)
+  })
+
+  it("returns lower k when sources have high overlap", () => {
+    // Both sources return same entities
+    const shared = makeItems(["a", "b", "c", "d", "e"])
+    const k = computeAdaptiveK([shared, shared], 30)
+    expect(k).toBeLessThan(30) // High agreement → lower k
+  })
+
+  it("returns higher k when sources have no overlap", () => {
+    const source1 = makeItems(["a", "b", "c", "d", "e"])
+    const source2 = makeItems(["f", "g", "h", "i", "j"])
+    const k = computeAdaptiveK([source1, source2], 30)
+    expect(k).toBeGreaterThan(30) // No agreement → higher k
+  })
+
+  it("returns intermediate k for partial overlap", () => {
+    const source1 = makeItems(["a", "b", "c", "d", "e"])
+    const source2 = makeItems(["c", "d", "e", "f", "g"])
+    const k = computeAdaptiveK([source1, source2], 30)
+    // Partial overlap: 3/7 Jaccard ≈ 0.43 → factor ≈ 1.36 → k ≈ 41
+    expect(k).toBeGreaterThanOrEqual(15) // Not minimum
+    expect(k).toBeLessThanOrEqual(60)    // Not maximum
+  })
+
+  it("clamps k within [0.5*baseK, 2.0*baseK]", () => {
+    // Perfect overlap
+    const perfect = makeItems(["a", "b", "c"])
+    expect(computeAdaptiveK([perfect, perfect], 30)).toBeGreaterThanOrEqual(15)
+    // Zero overlap
+    const src1 = makeItems(["a", "b", "c"])
+    const src2 = makeItems(["d", "e", "f"])
+    expect(computeAdaptiveK([src1, src2], 30)).toBeLessThanOrEqual(60)
   })
 })
 

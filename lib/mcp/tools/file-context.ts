@@ -50,26 +50,19 @@ export async function handleFileContext(
     return formatToolError(`File "${args.path}" not found or contains no indexed entities`)
   }
 
-  // Fetch justifications for all entities in the file
-  const justifications = await container.graphStore.getJustifications(ctx.orgId, repoId)
-  const justMap = new Map<string, typeof justifications[number]>()
-  for (const j of justifications) {
-    justMap.set(j.entity_id, j)
+  // L-14: Use entity profiles for rich context (falls back to direct DB on cache miss)
+  const entityIds = entities.map((e) => e.id)
+  let profileMap = new Map<string, import("@/lib/mcp/entity-profile").EntityProfile>()
+  try {
+    const { getEntityProfiles } = require("@/lib/mcp/entity-profile") as typeof import("@/lib/mcp/entity-profile")
+    profileMap = await getEntityProfiles(ctx.orgId, repoId, entityIds, container)
+  } catch {
+    // Profile cache unavailable — fall back to justifications
   }
 
-  // Fetch graph edges for caller/callee info
-  const entityIds = entities.map((e) => e.id)
-  const edges = await container.graphStore.getAllEdges(ctx.orgId, repoId)
-
-  // Build entity summaries with justification + graph context
+  // Build entity summaries from profiles
   const entitySummaries = entities.map((entity) => {
-    const justification = justMap.get(entity.id)
-
-    // Find callers (inbound edges)
-    const callerEdges = edges.filter((e) => e._to.endsWith(`/${entity.id}`) && e.kind === "calls")
-    // Find callees (outbound edges)
-    const calleeEdges = edges.filter((e) => e._from.endsWith(`/${entity.id}`) && e.kind === "calls")
-
+    const profile = profileMap.get(entity.id)
     const summary: Record<string, unknown> = {
       name: entity.name,
       kind: entity.kind,
@@ -77,35 +70,32 @@ export async function handleFileContext(
       signature: entity.signature ?? entity.name,
     }
 
-    if (justification) {
-      summary.business_purpose = justification.business_purpose
-      summary.taxonomy = justification.taxonomy
-      summary.feature_tag = justification.feature_tag
-      summary.domain_concepts = justification.domain_concepts
-      summary.confidence = justification.confidence
-      if (justification.architectural_pattern) {
-        summary.architectural_pattern = justification.architectural_pattern
-      }
-    }
-
-    if (callerEdges.length > 0) {
-      summary.caller_count = callerEdges.length
-    }
-    if (calleeEdges.length > 0) {
-      summary.callee_count = calleeEdges.length
+    if (profile) {
+      summary.business_purpose = profile.business_purpose
+      summary.taxonomy = profile.taxonomy
+      summary.feature_tag = profile.feature_tag
+      summary.domain_concepts = profile.domain_concepts
+      summary.confidence = profile.confidence
+      summary.caller_count = profile.callers.length
+      summary.callee_count = profile.callees.length
+      summary.community = profile.community
+      if (profile.architectural_pattern) summary.architectural_pattern = profile.architectural_pattern
+      if (profile.is_dead_code) summary.is_dead_code = true
+      if (profile.change_frequency != null) summary.change_frequency = profile.change_frequency
+      if (profile.stability_score != null) summary.stability_score = profile.stability_score
     }
 
     return summary
   })
 
-  // Aggregate file-level feature tags and domain concepts
+  // Aggregate file-level feature tags and domain concepts from profiles
   const featureTags = new Map<string, number>()
   const domainConcepts = new Map<string, number>()
   for (const entity of entities) {
-    const j = justMap.get(entity.id)
-    if (j) {
-      featureTags.set(j.feature_tag, (featureTags.get(j.feature_tag) ?? 0) + 1)
-      for (const concept of j.domain_concepts ?? []) {
+    const profile = profileMap.get(entity.id)
+    if (profile) {
+      featureTags.set(profile.feature_tag, (featureTags.get(profile.feature_tag) ?? 0) + 1)
+      for (const concept of profile.domain_concepts) {
         domainConcepts.set(concept, (domainConcepts.get(concept) ?? 0) + 1)
       }
     }

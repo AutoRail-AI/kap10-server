@@ -240,6 +240,12 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
     progress = 92
     wfLog("INFO", "Step 8b complete", { ...ctx, pass2Stored }, "Step 8b/10")
 
+    // Step 8c: L-14 — Warm entity profile cache in Redis
+    wfLog("INFO", "Step 8c/10: Warming entity profile cache", ctx, "Step 8c/10")
+    const { profilesWarmed } = await activities.warmEntityProfileCache(input)
+    progress = 93
+    wfLog("INFO", "Step 8c complete", { ...ctx, profilesWarmed }, "Step 8c/10")
+
     // Step 9: Chain to health report (stable ID prevents duplicates on retry)
     wfLog("INFO", "Step 9/10: Starting health report workflow", ctx, "Step 9/10")
     try {

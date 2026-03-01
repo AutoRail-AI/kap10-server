@@ -3,6 +3,7 @@
  *
  * Extracts functions, structs, interfaces, and methods from Go files.
  */
+import { computeComplexity } from "../../complexity"
 import { extractGoDocComment } from "../../doc-extractor"
 import { entityHash } from "../../entity-hash"
 import type { ParsedEdge, ParsedEntity } from "../../types"
@@ -87,7 +88,33 @@ export function parseGoFile(opts: TreeSitterOptions): GoParseResult {
     const structMatch = trimmed.match(/^type\s+(\w+)\s+struct\s*\{?/)
     if (structMatch) {
       const name = structMatch[1]!
-      entities.push({
+      // L-04: Extract struct member fields from the body
+      const members: string[] = []
+      if (trimmed.includes("{")) {
+        // Struct body starts on same line — scan forward for fields
+        let depth = 0
+        for (let j = i; j < lines.length; j++) {
+          const fieldLine = lines[j]!
+          for (const ch of fieldLine) {
+            if (ch === "{") depth++
+            if (ch === "}") depth--
+          }
+          // Parse field lines (between opening and closing braces)
+          if (j > i && depth > 0) {
+            const fieldTrimmed = fieldLine.trim()
+            // Skip comments, embedded structs, and blank lines
+            if (fieldTrimmed && !fieldTrimmed.startsWith("//") && !fieldTrimmed.startsWith("/*")) {
+              // Go struct field: FieldName FieldType `tag`
+              const fieldMatch = fieldTrimmed.match(/^(\w+)\s+\S/)
+              if (fieldMatch) {
+                members.push(fieldMatch[1]!)
+              }
+            }
+          }
+          if (depth === 0 && j > i) break
+        }
+      }
+      const structEntity: ParsedEntity = {
         id: entityHash(opts.repoId, opts.filePath, "struct", name),
         kind: "struct",
         name,
@@ -95,7 +122,11 @@ export function parseGoFile(opts: TreeSitterOptions): GoParseResult {
         start_line: lineNum,
         language: "go",
         exported: name[0] === name[0]!.toUpperCase(),
-      })
+      }
+      if (members.length > 0) {
+        structEntity.members = members
+      }
+      entities.push(structEntity)
       continue
     }
 
@@ -196,9 +227,11 @@ function fillGoEndLinesAndBodies(entities: ParsedEntity[], lines: string[]): voi
     const bodyLines = lines.slice(startIdx, Math.min(endIdx + 1, startIdx + MAX_BODY_LINES))
     if (bodyLines.length > 0) {
       entity.body = bodyLines.join("\n")
-      // Estimate complexity for functions and methods
+      // L-06: Compute both cyclomatic and cognitive complexity
       if (entity.kind === "function" || entity.kind === "method") {
-        entity.complexity = estimateGoComplexity(entity.body)
+        const cx = computeComplexity(entity.body, "go")
+        entity.complexity = cx.cyclomatic
+        entity.cognitive_complexity = cx.cognitive
       }
     }
   }
@@ -263,16 +296,7 @@ function extractGoReturnType(line: string): string | undefined {
   return undefined
 }
 
-/** Estimate cyclomatic complexity for Go. Baseline = 1. */
-function estimateGoComplexity(body: string): number {
-  let complexity = 1
-  const pattern = /\b(if|else\s+if|for|case|select)\b|&&|\|\|/g
-  let _match: RegExpExecArray | null
-  while ((_match = pattern.exec(body)) !== null) {
-    complexity++
-  }
-  return complexity
-}
+// L-06: estimateGoComplexity replaced by shared computeComplexity("go")
 
 /**
  * Go standard library packages — used to exclude external imports.
