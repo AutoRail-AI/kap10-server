@@ -2,9 +2,9 @@
  * P4-TEST-10: Workflow test for justifyEntityWorkflow.
  *
  * Verifies:
- * - Activity call ordering: fetchEntitiesAndEdges → loadOntology → justifyBatch → embedJustifications → performTopologicalSort → storeFeatureAggregations
+ * - Activity call ordering: fetchEntitiesAndEdges → loadOntology → justifyBatch → embedJustifications → findEntityCallerIds → storeFeatureAggregations
  * - Returns { justified: false } when no entities exist
- * - Cascade: re-justifies callers from topological sort levels
+ * - Cascade: re-justifies callers via findEntityCallerIds
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -15,7 +15,7 @@ const mockLoadOntology = vi.fn()
 const mockJustifyBatch = vi.fn()
 const mockStoreFeatureAggregations = vi.fn()
 const mockEmbedJustifications = vi.fn()
-const mockPerformTopologicalSort = vi.fn()
+const mockFindEntityCallerIds = vi.fn()
 
 vi.mock("@temporalio/workflow", () => ({
   defineQuery: vi.fn((_name: string) => Symbol("query")),
@@ -33,7 +33,7 @@ vi.mock("@temporalio/workflow", () => ({
             justifyBatch: mockJustifyBatch,
             storeFeatureAggregations: mockStoreFeatureAggregations,
             embedJustifications: mockEmbedJustifications,
-            performTopologicalSort: mockPerformTopologicalSort,
+            findEntityCallerIds: mockFindEntityCallerIds,
           }
           const fn = fns[prop]
           if (fn) {
@@ -74,7 +74,7 @@ describe("justifyEntityWorkflow", () => {
     mockLoadOntology.mockResolvedValue(null)
     mockJustifyBatch.mockResolvedValue({ justifiedCount: 1 })
     mockEmbedJustifications.mockResolvedValue(1)
-    mockPerformTopologicalSort.mockResolvedValue([["e1"]])
+    mockFindEntityCallerIds.mockResolvedValue([]) // no callers
     mockStoreFeatureAggregations.mockResolvedValue(undefined)
 
     const { justifyEntityWorkflow } = await import("../justify-entity")
@@ -94,20 +94,20 @@ describe("justifyEntityWorkflow", () => {
       "loadOntology",
       "justifyBatch",
       "embedJustifications",
-      "performTopologicalSort",
+      "findEntityCallerIds",
       "storeFeatureAggregations",
     ])
   })
 
-  it("cascades to callers from topological sort levels", async () => {
+  it("cascades to callers via findEntityCallerIds", async () => {
     mockFetchEntitiesAndEdges.mockResolvedValue({ entityCount: 2, edgeCount: 1 })
     mockLoadOntology.mockResolvedValue(null)
     mockJustifyBatch
       .mockResolvedValueOnce({ justifiedCount: 1 }) // entity itself
       .mockResolvedValueOnce({ justifiedCount: 1 }) // cascade callers
     mockEmbedJustifications.mockResolvedValue(1)
-    // e1 is in level 0 (leaf), e2 is in level 1 (caller)
-    mockPerformTopologicalSort.mockResolvedValue([["e1"], ["e2"]])
+    // findEntityCallerIds returns the caller IDs directly
+    mockFindEntityCallerIds.mockResolvedValue(["e2"])
     mockStoreFeatureAggregations.mockResolvedValue(undefined)
 
     const { justifyEntityWorkflow } = await import("../justify-entity")

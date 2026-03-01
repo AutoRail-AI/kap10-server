@@ -2,6 +2,7 @@
 
 import { RefreshCw } from "lucide-react"
 import { useState } from "react"
+import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 
 export function ReindexButton({ repoId }: { repoId: string }) {
@@ -19,11 +20,22 @@ export function ReindexButton({ repoId }: { repoId: string }) {
       if (res.status === 429) {
         setRateLimited(true)
         setTimeout(() => setRateLimited(false), 60_000)
+        toast.error("Rate limited — max 1 re-index per hour. Try again later.")
+        return
+      }
+      if (res.status === 409) {
+        toast.warning("Indexing already in progress. Wait for it to complete.")
         return
       }
       if (res.ok) {
         setTriggered(true)
+        toast.success("Re-indexing started")
+      } else {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        toast.error(body.error ?? `Re-index failed (${res.status})`)
       }
+    } catch {
+      toast.error("Network error — could not reach the server.")
     } finally {
       setReindexing(false)
     }

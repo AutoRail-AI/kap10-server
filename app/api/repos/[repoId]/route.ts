@@ -41,8 +41,24 @@ export const DELETE = withAuth(async (req: NextRequest) => {
   }
   await container.relationalStore.updateRepoStatus(repoId, { status: "deleting" })
   try {
-    if (repo.workflowId) {
-      await container.workflowEngine.cancelWorkflow(repo.workflowId)
+    // Cancel all possible active workflows for this repo
+    const workflowIds = [
+      repo.workflowId,
+      `index-${orgId}-${repoId}`,
+      `embed-${orgId}-${repoId}`,
+      `ontology-${orgId}-${repoId}`,
+      `justify-${orgId}-${repoId}`,
+      `health-${orgId}-${repoId}`,
+    ].filter((id): id is string => !!id)
+    const seen = new Set<string>()
+    for (const wfId of workflowIds) {
+      if (seen.has(wfId)) continue
+      seen.add(wfId)
+      try {
+        await container.workflowEngine.cancelWorkflow(wfId)
+      } catch {
+        // workflow may not be running
+      }
     }
     await container.workflowEngine.startWorkflow({
       workflowId: `delete-${orgId}-${repoId}`,

@@ -25,7 +25,18 @@ export function getPrisma(): InstanceType<typeof import("@prisma/client").Prisma
   const separator = connectionString.includes("?") ? "&" : "?"
   const connWithSchema = connectionString + separator + "options=-c%20search_path%3D" + encodeURIComponent(searchPath)
 
-  const adapter = new PrismaPg({ connectionString: connWithSchema })
+  // Use an explicit pg.Pool with a small max to avoid exhausting
+  // Supabase session-mode pooler (pool_size is typically 10-15).
+  // Better Auth uses another pool (max: 2), so keep this small.
+  const { Pool } = require("pg") as typeof import("pg")
+  const pool = new Pool({
+    connectionString: connWithSchema,
+    max: 3,
+    ssl: connectionString.includes("supabase.co")
+      ? { rejectUnauthorized: false }
+      : undefined,
+  })
+  const adapter = new PrismaPg(pool)
   prismaInstance = new PrismaClient({ adapter })
   return prismaInstance
 }

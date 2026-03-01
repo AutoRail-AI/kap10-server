@@ -78,7 +78,7 @@ describe("justification activities", () => {
     expect(result).not.toHaveProperty("edges")
   })
 
-  it("performTopologicalSort returns string[][] (ID arrays)", async () => {
+  it("performTopologicalSort stores levels in Redis and returns { levelCount }", async () => {
     // Seed entities and edges
     await container.graphStore.upsertEntity("o", {
       id: "a", org_id: "o", repo_id: "r", kind: "function", name: "a", file_path: "a.ts",
@@ -90,14 +90,18 @@ describe("justification activities", () => {
       _from: "functions/a", _to: "functions/b", kind: "calls", org_id: "o", repo_id: "r",
     })
 
-    const { performTopologicalSort } = await import("../justification")
-    const levels = await performTopologicalSort({ orgId: "o", repoId: "r" })
+    const { performTopologicalSort, fetchTopologicalLevel } = await import("../justification")
+    const result = await performTopologicalSort({ orgId: "o", repoId: "r" })
 
-    expect(levels).toHaveLength(2)
-    // Should return string IDs, not EntityDoc objects
-    expect(typeof levels[0]![0]).toBe("string")
-    expect(levels[0]![0]).toBe("b") // leaf first
-    expect(levels[1]![0]).toBe("a")
+    // Should return only level count, not the full array
+    expect(result).toEqual({ levelCount: 2 })
+
+    // Levels should be readable from Redis via fetchTopologicalLevel
+    const level0 = await fetchTopologicalLevel({ orgId: "o", repoId: "r" }, 0)
+    const level1 = await fetchTopologicalLevel({ orgId: "o", repoId: "r" }, 1)
+    expect(typeof level0[0]).toBe("string")
+    expect(level0[0]).toBe("b") // leaf first
+    expect(level1[0]).toBe("a")
   })
 
   // Note: justifyBatch is not unit-tested here because it uses require("@/lib/llm/config")

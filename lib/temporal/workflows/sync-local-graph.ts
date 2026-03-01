@@ -6,10 +6,9 @@
  *
  * Steps:
  *   1. Set snapshot status to "generating"
- *   2. Query + compact all entities and edges from ArangoDB
- *   3. Serialize to msgpack buffer + compute checksum
- *   4. Upload to Supabase Storage + update metadata
- *   5. Notify connected clients via cache/pub-sub
+ *   2. Single activity: query graph → serialize → upload → upsert metadata
+ *      (buffer never crosses Temporal's gRPC boundary)
+ *   3. Notify connected clients via cache/pub-sub
  *
  * On failure: set snapshot status to "failed"
  */
@@ -21,7 +20,7 @@ import type * as graphUpload from "../activities/graph-upload"
 const exportActivities = proxyActivities<typeof graphExport>({
   taskQueue: "light-llm-queue",
   startToCloseTimeout: "10m",
-  heartbeatTimeout: "2m",
+  heartbeatTimeout: "5m", // K-13: Increased from 2m for large-repo tolerance
   retry: { maximumAttempts: 3 },
 })
 
@@ -52,24 +51,16 @@ export async function syncLocalGraphWorkflow(input: SyncLocalGraphInput): Promis
       status: "generating",
     })
 
-    // Step 2+3: Query, compact, and serialize graph (combined — no large arrays in workflow)
-    const { buffer, checksum, entityCount, edgeCount } =
-      await exportActivities.queryAndSerializeCompactGraph({
+    // Step 2: Query + serialize + upload in a single activity.
+    // The buffer stays inside the worker and never crosses Temporal's
+    // 4MB gRPC message limit.
+    const { storagePath, sizeBytes, checksum, entityCount, edgeCount } =
+      await exportActivities.exportAndUploadGraph({
         orgId: input.orgId,
         repoId: input.repoId,
       })
 
-    // Step 4: Upload to Supabase Storage
-    const { storagePath, sizeBytes } = await uploadActivities.uploadToStorage({
-      orgId: input.orgId,
-      repoId: input.repoId,
-      buffer,
-      checksum,
-      entityCount,
-      edgeCount,
-    })
-
-    // Step 5: Notify connected clients
+    // Step 3: Notify connected clients
     await uploadActivities.notifyConnectedClients({
       orgId: input.orgId,
       repoId: input.repoId,

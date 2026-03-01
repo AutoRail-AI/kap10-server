@@ -65,9 +65,9 @@ const PROVIDER_MODEL_DEFAULTS: Record<LLMProviderType, { fast: string; standard:
     premium: "gemini-2.0-flash",
   },
   openai: {
-    fast: "gpt-4o-mini",
-    standard: "gpt-4o-mini",
-    premium: "gpt-4o",
+    fast: "gpt-4.1-nano",
+    standard: "gpt-4.1-mini",
+    premium: "gpt-4.1-mini",
   },
   anthropic: {
     fast: "claude-3-haiku-20240307",
@@ -103,6 +103,9 @@ export const MODEL_COSTS: Record<string, { input: number; output: number }> = {
   // OpenAI
   "gpt-4o-mini": { input: 0.15 / 1_000_000, output: 0.6 / 1_000_000 },
   "gpt-4o": { input: 2.5 / 1_000_000, output: 10 / 1_000_000 },
+  "gpt-4.1": { input: 2.0 / 1_000_000, output: 8.0 / 1_000_000 },
+  "gpt-4.1-mini": { input: 0.4 / 1_000_000, output: 1.6 / 1_000_000 },
+  "gpt-4.1-nano": { input: 0.1 / 1_000_000, output: 0.4 / 1_000_000 },
   // Anthropic
   "claude-3-haiku-20240307": { input: 0.25 / 1_000_000, output: 1.25 / 1_000_000 },
   "claude-sonnet-4-20250514": { input: 3 / 1_000_000, output: 15 / 1_000_000 },
@@ -125,6 +128,9 @@ export const MODEL_LIMITS: Record<string, { contextWindow: number; maxOutput: nu
   "gemini-2.0-flash-lite": { contextWindow: 1_048_576, maxOutput: 8192 },
   "gpt-4o-mini": { contextWindow: 128_000, maxOutput: 16_384 },
   "gpt-4o": { contextWindow: 128_000, maxOutput: 16_384 },
+  "gpt-4.1": { contextWindow: 1_047_576, maxOutput: 32_768 },
+  "gpt-4.1-mini": { contextWindow: 1_047_576, maxOutput: 32_768 },
+  "gpt-4.1-nano": { contextWindow: 1_047_576, maxOutput: 32_768 },
   "claude-3-haiku-20240307": { contextWindow: 200_000, maxOutput: 4096 },
   "claude-sonnet-4-20250514": { contextWindow: 200_000, maxOutput: 8192 },
   // Ollama models
@@ -137,3 +143,74 @@ export const MODEL_LIMITS: Record<string, { contextWindow: number; maxOutput: nu
 }
 
 export const MODEL_LIMITS_FALLBACK = { contextWindow: 32_000, maxOutput: 4096 }
+
+// ── Provider Rate Limits ─────────────────────────────────────────────────────
+
+/**
+ * Per-model TPM (tokens per minute) limits from the provider.
+ * Used by the rate limiter to avoid slamming provider limits.
+ * Only models with known low limits need entries — the fallback is generous.
+ */
+export const MODEL_TPM_LIMITS: Record<string, number> = {
+  // OpenAI (Tier 1 defaults — adjust per your billing tier)
+  "gpt-4o": 30_000,
+  "gpt-4o-mini": 200_000,
+  "gpt-4.1": 30_000,
+  "gpt-4.1-mini": 200_000,
+  "gpt-4.1-nano": 200_000,
+  "o3": 30_000,
+  "o4-mini": 200_000,
+  // Gemini — generous limits
+  "gemini-2.0-flash": 4_000_000,
+  "gemini-2.0-flash-lite": 4_000_000,
+  // Anthropic
+  "claude-3-haiku-20240307": 400_000,
+  "claude-sonnet-4-20250514": 400_000,
+}
+
+/** Fallback TPM if model not in MODEL_TPM_LIMITS. */
+export const MODEL_TPM_FALLBACK = 200_000
+
+/**
+ * Get the effective TPM limit for the current provider's standard model.
+ * Used as the default for the rate limiter when LLM_TPM_LIMIT is not set.
+ */
+export function getProviderTpmLimit(): number {
+  const model = LLM_MODELS.standard
+  return MODEL_TPM_LIMITS[model] ?? MODEL_TPM_FALLBACK
+}
+
+// ── Concurrency Limits ───────────────────────────────────────────────────────
+
+/**
+ * Max parallel justification chunks per provider.
+ * Controls how many justifyBatch activities run simultaneously in Promise.all().
+ *
+ * - Ollama: 1 (local inference — one request at a time)
+ * - OpenAI: depends on TPM — low-TPM models get fewer parallel chunks
+ * - Google/Anthropic: generous limits, high parallelism
+ *
+ * Override via JUSTIFY_MAX_PARALLEL_CHUNKS env var.
+ */
+export function getMaxParallelChunks(): number {
+  const envOverride = process.env.JUSTIFY_MAX_PARALLEL_CHUNKS
+  if (envOverride) return parseInt(envOverride, 10)
+
+  switch (LLM_PROVIDER) {
+    case "ollama":
+      return 1 // Local inference — sequential only
+    case "openai": {
+      // Scale based on TPM limit of the standard model
+      const tpm = MODEL_TPM_LIMITS[LLM_MODELS.standard] ?? MODEL_TPM_FALLBACK
+      if (tpm <= 30_000) return 2
+      if (tpm <= 200_000) return 5
+      return 10
+    }
+    case "anthropic":
+      return 5
+    case "google":
+      return 10 // Gemini has very generous rate limits
+    default:
+      return 3
+  }
+}

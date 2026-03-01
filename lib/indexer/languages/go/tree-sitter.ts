@@ -19,6 +19,10 @@ export function parseGoFile(opts: TreeSitterOptions): GoParseResult {
   const edges: ParsedEdge[] = []
   const lines = opts.content.split("\n")
 
+  // First pass: extract import edges for internal Go imports
+  const fileId = entityHash(opts.repoId, opts.filePath, "file", opts.filePath)
+  detectGoImportEdges(lines, fileId, opts.filePath, opts.repoId, edges)
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!
     const lineNum = i + 1
@@ -48,12 +52,16 @@ export function parseGoFile(opts: TreeSitterOptions): GoParseResult {
     }
 
     // Method declarations: func (r *Receiver) MethodName(params) returnType {
-    const methodMatch = trimmed.match(/^func\s+\((\w+)\s+\*?(\w+)\)\s+(\w+)\s*\(([^)]*)\)/)
+    const methodMatch = trimmed.match(/^func\s+\((\w+)\s+(\*?\w+)\)\s+(\w+)\s*\(([^)]*)\)/)
     if (methodMatch) {
-      const receiverType = methodMatch[2]!
+      const receiverFull = methodMatch[2]!
+      const isPointerReceiver = receiverFull.startsWith("*")
+      const receiverType = isPointerReceiver ? receiverFull.slice(1) : receiverFull
       const name = methodMatch[3]!
       const params = methodMatch[4] ?? ""
-      const sig = `(${receiverType}).${name}(${params})`
+      // C-04: Preserve pointer receiver flag in method signature
+      const receiverSig = isPointerReceiver ? `*${receiverType}` : receiverType
+      const sig = `(${receiverSig}).${name}(${params})`
       const entity: ParsedEntity = {
         id: entityHash(opts.repoId, opts.filePath, "method", name, sig),
         kind: "method",
@@ -264,4 +272,126 @@ function estimateGoComplexity(body: string): number {
     complexity++
   }
   return complexity
+}
+
+/**
+ * Go standard library packages — used to exclude external imports.
+ * Covers the most common stdlib packages. Go stdlib packages are
+ * single-segment (no dots or slashes in the first path element).
+ */
+const GO_STDLIB_PREFIXES = new Set([
+  "archive", "bufio", "bytes", "compress", "container", "context",
+  "crypto", "database", "debug", "embed", "encoding", "errors",
+  "expvar", "flag", "fmt", "go", "hash", "html", "image", "index",
+  "io", "log", "maps", "math", "mime", "net", "os", "path",
+  "plugin", "reflect", "regexp", "runtime", "slices", "sort",
+  "strconv", "strings", "sync", "syscall", "testing", "text",
+  "time", "unicode", "unsafe",
+])
+
+/**
+ * Detect Go import edges.
+ *
+ * Handles both single-line and grouped imports:
+ *   - `import "fmt"`
+ *   - `import ( "fmt"  "strings"  "myproject/internal/utils" )`
+ *
+ * Heuristic for internal imports: An import is internal if its path
+ * contains at least one "/" AND the first path segment is NOT a known
+ * Go stdlib package. This captures `github.com/org/repo/pkg/...` and
+ * `myproject/internal/...` patterns. The target file path is derived
+ * from the import path suffix (last 2+ path segments) to create a
+ * best-effort file-level edge.
+ */
+function detectGoImportEdges(
+  lines: string[],
+  fileId: string,
+  filePath: string,
+  repoId: string,
+  edges: ParsedEdge[],
+): void {
+  let inImportBlock = false
+  const importPaths: string[] = []
+
+  for (const line of lines) {
+    const trimmed = line.trim()
+
+    // Single import: import "path"
+    const singleMatch = trimmed.match(/^import\s+"([^"]+)"/)
+    if (singleMatch) {
+      importPaths.push(singleMatch[1]!)
+      continue
+    }
+
+    // Start of import block: import (
+    if (trimmed.match(/^import\s*\(/)) {
+      inImportBlock = true
+      continue
+    }
+
+    // End of import block
+    if (inImportBlock && trimmed === ")") {
+      inImportBlock = false
+      continue
+    }
+
+    // Inside import block: "path" or alias "path"
+    if (inImportBlock) {
+      const blockMatch = trimmed.match(/(?:\w+\s+)?"([^"]+)"/)
+      if (blockMatch) {
+        importPaths.push(blockMatch[1]!)
+      }
+    }
+  }
+
+  // Infer the module prefix from the current file's import context.
+  // Go files within a project share a common module prefix (from go.mod).
+  // We detect the repo's directory prefix from the file path and use it
+  // to identify which imports point back into the same repo.
+  const fileDir = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : ""
+
+  for (const importPath of importPaths) {
+    // Skip standard library (no "/" means single-segment = stdlib)
+    if (!importPath.includes("/")) continue
+
+    // Skip known stdlib packages
+    const firstSegment = importPath.split("/")[0]!
+    if (GO_STDLIB_PREFIXES.has(firstSegment)) continue
+
+    // Create an import edge using the import path suffix as target.
+    // For `github.com/org/repo/internal/utils`, the meaningful part
+    // for in-repo resolution is the suffix after the module root.
+    const segments = importPath.split("/")
+    // e.g., "github.com/org/repo/pkg/utils" → "pkg/utils"
+    const internalPath = segments.length > 3
+      ? segments.slice(3).join("/")
+      : segments[segments.length - 1]!
+
+    const targetFileId = entityHash(repoId, internalPath, "file", internalPath)
+    edges.push({
+      from_id: fileId,
+      to_id: targetFileId,
+      kind: "imports",
+      imported_symbols: [],
+      import_type: "value",
+      is_type_only: false,
+    })
+
+    // I-03: Also capture as external boundary (all non-stdlib Go imports with a domain)
+    // Heuristic: imports with a domain (contains ".") like github.com/... are third-party
+    if (firstSegment.includes(".")) {
+      const { classifyBoundary } = require("@/lib/indexer/boundary-classifier") as typeof import("@/lib/indexer/boundary-classifier")
+      edges.push({
+        from_id: fileId,
+        to_id: `external:${importPath}`,
+        kind: "imports",
+        imported_symbols: [],
+        import_type: "value",
+        is_type_only: false,
+        is_external: true,
+        package_name: importPath,
+        boundary_category: classifyBoundary(importPath, "go"),
+      })
+    }
+  }
 }

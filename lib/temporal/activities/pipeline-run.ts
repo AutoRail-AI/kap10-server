@@ -17,7 +17,10 @@ const INITIAL_STEPS: PipelineStepRecord[] = [
   { name: "scip", label: "Running SCIP indexers", status: "pending" },
   { name: "parse", label: "Parsing remaining files", status: "pending" },
   { name: "finalize", label: "Finalizing index", status: "pending" },
+  { name: "blastRadius", label: "Computing blast radius", status: "pending" },
   { name: "embed", label: "Generating embeddings", status: "pending" },
+  { name: "ontology", label: "Extracting domain ontology", status: "pending" },
+  { name: "justification", label: "Justifying entities", status: "pending" },
   { name: "graphSync", label: "Syncing graph snapshot", status: "pending" },
   { name: "patternDetection", label: "Detecting patterns", status: "pending" },
 ]
@@ -75,6 +78,8 @@ export interface UpdatePipelineStepInput {
   stepName: PipelineStepName
   status: PipelineStepRecord["status"]
   errorMessage?: string
+  /** TBI-F-01: Step-level metrics (entity counts, batch sizes, etc.) */
+  meta?: Record<string, unknown>
 }
 
 export async function updatePipelineStep(input: UpdatePipelineStepInput): Promise<void> {
@@ -107,6 +112,9 @@ export async function updatePipelineStep(input: UpdatePipelineStepInput): Promis
     }
     if (input.errorMessage) {
       step.errorMessage = input.errorMessage
+    }
+    if (input.meta) {
+      step.meta = { ...(step.meta ?? {}), ...input.meta }
     }
 
     await container.relationalStore.updatePipelineRun(input.runId, { steps })

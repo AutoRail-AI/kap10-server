@@ -6,7 +6,8 @@
  *   - setEmbeddingStatus: Set repo status to "embedding"
  *   - fetchFilePaths: Return lightweight file path list for workflow-level chunking
  *   - processAndEmbedBatch: Fetch entities → build docs → embed → store for a batch of files
- *   - deleteOrphanedEmbeddings: Remove stale embeddings for deleted entities
+ *   - deleteOrphanedEmbeddingsFromGraph: DB-side orphan cleanup (no large arrays through Temporal)
+ *   - deleteOrphanedEmbeddings: (deprecated) Remove stale embeddings with passed-in key array
  *   - setReadyStatus: Set repo status to "ready"
  *   - setEmbedFailedStatus: Set repo status to "embed_failed"
  *
@@ -17,6 +18,7 @@
 import { heartbeat } from "@temporalio/activity"
 import { getContainer } from "@/lib/di/container"
 import type { Container } from "@/lib/di/container"
+import { summarizeBody } from "@/lib/justification/ast-summarizer"
 import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
 import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
@@ -68,6 +70,89 @@ function formatKindLabel(kind: string): string {
 }
 
 /**
+ * L-07: Build kind-aware embedding text for an entity.
+ * Different entity kinds get different text strategies to maximize
+ * embedding quality for semantic search.
+ */
+function buildKindAwareText(
+  entity: EntityDoc,
+  justification?: JustificationDoc | undefined,
+): string[] {
+  const kindLabel = formatKindLabel(entity.kind)
+  const name = entity.name ?? "unknown"
+  const filePath = entity.file_path ?? ""
+  const signature = (entity.signature as string) ?? ""
+  const body = (entity.body as string) ?? ""
+  const doc = (entity.doc as string) ?? ""
+
+  const parts: string[] = []
+
+  switch (entity.kind) {
+    case "class":
+    case "struct": {
+      parts.push(`Class: ${name}`)
+      if (filePath) parts.push(`File: ${filePath}`)
+      const parent = (entity.parent as string) ?? ""
+      if (parent) parts.push(`Extends: ${parent}`)
+      const methods = (entity.methods as string[]) ?? []
+      if (methods.length > 0) parts.push(`Methods: ${methods.slice(0, 15).join(", ")}${methods.length > 15 ? ` and ${methods.length - 15} more` : ""}`)
+      if (signature) parts.push(`Signature: ${signature}`)
+      if (doc) parts.push(`Documentation: ${doc}`)
+      break
+    }
+    case "interface": {
+      parts.push(`Interface: ${name}`)
+      if (filePath) parts.push(`File: ${filePath}`)
+      if (signature) parts.push(`Contract: ${signature}`)
+      if (doc) parts.push(`Documentation: ${doc}`)
+      break
+    }
+    case "module":
+    case "namespace": {
+      parts.push(`Module: ${name}`)
+      if (filePath) parts.push(`File: ${filePath}`)
+      const exports = (entity.exports as string[]) ?? []
+      if (exports.length > 0) parts.push(`Exports: ${exports.slice(0, 20).join(", ")}`)
+      if (doc) parts.push(`Documentation: ${doc}`)
+      // Modules don't embed code body — just their export surface
+      break
+    }
+    default: {
+      // function, method, variable, type, enum, decorator — current strategy
+      parts.push(`${kindLabel}: ${name}`)
+      if (filePath) parts.push(`File: ${filePath}`)
+      if (signature) parts.push(`Signature: ${signature}`)
+      if (doc) parts.push(`Documentation: ${doc}`)
+      break
+    }
+  }
+
+  // Justification context (available in Pass 2, empty in Pass 1)
+  if (justification) {
+    parts.push(`Purpose: ${justification.business_purpose}`)
+    if (justification.domain_concepts.length > 0) {
+      parts.push(`Domain: ${justification.domain_concepts.join(", ")}`)
+    }
+    parts.push(`Feature: ${justification.feature_tag}`)
+  }
+
+  // Community label from entity metadata
+  const communityLabel = (entity as Record<string, unknown>).community_label as string | undefined
+  if (communityLabel) {
+    parts.push(`Community: ${communityLabel}`)
+  }
+
+  // Code body (skip for modules/namespaces which embed export surface only)
+  if (body && entity.kind !== "module" && entity.kind !== "namespace") {
+    const summarized = summarizeBody(body, MAX_BODY_CHARS)
+    parts.push("")
+    parts.push(summarized.text)
+  }
+
+  return parts
+}
+
+/**
  * Pure helper: transform entities into embeddable documents.
  * Extracted from the old `buildDocuments` activity so it can be reused
  * inside `processAndEmbedBatch` without an extra Temporal round-trip.
@@ -80,42 +165,18 @@ export function buildEmbeddableDocuments(
   const docs: EmbeddableDocument[] = []
 
   for (const entity of entities) {
-    if (entity.kind === "file" || entity.kind === "directory" || entity.kind === "module" || entity.kind === "namespace") {
+    // L-07: Re-include modules/namespaces (they get export-surface embeddings).
+    // Only exclude file and directory kinds — they get fallback file-level embeddings.
+    if (entity.kind === "file" || entity.kind === "directory") {
       continue
     }
 
-    const kindLabel = formatKindLabel(entity.kind)
     const name = entity.name ?? "unknown"
     const filePath = entity.file_path ?? ""
-    const signature = (entity.signature as string) ?? ""
-    const body = (entity.body as string) ?? ""
-
-    const doc = (entity.doc as string) ?? ""
-
-    const parts: string[] = []
-    parts.push(`${kindLabel}: ${name}`)
-    if (filePath) parts.push(`File: ${filePath}`)
-    if (signature) parts.push(`Signature: ${signature}`)
-    if (doc) parts.push(`Documentation: ${doc}`)
-
     const justification = justificationMap.get(entity.id)
-    if (justification) {
-      parts.push(`Purpose: ${justification.business_purpose}`)
-      if (justification.domain_concepts.length > 0) {
-        parts.push(`Domain: ${justification.domain_concepts.join(", ")}`)
-      }
-      parts.push(`Feature: ${justification.feature_tag}`)
-    }
 
-    if (body) {
-      const truncatedBody = body.length > MAX_BODY_CHARS
-        ? body.slice(0, MAX_BODY_CHARS) + `\n[truncated — ${body.length} chars total]`
-        : body
-      parts.push("")
-      parts.push(truncatedBody)
-    }
-
-    const text = parts.join("\n")
+    // L-07: Kind-aware text construction
+    const text = buildKindAwareText(entity, justification).join("\n")
 
     docs.push({
       entityKey: entity.id,
@@ -174,12 +235,27 @@ async function embedAndStore(
     // embed() processes one doc at a time internally — memory safe
     const embeddings = await container.vectorSearch.embed(texts)
 
-    await container.vectorSearch.upsert(
-      batch.map((d) => d.entityKey),
-      embeddings,
-      batch.map((d) => d.metadata),
-    )
-    totalStored += batch.length
+    // K-10: Filter out vectors containing NaN or Infinity before upserting
+    const validIndices: number[] = []
+    for (let vi = 0; vi < embeddings.length; vi++) {
+      const vec = embeddings[vi]
+      if (vec && vec.every((v) => Number.isFinite(v))) {
+        validIndices.push(vi)
+      } else {
+        _log.warn("Skipping embedding with NaN/Infinity values", {
+          entityKey: batch[vi]?.entityKey,
+        })
+      }
+    }
+
+    if (validIndices.length > 0) {
+      await container.vectorSearch.upsert(
+        validIndices.map((idx) => batch[idx]!.entityKey),
+        validIndices.map((idx) => embeddings[idx]!),
+        validIndices.map((idx) => batch[idx]!.metadata),
+      )
+    }
+    totalStored += validIndices.length
 
     if (global.gc) global.gc()
 
@@ -267,7 +343,7 @@ export async function processAndEmbedBatch(
   input: EmbeddingInput,
   filePaths: string[],
   batchLabel: { index: number; total: number },
-): Promise<{ embeddingsStored: number; entityKeys: string[] }> {
+): Promise<{ embeddingsStored: number }> {
   const log = logger.child({
     service: "embedding",
     organizationId: input.orgId,
@@ -279,7 +355,7 @@ export async function processAndEmbedBatch(
 
   log.info("Processing file batch", { fileCount: filePaths.length })
 
-  // 1. Fetch entities for this batch of files
+  // 1. Fetch entities for this batch of files — one file at a time, never bulk-load
   const allEntities: EntityDoc[] = []
   const filesWithNoEntities: string[] = []
   for (const path of filePaths) {
@@ -321,11 +397,10 @@ export async function processAndEmbedBatch(
 
   if (docs.length === 0) {
     log.info("No embeddable entities in batch, skipping")
-    return { embeddingsStored: 0, entityKeys: [] }
+    return { embeddingsStored: 0 }
   }
 
   // 3. Embed + store in pgvector (sub-batched internally)
-  const entityKeys = docs.map((d) => d.entityKey)
   const stored = await embedAndStore(container, docs, log)
 
   plog.log(
@@ -340,31 +415,149 @@ export async function processAndEmbedBatch(
   docs.length = 0
   if (global.gc) global.gc()
 
-  return { embeddingsStored: stored, entityKeys }
+  return { embeddingsStored: stored }
 }
 
-// ── deleteOrphanedEmbeddings ──────────────────────────────────────────────────
+// ── deleteOrphanedEmbeddingsFromGraph ──────────────────────────────────────────
 
 /**
  * Remove embeddings for entities that no longer exist in the graph store.
- * Compares current ArangoDB entity keys against pgvector entity keys.
+ * Queries the graph store for current entity keys DB-side (paginated) and
+ * passes them to the vector store for orphan deletion. This avoids
+ * accumulating all entity keys in the workflow's Temporal history.
  */
+export async function deleteOrphanedEmbeddingsFromGraph(
+  input: EmbeddingInput,
+): Promise<{ deletedCount: number }> {
+  const log = logger.child({ service: "embedding", organizationId: input.orgId, repoId: input.repoId })
+  const plog = createPipelineLogger(input.repoId, "embedding")
+  const container = getContainer()
+
+  // Build the current entity key set by paginating through files.
+  // We fetch one file at a time to avoid loading all entities into memory.
+  const currentEntityKeys: string[] = []
+  const filePaths = await container.graphStore.getFilePaths(input.orgId, input.repoId)
+
+  for (const { path } of filePaths) {
+    const entities = await container.graphStore.getEntitiesByFile(
+      input.orgId,
+      input.repoId,
+      path,
+    )
+
+    for (const entity of entities) {
+      // L-07: modules/namespaces now get embeddings, only exclude file/directory
+      if (entity.kind !== "file" && entity.kind !== "directory") {
+        currentEntityKeys.push(entity.id)
+      }
+    }
+
+    // Also add file-level key for files without code entities
+    if (entities.length === 0) {
+      currentEntityKeys.push(`file:${path}`)
+    }
+
+    // Heartbeat every 50 files to stay alive
+    if (currentEntityKeys.length % 50 === 0) {
+      heartbeat(`Collecting entity keys: ${currentEntityKeys.length} so far`)
+    }
+  }
+
+  log.info("Collected current entity keys for orphan detection", { keyCount: currentEntityKeys.length })
+  plog.log("info", "Orphan Cleanup", `Collected ${currentEntityKeys.length} entity keys, scanning for orphaned embeddings...`)
+  heartbeat(`Collected ${currentEntityKeys.length} entity keys, deleting orphans...`)
+
+  const deletedCount = await container.vectorSearch.deleteOrphaned(
+    input.repoId,
+    currentEntityKeys,
+  )
+
+  heartbeat(`Deleted ${deletedCount} orphaned embeddings`)
+  plog.log("info", "Orphan Cleanup", `Removed ${deletedCount} orphaned embeddings from vector store`)
+  log.info("Orphaned embeddings deleted", { deletedCount })
+  return { deletedCount }
+}
+
+/** @deprecated Use deleteOrphanedEmbeddingsFromGraph instead — avoids passing large arrays through Temporal. */
 export async function deleteOrphanedEmbeddings(
   input: EmbeddingInput,
   currentEntityKeys: string[]
 ): Promise<{ deletedCount: number }> {
   const container = getContainer()
 
-  if (container.vectorSearch.deleteOrphaned) {
-    const deletedCount = await container.vectorSearch.deleteOrphaned(
-      input.repoId,
-      currentEntityKeys
-    )
-    heartbeat(`Deleted ${deletedCount} orphaned embeddings`)
-    return { deletedCount }
+  const deletedCount = await container.vectorSearch.deleteOrphaned(
+    input.repoId,
+    currentEntityKeys
+  )
+  heartbeat(`Deleted ${deletedCount} orphaned embeddings`)
+  return { deletedCount }
+}
+
+// ── Pass 2: Re-embed with Justification Context (L-07) ───────────────────────
+
+/**
+ * L-07 Pass 2: Re-embed all entities with justification, domain, and community
+ * context. Called after justify-repo completes so that justificationMap is
+ * guaranteed to be populated.
+ *
+ * Processes files in batches to avoid memory pressure. Reuses the same
+ * buildEmbeddableDocuments + embedAndStore pipeline as Pass 1.
+ */
+export async function reEmbedWithJustifications(
+  input: EmbeddingInput
+): Promise<{ embeddingsStored: number }> {
+  const log = logger.child({ service: "embedding-pass2", organizationId: input.orgId, repoId: input.repoId })
+  const plog = createPipelineLogger(input.repoId, "embedding")
+  const container = getContainer()
+
+  plog.log("info", "Pass 2", "Starting re-embedding with justification context...")
+  log.info("Pass 2: Starting re-embed with justifications")
+
+  // Load justification map (now fully populated after justify-repo)
+  const justificationMap = await loadJustificationMap(container, input.orgId, input.repoId)
+  log.info("Pass 2: Loaded justifications", { justificationCount: justificationMap.size })
+  heartbeat(`Loaded ${justificationMap.size} justifications`)
+
+  if (justificationMap.size === 0) {
+    log.info("Pass 2: No justifications found, skipping re-embed")
+    return { embeddingsStored: 0 }
   }
 
-  return { deletedCount: 0 }
+  // Fetch all file paths
+  const filePaths = await container.graphStore.getFilePaths(input.orgId, input.repoId)
+  const FILE_BATCH_SIZE = 50
+  let totalStored = 0
+
+  for (let i = 0; i < filePaths.length; i += FILE_BATCH_SIZE) {
+    const batch = filePaths.slice(i, i + FILE_BATCH_SIZE)
+    const allEntities: EntityDoc[] = []
+
+    for (const { path } of batch) {
+      const entities = await container.graphStore.getEntitiesByFile(input.orgId, input.repoId, path)
+      allEntities.push(...entities)
+    }
+
+    const docs = buildEmbeddableDocuments(input, allEntities, justificationMap)
+    if (docs.length > 0) {
+      const stored = await embedAndStore(container, docs, log)
+      totalStored += stored
+    }
+
+    // Free memory
+    allEntities.length = 0
+    if (global.gc) global.gc()
+
+    heartbeat({
+      pass2Batch: Math.floor(i / FILE_BATCH_SIZE) + 1,
+      totalBatches: Math.ceil(filePaths.length / FILE_BATCH_SIZE),
+      stored: totalStored,
+    })
+  }
+
+  plog.log("info", "Pass 2", `Re-embedded ${totalStored} entities with justification context`)
+  log.info("Pass 2 complete", { embeddingsStored: totalStored })
+
+  return { embeddingsStored: totalStored }
 }
 
 // ── Legacy Activities (kept for backward compatibility / tests) ───────────────

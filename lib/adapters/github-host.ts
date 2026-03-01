@@ -35,11 +35,13 @@ export class GitHubHost implements IGitHost {
       if (options?.ref) await repoGit.checkout(options.ref)
       return
     }
-    await git.clone(cloneUrl, destination)
+    // K-02: Shallow clone — only the latest commit on the target branch.
+    // Pipeline never reads git history during indexing (TBI-I-02 is a separate feature).
+    const cloneOpts = ["--depth", "1", "--single-branch"]
     if (options?.ref) {
-      const g = simpleGit(destination)
-      await g.checkout(options.ref)
+      cloneOpts.push("--branch", options.ref)
     }
+    await git.clone(cloneUrl, destination, cloneOpts)
   }
 
   async getPullRequest(): Promise<never> {
@@ -129,7 +131,13 @@ export class GitHubHost implements IGitHost {
   async pullLatest(workspacePath: string, branch: string): Promise<void> {
     const simpleGit = getSimpleGit()
     const git = simpleGit(workspacePath)
-    await git.fetch("origin", branch)
+    // K-02: If the repo is a shallow clone, deepen enough for git diff to work
+    const isShallow = await git.raw(["rev-parse", "--is-shallow-repository"]).then((r) => r.trim() === "true").catch(() => false)
+    if (isShallow) {
+      await git.fetch(["--deepen", "1", "origin", branch])
+    } else {
+      await git.fetch("origin", branch)
+    }
     await git.checkout(branch)
     await git.pull("origin", branch)
   }
@@ -192,6 +200,49 @@ export class GitHubHost implements IGitHost {
       return authorMatch?.[1] ?? null
     } catch {
       return null
+    }
+  }
+
+  // ── I-02: Historical context for justification ───────────────────
+
+  async getFileGitHistory(
+    workspacePath: string,
+    filePath: string,
+    maxCommits = 20
+  ): Promise<Array<{ sha: string; subject: string; body: string }>> {
+    const { execFile } = require("node:child_process") as typeof import("node:child_process")
+    const { promisify } = require("node:util") as typeof import("node:util")
+    const execFileAsync = promisify(execFile)
+
+    try {
+      const SEPARATOR = "---GIT-LOG-SEP---"
+      const FIELD_SEP = "---FIELD---"
+      const { stdout } = await execFileAsync(
+        "git",
+        [
+          "log",
+          "--follow",
+          `--format=${SEPARATOR}%H${FIELD_SEP}%s${FIELD_SEP}%b`,
+          `-n`, String(maxCommits),
+          "--",
+          filePath,
+        ],
+        { cwd: workspacePath, maxBuffer: 512 * 1024 }
+      )
+
+      const entries: Array<{ sha: string; subject: string; body: string }> = []
+      for (const block of stdout.split(SEPARATOR)) {
+        const trimmed = block.trim()
+        if (!trimmed) continue
+        const parts = trimmed.split(FIELD_SEP)
+        const sha = parts[0]?.trim() ?? ""
+        const subject = parts[1]?.trim() ?? ""
+        const body = parts[2]?.trim() ?? ""
+        if (sha) entries.push({ sha, subject, body })
+      }
+      return entries
+    } catch {
+      return []
     }
   }
 

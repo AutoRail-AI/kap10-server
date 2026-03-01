@@ -1,11 +1,19 @@
 "use client"
 
-import { Play, RefreshCw, Square } from "lucide-react"
+import { ChevronDown, Play, RefreshCw, Square } from "lucide-react"
 import { usePathname } from "next/navigation"
 import { useCallback, useEffect, useState } from "react"
+import { toast } from "sonner"
 import { PipelineHistoryTable } from "@/components/repo/pipeline-history-table"
 import { PipelineLogViewer } from "@/components/repo/pipeline-log-viewer"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { useRepoEvents } from "@/hooks/use-repo-events"
@@ -42,6 +50,7 @@ export default function PipelinePage() {
   const [loading, setLoading] = useState(true)
   const [reindexing, setReindexing] = useState(false)
   const [restarting, setRestarting] = useState(false)
+  const [resuming, setResuming] = useState(false)
   const [repoStatus, setRepoStatus] = useState<string>("ready")
   const [rateLimited, setRateLimited] = useState(false)
 
@@ -112,11 +121,22 @@ export default function PipelinePage() {
       if (res.status === 429) {
         setRateLimited(true)
         setTimeout(() => setRateLimited(false), 60_000)
+        toast.error("Rate limited — max 1 re-index per hour. Try again later.")
+        return
+      }
+      if (res.status === 409) {
+        toast.warning("Indexing already in progress. Wait for it to complete.")
         return
       }
       if (res.ok) {
         setRepoStatus("indexing")
+        toast.success("Re-indexing started")
+      } else {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        toast.error(body.error ?? `Re-index failed (${res.status})`)
       }
+    } catch {
+      toast.error("Network error — could not reach the server.")
     } finally {
       setReindexing(false)
     }
@@ -141,13 +161,50 @@ export default function PipelinePage() {
       if (res.status === 429) {
         setRateLimited(true)
         setTimeout(() => setRateLimited(false), 60_000)
+        toast.error("Rate limited — max 3 retries per hour. Try again later.")
         return
       }
       if (res.ok) {
         setRepoStatus("indexing")
+        toast.success("Pipeline retry started")
+      } else {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        toast.error(body.error ?? `Retry failed (${res.status})`)
       }
+    } catch {
+      toast.error("Network error — could not reach the server.")
     } finally {
       setRestarting(false)
+    }
+  }
+
+  const handleResume = async (phase: string) => {
+    if (resuming || rateLimited) return
+    setResuming(true)
+    try {
+      const res = await fetch(`/api/repos/${repoId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phase }),
+      })
+      if (res.status === 429) {
+        setRateLimited(true)
+        setTimeout(() => setRateLimited(false), 60_000)
+        toast.error("Rate limited — max 3 resumes per hour. Try again later.")
+        return
+      }
+      if (res.ok) {
+        const json = (await res.json()) as { data: { status: string } }
+        setRepoStatus(json.data.status)
+        toast.success(`Pipeline resumed from ${phase.replace("_", " ")}`)
+      } else {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        toast.error(body.error ?? `Resume failed (${res.status})`)
+      }
+    } catch {
+      toast.error("Network error — could not reach the server.")
+    } finally {
+      setResuming(false)
     }
   }
 
@@ -206,26 +263,48 @@ export default function PipelinePage() {
         </div>
       )}
 
-      {/* Failed state — show Restart button */}
+      {/* Failed state — show Restart dropdown */}
       {isFailed && (
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 flex items-center justify-between">
           <p className="text-sm font-medium text-destructive">
-            Pipeline stopped or failed. Use Restart to run indexing again.
+            Pipeline stopped or failed. Restart the full pipeline or resume from a specific phase.
           </p>
-          <Button
-            size="sm"
-            variant="outline"
-            className="border-destructive/30 text-destructive hover:bg-destructive/10 gap-1.5 h-7 text-xs"
-            onClick={handleRestart}
-            disabled={restarting || rateLimited}
-          >
-            {restarting ? (
-              <Spinner className="h-3 w-3" />
-            ) : (
-              <RefreshCw className="h-3 w-3" />
-            )}
-            {rateLimited ? "Wait 1m" : "Restart"}
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-destructive/30 text-destructive hover:bg-destructive/10 gap-1.5 h-7 text-xs"
+                disabled={restarting || resuming || rateLimited}
+              >
+                {restarting || resuming ? (
+                  <Spinner className="h-3 w-3" />
+                ) : (
+                  <RefreshCw className="h-3 w-3" />
+                )}
+                {rateLimited ? "Wait 1m" : "Restart"}
+                <ChevronDown className="h-3 w-3 ml-0.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={handleRestart}>
+                Full Pipeline
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => handleResume("embedding")}>
+                Embedding
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleResume("ontology")}>
+                Ontology
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleResume("justification")}>
+                Justification
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleResume("health_report")}>
+                Health Report
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       )}
 

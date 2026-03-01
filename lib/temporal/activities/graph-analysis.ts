@@ -1,10 +1,12 @@
 /**
  * Graph analysis activities — pre-compute blast radius (fan-in/fan-out)
  * for all function/method entities and flag high-risk "god functions".
+ * Also computes weighted PageRank (L-19) for semantic centrality scoring.
  */
 
 import { heartbeat } from "@temporalio/activity"
 import { getContainer } from "@/lib/di/container"
+import { computePageRank, EDGE_WEIGHTS } from "@/lib/justification/pagerank"
 import { logger } from "@/lib/utils/logger"
 
 export interface GraphAnalysisInput {
@@ -85,15 +87,50 @@ export async function precomputeBlastRadius(
 
   heartbeat(`storing blast radius for ${updatedEntities.length} entities (${highRiskCount} high-risk)`)
 
+  // L-19: Compute weighted PageRank for ALL entities (not just callable)
+  heartbeat("computing PageRank scores for all entities")
+  const prEdges = edges
+    .filter((e) => (EDGE_WEIGHTS[e.kind] ?? 0) > 0)
+    .map((e) => ({
+      from: e._from.includes("/") ? e._from.split("/")[1]! : e._from,
+      to: e._to.includes("/") ? e._to.split("/")[1]! : e._to,
+      kind: e.kind,
+    }))
+
+  const prResult = computePageRank(
+    allEntities.map((e) => e.id),
+    prEdges
+  )
+
+  // Apply PageRank scores to ALL entities (callable already in updatedEntities)
+  const callableIdSet = new Set(callableEntities.map((e) => e.id))
+  for (const entity of allEntities) {
+    if (!callableIdSet.has(entity.id)) {
+      // Non-callable entities also get PageRank metadata
+      entity.pagerank = prResult.scores.get(entity.id) ?? 0
+      entity.pagerank_percentile = prResult.percentiles.get(entity.id) ?? 0
+      updatedEntities.push(entity)
+    }
+  }
+  // Callable entities already in updatedEntities — add PageRank to them
+  for (const entity of callableEntities) {
+    entity.pagerank = prResult.scores.get(entity.id) ?? 0
+    entity.pagerank_percentile = prResult.percentiles.get(entity.id) ?? 0
+  }
+
+  heartbeat(`storing ${updatedEntities.length} entities with blast radius + PageRank`)
+
   // Bulk update entities in the graph store
   if (updatedEntities.length > 0) {
     await container.graphStore.bulkUpsertEntities(input.orgId, updatedEntities)
   }
 
-  log.info("Blast radius pre-computation complete", {
+  log.info("Blast radius + PageRank pre-computation complete", {
+    totalEntities: allEntities.length,
     totalCallable: callableEntities.length,
     highRiskCount,
     callEdges: callEdges.length,
+    pagerankIterations: prResult.iterations,
   })
 
   return { updatedCount: updatedEntities.length, highRiskCount }

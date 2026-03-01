@@ -14,8 +14,11 @@ import { NativeConnection, Worker } from "@temporalio/worker"
 import path from "node:path"
 import * as adrGeneration from "@/lib/temporal/activities/adr-generation"
 import * as antiPattern from "@/lib/temporal/activities/anti-pattern"
+import * as contextRefresh from "@/lib/temporal/activities/context-refresh"
 import * as driftAlert from "@/lib/temporal/activities/drift-alert"
+import * as driftDocumentation from "@/lib/temporal/activities/drift-documentation"
 import * as embedding from "@/lib/temporal/activities/embedding"
+import * as graphAnalysis from "@/lib/temporal/activities/graph-analysis"
 import * as graphExport from "@/lib/temporal/activities/graph-export"
 import * as graphUpload from "@/lib/temporal/activities/graph-upload"
 import * as healthReport from "@/lib/temporal/activities/health-report"
@@ -68,7 +71,9 @@ async function createWorkerWithRetry(): Promise<Worker> {
           // Phase 5: Incremental indexing (light activities)
           ...incremental,
           // Phase 5: Drift detection
+          ...contextRefresh,
           ...driftAlert,
+          ...driftDocumentation,
           // Phase 6: Pattern detection (light: llmSynthesizeRules, storePatterns)
           ...patternDetection,
           // Phase 6: Rule decay
@@ -81,6 +86,8 @@ async function createWorkerWithRetry(): Promise<Worker> {
           ...ledgerMerge,
           // ADR generation
           ...adrGeneration,
+          // Graph analysis (blast radius pre-computation)
+          ...graphAnalysis,
           // Phase 10a: Graph snapshot activities
           ...graphExport,
           ...graphUpload,

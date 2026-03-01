@@ -162,6 +162,8 @@ services:
     volumes:
       - workspaces:/data/workspaces
     restart: unless-stopped
+    extra_hosts:
+        - "host.docker.internal:host-gateway"
     deploy:
       resources:
         limits:
@@ -188,6 +190,8 @@ services:
       - path: .env.local
         required: false
     restart: unless-stopped
+    extra_hosts:
+        - "host.docker.internal:host-gateway"
     deploy:
       resources:
         limits:

@@ -95,7 +95,10 @@ Generate a concise anti-pattern rule with name, description, pattern (code patte
       updated_at: now,
     })
 
-    // 4. Log token usage
+    // 4. D-03: Close rewind → rule tracing loop — mark ledger entry with generated rule
+    await container.graphStore.markLedgerEntryRuleGenerated(input.orgId, input.rewindEntryId, ruleId)
+
+    // 5. Log token usage
     await container.graphStore.logTokenUsage(input.orgId, {
       id: crypto.randomUUID(),
       org_id: input.orgId,
@@ -107,16 +110,39 @@ Generate a concise anti-pattern rule with name, description, pattern (code patte
       created_at: new Date().toISOString(),
     })
 
-    // 5. Update the rewind entry with the generated rule ID
-    const rewindEntry = await container.graphStore.getLedgerEntry(input.orgId, input.rewindEntryId)
-    if (rewindEntry) {
-      // Best-effort: store rule_generated reference
-      try {
-        const _db = require("arangojs") as typeof import("arangojs")
-        // Update via graphStore isn't available for arbitrary fields, but rule_generated is on the doc
-      } catch {
-        // ok
+    // 6. I-01: Create entity warnings for affected entities — mine negative knowledge
+    try {
+      // Find entities in affected files to attach warnings to
+      const affectedEntityIds: string[] = []
+      for (const change of revertedChanges) {
+        const fileEntities = await container.graphStore.getEntitiesByFile(
+          input.orgId,
+          input.repoId,
+          change.file_path
+        )
+        for (const e of fileEntities) {
+          affectedEntityIds.push(e.id)
+        }
       }
+
+      if (affectedEntityIds.length > 0) {
+        const warnings: import("@/lib/ports/types").EntityWarningDoc[] = affectedEntityIds.slice(0, 50).map((entityId) => ({
+          id: `${ruleId}-${entityId}`.slice(0, 36),
+          org_id: input.orgId,
+          repo_id: input.repoId,
+          entity_id: entityId,
+          rule_id: ruleId,
+          severity: rule.severity === "high" ? "error" as const : rule.severity === "medium" ? "warning" as const : "info" as const,
+          message: `Previous AI change reverted: ${rule.name}`,
+          reason: rule.description,
+          ledger_entry_id: input.rewindEntryId,
+          reverted_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+        }))
+        await container.graphStore.bulkUpsertEntityWarnings(input.orgId, warnings)
+      }
+    } catch {
+      // Entity warning creation is best-effort — don't fail the rule synthesis
     }
 
     return { ruleId }

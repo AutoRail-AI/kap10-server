@@ -127,6 +127,11 @@ export class VercelAIProvider implements ILLMProvider {
     throw lastError
   }
 
+  /** Rough token estimate: ~4 chars per token for English text. */
+  private estimateTokens(text: string): number {
+    return Math.ceil(text.length / 4)
+  }
+
   async generateObject<T>(params: {
     model: string
     schema: { parse: (v: unknown) => T }
@@ -135,6 +140,10 @@ export class VercelAIProvider implements ILLMProvider {
     context?: OrgContext
     temperature?: number
   }): Promise<{ object: T; usage: TokenUsage }> {
+    // Pre-check: wait until estimated tokens fit within TPM budget
+    const estimatedTokens = this.estimateTokens(params.prompt + (params.system ?? ""))
+    await this.rateLimiter.waitForTokenBudget(estimatedTokens)
+
     return this.retryWithBackoff(async () => {
       const ai = require("ai") as any
       const provider = this.getTextProvider()
@@ -152,7 +161,7 @@ export class VercelAIProvider implements ILLMProvider {
         outputTokens: result.usage?.completionTokens ?? 0,
       }
 
-      // Record token usage for TPM tracking
+      // Record actual token usage for TPM tracking
       await this.rateLimiter.recordUsage(usage.inputTokens + usage.outputTokens)
 
       const parsed = params.schema.parse(result.object)

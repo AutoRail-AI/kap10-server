@@ -3,10 +3,18 @@
 import { ArrowRight, ChevronDown, ChevronRight, FileDown, FileText, RefreshCw, Save, Square } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { useCallback, useEffect, useRef, useState } from "react"
+import { toast } from "sonner"
 import { PipelineLogViewer } from "@/components/repo/pipeline-log-viewer"
 import { PipelineStepper } from "@/components/repo/pipeline-stepper"
 import { WhatsHappeningPanel } from "@/components/repo/whats-happening-panel"
 import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Spinner } from "@/components/ui/spinner"
 import { usePipelineLogs } from "@/hooks/use-pipeline-logs"
 import { useRepoEvents } from "@/hooks/use-repo-events"
@@ -38,6 +46,7 @@ export function RepoOnboardingConsole({
   const isReady = status === "ready"
   const { logs } = usePipelineLogs(repoId, isActive || isError || isReady, currentRunId)
   const [retrying, setRetrying] = useState(false)
+  const [resuming, setResuming] = useState(false)
   const [stopping, setStopping] = useState(false)
   const [showCelebration, setShowCelebration] = useState(false)
   const prevStatusRef = useRef(initialStatus)
@@ -116,9 +125,47 @@ export function RepoOnboardingConsole({
       const res = await fetch(`/api/repos/${repoId}/retry`, { method: "POST" })
       if (res.ok) {
         setStatus("indexing")
+        toast.success("Pipeline retry started")
+      } else if (res.status === 429) {
+        toast.error("Rate limited — max 3 retries per hour. Try again later.")
+      } else {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        toast.error(body.error ?? `Retry failed (${res.status})`)
       }
+    } catch {
+      toast.error("Network error — could not reach the server.")
     } finally {
       setRetrying(false)
+    }
+  }
+
+  const handleResume = async (phase: string) => {
+    setResuming(true)
+    try {
+      const res = await fetch(`/api/repos/${repoId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phase }),
+      })
+      if (res.ok) {
+        const statusMap: Record<string, string> = {
+          embedding: "embedding",
+          ontology: "ontology",
+          justification: "justifying",
+          health_report: "ready",
+        }
+        setStatus(statusMap[phase] ?? "indexing")
+        toast.success(`Pipeline resumed from ${phase.replace("_", " ")}`)
+      } else if (res.status === 429) {
+        toast.error("Rate limited — max 3 retries per hour. Try again later.")
+      } else {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        toast.error(body.error ?? `Resume failed (${res.status})`)
+      }
+    } catch {
+      toast.error("Network error — could not reach the server.")
+    } finally {
+      setResuming(false)
     }
   }
 
@@ -223,20 +270,32 @@ export function RepoOnboardingConsole({
               {errorMessage ?? `The pipeline encountered an error during ${status.replace("_", " ")}.`}
             </p>
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            className="border-destructive/30 text-destructive hover:bg-destructive/10"
-            onClick={handleRetry}
-            disabled={retrying}
-          >
-            {retrying ? (
-              <Spinner className="mr-2 h-3.5 w-3.5" />
-            ) : (
-              <RefreshCw className="mr-2 h-3.5 w-3.5" />
-            )}
-            Retry Pipeline
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-destructive/30 text-destructive hover:bg-destructive/10"
+                disabled={retrying || resuming}
+              >
+                {retrying || resuming ? (
+                  <Spinner className="mr-2 h-3.5 w-3.5" />
+                ) : (
+                  <RefreshCw className="mr-2 h-3.5 w-3.5" />
+                )}
+                Restart
+                <ChevronDown className="ml-1.5 h-3 w-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={handleRetry}>Full Pipeline</DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => handleResume("embedding")}>From Embedding</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleResume("ontology")}>From Ontology</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleResume("justification")}>From Justification</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleResume("health_report")}>From Health Report</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       )}
 

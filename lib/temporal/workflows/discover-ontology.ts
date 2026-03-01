@@ -10,6 +10,7 @@ import { ParentClosePolicy, proxyActivities, startChild, workflowInfo } from "@t
 import { justifyRepoWorkflow } from "./justify-repo"
 import type * as ontologyActivities from "../activities/ontology"
 import type * as pipelineLogs from "../activities/pipeline-logs"
+import type * as pipelineRun from "../activities/pipeline-run"
 
 const activities = proxyActivities<typeof ontologyActivities>({
   taskQueue: "light-llm-queue",
@@ -22,6 +23,12 @@ const logActivities = proxyActivities<typeof pipelineLogs>({
   taskQueue: "light-llm-queue",
   startToCloseTimeout: "5s",
   retry: { maximumAttempts: 1 },
+})
+
+const runActivities = proxyActivities<typeof pipelineRun>({
+  taskQueue: "light-llm-queue",
+  startToCloseTimeout: "10s",
+  retry: { maximumAttempts: 2 },
 })
 
 export interface DiscoverOntologyInput {
@@ -59,6 +66,9 @@ export async function discoverOntologyWorkflow(input: DiscoverOntologyInput): Pr
   const ctx = { organizationId: input.orgId, repoId: input.repoId, runId: input.runId }
   wfLog("INFO", "Ontology discovery workflow started", ctx, "Start")
 
+  // TBI-F-01: Mark ontology step as running
+  if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "ontology", status: "running" })
+
   // Step 1: Discover, refine, and store ontology (all in one activity — no large payloads)
   wfLog("INFO", "Step 1/2: Discovering and storing ontology", ctx, "Step 1/2")
   const { termCount } = await activities.discoverAndStoreOntology({
@@ -66,6 +76,9 @@ export async function discoverOntologyWorkflow(input: DiscoverOntologyInput): Pr
     repoId: input.repoId,
   })
   wfLog("INFO", "Step 1 complete: ontology stored", { ...ctx, termCount }, "Step 1/2")
+
+  // TBI-F-01: Mark ontology step complete with metrics
+  if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "ontology", status: "completed", meta: { termCount } })
 
   // Step 2: Chain to justification workflow
   wfLog("INFO", "Step 2/2: Starting justification workflow", ctx, "Step 2/2")

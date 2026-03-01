@@ -49,13 +49,6 @@ export const POST = withAuth(async (req: NextRequest) => {
     )
   }
 
-  const rateLimitKey = `reindex:${repoId}`
-  const allowed = await container.cacheStore.rateLimit(rateLimitKey, 1, 3600)
-  if (!allowed) {
-    log.warn("Rate limited", { repoId })
-    return errorResponse("Re-index rate limited. Try again in 1 hour.", 429)
-  }
-
   const installations = await container.relationalStore.getInstallations(orgId)
   const installation = installations[0]
   if (!installation) {

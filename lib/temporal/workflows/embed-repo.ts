@@ -1,7 +1,7 @@
 /**
  * Phase 3: embedRepoWorkflow — generates and stores vector embeddings for all entities.
  *
- * Workflow ID: embed-{orgId}-{repoId} (idempotent — re-triggering terminates old workflow)
+ * Workflow ID: embed-{orgId}-{repoId} (idempotent — stable ID prevents duplicates)
  * Queue: light-llm-queue (CPU-bound ONNX inference)
  *
  * Steps:
@@ -11,7 +11,7 @@
  *      processAndEmbedBatch which fetches entities, builds docs, embeds,
  *      and stores — all inside the worker, never serializing large payloads
  *      through Temporal's data converter.
- *   4. Delete orphaned embeddings (entities removed since last embed)
+ *   4. Delete orphaned embeddings (DB-side comparison — no large arrays in workflow)
  *   5. Set repo status to "ready"
  *   6. Chain to ontology discovery workflow
  *
@@ -22,6 +22,7 @@ import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild
 import { discoverOntologyWorkflow } from "./discover-ontology"
 import type * as embeddingActivities from "../activities/embedding"
 import type * as pipelineLogs from "../activities/pipeline-logs"
+import type * as pipelineRun from "../activities/pipeline-run"
 
 const activities = proxyActivities<typeof embeddingActivities>({
   taskQueue: "light-llm-queue",
@@ -34,6 +35,12 @@ const logActivities = proxyActivities<typeof pipelineLogs>({
   taskQueue: "light-llm-queue",
   startToCloseTimeout: "5s",
   retry: { maximumAttempts: 1 },
+})
+
+const runActivities = proxyActivities<typeof pipelineRun>({
+  taskQueue: "light-llm-queue",
+  startToCloseTimeout: "10s",
+  retry: { maximumAttempts: 2 },
 })
 
 /**
@@ -103,12 +110,13 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
     progress = 10
     wfLog("INFO", "Step 2 complete: file paths fetched", { ...ctx, fileCount: allFilePaths.length }, "Step 2/6")
 
-    // Step 3: Process file batches — chunk paths and fan out
+    // Step 3: Process file batches — pagination style: embed, persist, move on.
+    // Each batch is fully self-contained: fetch → embed → store → discard.
+    // No data accumulates in the workflow between batches.
     const totalBatches = Math.max(1, Math.ceil(allFilePaths.length / FILES_PER_BATCH))
     wfLog("INFO", `Step 3/6: Processing ${totalBatches} file batches (${FILES_PER_BATCH} files each)`, { ...ctx, totalBatches }, "Step 3/6")
 
     let totalEmbeddingsStored = 0
-    const allEntityKeys: string[] = []
 
     for (let i = 0; i < totalBatches; i++) {
       const start = i * FILES_PER_BATCH
@@ -121,7 +129,8 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
       )
 
       totalEmbeddingsStored += result.embeddingsStored
-      allEntityKeys.push(...result.entityKeys)
+      // NOTE: We no longer accumulate entityKeys here. Orphan deletion
+      // is handled DB-side by comparing graph store vs pgvector directly.
 
       // Progress: 10% (after file paths) → 85% (after all batches)
       progress = 10 + Math.round(((i + 1) / totalBatches) * 75)
@@ -135,11 +144,10 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
     progress = 85
     wfLog("INFO", "Step 3 complete: all batches embedded", { ...ctx, totalEmbeddingsStored }, "Step 3/6")
 
-    // Step 4: Delete orphaned embeddings
+    // Step 4: Delete orphaned embeddings (DB-side — no large arrays passed through Temporal)
     wfLog("INFO", "Step 4/6: Deleting orphaned embeddings", ctx, "Step 4/6")
-    const { deletedCount } = await activities.deleteOrphanedEmbeddings(
+    const { deletedCount } = await activities.deleteOrphanedEmbeddingsFromGraph(
       { orgId: input.orgId, repoId: input.repoId },
-      allEntityKeys,
     )
     progress = 95
     wfLog("INFO", "Step 4 complete: orphans deleted", { ...ctx, deletedCount }, "Step 4/6")
@@ -151,13 +159,32 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
 
     // Step 6: Chain to ontology discovery + justification pipeline (Phase 4)
     wfLog("INFO", "Step 6/6: Starting ontology discovery workflow", ctx, "Step 6/6")
-    await startChild(discoverOntologyWorkflow, {
-      workflowId: `ontology-${input.orgId}-${input.repoId}-${workflowInfo().runId.slice(0, 8)}`,
-      taskQueue: "light-llm-queue",
-      args: [{ orgId: input.orgId, repoId: input.repoId, runId: input.runId }],
-      parentClosePolicy: ParentClosePolicy.ABANDON,
-    })
+    try {
+      await startChild(discoverOntologyWorkflow, {
+        workflowId: `ontology-${input.orgId}-${input.repoId}`,
+        taskQueue: "light-llm-queue",
+        args: [{ orgId: input.orgId, repoId: input.repoId, runId: input.runId }],
+        parentClosePolicy: ParentClosePolicy.ABANDON,
+      })
+    } catch (childErr: unknown) {
+      const msg = childErr instanceof Error ? childErr.message : String(childErr)
+      if (msg.includes("already started") || msg.includes("already exists")) {
+        wfLog("WARN", "Ontology workflow already running, skipping duplicate", ctx, "Step 6/6")
+      } else {
+        throw childErr
+      }
+    }
     progress = 100
+
+    // TBI-F-01: Mark embed step complete with metrics
+    if (input.runId) {
+      await runActivities.updatePipelineStep({
+        runId: input.runId,
+        stepName: "embed",
+        status: "completed",
+        meta: { embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount },
+      })
+    }
 
     // Await final log calls so they complete before the workflow finishes.
     // Fire-and-forget causes "Activity not found on completion" warnings.

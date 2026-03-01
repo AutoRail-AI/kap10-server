@@ -10,13 +10,15 @@ export async function generateContextDocument(
   repoId: string,
   graphStore: IGraphStore
 ): Promise<string> {
-  const [projectStats, healthReport, features, ontology, adrs] =
+  const [projectStats, healthReport, features, ontology, adrs, patterns, rules] =
     await Promise.all([
       graphStore.getProjectStats(orgId, repoId).catch(() => null),
       graphStore.getHealthReport(orgId, repoId).catch(() => null),
       graphStore.getFeatureAggregations(orgId, repoId).catch(() => []),
       graphStore.getDomainOntology(orgId, repoId).catch(() => null),
       graphStore.getADRs(orgId, repoId).catch(() => []),
+      graphStore.queryPatterns(orgId, { orgId, repoId, status: "confirmed", limit: 50 }).catch(() => []),
+      graphStore.queryRules(orgId, { orgId, repoId, status: "active", limit: 50 }).catch(() => []),
     ])
 
   const lines: string[] = []
@@ -162,6 +164,32 @@ export async function generateContextDocument(
       lines.push(`| ${term} | ${definition} |`)
     }
     lines.push("")
+  }
+
+  // Team Conventions (TBI-J-02: unified knowledge document)
+  if (rules.length > 0 || patterns.length > 0) {
+    lines.push("## Team Conventions")
+    lines.push("")
+
+    if (rules.length > 0) {
+      lines.push("### Architecture Rules")
+      lines.push("")
+      for (const rule of rules) {
+        const badge = rule.enforcement === "block" ? "[MUST]" : rule.enforcement === "warn" ? "[SHOULD]" : "[MAY]"
+        lines.push(`- ${badge} **${rule.title}**: ${rule.description}`)
+      }
+      lines.push("")
+    }
+
+    if (patterns.length > 0) {
+      lines.push("### Detected Patterns")
+      lines.push("")
+      for (const pattern of patterns.slice(0, 20)) {
+        const rate = Math.round(pattern.adherenceRate * 100)
+        lines.push(`- **${pattern.title}** (${rate}% adherence, ${pattern.type})`)
+      }
+      lines.push("")
+    }
   }
 
   // Footer

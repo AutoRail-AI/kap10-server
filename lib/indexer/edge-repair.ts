@@ -35,26 +35,29 @@ export async function repairEdges(
     await graphStore.batchDeleteEdgesByEntity(orgId, deletedKeys)
   }
 
-  // Step 2: For updated entities, check if any edges became broken
-  // (e.g., entity moved to different file but kept same key)
+  // Step 2: For updated entities, check if any edges reference deleted entities.
+  // An entity rename keeps the same key, but if one endpoint of an edge was
+  // deleted in the same diff, the edge is now broken and must be removed.
   const updatedKeys = entityDiff.updated.map((e) => e.id)
-  if (updatedKeys.length > 0) {
-    // Edges are keyed by _from/_to which use entity keys,
-    // so they survive updates. No action needed unless the kind changed.
+  if (updatedKeys.length > 0 && deletedKeys.length > 0) {
     const updatedEdges = await graphStore.getEdgesForEntities(orgId, updatedKeys)
 
-    // Verify edges still point to valid collections
+    // Collect keys of entities whose edges now dangle (point to a deleted entity)
+    const brokenEndpoints = new Set<string>()
     for (const edge of updatedEdges) {
       const fromKey = edge._from.split("/").pop()
       const toKey = edge._to.split("/").pop()
+      if (fromKey && deletedKeys.includes(fromKey)) brokenEndpoints.add(fromKey)
+      if (toKey && deletedKeys.includes(toKey)) brokenEndpoints.add(toKey)
+    }
 
-      // Check if referenced entities still exist
-      if (fromKey && deletedKeys.includes(fromKey)) {
-        edgesDeleted++
-      }
-      if (toKey && deletedKeys.includes(toKey)) {
-        edgesDeleted++
-      }
+    // Actually delete the broken edges (Step 1 already handles edges where BOTH
+    // endpoints are deleted; this handles the case where only one endpoint is deleted
+    // but the edge was also attached to an updated entity)
+    if (brokenEndpoints.size > 0) {
+      const keysToClean = Array.from(brokenEndpoints)
+      await graphStore.batchDeleteEdgesByEntity(orgId, keysToClean)
+      edgesDeleted += brokenEndpoints.size
     }
   }
 

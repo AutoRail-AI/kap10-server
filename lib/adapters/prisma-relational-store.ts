@@ -112,8 +112,15 @@ export class PrismaRelationalStore implements IRelationalStore {
     githubRepoId?: number
     githubFullName?: string
   }): Promise<RepoRecord> {
-    const row = await this.prisma.repo.create({
-      data: {
+    const row = await this.prisma.repo.upsert({
+      where: {
+        organizationId_provider_providerId: {
+          organizationId: data.organizationId,
+          provider: data.provider as "github",
+          providerId: data.providerId,
+        },
+      },
+      create: {
         organizationId: data.organizationId,
         name: data.name,
         fullName: data.fullName,
@@ -123,6 +130,15 @@ export class PrismaRelationalStore implements IRelationalStore {
         defaultBranch: data.defaultBranch ?? "main",
         githubRepoId: data.githubRepoId != null ? BigInt(data.githubRepoId) : undefined,
         githubFullName: data.githubFullName,
+      },
+      update: {
+        name: data.name,
+        fullName: data.fullName,
+        status: (data.status as "pending" | "indexing" | "ready" | "error" | "deleting") ?? "pending",
+        defaultBranch: data.defaultBranch ?? "main",
+        githubRepoId: data.githubRepoId != null ? BigInt(data.githubRepoId) : undefined,
+        githubFullName: data.githubFullName,
+        errorMessage: null,
       },
     })
     return this.mapRepo(row)
@@ -574,8 +590,9 @@ export class PrismaRelationalStore implements IRelationalStore {
     indexVersion?: string
     steps?: PipelineStepRecord[]
   }): Promise<PipelineRunRecord> {
-    const row = await this.prisma.pipelineRun.create({
-      data: {
+    const row = await this.prisma.pipelineRun.upsert({
+      where: { id: data.id },
+      create: {
         id: data.id,
         repoId: data.repoId,
         organizationId: data.organizationId,
@@ -585,6 +602,15 @@ export class PrismaRelationalStore implements IRelationalStore {
         pipelineType: data.pipelineType ?? "full",
         indexVersion: data.indexVersion ?? null,
         steps: JSON.parse(JSON.stringify(data.steps ?? [])) as object[],
+      },
+      update: {
+        workflowId: data.workflowId ?? undefined,
+        triggerType: data.triggerType as "initial",
+        pipelineType: data.pipelineType ?? "full",
+        indexVersion: data.indexVersion ?? undefined,
+        steps: JSON.parse(JSON.stringify(data.steps ?? [])) as object[],
+        status: "running",
+        errorMessage: null,
       },
     })
     return this.mapPipelineRun(row)
@@ -817,6 +843,12 @@ export class PrismaRelationalStore implements IRelationalStore {
     `
     if (rows.length === 0 || !rows[0]!.review_config) return { ...DEFAULT_REVIEW_CONFIG }
     return { ...DEFAULT_REVIEW_CONFIG, ...(rows[0]!.review_config as ReviewConfig) }
+  }
+
+  async updateRepoManifest(repoId: string, manifestData: string | null): Promise<void> {
+    await this.prisma.$executeRaw`
+      UPDATE unerr.repos SET manifest_data = ${manifestData} WHERE id = ${repoId}
+    `
   }
 
   private mapPrReviewRow(r: Record<string, unknown>): PrReviewRecord {

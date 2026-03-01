@@ -23,6 +23,10 @@ export function parsePythonFile(opts: TreeSitterOptions): PythonParseResult {
   const edges: ParsedEdge[] = []
   const lines = opts.content.split("\n")
 
+  // First pass: extract import edges for relative imports
+  const fileId = entityHash(opts.repoId, opts.filePath, "file", opts.filePath)
+  detectPythonImportEdges(lines, fileId, opts.filePath, opts.repoId, edges)
+
   let currentClass: ParsedEntity | null = null
   let currentClassIndent = -1
 
@@ -74,12 +78,31 @@ export function parsePythonFile(opts: TreeSitterOptions): PythonParseResult {
     }
 
     // Function/method declarations
-    const funcMatch = trimmed.match(/^(async\s+)?def\s+(\w+)\s*\(([^)]*)\)/)
+    const funcMatch = trimmed.match(/^(async\s+)?def\s+(\w+)\s*\(/)
     if (funcMatch) {
       const name = funcMatch[2]!
-      const params = funcMatch[3] ?? ""
       const isAsync = !!funcMatch[1]
-      const returnTypeMatch = trimmed.match(/\)\s*->\s*([^:]+):/)
+      // C-04: Support multi-line params — scan forward if closing paren not on this line
+      let params = ""
+      const singleLineMatch = trimmed.match(/^(?:async\s+)?def\s+\w+\s*\(([^)]*)\)/)
+      if (singleLineMatch) {
+        params = singleLineMatch[1] ?? ""
+      } else {
+        // Multi-line: collect lines until closing paren
+        const paramParts = [trimmed.slice(trimmed.indexOf("(") + 1)]
+        for (let j = i + 1; j < lines.length && j < i + 20; j++) {
+          const pLine = lines[j]!.trim()
+          if (pLine.includes(")")) {
+            paramParts.push(pLine.slice(0, pLine.indexOf(")")))
+            break
+          }
+          paramParts.push(pLine)
+        }
+        params = paramParts.join(" ").trim()
+      }
+      // Extract return type — check the full line or the closing line
+      const fullDefLine = trimmed.includes(")") ? trimmed : lines.slice(i, Math.min(i + 20, lines.length)).map((l) => l.trim()).join(" ")
+      const returnTypeMatch = fullDefLine.match(/\)\s*->\s*([^:]+):/)
       const returnType = returnTypeMatch ? returnTypeMatch[1]!.trim() : undefined
 
       if (currentClass && indent > currentClassIndent) {
@@ -268,4 +291,127 @@ function estimatePythonComplexity(body: string): number {
     complexity++
   }
   return complexity
+}
+
+/**
+ * Detect Python import edges from relative imports.
+ *
+ * Handles:
+ *   - `from . import foo`       → imports current package's foo module
+ *   - `from .module import bar` → imports sibling module
+ *   - `from ..pkg import baz`   → imports parent package's module
+ *
+ * Only relative imports (`.` prefixed) are treated as internal project imports.
+ * Absolute imports (e.g., `import os`, `from flask import ...`) are skipped
+ * since they reference external packages.
+ */
+function detectPythonImportEdges(
+  lines: string[],
+  fileId: string,
+  filePath: string,
+  repoId: string,
+  edges: ParsedEdge[],
+): void {
+  for (const line of lines) {
+    const trimmed = line.trim()
+
+    // from .module import foo, bar  OR  from . import foo
+    // from ..pkg.sub import thing
+    const fromMatch = trimmed.match(
+      /^from\s+(\.+\w*(?:\.\w+)*)\s+import\s+(.+)/
+    )
+    if (fromMatch) {
+      const moduleSpec = fromMatch[1]!  // e.g., ".models", "..utils.helpers", "."
+      const importList = fromMatch[2]!
+
+      // Relative imports → internal edges
+      if (moduleSpec.startsWith(".")) {
+        const targetPath = resolvePythonImportPath(filePath, moduleSpec)
+        if (!targetPath) continue
+
+        const symbols: string[] = []
+        for (const sym of importList.split(",")) {
+          const name = sym.trim().split(/\s+as\s+/)[0]!.trim()
+          if (name && !name.startsWith("(")) symbols.push(name)
+        }
+
+        const targetFileId = entityHash(repoId, targetPath, "file", targetPath)
+        edges.push({
+          from_id: fileId,
+          to_id: targetFileId,
+          kind: "imports",
+          imported_symbols: symbols,
+          import_type: "value",
+          is_type_only: false,
+        })
+      }
+      continue
+    }
+
+    // I-03: Capture external imports (absolute `from X import ...` and `import X`)
+    const absFromMatch = trimmed.match(/^from\s+(\w+(?:\.\w+)*)\s+import\s+(.+)/)
+    const absImportMatch = !absFromMatch ? trimmed.match(/^import\s+(\w+(?:\.\w+)*)(?:\s+as\s+\w+)?$/) : null
+
+    if (absFromMatch || absImportMatch) {
+      const { extractExternalPackageName, classifyBoundary } = require("@/lib/indexer/boundary-classifier") as typeof import("@/lib/indexer/boundary-classifier")
+      const moduleName = absFromMatch ? absFromMatch[1]! : absImportMatch![1]!
+      const pkgName = extractExternalPackageName(moduleName, "python")
+      if (pkgName) {
+        const symbols: string[] = []
+        if (absFromMatch) {
+          for (const sym of absFromMatch[2]!.split(",")) {
+            const name = sym.trim().split(/\s+as\s+/)[0]!.trim()
+            if (name && !name.startsWith("(")) symbols.push(name)
+          }
+        }
+        edges.push({
+          from_id: fileId,
+          to_id: `external:${pkgName}`,
+          kind: "imports",
+          imported_symbols: symbols,
+          import_type: "value",
+          is_type_only: false,
+          is_external: true,
+          package_name: pkgName,
+          boundary_category: classifyBoundary(pkgName, "python"),
+        })
+      }
+    }
+  }
+}
+
+/**
+ * Resolve a Python relative import to a file path.
+ *
+ * Examples (current file: `src/services/payment/handler.py`):
+ *   - `.models`       → `src/services/payment/models`
+ *   - `..utils`       → `src/services/utils`
+ *   - `.`             → `src/services/payment/__init__`
+ */
+function resolvePythonImportPath(currentFile: string, moduleSpec: string): string | null {
+  // Count leading dots
+  let dots = 0
+  while (dots < moduleSpec.length && moduleSpec[dots] === ".") dots++
+  const modulePart = moduleSpec.slice(dots) // e.g., "models" or "utils.helpers" or ""
+
+  // Get current file's directory parts
+  const dirParts = currentFile.includes("/")
+    ? currentFile.slice(0, currentFile.lastIndexOf("/")).split("/")
+    : []
+
+  // Each dot beyond the first goes up one directory
+  // 1 dot = current package, 2 dots = parent package, etc.
+  const upLevels = dots - 1
+  if (upLevels > dirParts.length) return null // can't go above root
+
+  const baseParts = upLevels > 0 ? dirParts.slice(0, dirParts.length - upLevels) : [...dirParts]
+
+  if (modulePart) {
+    // Convert dotted module path to file path: "utils.helpers" → "utils/helpers"
+    const moduleParts = modulePart.split(".")
+    return [...baseParts, ...moduleParts].join("/")
+  }
+
+  // Bare relative import (e.g., `from . import foo`) → package __init__
+  return [...baseParts, "__init__"].join("/")
 }

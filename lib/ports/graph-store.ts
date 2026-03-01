@@ -1,4 +1,4 @@
-import type { ADRDoc, BlueprintData, BoundedContextFinding, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, PatternFilter, ProjectStats, RuleDoc, RuleExceptionDoc, RuleFilter, RuleHealthDoc, SearchResult, SnippetDoc, SnippetFilter, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "./types"
+import type { ADRDoc, BlueprintData, BoundedContextFinding, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, EntityWarningDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, PatternFilter, ProjectStats, RuleDoc, RuleExceptionDoc, RuleFilter, RuleHealthDoc, SearchResult, SnippetDoc, SnippetFilter, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "./types"
 
 export interface IGraphStore {
   bootstrapGraphSchema(): Promise<void>
@@ -50,6 +50,8 @@ export interface IGraphStore {
 
   bulkUpsertEntities(orgId: string, entities: EntityDoc[]): Promise<void>
   bulkUpsertEdges(orgId: string, edges: EdgeDoc[]): Promise<void>
+  /** TBI-E-02: Raw bulk import using JSONL format — higher throughput for large batches */
+  bulkImportRaw(orgId: string, collection: string, docs: Record<string, unknown>[]): Promise<{ created: number; errors: number; updated: number }>
   /** Phase 1: List file paths for a repo (for file tree) */
   getFilePaths(orgId: string, repoId: string): Promise<{ path: string }[]>
   /** Phase 1: Delete all graph data for a repo */
@@ -189,4 +191,35 @@ export interface IGraphStore {
   // Shadow reindexing
   /** Delete all entities and edges for a specific index_version */
   deleteByIndexVersion(orgId: string, repoId: string, indexVersion: string): Promise<void>
+  /** Delete all entities and edges NOT matching the current index_version (shadow swap cleanup) */
+  deleteStaleByIndexVersion(orgId: string, repoId: string, currentIndexVersion: string): Promise<void>
+
+  /** K-09: Verify actual entity counts from ArangoDB collections */
+  verifyEntityCounts(orgId: string, repoId: string): Promise<{
+    files: number
+    functions: number
+    classes: number
+    interfaces: number
+    variables: number
+  }>
+
+  // I-01: Negative Knowledge — entity warnings from reverted AI changes
+  /** Bulk upsert entity warnings (idempotent by id) */
+  bulkUpsertEntityWarnings(orgId: string, warnings: EntityWarningDoc[]): Promise<void>
+  /** Get active warnings for a specific entity */
+  getEntityWarnings(orgId: string, entityId: string): Promise<EntityWarningDoc[]>
+  /** Get all warnings for a repo */
+  getEntityWarningsByRepo(orgId: string, repoId: string): Promise<EntityWarningDoc[]>
+
+  // D-03: Close rewind → rule tracing loop
+  /** Mark a ledger entry as having generated a rule (sets rule_generated=true and links rule_id) */
+  markLedgerEntryRuleGenerated(orgId: string, ledgerEntryId: string, ruleId: string): Promise<void>
+
+  // I-04: Drift-as-documentation-trigger
+  /** Store a documentation proposal generated from drift detection */
+  upsertDocumentationProposal(orgId: string, proposal: import("@/lib/temporal/activities/drift-documentation").DocumentationProposal): Promise<void>
+  /** Get pending documentation proposals for a repo */
+  getDocumentationProposals(orgId: string, repoId: string, status?: string): Promise<import("@/lib/temporal/activities/drift-documentation").DocumentationProposal[]>
+  /** Update the status of a documentation proposal */
+  updateDocumentationProposalStatus(orgId: string, proposalId: string, status: "accepted" | "rejected"): Promise<void>
 }

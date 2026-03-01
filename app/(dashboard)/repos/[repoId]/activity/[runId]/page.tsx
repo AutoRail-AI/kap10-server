@@ -3,6 +3,7 @@
 import {
   ArrowLeft,
   CheckCircle2,
+  ChevronDown,
   Clock,
   FileCode,
   Layers,
@@ -11,20 +12,24 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
+import { toast } from "sonner"
 import { PipelineLogViewer } from "@/components/repo/pipeline-log-viewer"
+import { PipelineStepper } from "@/components/repo/pipeline-stepper"
+import { WhatsHappeningPanel } from "@/components/repo/whats-happening-panel"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Skeleton } from "@/components/ui/skeleton"
-
-interface PipelineStep {
-  name: string
-  label: string
-  status: "pending" | "running" | "completed" | "failed" | "skipped"
-  startedAt?: string
-  completedAt?: string
-  durationMs?: number
-  errorMessage?: string
-}
+import { Spinner } from "@/components/ui/spinner"
+import { usePipelineLogs } from "@/hooks/use-pipeline-logs"
+import type { PipelineStepRecord } from "@/lib/ports/types"
 
 interface RunDetail {
   id: string
@@ -41,7 +46,7 @@ interface RunDetail {
   completedAt: string | null
   durationMs: number | null
   errorMessage: string | null
-  steps: PipelineStep[]
+  steps: PipelineStepRecord[]
   fileCount: number | null
   functionCount: number | null
   classCount: number | null
@@ -67,12 +72,42 @@ const statusConfig: Record<
   cancelled: { icon: XCircle, className: "text-warning", label: "Cancelled" },
 }
 
-const stepStatusColors: Record<string, string> = {
-  pending: "border-white/10 bg-white/2 text-white/30",
-  running: "border-electric-cyan/30 bg-electric-cyan/5 text-electric-cyan",
-  completed: "border-emerald-400/30 bg-emerald-400/5 text-emerald-400",
-  failed: "border-destructive/30 bg-destructive/5 text-destructive",
-  skipped: "border-white/10 bg-white/2 text-white/20",
+const ACTIVE_RUN_STATUSES = ["running"]
+const FAILED_RUN_STATUSES = ["failed"]
+
+/** Map run status to a repo-like status for PipelineStepper */
+function runStatusToRepoStatus(run: RunDetail): string {
+  if (run.status === "completed") return "ready"
+  if (run.status === "failed") {
+    // Derive failed phase from steps
+    const failedStep = run.steps.find((s) => s.status === "failed")
+    if (failedStep) {
+      if (failedStep.name === "embed") return "embed_failed"
+      if (["graphSync", "patternDetection"].includes(failedStep.name))
+        return "justify_failed"
+    }
+    return "error"
+  }
+  if (run.status === "running") {
+    const runningStep = run.steps.find((s) => s.status === "running")
+    if (runningStep) {
+      if (runningStep.name === "embed") return "embedding"
+      if (["graphSync", "patternDetection"].includes(runningStep.name))
+        return "justifying"
+      if (["clone"].includes(runningStep.name)) return "indexing"
+    }
+    return "indexing"
+  }
+  return "pending"
+}
+
+/** Derive progress from steps */
+function deriveProgress(steps: PipelineStepRecord[]): number {
+  if (steps.length === 0) return 0
+  const completed = steps.filter(
+    (s) => s.status === "completed" || s.status === "skipped",
+  ).length
+  return Math.round((completed / steps.length) * 100)
 }
 
 function formatDuration(ms: number): string {
@@ -100,31 +135,107 @@ export default function RunDetailPage() {
   const [run, setRun] = useState<RunDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [restarting, setRestarting] = useState(false)
+  const [resuming, setResuming] = useState(false)
+  const [rateLimited, setRateLimited] = useState(false)
 
+  const isRunning = run ? ACTIVE_RUN_STATUSES.includes(run.status) : false
+  const isFailed = run ? FAILED_RUN_STATUSES.includes(run.status) : false
+  const repoStatus = run ? runStatusToRepoStatus(run) : "pending"
+  const progress = run ? deriveProgress(run.steps) : 0
+  const indexingStartedAt = run ? new Date(run.startedAt).getTime() : null
+
+  // Logs for the WhatsHappeningPanel
+  const { logs } = usePipelineLogs(repoId, isRunning || isFailed || run?.status === "completed", runId)
+
+  const fetchRun = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/repos/${repoId}/runs/${runId}`)
+      if (!res.ok) {
+        setError("Run not found")
+        return
+      }
+      const json = (await res.json()) as { data?: { run?: RunDetail } }
+      setRun(json.data?.run ?? null)
+    } catch {
+      setError("Failed to load run details")
+    } finally {
+      setLoading(false)
+    }
+  }, [repoId, runId])
+
+  // Initial fetch
   useEffect(() => {
     if (!repoId || !runId) return
-    void (async () => {
-      try {
-        const res = await fetch(`/api/repos/${repoId}/runs/${runId}`)
-        if (!res.ok) {
-          setError("Run not found")
-          return
-        }
-        const json = (await res.json()) as { data?: { run?: RunDetail } }
-        setRun(json.data?.run ?? null)
-      } catch {
-        setError("Failed to load run details")
-      } finally {
-        setLoading(false)
+    void fetchRun()
+  }, [repoId, runId, fetchRun])
+
+  // Poll for updates while running
+  useEffect(() => {
+    if (!isRunning) return
+    const interval = setInterval(() => void fetchRun(), 5_000)
+    return () => clearInterval(interval)
+  }, [isRunning, fetchRun])
+
+  const handleRestart = async () => {
+    if (restarting || rateLimited) return
+    setRestarting(true)
+    try {
+      const res = await fetch(`/api/repos/${repoId}/retry`, { method: "POST" })
+      if (res.status === 429) {
+        setRateLimited(true)
+        setTimeout(() => setRateLimited(false), 60_000)
+        toast.error("Rate limited — max 3 retries per hour. Try again later.")
+        return
       }
-    })()
-  }, [repoId, runId])
+      if (res.ok) {
+        toast.success("Pipeline retry started")
+        void fetchRun()
+      } else {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        toast.error(body.error ?? `Retry failed (${res.status})`)
+      }
+    } catch {
+      toast.error("Network error — could not reach the server.")
+    } finally {
+      setRestarting(false)
+    }
+  }
+
+  const handleResume = async (phase: string) => {
+    if (resuming || rateLimited) return
+    setResuming(true)
+    try {
+      const res = await fetch(`/api/repos/${repoId}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phase }),
+      })
+      if (res.status === 429) {
+        setRateLimited(true)
+        setTimeout(() => setRateLimited(false), 60_000)
+        toast.error("Rate limited — max 3 resumes per hour. Try again later.")
+        return
+      }
+      if (res.ok) {
+        toast.success(`Pipeline resumed from ${phase.replace("_", " ")}`)
+        void fetchRun()
+      } else {
+        const body = (await res.json().catch(() => ({}))) as { error?: string }
+        toast.error(body.error ?? `Resume failed (${res.status})`)
+      }
+    } catch {
+      toast.error("Network error — could not reach the server.")
+    } finally {
+      setResuming(false)
+    }
+  }
 
   if (loading) {
     return (
       <div className="space-y-6 py-6 animate-fade-in">
         <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-[200px] w-full" />
+        <Skeleton className="h-[100px] w-full" />
         <Skeleton className="h-[300px] w-full" />
       </div>
     )
@@ -154,7 +265,7 @@ export default function RunDetailPage() {
   const StatusIcon = cfg.icon
 
   return (
-    <div className="space-y-6 py-6 animate-fade-in">
+    <div className="space-y-4 py-6 animate-fade-in">
       {/* Back link + header */}
       <div className="space-y-3">
         <Link
@@ -193,58 +304,81 @@ export default function RunDetailPage() {
         />
       </div>
 
-      {/* Error message */}
-      {run.errorMessage && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-destructive/60 mb-1">
-            Error
-          </p>
-          <p className="text-sm text-destructive font-mono whitespace-pre-wrap">
-            {run.errorMessage}
-          </p>
-        </div>
-      )}
+      {/* Pipeline Stepper — workflow tracker */}
+      <PipelineStepper
+        status={repoStatus}
+        progress={progress}
+        steps={run.steps}
+      />
 
-      {/* Pipeline steps */}
-      {run.steps && run.steps.length > 0 && (
-        <div className="space-y-2">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk">
-            Pipeline Steps
-          </p>
-          <div className="space-y-1.5">
-            {run.steps.map((step) => (
-              <div
-                key={step.name}
-                className={`flex items-center gap-3 rounded-lg border px-4 py-2.5 ${
-                  stepStatusColors[step.status] ?? stepStatusColors.pending
-                }`}
-              >
-                <span className="text-xs font-medium flex-1">
-                  {step.label}
-                </span>
-                <span className="text-[10px] font-mono uppercase tracking-wider opacity-60">
-                  {step.status}
-                </span>
-                {step.durationMs != null && (
-                  <span className="text-[10px] font-mono text-white/30 tabular-nums">
-                    {formatDuration(step.durationMs)}
-                  </span>
-                )}
-                {step.errorMessage && (
-                  <span
-                    className="text-[10px] text-destructive truncate max-w-[200px]"
-                    title={step.errorMessage}
-                  >
-                    {step.errorMessage}
-                  </span>
-                )}
-              </div>
-            ))}
+      {/* Error state with restart dropdown */}
+      {isFailed && (
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 flex items-center justify-between">
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-destructive">Pipeline Error</p>
+            <p className="text-xs text-muted-foreground">
+              {run.errorMessage ?? "The pipeline encountered an error."}
+            </p>
           </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-destructive/30 text-destructive hover:bg-destructive/10 gap-1.5 h-7 text-xs"
+                disabled={restarting || resuming || rateLimited}
+              >
+                {restarting || resuming ? (
+                  <Spinner className="h-3 w-3" />
+                ) : (
+                  <RefreshCw className="h-3 w-3" />
+                )}
+                {rateLimited ? "Wait 1m" : "Restart"}
+                <ChevronDown className="h-3 w-3 ml-0.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-44">
+              <DropdownMenuItem onClick={handleRestart}>
+                Full Pipeline
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => handleResume("embedding")}>
+                Embedding
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleResume("ontology")}>
+                Ontology
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleResume("justification")}>
+                Justification
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleResume("health_report")}>
+                Health Report
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       )}
 
-      {/* Metrics */}
+      {/* Console + Analytics grid (matches onboarding console layout) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2">
+          <PipelineLogViewer
+            repoId={repoId}
+            status={run.status === "running" ? repoStatus : run.status}
+            runId={runId}
+          />
+        </div>
+        <div className="lg:col-span-1">
+          <WhatsHappeningPanel
+            status={repoStatus}
+            progress={progress}
+            logs={logs}
+            indexingStartedAt={indexingStartedAt}
+          />
+        </div>
+      </div>
+
+      {/* Results metrics */}
       {(run.fileCount != null || run.entitiesWritten != null) && (
         <div className="space-y-2">
           <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk">
@@ -279,18 +413,6 @@ export default function RunDetailPage() {
           </div>
         </div>
       )}
-
-      {/* Logs for this run */}
-      <div className="space-y-2">
-        <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk">
-          Logs
-        </p>
-        <PipelineLogViewer
-          repoId={repoId}
-          status={run.status}
-          runId={runId}
-        />
-      </div>
     </div>
   )
 }

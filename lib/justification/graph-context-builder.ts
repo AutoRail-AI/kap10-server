@@ -63,13 +63,36 @@ export async function buildGraphContexts(
         }
       })
 
-    const centrality = computeApproxCentrality(entity.id, subgraph.entities, subgraph.edges)
+    // L-19: Use pre-computed PageRank if available, fall back to degree centrality
+    const pagerank = (entity as Record<string, unknown>).pagerank_percentile as number | undefined
+    const centrality = pagerank != null ? pagerank / 100 : computeApproxCentrality(entity.id, subgraph.entities, subgraph.edges)
+
+    // I-01: Fetch entity warnings (negative knowledge from reverted AI changes)
+    let warningsSummary: string | undefined
+    try {
+      const warnings = await graphStore.getEntityWarnings(orgId, entity.id)
+      if (warnings.length > 0) {
+        warningsSummary = warnings
+          .slice(0, 3)
+          .map((w) => `⚠️ ${w.message} — ${w.reason}${w.reverted_at ? ` (reverted ${w.reverted_at.split("T")[0]})` : ""}`)
+          .join("\n")
+      }
+    } catch {
+      // Non-fatal — warnings are best-effort context
+    }
+
+    // L-21: Read community label written by detectCommunitiesActivity
+    const communityLabel = (entity as Record<string, unknown>).community_label as string | undefined
+
+    const summary = summarizeSubgraph(entity, neighbors)
+    const fullSummary = warningsSummary ? `${summary}\n\nPast failures on this entity:\n${warningsSummary}` : summary
 
     contexts.set(entity.id, {
       entityId: entity.id,
       neighbors,
       centrality,
-      subgraphSummary: summarizeSubgraph(entity, neighbors),
+      subgraphSummary: fullSummary,
+      communityLabel,
     })
   }
 

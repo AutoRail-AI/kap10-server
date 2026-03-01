@@ -26,7 +26,7 @@ export function findTestFiles(
   // Build a reverse lookup: entity ID → callers
   const callerIds = new Set<string>()
   for (const edge of edges) {
-    if (edge.kind !== "calls") continue
+    if (edge.kind !== "calls" && edge.kind !== "imports" && edge.kind !== "references") continue
     const toId = edge._to.split("/").pop()
     if (toId === entityId) {
       const fromId = edge._from.split("/").pop()
@@ -69,29 +69,53 @@ export function extractTestAssertions(
   testFiles: string[],
   allEntities: EntityDoc[]
 ): string[] {
+  const seen = new Set<string>()
   const assertions: string[] = []
+
+  function addAssertion(text: string): void {
+    const trimmed = text.trim()
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed)
+      assertions.push(trimmed)
+    }
+  }
+
+  const testBlockRe = /(?:describe|it|test)\(\s*["'`]([^"'`]+)["'`]/g
 
   for (const filePath of testFiles) {
     const fileEntities = allEntities.filter((e) => e.file_path === filePath)
     for (const entity of fileEntities) {
-      // Look for describe/it/test block names stored in entity name
+      // Legacy: entity name prefix convention
       const name = entity.name ?? ""
       if (
         name.startsWith("describe:") ||
         name.startsWith("it:") ||
         name.startsWith("test:")
       ) {
-        assertions.push(name)
+        addAssertion(name)
       }
-      // Also use signature if it contains test descriptions
+
+      // Parse describe/it/test blocks from entity body text
+      const body = (entity.body as string) ?? ""
+      if (body) {
+        let match: RegExpExecArray | null
+        while ((match = testBlockRe.exec(body)) !== null) {
+          if (match[1]) addAssertion(match[1])
+        }
+      }
+
+      // Also check signature for test descriptions
       const sig = (entity.signature as string) ?? ""
-      if (sig.includes("describe(") || sig.includes("it(") || sig.includes("test(")) {
-        assertions.push(sig)
+      if (sig) {
+        let match: RegExpExecArray | null
+        while ((match = testBlockRe.exec(sig)) !== null) {
+          if (match[1]) addAssertion(match[1])
+        }
       }
     }
   }
 
-  return assertions
+  return assertions.slice(0, 20)
 }
 
 /**

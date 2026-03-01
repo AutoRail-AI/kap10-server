@@ -7,6 +7,7 @@ import type * as heavy from "../activities/indexing-heavy"
 import type * as light from "../activities/indexing-light"
 import type * as pipelineLogs from "../activities/pipeline-logs"
 import type * as pipelineRun from "../activities/pipeline-run"
+import type * as workspaceCleanup from "../activities/workspace-cleanup"
 
 const heavyActivities = proxyActivities<typeof heavy>({
   taskQueue: "heavy-compute-queue",
@@ -39,6 +40,12 @@ const graphAnalysisActivities = proxyActivities<typeof graphAnalysis>({
   startToCloseTimeout: "10m",
   heartbeatTimeout: "2m",
   retry: { maximumAttempts: 2 },
+})
+
+const cleanupActivities = proxyActivities<typeof workspaceCleanup>({
+  taskQueue: "heavy-compute-queue",
+  startToCloseTimeout: "2m",
+  retry: { maximumAttempts: 1 },
 })
 
 export const getProgressQuery = defineQuery<number>("getProgress")
@@ -179,57 +186,95 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     const result = { entitiesWritten: scip.entityCount + parse.entityCount, edgesWritten: scip.edgeCount + parse.edgeCount, fileCount, functionCount, classCount }
 
     // Step 4b: Pre-compute blast radius (fan-in/fan-out for god function detection)
+    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "blastRadius", status: "running" })
     wfLog("INFO", "Step 4b: Pre-computing blast radius", ctx, "Step 4b")
     const blastRadius = await graphAnalysisActivities.precomputeBlastRadius({
       orgId: input.orgId,
       repoId: input.repoId,
     })
+    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "blastRadius", status: "completed", meta: { updatedCount: blastRadius.updatedCount, highRiskCount: blastRadius.highRiskCount } })
     wfLog("INFO", "Step 4b complete: blast radius computed", { ...ctx, updated: blastRadius.updatedCount, highRisk: blastRadius.highRiskCount }, "Step 4b")
 
-    // Derive unique child workflow IDs from the parent run ID so re-indexing
-    // never collides with previous runs
-    const suffix = wfInfo.runId.slice(0, 8)
+    // Child workflow IDs use stable orgId+repoId (no runId suffix).
+    // Previously we used wfInfo.runId.slice(0,8) as suffix, which changes
+    // on every Temporal retry, spawning duplicate child workflows that
+    // process the same batches in parallel. With stable IDs, Temporal
+    // rejects the duplicate if one is already running.
 
     // Step 5: Fire-and-forget the embedding workflow (Phase 3)
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "embed", status: "running" })
     wfLog("INFO", "Step 5/7: Starting embed workflow", ctx, "Step 5/7")
-    await startChild(embedRepoWorkflow, {
-      workflowId: `embed-${input.orgId}-${input.repoId}-${suffix}`,
-      taskQueue: "light-llm-queue",
-      args: [{ orgId: input.orgId, repoId: input.repoId, lastIndexedSha: workspace.lastSha, runId: input.runId }],
-      parentClosePolicy: ParentClosePolicy.ABANDON,
-    })
+    try {
+      await startChild(embedRepoWorkflow, {
+        workflowId: `embed-${input.orgId}-${input.repoId}`,
+        taskQueue: "light-llm-queue",
+        args: [{ orgId: input.orgId, repoId: input.repoId, lastIndexedSha: workspace.lastSha, runId: input.runId }],
+        parentClosePolicy: ParentClosePolicy.ABANDON,
+      })
+    } catch (childErr: unknown) {
+      // If workflow already exists (from a previous attempt), that's fine — it's
+      // already processing the same data. Log and continue.
+      const msg = childErr instanceof Error ? childErr.message : String(childErr)
+      if (msg.includes("already started") || msg.includes("already exists")) {
+        wfLog("WARN", "Embed workflow already running, skipping duplicate", { ...ctx, existingWorkflowId: `embed-${input.orgId}-${input.repoId}` }, "Step 5/7")
+      } else {
+        throw childErr
+      }
+    }
 
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "embed", status: "completed" })
 
     // Step 6: Fire-and-forget the local graph sync workflow (Phase 10a)
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "graphSync", status: "running" })
     wfLog("INFO", "Step 6/7: Starting graph sync workflow", ctx, "Step 6/7")
-    await startChild(syncLocalGraphWorkflow, {
-      workflowId: `sync-${input.orgId}-${input.repoId}-${suffix}`,
-      taskQueue: "light-llm-queue",
-      args: [{ orgId: input.orgId, repoId: input.repoId }],
-      parentClosePolicy: ParentClosePolicy.ABANDON,
-    })
+    try {
+      await startChild(syncLocalGraphWorkflow, {
+        workflowId: `sync-${input.orgId}-${input.repoId}`,
+        taskQueue: "light-llm-queue",
+        args: [{ orgId: input.orgId, repoId: input.repoId }],
+        parentClosePolicy: ParentClosePolicy.ABANDON,
+      })
+    } catch (childErr: unknown) {
+      const msg = childErr instanceof Error ? childErr.message : String(childErr)
+      if (msg.includes("already started") || msg.includes("already exists")) {
+        wfLog("WARN", "Sync workflow already running, skipping duplicate", { ...ctx, existingWorkflowId: `sync-${input.orgId}-${input.repoId}` }, "Step 6/7")
+      } else {
+        throw childErr
+      }
+    }
 
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "graphSync", status: "completed" })
 
     // Step 7: Fire-and-forget pattern detection workflow (Phase 6)
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "patternDetection", status: "running" })
     wfLog("INFO", "Step 7/7: Starting pattern detection workflow", ctx, "Step 7/7")
-    await startChild(detectPatternsWorkflow, {
-      workflowId: `detect-patterns-${input.orgId}-${input.repoId}-${suffix}`,
-      taskQueue: "heavy-compute-queue",
-      args: [{
-        orgId: input.orgId,
-        repoId: input.repoId,
-        workspacePath: workspace.workspacePath,
-        languages: workspace.languages,
-      }],
-      parentClosePolicy: ParentClosePolicy.ABANDON,
-    })
+    try {
+      await startChild(detectPatternsWorkflow, {
+        workflowId: `detect-patterns-${input.orgId}-${input.repoId}`,
+        taskQueue: "heavy-compute-queue",
+        args: [{
+          orgId: input.orgId,
+          repoId: input.repoId,
+          workspacePath: workspace.workspacePath,
+          languages: workspace.languages,
+        }],
+        parentClosePolicy: ParentClosePolicy.ABANDON,
+      })
+    } catch (childErr: unknown) {
+      const msg = childErr instanceof Error ? childErr.message : String(childErr)
+      if (msg.includes("already started") || msg.includes("already exists")) {
+        wfLog("WARN", "Pattern detection workflow already running, skipping duplicate", { ...ctx, existingWorkflowId: `detect-patterns-${input.orgId}-${input.repoId}` }, "Step 7/7")
+      } else {
+        throw childErr
+      }
+    }
 
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "patternDetection", status: "completed" })
+
+    // K-01: Best-effort workspace cleanup. Pattern detection will also clean up
+    // after it finishes. This is a fallback in case pattern detection fails before cleanup.
+    // Uses fire-and-forget so it doesn't block the main workflow completion.
+    cleanupActivities.cleanupWorkspaceFilesystem({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
 
     progress = 100
     // Await final log calls so they complete before the workflow finishes.

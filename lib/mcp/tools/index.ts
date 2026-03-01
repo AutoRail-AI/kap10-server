@@ -12,6 +12,7 @@ import {
 import { GET_RECENT_CHANGES_SCHEMA, handleGetRecentChanges } from "./changes"
 import { handleSyncDirtyBuffer, SYNC_DIRTY_BUFFER_SCHEMA } from "./dirty-buffer"
 import { GET_CALLEES_SCHEMA, GET_CALLERS_SCHEMA, GET_IMPORTS_SCHEMA, handleGetCallees, handleGetCallers, handleGetImports } from "./graph"
+import { FILE_CONTEXT_SCHEMA, handleFileContext } from "./file-context"
 import { GET_CLASS_SCHEMA, GET_FILE_SCHEMA, GET_FUNCTION_SCHEMA, handleGetClass, handleGetFile, handleGetFunction } from "./inspect"
 import { CHECK_PATTERNS_SCHEMA, GET_CONVENTIONS_SCHEMA, handleCheckPatterns, handleGetConventions, handleSuggestApproach, SUGGEST_APPROACH_SCHEMA } from "./patterns"
 import { handleReviewPrStatus, REVIEW_PR_STATUS_SCHEMA } from "./review"
@@ -44,6 +45,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   { ...GET_FUNCTION_SCHEMA, requiredScope: "mcp:read" },
   { ...GET_CLASS_SCHEMA, requiredScope: "mcp:read" },
   { ...GET_FILE_SCHEMA, requiredScope: "mcp:read" },
+  { ...FILE_CONTEXT_SCHEMA, requiredScope: "mcp:read" },
   { ...GET_CALLERS_SCHEMA, requiredScope: "mcp:read" },
   { ...GET_CALLEES_SCHEMA, requiredScope: "mcp:read" },
   { ...GET_IMPORTS_SCHEMA, requiredScope: "mcp:read" },
@@ -87,6 +89,7 @@ const TOOL_HANDLERS: Record<string, { handler: ToolHandler; scope: string }> = {
   get_function: { handler: handleGetFunction as ToolHandler, scope: "mcp:read" },
   get_class: { handler: handleGetClass as ToolHandler, scope: "mcp:read" },
   get_file: { handler: handleGetFile as ToolHandler, scope: "mcp:read" },
+  file_context: { handler: handleFileContext as ToolHandler, scope: "mcp:read" },
   get_callers: { handler: handleGetCallers as ToolHandler, scope: "mcp:read" },
   get_callees: { handler: handleGetCallees as ToolHandler, scope: "mcp:read" },
   get_imports: { handler: handleGetImports as ToolHandler, scope: "mcp:read" },

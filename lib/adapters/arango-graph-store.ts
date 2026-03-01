@@ -81,6 +81,8 @@ const DOC_COLLECTIONS = [
   "rule_health",
   "mined_patterns",
   "impact_reports",
+  // I-01: Negative Knowledge
+  "entity_warnings",
 ] as const
 
 const EDGE_COLLECTIONS = ["contains", "calls", "imports", "extends", "implements", "rule_exceptions", "language_implementations"] as const
@@ -89,7 +91,7 @@ const TENANT_INDEX_FIELDS = ["org_id", "repo_id"]
 const FILE_PATH_INDEX_FIELDS = ["org_id", "repo_id", "file_path"]
 const ENTITY_COLLECTIONS_FOR_FILE = ["functions", "classes", "interfaces", "variables"] as const
 const ALL_ENTITY_COLLECTIONS = ["files", ...ENTITY_COLLECTIONS_FOR_FILE] as const
-const BATCH_SIZE = 1000
+const BATCH_SIZE = 5000
 
 /** Map singular entity kind (from indexer) → plural ArangoDB collection name. */
 const KIND_TO_COLLECTION: Record<string, string> = {
@@ -327,6 +329,24 @@ export class ArangoGraphStore implements IGraphStore {
           type: "persistent",
           fields: ["org_id", "rule_id"],
           name: "idx_rule_health_org_rule",
+        })
+      } catch { /* index exists */ }
+
+      // I-01: Entity warnings indexes
+      try {
+        const ewCol = db.collection("entity_warnings")
+        await ewCol.ensureIndex({
+          type: "persistent",
+          fields: ["org_id", "entity_id"],
+          name: "idx_entity_warnings_org_entity",
+        })
+      } catch { /* index exists */ }
+      try {
+        const ewCol = db.collection("entity_warnings")
+        await ewCol.ensureIndex({
+          type: "persistent",
+          fields: ["org_id", "repo_id", "severity"],
+          name: "idx_entity_warnings_repo_severity",
         })
       } catch { /* index exists */ }
 
@@ -764,6 +784,46 @@ export class ArangoGraphStore implements IGraphStore {
       arangoLog.info("Edges upserted into collection", { collection: collName, count: list.length })
     }
     arangoLog.info("Bulk upsert edges complete", { orgId, total: edges.length, durationMs: Date.now() - start })
+  }
+
+  /**
+   * TBI-E-02: Raw bulk import using JSONL format for maximum throughput.
+   * Uses ArangoDB's collection.import() with onDuplicate: "update" and
+   * the raised BATCH_SIZE (5000) for large batches.
+   */
+  async bulkImportRaw(
+    orgId: string,
+    collection: string,
+    docs: Record<string, unknown>[]
+  ): Promise<{ created: number; errors: number; updated: number }> {
+    if (docs.length === 0) return { created: 0, errors: 0, updated: 0 }
+    const start = Date.now()
+    const db = await getDbAsync()
+    const col = db.collection(collection)
+    let totalCreated = 0
+    let totalErrors = 0
+    let totalUpdated = 0
+
+    // Ensure org_id is set on all docs
+    const enriched = docs.map((d) => ({ ...d, org_id: d.org_id ?? orgId }))
+
+    for (let i = 0; i < enriched.length; i += BATCH_SIZE) {
+      const batch = enriched.slice(i, i + BATCH_SIZE)
+      const result = await col.import(batch, { onDuplicate: "update" })
+      totalCreated += result.created ?? 0
+      totalErrors += result.errors ?? 0
+      totalUpdated += result.updated ?? 0
+    }
+
+    arangoLog.info("Bulk import raw complete", {
+      collection,
+      total: docs.length,
+      created: totalCreated,
+      updated: totalUpdated,
+      errors: totalErrors,
+      durationMs: Date.now() - start,
+    })
+    return { created: totalCreated, errors: totalErrors, updated: totalUpdated }
   }
 
   async getFilePaths(orgId: string, repoId: string): Promise<{ path: string }[]> {
@@ -2120,6 +2180,140 @@ export class ArangoGraphStore implements IGraphStore {
         `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.index_version == @iv REMOVE doc IN @@coll`,
         { "@coll": name, orgId, repoId, iv: indexVersion }
       )
+    }
+  }
+
+  async deleteStaleByIndexVersion(orgId: string, repoId: string, currentIndexVersion: string): Promise<void> {
+    const db = await getDbAsync()
+    const entityCollections = ["files", "functions", "classes", "interfaces", "variables"] as const
+    for (const name of entityCollections) {
+      await db.query(
+        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.index_version != @iv REMOVE doc IN @@coll`,
+        { "@coll": name, orgId, repoId, iv: currentIndexVersion }
+      )
+    }
+    for (const name of EDGE_COLLECTIONS) {
+      await db.query(
+        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.index_version != @iv REMOVE doc IN @@coll`,
+        { "@coll": name, orgId, repoId, iv: currentIndexVersion }
+      )
+    }
+  }
+
+  async verifyEntityCounts(orgId: string, repoId: string): Promise<{
+    files: number
+    functions: number
+    classes: number
+    interfaces: number
+    variables: number
+  }> {
+    const db = await getDbAsync()
+    const counts = { files: 0, functions: 0, classes: 0, interfaces: 0, variables: 0 }
+    const collections = ["files", "functions", "classes", "interfaces", "variables"] as const
+    for (const name of collections) {
+      const cursor = await db.query(
+        `RETURN LENGTH(FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId RETURN 1)`,
+        { "@coll": name, orgId, repoId }
+      )
+      const result = await cursor.next()
+      counts[name] = (result as number) ?? 0
+    }
+    return counts
+  }
+
+  // ── I-01: Negative Knowledge — Entity Warnings ──────────────────
+
+  async bulkUpsertEntityWarnings(orgId: string, warnings: import("@/lib/ports/types").EntityWarningDoc[]): Promise<void> {
+    if (warnings.length === 0) return
+    const db = await getDbAsync()
+    const col = db.collection("entity_warnings")
+    const docs = warnings.map((w) => ({ ...w, _key: w.id, org_id: orgId }))
+    for (let i = 0; i < docs.length; i += BATCH_SIZE) {
+      const batch = docs.slice(i, i + BATCH_SIZE)
+      await col.import(batch, { onDuplicate: "update" })
+    }
+  }
+
+  async getEntityWarnings(orgId: string, entityId: string): Promise<import("@/lib/ports/types").EntityWarningDoc[]> {
+    const db = await getDbAsync()
+    const cursor = await db.query(
+      `FOR doc IN entity_warnings FILTER doc.org_id == @orgId AND doc.entity_id == @entityId SORT doc.created_at DESC RETURN doc`,
+      { orgId, entityId }
+    )
+    return cursor.all() as Promise<import("@/lib/ports/types").EntityWarningDoc[]>
+  }
+
+  async getEntityWarningsByRepo(orgId: string, repoId: string): Promise<import("@/lib/ports/types").EntityWarningDoc[]> {
+    const db = await getDbAsync()
+    const cursor = await db.query(
+      `FOR doc IN entity_warnings FILTER doc.org_id == @orgId AND doc.repo_id == @repoId SORT doc.severity DESC, doc.created_at DESC LIMIT 500 RETURN doc`,
+      { orgId, repoId }
+    )
+    return cursor.all() as Promise<import("@/lib/ports/types").EntityWarningDoc[]>
+  }
+
+  // I-04: Drift-as-documentation-trigger
+  async upsertDocumentationProposal(orgId: string, proposal: import("@/lib/temporal/activities/drift-documentation").DocumentationProposal): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("documentation_proposals")
+    try {
+      await col.save({ _key: proposal.id, ...proposal }, { overwriteMode: "replace" })
+    } catch (error: unknown) {
+      const log = (await import("@/lib/utils/logger")).logger.child({ service: "arango", organizationId: orgId })
+      log.warn("Failed to upsert documentation proposal", {
+        proposalId: proposal.id,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  async getDocumentationProposals(orgId: string, repoId: string, status?: string): Promise<import("@/lib/temporal/activities/drift-documentation").DocumentationProposal[]> {
+    const db = await getDbAsync()
+    const filters = ["doc.org_id == @orgId", "doc.repo_id == @repoId"]
+    const bindVars: Record<string, unknown> = { orgId, repoId }
+    if (status) {
+      filters.push("doc.status == @status")
+      bindVars.status = status
+    }
+    const cursor = await db.query(
+      `FOR doc IN documentation_proposals FILTER ${filters.join(" AND ")} SORT doc.created_at DESC LIMIT 100 RETURN doc`,
+      bindVars
+    )
+    return cursor.all() as Promise<import("@/lib/temporal/activities/drift-documentation").DocumentationProposal[]>
+  }
+
+  async updateDocumentationProposalStatus(orgId: string, proposalId: string, status: "accepted" | "rejected"): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("documentation_proposals")
+    try {
+      await col.update(proposalId, { status, updated_at: new Date().toISOString() })
+    } catch (error: unknown) {
+      const log = (await import("@/lib/utils/logger")).logger.child({ service: "arango", organizationId: orgId })
+      log.warn("Failed to update documentation proposal status", {
+        proposalId,
+        status,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  // D-03: Close rewind → rule tracing loop
+  async markLedgerEntryRuleGenerated(orgId: string, ledgerEntryId: string, ruleId: string): Promise<void> {
+    const db = await getDbAsync()
+    const col = db.collection("ledger")
+    try {
+      await col.update(ledgerEntryId, {
+        rule_generated: true,
+        rule_id: ruleId,
+        rule_generated_at: new Date().toISOString(),
+      })
+    } catch (error: unknown) {
+      const log = (await import("@/lib/utils/logger")).logger.child({ service: "arango", organizationId: orgId })
+      log.warn("Failed to mark ledger entry rule_generated", {
+        ledgerEntryId,
+        ruleId,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      })
     }
   }
 }

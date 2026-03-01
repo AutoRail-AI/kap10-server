@@ -8,6 +8,7 @@
 
 import type { DomainOntologyDoc, EntityDoc, JustificationDoc } from "@/lib/ports/types"
 import { extractCommentSignals, formatCommentSignalsForPrompt } from "./comment-signals"
+import type { IntentSignals } from "./intent-signals"
 import type { GraphContext } from "./schemas"
 import type { TestContext } from "./types"
 
@@ -55,6 +56,10 @@ export interface PromptBuilderOptions {
   isDeadCode?: boolean
   /** User-provided project context (ARCHITECTURE.md, PRD, etc.) for anchoring taxonomy */
   contextDocuments?: string
+  /** I-02: Git commit history for the entity's file (recent commit subjects/bodies) */
+  historicalContext?: string[]
+  /** L-20: Intent signals extracted from tests, entry points, naming, commits */
+  intentSignals?: IntentSignals
 }
 
 // ── Entity-Specific Section Builders ──────────────────────────────────────────
@@ -81,8 +86,8 @@ function buildFunctionSection(
 
   // Function-specific metadata
   if (entity.is_async) lines.push(`- **Async**: yes (uses async/await — consider I/O boundaries and error propagation)`)
-  if (entity.parameter_count != null) lines.push(`- **Parameters**: ${entity.parameter_count as number}`)
-  if (entity.return_type) lines.push(`- **Returns**: ${entity.return_type as string}`)
+  if (entity.parameter_count != null) lines.push(`- **Parameter count**: ${entity.parameter_count as number}`)
+  if (entity.return_type) lines.push(`- **Return type**: ${entity.return_type as string}`)
   if (entity.complexity != null) {
     const c = entity.complexity as number
     lines.push(`- **Complexity**: ${c}${c >= 10 ? " (high — likely orchestrates multiple paths)" : c >= 5 ? " (moderate)" : ""}`)
@@ -335,16 +340,74 @@ export function buildJustificationPrompt(
   }
 
   // Section 0.5: Preliminary analysis hints (from static analysis)
-  if (options?.heuristicHint || options?.isDeadCode) {
+  if (options?.heuristicHint || options?.isDeadCode || (entity as Record<string, unknown>).decorators) {
     const hintLines: string[] = []
-    if (options.heuristicHint) {
+    if (options?.heuristicHint) {
       hintLines.push(`Static analysis suggests this entity is **${options.heuristicHint.taxonomy}** in the **${options.heuristicHint.featureTag}** area because: ${options.heuristicHint.reason}.`)
     }
-    if (options.isDeadCode) {
+    if (options?.isDeadCode) {
       hintLines.push(`This entity has zero inbound references and may be dead code.`)
+    }
+    // C-01: Include decorator/annotation metadata
+    const decorators = (entity as Record<string, unknown>).decorators as string[] | undefined
+    if (decorators && decorators.length > 0) {
+      hintLines.push(`Decorators/annotations: ${decorators.join(", ")}`)
     }
     hintLines.push(`Use these observations as starting points but override based on your source code analysis.`)
     sections.push(`## Preliminary Analysis (Static)\n${hintLines.join("\n")}`)
+  }
+
+  // L-20: STRUCTURAL SIGNAL — consolidates graph topology data
+  {
+    const structLines: string[] = []
+    const callers = graphContext.neighbors.filter((n) => n.direction === "inbound")
+    const callees = graphContext.neighbors.filter((n) => n.direction === "outbound")
+    if (callers.length > 0) {
+      structLines.push(`- Callers (inbound): ${callers.slice(0, 5).map((n) => `${n.name} (${n.kind})`).join(", ")}${callers.length > 5 ? ` and ${callers.length - 5} more` : ""}`)
+    }
+    if (callees.length > 0) {
+      structLines.push(`- Callees (outbound): ${callees.slice(0, 5).map((n) => `${n.name} (${n.kind})`).join(", ")}${callees.length > 5 ? ` and ${callees.length - 5} more` : ""}`)
+    }
+    if (graphContext.centrality != null) {
+      structLines.push(`- Centrality: ${Math.round(graphContext.centrality * 100)}th percentile (PageRank)`)
+    }
+    if (graphContext.communityLabel) {
+      structLines.push(`- Community: ${graphContext.communityLabel}`)
+    }
+    const fanIn = (entity as Record<string, unknown>).fan_in as number | undefined
+    const fanOut = (entity as Record<string, unknown>).fan_out as number | undefined
+    const riskLevel = (entity as Record<string, unknown>).risk_level as string | undefined
+    if (fanIn != null || fanOut != null) {
+      structLines.push(`- Fan: in=${fanIn ?? 0}, out=${fanOut ?? 0}${riskLevel ? ` (risk: ${riskLevel})` : ""}`)
+    }
+    if (structLines.length > 0) {
+      sections.push(`## Structural Signal\n${structLines.join("\n")}`)
+    }
+  }
+
+  // L-20: INTENT SIGNAL — from tests, entry points, naming, commits
+  if (options?.intentSignals) {
+    const intentLines: string[] = []
+    const sig = options.intentSignals
+    if (sig.fromTests.length > 0) {
+      intentLines.push(`- Tests: ${sig.fromTests.map((t) => `"${t}"`).join(", ")}`)
+    }
+    if (sig.fromEntryPoints.length > 0) {
+      intentLines.push(`- Entry point: ${sig.fromEntryPoints.join("; ")}`)
+    }
+    if (sig.fromNaming) {
+      intentLines.push(`- Naming: "${entity.name}" → ${sig.fromNaming}`)
+    }
+    if (sig.fromCommits.length > 0) {
+      intentLines.push(`- Recent commits: ${sig.fromCommits.map((c) => `"${c}"`).join(", ")}`)
+    }
+    if (intentLines.length > 0) {
+      sections.push(`## Intent Signal\n${intentLines.join("\n")}`)
+    }
+  } else if (options?.historicalContext && options.historicalContext.length > 0) {
+    // Fallback: if no intent signals but historical context exists, still show it
+    const histLines = options.historicalContext.slice(0, 10).map((msg) => `- ${msg}`)
+    sections.push(`## Historical Context (Recent Git History)\nRecent commits affecting this file:\n${histLines.join("\n")}`)
   }
 
   // Build a lookup map from entity ID → business purpose for inline call graph context
@@ -391,37 +454,44 @@ Feature: ${pj.feature_tag}`)
 Other members of the same parent: ${siblings}${options.siblingNames.length > 8 ? ` and ${options.siblingNames.length - 8} more` : ""}`)
   }
 
-  // Section 4: Graph neighborhood (only for generic — others embed it in their section)
-  if (entity.kind !== "function" && entity.kind !== "method" && entity.kind !== "decorator" &&
-      entity.kind !== "class" && entity.kind !== "struct" &&
-      entity.kind !== "file" && entity.kind !== "module" && entity.kind !== "namespace" &&
-      entity.kind !== "interface") {
-    if (graphContext.neighbors.length > 0) {
-      const neighborList = graphContext.neighbors
-        .slice(0, 15)
-        .map((n) => {
-          const location = n.file_path ? ` in ${n.file_path}` : ""
-          return `  - [${n.direction}] ${n.name} (${n.kind})${location}`
+  // Section 4: Graph neighborhood absorbed into Structural Signal (L-20)
+
+  // Section 5: Domain Signal (L-25 three-tier or flat fallback)
+  if (ontology && ontology.terms.length > 0) {
+    if (ontology.term_tiers) {
+      // L-25: Structured three-tier domain signal
+      const tiers = ontology.term_tiers
+      const domainLines = tiers.domain.slice(0, 10).map((t) => {
+        const def = ontology.ubiquitous_language[t]
+        return def ? `  - ${t}: "${def}"` : `  - ${t}`
+      }).join("\n")
+      const archLine = tiers.architectural.slice(0, 8).join(", ")
+      const fwLine = tiers.framework.slice(0, 8).join(", ")
+
+      let domainSignal = `## Domain Signal\n**Domain concepts**:\n${domainLines}`
+      if (archLine) domainSignal += `\n**Architectural patterns**: ${archLine}`
+      if (fwLine) domainSignal += `\n**Framework/infra**: ${fwLine}`
+
+      if (ontology.domain_to_architecture && Object.keys(ontology.domain_to_architecture).length > 0) {
+        const d2aLines = Object.entries(ontology.domain_to_architecture)
+          .slice(0, 8)
+          .map(([domain, archNames]) => `  - ${domain} → [${archNames.join(", ")}]`)
+          .join("\n")
+        domainSignal += `\n**Domain→Architecture**:\n${d2aLines}`
+      }
+
+      sections.push(domainSignal)
+    } else {
+      // Flat fallback for old ontologies without term_tiers
+      const vocabEntries = ontology.terms
+        .slice(0, 20)
+        .map((t) => {
+          const def = ontology.ubiquitous_language[t.term]
+          return def ? `  - **${t.term}**: ${def}` : `  - **${t.term}** (freq: ${t.frequency})`
         })
         .join("\n")
-      sections.push(`## Graph Neighborhood (${graphContext.neighbors.length} connections)
-${graphContext.subgraphSummary ?? ""}
-${neighborList}
-${graphContext.centrality != null ? `\nCentrality score: ${graphContext.centrality.toFixed(3)}` : ""}`)
+      sections.push(`## Domain Vocabulary (Ubiquitous Language)\n${vocabEntries}`)
     }
-  }
-
-  // Section 5: Domain vocabulary
-  if (ontology && ontology.terms.length > 0) {
-    const vocabEntries = ontology.terms
-      .slice(0, 20)
-      .map((t) => {
-        const def = ontology.ubiquitous_language[t.term]
-        return def ? `  - **${t.term}**: ${def}` : `  - **${t.term}** (freq: ${t.frequency})`
-      })
-      .join("\n")
-    sections.push(`## Domain Vocabulary (Ubiquitous Language)
-${vocabEntries}`)
   }
 
   // Section 6: Dependency context (callees + callers)
@@ -457,14 +527,7 @@ ${vocabEntries}`)
     sections.push(`## Dependency Context\n${parts.join("\n\n")}`)
   }
 
-  // Section 7: Test assertions (if available)
-  if (testContext && testContext.assertions.length > 0) {
-    const assertions = testContext.assertions.slice(0, 10).join("\n  - ")
-    sections.push(`## Test Assertions
-Test files: ${testContext.testFiles.join(", ")}
-Key assertions:
-  - ${assertions}`)
-  }
+  // Section 7: Test assertions absorbed into Intent Signal (L-20)
 
   // Section 8: Author notes (TODO/FIXME/DEPRECATED markers)
   const commentSignals = extractCommentSignals(entity.body as string | undefined)
@@ -554,6 +617,7 @@ export function buildBatchJustificationPrompt(
     calleeJustifications?: JustificationDoc[]
     heuristicHint?: { taxonomy: string; featureTag: string; reason: string }
     isDeadCode?: boolean
+    intentSignals?: IntentSignals
   }>,
   ontology: DomainOntologyDoc | null,
   entityNameMap?: Map<string, string>
@@ -585,26 +649,40 @@ Respond with a JSON array of objects, one per entity, in the same order. Each ob
     sections.push(`## Project Context\n${projectLines.join("\n")}`)
   }
 
-  // Domain vocabulary (shared across batch)
+  // Domain vocabulary (shared across batch) — L-25 three-tier or flat fallback
   if (ontology && ontology.terms.length > 0) {
-    const vocabEntries = ontology.terms
-      .slice(0, 15)
-      .map((t) => {
-        const def = ontology.ubiquitous_language[t.term]
-        return def ? `  - **${t.term}**: ${def}` : `  - **${t.term}**`
-      })
-      .join("\n")
-    sections.push(`## Domain Vocabulary
-${vocabEntries}`)
+    if (ontology.term_tiers) {
+      const tiers = ontology.term_tiers
+      const domainTerms = tiers.domain.slice(0, 8).map((t) => {
+        const def = ontology.ubiquitous_language[t]
+        return def ? `${t}: "${def}"` : t
+      }).join("; ")
+      const archTerms = tiers.architectural.slice(0, 6).join(", ")
+      const fwTerms = tiers.framework.slice(0, 6).join(", ")
+
+      let signal = `## Domain Signal\n**Domain**: ${domainTerms}`
+      if (archTerms) signal += `\n**Architectural**: ${archTerms}`
+      if (fwTerms) signal += `\n**Framework**: ${fwTerms}`
+      sections.push(signal)
+    } else {
+      const vocabEntries = ontology.terms
+        .slice(0, 15)
+        .map((t) => {
+          const def = ontology.ubiquitous_language[t.term]
+          return def ? `  - **${t.term}**: ${def}` : `  - **${t.term}**`
+        })
+        .join("\n")
+      sections.push(`## Domain Vocabulary\n${vocabEntries}`)
+    }
   }
 
   // Each entity as a compact section
   for (let i = 0; i < entities.length; i++) {
-    const { entity, graphContext, parentJustification, calleeJustifications, heuristicHint, isDeadCode } = entities[i]!
+    const { entity, graphContext, parentJustification, calleeJustifications, heuristicHint, isDeadCode, intentSignals } = entities[i]!
     const body = entity.body as string | undefined
-    // Truncate body to ~30 lines for batch mode
+    // L-23: Use semantic summarization for batch mode (cap at ~2000 chars)
     const truncatedBody = body
-      ? body.split("\n").slice(0, 30).join("\n") + (body.split("\n").length > 30 ? "\n// ..." : "")
+      ? summarizeBody(body, 2000).text
       : null
 
     let entitySection = `## Entity ${i + 1} (ID: ${entity.id})
@@ -654,14 +732,38 @@ ${entity.doc ? `- **Documentation**: ${entity.doc as string}` : ""}
       entitySection += `\n- **Dependencies**: ${depSummary}`
     }
 
+    // L-20: Compact signal line for batch prompts
+    {
+      const callers = graphContext.neighbors.filter((n) => n.direction === "inbound")
+      const callees = graphContext.neighbors.filter((n) => n.direction === "outbound")
+      const signalParts: string[] = []
+      if (callers.length > 0 || callees.length > 0) {
+        signalParts.push(`${callers.length} callers, ${callees.length} callees`)
+      }
+      if (graphContext.communityLabel) {
+        signalParts.push(`community: ${graphContext.communityLabel}`)
+      }
+      if (intentSignals?.fromTests?.[0]) {
+        signalParts.push(`tests: "${intentSignals.fromTests[0]}"`)
+      }
+      if (intentSignals?.fromEntryPoints?.[0]) {
+        signalParts.push(intentSignals.fromEntryPoints[0])
+      }
+      if (signalParts.length > 0) {
+        entitySection += `\n- **Signals**: ${signalParts.join(" | ")}`
+      }
+    }
+
     sections.push(entitySection)
   }
 
   return sections.join("\n\n")
 }
 
-/** Truncate source body to avoid exceeding token limits. */
+import { summarizeBody } from "./ast-summarizer"
+
+/** L-23: Semantic body summarization — preserves anchors, compresses boilerplate. */
 function truncateBody(body: string, maxChars = 3000): string {
-  if (body.length <= maxChars) return body
-  return body.slice(0, maxChars) + "\n// ... truncated"
+  const result = summarizeBody(body, maxChars)
+  return result.text
 }

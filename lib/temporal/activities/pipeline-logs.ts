@@ -158,6 +158,10 @@ export async function archivePipelineLogs(input: ArchivePipelineLogsInput): Prom
 
     // Upload to Supabase Storage — include runId in path if available
     const { supabase } = require("@/lib/db") as typeof import("@/lib/db")
+
+    // Ensure the bucket exists (idempotent — ignored if already created)
+    await supabase.storage.createBucket("pipeline-logs", { public: false }).catch(() => {})
+
     const basePath = input.runId
       ? `${input.orgId}/${input.repoId}/${input.runId}/${timestamp}`
       : `${input.orgId}/${input.repoId}/${timestamp}`

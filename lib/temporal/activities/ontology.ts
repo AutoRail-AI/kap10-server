@@ -7,7 +7,12 @@ import { heartbeat } from "@temporalio/activity"
 import { randomUUID } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { getContainer } from "@/lib/di/container"
-import { buildOntologyPrompt, extractDomainTerms } from "@/lib/justification/ontology-extractor"
+import {
+  buildDomainToArchitectureMap,
+  buildOntologyPrompt,
+  classifyTerms,
+  extractDomainTerms,
+} from "@/lib/justification/ontology-extractor"
 import { DomainOntologySchema } from "@/lib/justification/schemas"
 import type { DomainOntologyDoc, EntityDoc } from "@/lib/ports/types"
 import { logger } from "@/lib/utils/logger"
@@ -46,6 +51,24 @@ export async function discoverAndStoreOntology(
   await container.graphStore.upsertDomainOntology(input.orgId, ontology)
   log.info("Ontology stored")
 
+  // TBI-C-03: Persist workspace manifest to relational store for fast access
+  if (ontology.project_name || ontology.tech_stack || ontology.project_domain) {
+    try {
+      const manifestData = JSON.stringify({
+        project_name: ontology.project_name,
+        project_description: ontology.project_description,
+        project_domain: ontology.project_domain,
+        tech_stack: ontology.tech_stack,
+      })
+      await container.relationalStore.updateRepoManifest(input.repoId, manifestData)
+      log.info("Manifest data persisted to relational store")
+    } catch (error: unknown) {
+      log.warn("Failed to persist manifest data", {
+        errorMessage: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
   return { termCount: ontology.terms.length }
 }
 
@@ -68,8 +91,13 @@ async function extractAndRefineOntologyInternal(
   const rawTerms = extractDomainTerms(entities)
   heartbeat(`found ${rawTerms.length} domain terms`)
 
-  // Step 2: Build LLM prompt
-  const prompt = buildOntologyPrompt(rawTerms, entities)
+  // Step 1b: L-25 — Three-tier classification
+  const classifiedTerms = classifyTerms(rawTerms)
+  const domainToArchitecture = buildDomainToArchitectureMap(entities, classifiedTerms)
+  heartbeat("three-tier classification complete")
+
+  // Step 2: Build LLM prompt (with three-tier context)
+  const prompt = buildOntologyPrompt(rawTerms, entities, classifiedTerms)
 
   // Step 3: Refine with LLM
   const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
@@ -113,12 +141,21 @@ async function extractAndRefineOntologyInternal(
     // Best-effort — don't fail ontology if context fetch fails
   }
 
+  // L-25: Build term_tiers from classified terms
+  const termTiers = {
+    domain: classifiedTerms.filter((t) => t.tier === "domain").map((t) => t.term),
+    architectural: classifiedTerms.filter((t) => t.tier === "architectural").map((t) => t.term),
+    framework: classifiedTerms.filter((t) => t.tier === "framework").map((t) => t.term),
+  }
+
   return {
     id: randomUUID(),
     org_id: input.orgId,
     repo_id: input.repoId,
     terms,
     ubiquitous_language: ubiquitousLanguage,
+    term_tiers: termTiers,
+    domain_to_architecture: domainToArchitecture,
     ...projectContext,
     ...(enrichedDescription && { project_description: enrichedDescription }),
     generated_at: new Date().toISOString(),

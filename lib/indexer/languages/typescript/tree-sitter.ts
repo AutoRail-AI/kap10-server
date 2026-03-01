@@ -45,17 +45,17 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
       const defaultImport = importMatch[3]
       const source = importMatch[4]!
 
-      // Only create edges for internal imports (relative or alias)
-      if (source.startsWith(".") || source.startsWith("@/") || source.startsWith("~/")) {
-        const symbols: string[] = []
-        if (namedImports) {
-          for (const sym of namedImports.split(",")) {
-            const trimmed = sym.trim().split(/\s+as\s+/)[0]!.trim()
-            if (trimmed) symbols.push(trimmed)
-          }
+      const symbols: string[] = []
+      if (namedImports) {
+        for (const sym of namedImports.split(",")) {
+          const trimmed = sym.trim().split(/\s+as\s+/)[0]!.trim()
+          if (trimmed) symbols.push(trimmed)
         }
-        if (defaultImport) symbols.push(defaultImport)
+      }
+      if (defaultImport) symbols.push(defaultImport)
 
+      // Internal imports (relative or alias) → create graph edges
+      if (source.startsWith(".") || source.startsWith("@/") || source.startsWith("~/")) {
         const targetFileId = entityHash(opts.repoId, resolveImportPath(opts.filePath, source), "file", resolveImportPath(opts.filePath, source))
         edges.push({
           from_id: fileId,
@@ -65,9 +65,29 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
           import_type: isTypeOnly ? "type" : "value",
           is_type_only: isTypeOnly,
         })
+      } else {
+        // I-03: External/third-party imports — capture with boundary metadata
+        const { extractExternalPackageName, classifyBoundary } = require("@/lib/indexer/boundary-classifier") as typeof import("@/lib/indexer/boundary-classifier")
+        const pkgName = extractExternalPackageName(source, "typescript")
+        if (pkgName) {
+          edges.push({
+            from_id: fileId,
+            to_id: `external:${pkgName}`,
+            kind: "imports",
+            imported_symbols: symbols,
+            import_type: isTypeOnly ? "type" : "value",
+            is_type_only: isTypeOnly,
+            is_external: true,
+            package_name: pkgName,
+            boundary_category: classifyBoundary(pkgName, "typescript"),
+          })
+        }
       }
     }
   }
+
+  // C-01: Track pending decorators for the next class/method declaration
+  let pendingDecorators: string[] = []
 
   // Track current class/interface scope for method extraction
   let currentClass: ParsedEntity | null = null
@@ -78,13 +98,57 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
     const line = lines[i]!
     const lineNum = i + 1
 
-    // Track brace depth for class scope
-    for (const ch of line) {
-      if (ch === "{") braceDepth++
-      if (ch === "}") {
-        braceDepth--
-        if (currentClass && braceDepth < classStartDepth) {
-          currentClass = null
+    // Track brace depth for class scope — skip braces inside strings, comments, template literals
+    let inSingleQuote = false
+    let inDoubleQuote = false
+    let inTemplateLiteral = false
+    let inLineComment = false
+    let inBlockComment = false
+    for (let ci = 0; ci < line.length; ci++) {
+      const ch = line[ci]!
+      const next = ci + 1 < line.length ? line[ci + 1] : ""
+      const prev = ci > 0 ? line[ci - 1] : ""
+
+      // Handle block comment state
+      if (inBlockComment) {
+        if (ch === "*" && next === "/") {
+          inBlockComment = false
+          ci++ // skip the '/'
+        }
+        continue
+      }
+
+      // Handle line comment — skip rest of line
+      if (inLineComment) continue
+
+      // Check for comment starts
+      if (!inSingleQuote && !inDoubleQuote && !inTemplateLiteral) {
+        if (ch === "/" && next === "/") { inLineComment = true; continue }
+        if (ch === "/" && next === "*") { inBlockComment = true; ci++; continue }
+      }
+
+      // Handle string states (skip escaped quotes)
+      if (ch === "'" && !inDoubleQuote && !inTemplateLiteral && prev !== "\\") {
+        inSingleQuote = !inSingleQuote
+        continue
+      }
+      if (ch === "\"" && !inSingleQuote && !inTemplateLiteral && prev !== "\\") {
+        inDoubleQuote = !inDoubleQuote
+        continue
+      }
+      if (ch === "`" && !inSingleQuote && !inDoubleQuote && prev !== "\\") {
+        inTemplateLiteral = !inTemplateLiteral
+        continue
+      }
+
+      // Only count braces outside strings and comments
+      if (!inSingleQuote && !inDoubleQuote && !inTemplateLiteral) {
+        if (ch === "{") braceDepth++
+        if (ch === "}") {
+          braceDepth--
+          if (currentClass && braceDepth < classStartDepth) {
+            currentClass = null
+          }
         }
       }
     }
@@ -93,6 +157,17 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
     const trimmed = line.trim()
     if (!trimmed || trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*")) {
       continue
+    }
+
+    // C-01: Detect TypeScript/JS decorators (@Decorator, @Injectable(), @Column({ type: 'varchar' }))
+    if (trimmed.startsWith("@")) {
+      const decoratorMatch = trimmed.match(/^@(\w+(?:\.\w+)*)/)
+      if (decoratorMatch) {
+        // Capture the full decorator text including arguments
+        const decoratorText = trimmed.match(/^@(\w+(?:\.\w+)*(?:\([^)]*\))?)/)
+        pendingDecorators.push(decoratorText ? `@${decoratorText[1]}` : `@${decoratorMatch[1]}`)
+        continue
+      }
     }
 
     // Exported function declarations
@@ -118,6 +193,11 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
         parameter_count: countParams(params),
         return_type: extractReturnType(trimmed),
       }
+      // C-01: Attach pending decorators
+      if (pendingDecorators.length > 0) {
+        entity.decorators = pendingDecorators
+        pendingDecorators = []
+      }
       entities.push(entity)
       continue
     }
@@ -129,7 +209,10 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
     if (arrowMatch && (trimmed.includes("=>") || trimmed.includes("function"))) {
       const name = arrowMatch[3]!
       const exported = !!arrowMatch[1]
-      const sig = `const ${name}`
+      // C-04: Extract arrow function params from the line
+      const arrowParamsMatch = trimmed.match(/=\s*(?:async\s+)?(?:function\s*)?(?:<[^>]*>)?\s*\(([^)]*)\)/)
+      const arrowParams = arrowParamsMatch ? arrowParamsMatch[1]! : ""
+      const sig = arrowParams ? `const ${name} = (${arrowParams})` : `const ${name}`
       const entity: ParsedEntity = {
         id: entityHash(opts.repoId, opts.filePath, "function", name, sig),
         kind: "function",
@@ -141,6 +224,8 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
         signature: sig,
         doc: extractJSDocComment(lines, i),
         is_async: !!arrowMatch[4],
+        parameter_count: arrowParams ? countParams(arrowParams) : undefined,
+        return_type: extractReturnType(trimmed),
       }
       entities.push(entity)
       continue
@@ -163,6 +248,11 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
         language: detectLanguageFromPath(opts.filePath),
         exported,
         doc: extractJSDocComment(lines, i),
+      }
+      // C-01: Attach pending decorators
+      if (pendingDecorators.length > 0) {
+        entity.decorators = pendingDecorators
+        pendingDecorators = []
       }
       entities.push(entity)
       currentClass = entity
@@ -245,7 +335,13 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
         const name = methodMatch[4]!
         if (name !== "constructor" || true) {
           const params = methodMatch[6] ?? ""
-          const sig = `${currentClass.name}.${name}(${params})`
+          // C-04: Preserve visibility and static modifiers in method signature
+          const visibility = methodMatch[1]?.trim() ?? ""
+          const isStatic = !!methodMatch[2]
+          const prefix = [visibility, isStatic ? "static" : ""].filter(Boolean).join(" ")
+          const sig = prefix
+            ? `${prefix} ${currentClass.name}.${name}(${params})`
+            : `${currentClass.name}.${name}(${params})`
           const entity: ParsedEntity = {
             id: entityHash(opts.repoId, opts.filePath, "method", name, sig),
             kind: "method",
@@ -260,6 +356,11 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
             parameter_count: countParams(params),
             return_type: extractReturnType(trimmed),
           }
+          // C-01: Attach pending decorators
+          if (pendingDecorators.length > 0) {
+            entity.decorators = pendingDecorators
+            pendingDecorators = []
+          }
           entities.push(entity)
 
           // member_of edge
@@ -271,6 +372,9 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
 
   // Post-process: compute end_line and extract body for each entity
   fillEndLinesAndBodies(entities, lines)
+
+  // L-02: Detect same-file call edges (parity with Python/Go/Java)
+  detectTypeScriptCallEdges(entities, edges)
 
   return { entities, edges }
 }
@@ -398,6 +502,51 @@ function estimateComplexity(body: string): number {
     complexity++
   }
   return complexity
+}
+
+/**
+ * L-02: Detect same-file call edges by scanning function/method bodies
+ * for `name(` patterns matching known entity names in the same file.
+ * Matches the pattern used in Python and Go parsers.
+ */
+function detectTypeScriptCallEdges(entities: ParsedEntity[], edges: ParsedEdge[]): void {
+  // Build a set of callable entity names → IDs
+  const callableMap = new Map<string, string>()
+  for (const e of entities) {
+    if (e.kind === "function" || e.kind === "method" || e.kind === "class") {
+      callableMap.set(e.name, e.id)
+    }
+  }
+
+  if (callableMap.size === 0) return
+
+  // Filter names with length > 1 to avoid false positives on single-char identifiers
+  const names = Array.from(callableMap.keys()).filter((n) => n.length > 1)
+  if (names.length === 0) return
+
+  // Escape regex special chars in names, match word boundary + name + (
+  const escapedNames = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  const callPattern = new RegExp(`\\b(${escapedNames.join("|")})\\s*\\(`, "g")
+
+  const edgeSet = new Set<string>()
+  for (const entity of entities) {
+    if (entity.kind !== "function" && entity.kind !== "method") continue
+    if (!entity.body) continue
+
+    let match: RegExpExecArray | null
+    const regex = new RegExp(callPattern.source, "g")
+    while ((match = regex.exec(entity.body)) !== null) {
+      const calledName = match[1]!
+      const calleeId = callableMap.get(calledName)
+      if (calleeId && calleeId !== entity.id) {
+        const edgeKey = `${entity.id}\0${calleeId}`
+        if (!edgeSet.has(edgeKey)) {
+          edgeSet.add(edgeKey)
+          edges.push({ from_id: entity.id, to_id: calleeId, kind: "calls" })
+        }
+      }
+    }
+  }
 }
 
 function detectLanguageFromPath(filePath: string): string {

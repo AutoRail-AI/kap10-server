@@ -10,7 +10,7 @@ import { buildCascadeQueue } from "@/lib/indexer/cascade"
 import { clearCallerCountCache } from "@/lib/indexer/centrality"
 import { repairEdges } from "@/lib/indexer/edge-repair"
 import { entityHash } from "@/lib/indexer/entity-hash"
-import { withQuarantine } from "@/lib/indexer/quarantine"
+import { withQuarantine, shouldHealQuarantine } from "@/lib/indexer/quarantine"
 import { detectDeadCode } from "@/lib/justification/dead-code-detector"
 import { buildGraphContexts } from "@/lib/justification/graph-context-builder"
 import { computeHeuristicHint } from "@/lib/justification/model-router"
@@ -121,10 +121,13 @@ export async function reIndexBatch(input: ReIndexBatchInput): Promise<ReIndexBat
 
         const plugin = getPluginForExtension(ext)
         if (plugin) {
-          const content = fs.readFileSync(fullPath, "utf-8")
+          // K-07: Encoding-aware file reading
+          const { readFileWithEncoding } = require("@/lib/indexer/file-reader") as typeof import("@/lib/indexer/file-reader")
+          const fileResult = readFileWithEncoding(fullPath)
+          if (!fileResult) return entities // Binary file — return file entity only
           const parsed = await plugin.parseWithTreeSitter({
             filePath,
-            content,
+            content: fileResult.content,
             orgId: input.orgId,
             repoId: input.repoId,
           })
@@ -184,6 +187,41 @@ export async function reIndexBatch(input: ReIndexBatchInput): Promise<ReIndexBat
     allEntities,
     allEdges as import("@/lib/ports/types").EdgeDoc[],
   )
+
+  // K-16: Heal quarantined entities — if a file that was previously quarantined
+  // is now successfully parsed, delete its quarantine placeholder.
+  if (allEntities.length > 0) {
+    try {
+      heartbeat("checking quarantine healing")
+      // Fetch existing entities for the affected files to find quarantined ones
+      const affectedFilePaths = Array.from(new Set(input.filePaths))
+      const existingEntities: EntityDoc[] = []
+      for (const fp of affectedFilePaths) {
+        const fileEntities = await container.graphStore.getEntitiesByFile(
+          input.orgId,
+          input.repoId,
+          fp,
+        )
+        existingEntities.push(...fileEntities)
+      }
+
+      const healedPaths = shouldHealQuarantine(existingEntities, allEntities)
+      if (healedPaths.length > 0) {
+        // Delete quarantine placeholder entities by their deterministic IDs
+        const { createHash } = require("node:crypto") as typeof import("node:crypto")
+        const quarantineKeys = healedPaths.map((fp) =>
+          createHash("sha256")
+            .update(`${input.repoId}\0${fp}\0quarantine`)
+            .digest("hex")
+            .slice(0, 16)
+        )
+        await container.graphStore.batchDeleteEntities(input.orgId, quarantineKeys)
+        heartbeat(`healed ${healedPaths.length} quarantined files`)
+      }
+    } catch {
+      // Quarantine healing is non-fatal — entities will be overwritten on next run
+    }
+  }
 
   return {
     entityIds: allEntities.map((e) => e.id),
@@ -363,21 +401,42 @@ export async function cascadeReJustify(input: CascadeReJustifyInput): Promise<Ca
     return { cascadeStatus: "skipped", cascadeEntities: 0 }
   }
 
-  heartbeat(`re-justifying ${allKeys.length} entities via full pipeline`)
+  heartbeat(`re-justifying ${allKeys.length} entities via targeted subgraph`)
 
-  // Load all data needed for full justification pipeline
-  const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
-  const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
-  const ontology = await container.graphStore.getDomainOntology(input.orgId, input.repoId)
-  const previousJustifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
+  // K-15: Fetch only the affected subgraph instead of the entire repo.
+  // For each entity in the cascade queue, we need its 1-hop neighbors for context.
+  const subgraphs = await container.graphStore.getBatchSubgraphs(input.orgId, allKeys, 1)
+  heartbeat("loaded subgraphs for cascade entities")
 
-  const prevJustMap = new Map<string, JustificationDoc>()
-  for (const j of previousJustifications) {
-    prevJustMap.set(j.entity_id, j)
+  // Collect all entity IDs in the affected subgraph (cascade keys + their neighbors)
+  const affectedKeySet = new Set(allKeys)
+  const subgraphEntries = Array.from(subgraphs.entries())
+  for (const [, sg] of subgraphEntries) {
+    for (const e of sg.entities) affectedKeySet.add(e.id)
   }
+  const affectedKeys = Array.from(affectedKeySet)
 
-  // Build entity map and name map
-  const entityMap = new Map(allEntities.map((e) => [e.id, e]))
+  // Fetch only the affected entities, edges, and justifications
+  const affectedEntities: EntityDoc[] = []
+  for (const [, sg] of subgraphEntries) {
+    for (const e of sg.entities) affectedEntities.push(e)
+  }
+  // Deduplicate by ID
+  const entityMap = new Map(affectedEntities.map((e) => [e.id, e]))
+  const allEntities = Array.from(entityMap.values())
+
+  const edges = await container.graphStore.getEdgesForEntities(input.orgId, affectedKeys)
+  const ontology = await container.graphStore.getDomainOntology(input.orgId, input.repoId)
+
+  // Fetch justifications only for affected entities
+  const prevJustMap = new Map<string, JustificationDoc>()
+  for (const key of affectedKeys) {
+    const j = await container.graphStore.getJustification(input.orgId, key)
+    if (j) prevJustMap.set(j.entity_id, j)
+  }
+  heartbeat("loaded justifications for affected entities")
+
+  // Build name map
   const entityNameMap = new Map<string, string>()
   for (const e of allEntities) {
     entityNameMap.set(e.id, e.file_path ? `${e.name} in ${e.file_path}` : e.name)
@@ -394,7 +453,7 @@ export async function cascadeReJustify(input: CascadeReJustifyInput): Promise<Ca
     }
   }
 
-  // Dead code detection
+  // Dead code detection on the affected subgraph
   const deadCodeIds = detectDeadCode(allEntities, edges)
 
   // Filter to entities in the cascade queue
@@ -523,13 +582,8 @@ export async function cascadeReJustify(input: CascadeReJustifyInput): Promise<Ca
   if (container.vectorSearch.upsertJustificationEmbeddings) {
     try {
       heartbeat("re-embedding justifications")
-      const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
-      const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
-      const entityMap = new Map(allEntities.map((e) => [e.id, e]))
-
-      // Only re-embed the entities we just re-justified
-      const reJustifiedSet = new Set(allKeys)
-      const toEmbed = justifications.filter((j) => reJustifiedSet.has(j.entity_id))
+      // K-15: Use already-loaded entity map and freshly stored results instead of re-fetching all
+      const toEmbed = results
 
       if (toEmbed.length > 0) {
         const texts = toEmbed.map((j) => {
@@ -587,26 +641,52 @@ export interface InvalidateCachesInput {
 
 /**
  * Invalidate caches for the affected repo.
+ * K-17: Exhaustive cache invalidation — covers all cache key patterns
+ * that reference repo data: MCP tool caches, search caches, graph snapshots,
+ * topological sort levels, justification levels, prefetch contexts, rules,
+ * and graph-sync notifications.
  * Runs on light-llm-queue.
  */
 export async function invalidateCaches(input: InvalidateCachesInput): Promise<void> {
   const container = getContainer()
   heartbeat("invalidating caches")
 
-  // Invalidate common cache keys for this repo
-  const patterns = [
+  // Exact-key invalidations — keys with known, fixed names per repo
+  const exactKeys = [
     `mcp:stats:${input.orgId}:${input.repoId}`,
     `mcp:blueprint:${input.orgId}:${input.repoId}`,
     `mcp:health:${input.orgId}:${input.repoId}`,
     `mcp:features:${input.orgId}:${input.repoId}`,
     `graph:snapshot:${input.repoId}`,
+    `graph-sync:${input.orgId}:${input.repoId}`,
+    `topo:${input.orgId}:${input.repoId}:meta`,
   ]
 
-  for (const key of patterns) {
+  for (const key of exactKeys) {
     try {
       await container.cacheStore.invalidate(key)
     } catch {
       // Cache invalidation failure is non-fatal
+    }
+  }
+
+  // Prefix-based invalidations — covers dynamic keys like
+  // topo levels, justification levels, search results, prefetch contexts, rules
+  if (container.cacheStore.invalidateByPrefix) {
+    const prefixes = [
+      `topo:${input.orgId}:${input.repoId}:level:`,
+      `justify-changed:${input.orgId}:${input.repoId}:`,
+      `search:${input.orgId}:${input.repoId}:`,
+      `prefetch:ctx:${input.orgId}:${input.repoId}:`,
+      `rules:resolved:${input.orgId}:${input.repoId}:`,
+    ]
+
+    for (const prefix of prefixes) {
+      try {
+        await container.cacheStore.invalidateByPrefix(prefix)
+      } catch {
+        // Non-fatal
+      }
     }
   }
 }

@@ -36,8 +36,8 @@ export const JustificationResultSchema = z.object({
   domainConcepts: z.array(z.string()),
   featureTag: z.string(),
   semanticTriples: z.array(SemanticTripleSchema),
-  complianceTags: z.array(z.string()).optional().default([]),
-  architecturalPattern: ArchitecturalPatternSchema.optional().default("unknown"),
+  complianceTags: z.array(z.string()),
+  architecturalPattern: ArchitecturalPatternSchema,
   reasoning: z.string().describe("2-3 sentence chain-of-evidence explaining your classification choices"),
 })
 export type JustificationResult = z.infer<typeof JustificationResultSchema>
@@ -51,10 +51,18 @@ export const DomainOntologySchema = z.object({
     z.object({
       term: z.string(),
       frequency: z.number(),
-      relatedTerms: z.array(z.string()).optional().default([]),
+      relatedTerms: z.array(z.string()),
     })
   ),
-  ubiquitousLanguage: z.record(z.string(), z.string()).optional().default({}),
+  ubiquitousLanguage: z.record(z.string(), z.string()),
+  /** L-25: Three-tier term classification */
+  termTiers: z.object({
+    domain: z.array(z.string()),
+    architectural: z.array(z.string()),
+    framework: z.array(z.string()),
+  }).optional(),
+  /** L-25: Domain concept → architectural entity name mapping */
+  domainToArchitecture: z.record(z.string(), z.array(z.string())).optional(),
   generatedAt: z.string(),
 })
 export type DomainOntology = z.infer<typeof DomainOntologySchema>
@@ -144,6 +152,7 @@ export const GraphContextSchema = z.object({
   ),
   centrality: z.number().optional(),
   subgraphSummary: z.string().optional(),
+  communityLabel: z.string().optional(),
 })
 export type GraphContext = z.infer<typeof GraphContextSchema>
 
@@ -157,13 +166,16 @@ export const BatchJustificationItemSchema = z.object({
   domainConcepts: z.array(z.string()),
   featureTag: z.string(),
   semanticTriples: z.array(SemanticTripleSchema),
-  complianceTags: z.array(z.string()).optional().default([]),
-  architecturalPattern: ArchitecturalPatternSchema.optional().default("unknown"),
+  complianceTags: z.array(z.string()),
+  architecturalPattern: ArchitecturalPatternSchema,
   reasoning: z.string().describe("2-3 sentence chain-of-evidence explaining your classification choices"),
 })
 export type BatchJustificationItem = z.infer<typeof BatchJustificationItemSchema>
 
-export const BatchJustificationResultSchema = z.array(BatchJustificationItemSchema)
+// Wrapped in an object because OpenAI response_format requires top-level type: "object"
+export const BatchJustificationResultSchema = z.object({
+  results: z.array(BatchJustificationItemSchema),
+})
 export type BatchJustificationResult = z.infer<typeof BatchJustificationResultSchema>
 
 // ── ADR (Architecture Decision Record) ──────────────────────────

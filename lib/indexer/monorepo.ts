@@ -3,9 +3,10 @@
  *
  * Detects pnpm, yarn, npm, nx, and lerna workspaces.
  * Returns workspace root paths for SCIP indexers that need per-package runs.
+ * A-05: Also detects dominant language per workspace root for polyglot support.
  */
-import { existsSync, readFileSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { extname, join, resolve } from "node:path"
 
 import type { WorkspaceInfo } from "./types"
 
@@ -49,8 +50,103 @@ export function detectWorkspaceRoots(workspacePath: string): WorkspaceInfo {
     }
   }
 
+  // Check Maven multi-module (pom.xml with <modules>)
+  const pomPath = join(absRoot, "pom.xml")
+  if (existsSync(pomPath)) {
+    const roots = parseMavenModules(absRoot, pomPath)
+    if (roots.length > 1) return { roots, type: "maven" }
+    if (roots.length === 1) return { roots, type: "maven" }
+  }
+
+  // Check Gradle multi-project (settings.gradle / settings.gradle.kts)
+  const gradleSettingsPath = existsSync(join(absRoot, "settings.gradle.kts"))
+    ? join(absRoot, "settings.gradle.kts")
+    : existsSync(join(absRoot, "settings.gradle"))
+      ? join(absRoot, "settings.gradle")
+      : null
+  if (gradleSettingsPath) {
+    const roots = parseGradleSettings(absRoot, gradleSettingsPath)
+    if (roots.length > 1) return { roots, type: "gradle" }
+    if (roots.length === 1) return { roots, type: "gradle" }
+  }
+
   // Single-package repo
   return { roots: ["."], type: "single" }
+}
+
+/**
+ * A-05: Detect the dominant programming language for each workspace root.
+ * Scans files in each root directory and returns the language with the most files.
+ */
+export function detectLanguagePerRoot(
+  workspacePath: string,
+  roots: string[]
+): Record<string, string> {
+  const absRoot = resolve(workspacePath)
+  const result: Record<string, string> = {}
+
+  for (const root of roots) {
+    const rootDir = join(absRoot, root)
+    if (!existsSync(rootDir)) continue
+
+    const langCounts = new Map<string, number>()
+    countLanguageFiles(rootDir, langCounts, 0, 3)
+
+    // Find dominant language
+    let maxCount = 0
+    let dominant = "unknown"
+    for (const [lang, count] of Array.from(langCounts.entries())) {
+      if (count > maxCount) {
+        maxCount = count
+        dominant = lang
+      }
+    }
+    if (maxCount > 0) result[root] = dominant
+  }
+
+  return result
+}
+
+/** Extension → language mapping for per-root detection */
+const ROOT_EXTENSION_LANGUAGE: Record<string, string> = {
+  ".ts": "typescript", ".tsx": "typescript",
+  ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript",
+  ".py": "python", ".pyi": "python",
+  ".go": "go",
+  ".rs": "rust",
+  ".java": "java", ".kt": "kotlin",
+  ".rb": "ruby",
+  ".php": "php",
+  ".c": "c", ".h": "c",
+  ".cpp": "cpp", ".hpp": "cpp",
+  ".cs": "csharp",
+  ".swift": "swift",
+  ".scala": "scala",
+}
+
+/** Recursively count language files up to maxDepth. */
+function countLanguageFiles(
+  dir: string,
+  counts: Map<string, number>,
+  depth: number,
+  maxDepth: number
+): void {
+  if (depth > maxDepth) return
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "vendor" || entry.name === "__pycache__") continue
+      if (entry.isDirectory()) {
+        countLanguageFiles(join(dir, entry.name), counts, depth + 1, maxDepth)
+      } else if (entry.isFile()) {
+        const ext = extname(entry.name).toLowerCase()
+        const lang = ROOT_EXTENSION_LANGUAGE[ext]
+        if (lang) counts.set(lang, (counts.get(lang) ?? 0) + 1)
+      }
+    }
+  } catch {
+    // Skip inaccessible directories
+  }
 }
 
 /** Parse pnpm-workspace.yaml to extract workspace glob patterns, then resolve to actual dirs. */
@@ -156,4 +252,51 @@ function resolveGlobPatterns(absRoot: string, patterns: string[]): string[] {
   }
 
   return roots
+}
+
+/** Parse Maven pom.xml to extract <modules> entries. */
+function parseMavenModules(absRoot: string, pomPath: string): string[] {
+  try {
+    const content = readFileSync(pomPath, "utf-8")
+    // Simple XML parsing for <modules><module>name</module></modules>
+    const modulesMatch = content.match(/<modules>([\s\S]*?)<\/modules>/)
+    if (!modulesMatch) return ["."]
+
+    const moduleNames: string[] = []
+    const moduleRegex = /<module>\s*([^<]+)\s*<\/module>/g
+    let match: RegExpExecArray | null
+    while ((match = moduleRegex.exec(modulesMatch[1]!)) !== null) {
+      const moduleName = match[1]!.trim()
+      if (moduleName && existsSync(join(absRoot, moduleName))) {
+        moduleNames.push(moduleName)
+      }
+    }
+
+    return moduleNames.length > 0 ? moduleNames : ["."]
+  } catch {
+    return ["."]
+  }
+}
+
+/** Parse Gradle settings.gradle(.kts) to extract include() entries. */
+function parseGradleSettings(absRoot: string, settingsPath: string): string[] {
+  try {
+    const content = readFileSync(settingsPath, "utf-8")
+    const modules: string[] = []
+
+    // Match include("module") or include(":module") or include ':module'
+    const includeRegex = /include\s*\(?['"][:.]?([^'"]+)['"]/g
+    let match: RegExpExecArray | null
+    while ((match = includeRegex.exec(content)) !== null) {
+      // Gradle uses ":" as path separator, convert to filesystem path
+      const modulePath = match[1]!.replace(/:/g, "/").trim()
+      if (modulePath && existsSync(join(absRoot, modulePath))) {
+        modules.push(modulePath)
+      }
+    }
+
+    return modules.length > 0 ? modules : ["."]
+  } catch {
+    return ["."]
+  }
 }

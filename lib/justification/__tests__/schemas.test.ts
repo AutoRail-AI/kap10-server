@@ -49,6 +49,7 @@ describe("Phase 4 Schemas", () => {
           { subject: "PaymentService", predicate: "processes", object: "transactions" },
         ],
         complianceTags: ["PCI-DSS"],
+        architecturalPattern: "pure_domain",
         reasoning: "The function name and signature indicate payment processing. It calls the Stripe API and validates amounts, confirming VERTICAL classification in the payment domain.",
       })
       expect(result.taxonomy).toBe("VERTICAL")
@@ -57,7 +58,7 @@ describe("Phase 4 Schemas", () => {
       expect(result.reasoning).toContain("payment processing")
     })
 
-    it("defaults complianceTags to empty array", () => {
+    it("accepts empty complianceTags array", () => {
       const result = JustificationResultSchema.parse({
         taxonomy: "UTILITY",
         confidence: 0.9,
@@ -65,6 +66,8 @@ describe("Phase 4 Schemas", () => {
         domainConcepts: [],
         featureTag: "testing",
         semanticTriples: [],
+        complianceTags: [],
+        architecturalPattern: "unknown",
         reasoning: "Simple test utility helper based on naming convention and file location in __tests__ directory.",
       })
       expect(result.complianceTags).toEqual([])
@@ -79,6 +82,8 @@ describe("Phase 4 Schemas", () => {
           domainConcepts: [],
           featureTag: "x",
           semanticTriples: [],
+          complianceTags: [],
+          architecturalPattern: "unknown",
           reasoning: "test",
         })
       ).toThrow()

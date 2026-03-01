@@ -9,9 +9,13 @@
 import { heartbeat } from "@temporalio/activity"
 import { randomUUID } from "node:crypto"
 import { getContainer } from "@/lib/di/container"
+import { detectCommunities } from "@/lib/justification/community-detection"
+import { computeCalibratedConfidence, isDescriptiveName } from "@/lib/justification/confidence"
 import { detectDeadCode } from "@/lib/justification/dead-code-detector"
 import { createBatches, getBatcherConfigForModel } from "@/lib/justification/dynamic-batcher"
 import { buildGraphContexts } from "@/lib/justification/graph-context-builder"
+import { extractIntentSignals } from "@/lib/justification/intent-signals"
+import type { IntentSignals } from "@/lib/justification/intent-signals"
 import { computeHeuristicHint, routeModel } from "@/lib/justification/model-router"
 import { clusterFeatureAreas, deduplicateFeatures, normalizeJustifications } from "@/lib/justification/post-processor"
 import {
@@ -25,6 +29,7 @@ import type { GraphContext } from "@/lib/justification/schemas"
 import { checkStaleness, computeBodyHash } from "@/lib/justification/staleness-checker"
 import { buildTestContext } from "@/lib/justification/test-context-extractor"
 import { topologicalSortEntityIds } from "@/lib/justification/topological-sort"
+import { getMaxParallelChunks } from "@/lib/llm/config"
 import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
 import { logger } from "@/lib/utils/logger"
@@ -73,17 +78,171 @@ export async function loadOntology(
 }
 
 /**
+ * L-21: Detect communities via Louvain and write community_id + community_label
+ * back onto entities in ArangoDB. Runs before justification so the data is
+ * available when buildGraphContexts reads entity metadata.
+ */
+export async function detectCommunitiesActivity(
+  input: JustificationInput
+): Promise<{ communityCount: number }> {
+  const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
+  const container = getContainer()
+
+  heartbeat("fetching entities and edges for community detection")
+  const entities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
+  const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
+
+  heartbeat(`running Louvain on ${entities.length} entities`)
+  const result = detectCommunities(entities, edges)
+  log.info("Community detection complete", {
+    totalCommunities: result.totalCommunities,
+    significantCommunities: result.communities.size,
+  })
+
+  // Write community_id and community_label back onto entities
+  if (result.assignments.size > 0) {
+    heartbeat(`writing community labels to ${result.assignments.size} entities`)
+    const updates: Array<{ id: string; community_id: number; community_label: string }> = []
+    for (const [entityId, communityId] of result.assignments) {
+      const info = result.communities.get(communityId)
+      updates.push({
+        id: entityId,
+        community_id: communityId,
+        community_label: info?.label ?? `Community ${communityId}`,
+      })
+    }
+
+    // Batch upsert in chunks to avoid large payloads
+    const CHUNK_SIZE = 500
+    for (let i = 0; i < updates.length; i += CHUNK_SIZE) {
+      const chunk = updates.slice(i, i + CHUNK_SIZE)
+      heartbeat(`writing community labels chunk ${Math.floor(i / CHUNK_SIZE) + 1}`)
+      await container.graphStore.bulkUpsertEntities(
+        input.orgId,
+        chunk.map((u) => ({
+          id: u.id,
+          community_id: u.community_id,
+          community_label: u.community_label,
+        }) as unknown as import("@/lib/ports/types").EntityDoc)
+      )
+    }
+  }
+
+  return { communityCount: result.communities.size }
+}
+
+/**
  * Perform topological sort by fetching entities/edges from ArangoDB.
- * Returns string[][] (entity ID arrays per level) to keep payload small.
+ * Stores the level data in Redis (data residency) and returns only the
+ * level count through Temporal's gRPC boundary. This avoids sending the
+ * full string[][] (potentially 5MB+ for large repos) through Temporal.
+ *
+ * Each level is stored under a separate Redis key with a 2-hour TTL.
+ * The workflow calls fetchTopologicalLevel(levelIndex) to retrieve
+ * one level at a time when needed.
  */
 export async function performTopologicalSort(
   input: JustificationInput
-): Promise<string[][]> {
+): Promise<{ levelCount: number }> {
   heartbeat("performing topological sort")
   const container = getContainer()
   const entities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
   const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
-  return topologicalSortEntityIds(entities, edges)
+  const levels = topologicalSortEntityIds(entities, edges)
+
+  // Store each level in Redis — data residency pattern
+  const TTL = 7200 // 2 hours
+  const baseKey = `topo:${input.orgId}:${input.repoId}`
+  for (let i = 0; i < levels.length; i++) {
+    heartbeat(`storing topo level ${i + 1}/${levels.length} in cache`)
+    await container.cacheStore.set(`${baseKey}:level:${i}`, levels[i], TTL)
+  }
+  await container.cacheStore.set(`${baseKey}:meta`, { levelCount: levels.length }, TTL)
+
+  return { levelCount: levels.length }
+}
+
+/**
+ * Fetch a single topological level's entity IDs from Redis.
+ * Returns only the IDs for the requested level — keeps payloads small.
+ */
+export async function fetchTopologicalLevel(
+  input: JustificationInput,
+  levelIndex: number
+): Promise<string[]> {
+  const container = getContainer()
+  const baseKey = `topo:${input.orgId}:${input.repoId}`
+  const level = await container.cacheStore.get<string[]>(`${baseKey}:level:${levelIndex}`)
+  if (!level) {
+    throw new Error(`Topological level ${levelIndex} not found in cache (key: ${baseKey}:level:${levelIndex}). Cache may have expired.`)
+  }
+  return level
+}
+
+/**
+ * Store changed entity IDs from a justification level into Redis.
+ * This avoids returning large changedEntityIds arrays through Temporal.
+ */
+export async function storeChangedEntityIds(
+  input: JustificationInput,
+  levelIndex: number,
+  changedEntityIds: string[]
+): Promise<void> {
+  const container = getContainer()
+  const key = `justify-changed:${input.orgId}:${input.repoId}:level:${levelIndex}`
+  await container.cacheStore.set(key, changedEntityIds, 7200)
+}
+
+/**
+ * Fetch changed entity IDs from the previous level (for cascading staleness).
+ * Returns empty array if no previous level or cache expired.
+ */
+export async function fetchPreviousLevelChangedIds(
+  input: JustificationInput,
+  levelIndex: number
+): Promise<string[]> {
+  if (levelIndex <= 0) return []
+  const container = getContainer()
+  const key = `justify-changed:${input.orgId}:${input.repoId}:level:${levelIndex - 1}`
+  return (await container.cacheStore.get<string[]>(key)) ?? []
+}
+
+/**
+ * Clean up all topological sort and changed-entity Redis keys after workflow completes.
+ */
+export async function cleanupJustificationCache(
+  input: JustificationInput,
+  levelCount: number
+): Promise<void> {
+  const container = getContainer()
+  const baseKey = `topo:${input.orgId}:${input.repoId}`
+  for (let i = 0; i < levelCount; i++) {
+    await container.cacheStore.invalidate(`${baseKey}:level:${i}`)
+    await container.cacheStore.invalidate(`justify-changed:${input.orgId}:${input.repoId}:level:${i}`)
+  }
+  await container.cacheStore.invalidate(`${baseKey}:meta`)
+}
+
+/**
+ * Find the direct callers (next topological level up) of a specific entity.
+ * Used by single-entity re-justification — runs topological sort internally,
+ * returns only the caller IDs (small payload, doesn't need Redis data residency).
+ */
+export async function findEntityCallerIds(
+  input: JustificationInput,
+  entityId: string
+): Promise<string[]> {
+  heartbeat("finding entity callers via topological sort")
+  const container = getContainer()
+  const entities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
+  const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
+  const levels = topologicalSortEntityIds(entities, edges)
+
+  const entityLevelIdx = levels.findIndex((level) => level.includes(entityId))
+  if (entityLevelIdx >= 0 && entityLevelIdx < levels.length - 1) {
+    return levels[entityLevelIdx + 1] ?? []
+  }
+  return []
 }
 
 /**
@@ -156,10 +315,21 @@ function buildParentAndSiblingContext(
 }
 
 /**
+ * Returns the max parallel chunks for justification based on the current LLM provider.
+ * Exposed as a Temporal activity because workflows can't import Node modules directly.
+ */
+export async function getJustificationConcurrency(): Promise<number> {
+  return getMaxParallelChunks()
+}
+
+/**
  * Justify a batch of entities by their IDs.
  * Fetches all needed data (entities, edges, ontology, previous justifications)
  * from ArangoDB internally. Uses dynamic batching to minimize LLM calls.
  * Stores results directly before returning a count.
+ *
+ * Changed entity IDs are stored in Redis via storeChangedEntityIds (called by
+ * the workflow) — only the count crosses Temporal's gRPC boundary.
  */
 export async function justifyBatch(
   input: JustificationInput,
@@ -223,7 +393,44 @@ export async function justifyBatch(
   // Dead code detection: auto-classify entities with zero inbound references
   const deadCodeIds = detectDeadCode(allEntities, edges)
 
-  // All entities go to LLM — heuristic hints are passed as context
+  // I-02: Fetch git history per unique file path (grouped to avoid redundant git log calls)
+  const fileHistoryMap = new Map<string, string[]>()
+  const workspacePath = `/data/workspaces/${input.orgId}/${input.repoId}`
+  try {
+    const filePathSet = new Set(entities.map((e) => e.file_path).filter(Boolean))
+    const uniqueFilePaths = Array.from(filePathSet)
+    heartbeat(`fetching git history for ${uniqueFilePaths.length} files`)
+    // Fetch in parallel but limit concurrency to avoid spawning too many git processes
+    const HISTORY_BATCH_SIZE = 10
+    for (let hi = 0; hi < uniqueFilePaths.length; hi += HISTORY_BATCH_SIZE) {
+      const batch = uniqueFilePaths.slice(hi, hi + HISTORY_BATCH_SIZE)
+      const results = await Promise.all(
+        batch.map(async (fp) => {
+          const commits = await container.gitHost.getFileGitHistory(workspacePath, fp, 10)
+          return { fp, commits }
+        })
+      )
+      for (const { fp, commits } of results) {
+        if (commits.length > 0) {
+          fileHistoryMap.set(
+            fp,
+            commits.map((c) => {
+              const body = c.body ? ` — ${c.body.slice(0, 120)}` : ""
+              return `${c.sha.slice(0, 7)}: ${c.subject}${body}`
+            })
+          )
+        }
+      }
+    }
+  } catch {
+    // Best-effort — don't fail justification if git history fetch fails
+  }
+
+  // C-05: Heuristic bypass — skip LLM for pure-utility entities with high confidence and 0 callers
+  const HEURISTIC_BYPASS_CONFIDENCE = 0.9
+  const bypassedResults: JustificationDoc[] = []
+
+  // Most entities go to LLM — heuristic hints are passed as context
   const llmEntities: Array<{
     entity: EntityDoc
     graphContext: GraphContext
@@ -235,6 +442,8 @@ export async function justifyBatch(
     siblingNames?: string[]
     heuristicHint?: { taxonomy: string; featureTag: string; reason: string }
     isDeadCode?: boolean
+    historicalContext?: string[]
+    intentSignals?: IntentSignals
   }> = []
 
   for (let i = 0; i < entities.length; i++) {
@@ -260,6 +469,15 @@ export async function justifyBatch(
     // Build test context
     const testContext = buildTestContext(entity.id, allEntities, edges)
 
+    // L-20: Extract intent signals for prompt enrichment
+    const intentSignals = extractIntentSignals(
+      entity,
+      testContext,
+      fileHistoryMap.get(entity.file_path),
+      graphContext?.neighbors ?? [],
+      allEntities
+    )
+
     // Gather dependency justifications (split by direction)
     const calleeJustifications: JustificationDoc[] = []
     const callerJustifications: JustificationDoc[] = []
@@ -276,6 +494,35 @@ export async function justifyBatch(
       }
     }
 
+    // C-05: Heuristic bypass — skip LLM for pure-utility entities
+    // Conditions: high confidence hint (≥0.9), 0 inbound callers, not safety-relevant
+    if (
+      heuristicHint &&
+      heuristicHint.confidence >= HEURISTIC_BYPASS_CONFIDENCE &&
+      callerCount === 0
+    ) {
+      const now = new Date().toISOString()
+      bypassedResults.push({
+        id: randomUUID(),
+        org_id: input.orgId,
+        repo_id: input.repoId,
+        entity_id: entity.id,
+        taxonomy: heuristicHint.taxonomy,
+        confidence: heuristicHint.confidence,
+        business_purpose: heuristicHint.businessPurpose,
+        domain_concepts: [],
+        feature_tag: heuristicHint.featureTag,
+        semantic_triples: [],
+        compliance_tags: [],
+        model_tier: "heuristic" as JustificationDoc["model_tier"],
+        model_used: "heuristic-bypass",
+        valid_from: now,
+        valid_to: null,
+        created_at: now,
+      })
+      continue
+    }
+
     llmEntities.push({
       entity,
       graphContext: graphContext ?? { entityId: entity.id, neighbors: [] },
@@ -287,6 +534,8 @@ export async function justifyBatch(
       siblingNames: siblingMap.get(entity.id),
       heuristicHint: heuristicHint ? { taxonomy: heuristicHint.taxonomy, featureTag: heuristicHint.featureTag, reason: heuristicHint.reason } : undefined,
       isDeadCode,
+      historicalContext: fileHistoryMap.get(entity.file_path),
+      intentSignals,
     })
   }
 
@@ -354,6 +603,8 @@ export async function justifyBatch(
             heuristicHint: teInfo.heuristicHint,
             isDeadCode: teInfo.isDeadCode,
             contextDocuments,
+            historicalContext: teInfo.historicalContext,
+            intentSignals: teInfo.intentSignals,
           }
         )
 
@@ -408,6 +659,7 @@ export async function justifyBatch(
           } else {
             consecutiveFatalErrors = 0
           }
+          pipelineLog.log("warn", "Justification", `Fallback created for ${be.entity.name}: ${message.slice(0, 120)}`)
           results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
         }
       } else {
@@ -422,6 +674,7 @@ export async function justifyBatch(
               calleeJustifications: teInfo?.depJustifications,
               heuristicHint: teInfo?.heuristicHint,
               isDeadCode: teInfo?.isDeadCode,
+              intentSignals: teInfo?.intentSignals,
             }
           }),
           ontology,
@@ -442,8 +695,8 @@ export async function justifyBatch(
               temperature: 0.1,
             })
 
-            // Match results to entities
-            const batchResults = llmResult.object
+            // Match results to entities (unwrap from wrapper object)
+            const batchResults = llmResult.object.results
             for (const be of batch.entities) {
               const match = batchResults.find((r) => r.entityId === be.entity.id)
               if (match) {
@@ -480,7 +733,8 @@ export async function justifyBatch(
               } else {
                 // Entity not found in batch response — retry individually
                 console.warn(`[justifyBatch] Entity ${be.entity.name} missing from batch response, retrying individually`)
-                await retrySingleEntity(container, input, be, ontology, tierEntities, entityNameMap, prevJustMap, modelToUse, tier, results, now)
+                pipelineLog.log("warn", "Justification", `${be.entity.name} missing from batch response, retrying individually`)
+                await retrySingleEntity(container, input, be, ontology, tierEntities, entityNameMap, prevJustMap, modelToUse, tier, results, now, pipelineLog)
               }
             }
             _batchSuccess = true
@@ -496,6 +750,7 @@ export async function justifyBatch(
                 throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${consecutiveFatalErrors} consecutive fatal errors. Check LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL env vars.`)
               }
               // Create fallbacks for this batch but continue (might hit threshold soon)
+              pipelineLog.log("warn", "Justification", `Fallback created for ${batch.entities.length} entities in batch: ${message.slice(0, 100)}`)
               for (const be of batch.entities) {
                 results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
               }
@@ -523,6 +778,7 @@ export async function justifyBatch(
             console.warn(
               `[justifyBatch] Batch LLM failed after ${attempt + 1} attempt(s) (${batch.entities.length} entities): ${message}. Retrying individually.`
             )
+            pipelineLog.log("warn", "Justification", `Batch failed after ${attempt + 1} attempt(s) for ${batch.entities.length} entities: ${message.slice(0, 100)}. Retrying individually.`)
 
             // Add a cooldown before individual retries if rate limited
             if (isRetryable) {
@@ -534,7 +790,7 @@ export async function justifyBatch(
               if (isRetryable) {
                 await new Promise((r) => setTimeout(r, 3_000))
               }
-              await retrySingleEntity(container, input, be, ontology, tierEntities, entityNameMap, prevJustMap, modelToUse, tier, results, now)
+              await retrySingleEntity(container, input, be, ontology, tierEntities, entityNameMap, prevJustMap, modelToUse, tier, results, now, pipelineLog)
             }
             _batchSuccess = true // Handled via individual retries
             break
@@ -557,6 +813,31 @@ export async function justifyBatch(
   llmEntities.length = 0
   byTier.clear()
   if (global.gc) global.gc()
+
+  // C-05: Merge heuristic-bypassed results with LLM results
+  if (bypassedResults.length > 0) {
+    pipelineLog.log("info", "Justification", `Heuristic bypass: ${bypassedResults.length} pure-utility entities skipped LLM`)
+    results.push(...bypassedResults)
+  }
+
+  // L-19: Apply calibrated confidence to all results
+  for (const r of results) {
+    const entity = entityMap.get(r.entity_id)
+    const gc = graphContexts.get(r.entity_id)
+    const signals = {
+      hasCallers: gc ? gc.neighbors.some((n) => n.direction === "inbound") : false,
+      hasCallees: gc ? gc.neighbors.some((n) => n.direction === "outbound") : false,
+      hasTests: !!(entity && buildTestContext(entity.id, allEntities, edges)?.assertions?.length),
+      hasDocs: !!(entity?.doc),
+      hasDescriptiveName: entity ? isDescriptiveName(entity.name) : false,
+      llmConfidence: r.confidence,
+      llmModelTier: (r.model_tier ?? "standard") as "heuristic" | "fast" | "standard" | "premium",
+      pageRankPercentile: entity ? ((entity as Record<string, unknown>).pagerank_percentile as number | undefined) ?? 0 : 0,
+    }
+    const calibrated = computeCalibratedConfidence(signals)
+    ;(r as Record<string, unknown>).calibrated_confidence = calibrated.composite
+    ;(r as Record<string, unknown>).confidence_breakdown = calibrated.breakdown
+  }
 
   // Store results directly (merged storeJustifications into justifyBatch)
   if (results.length > 0) {
@@ -595,13 +876,15 @@ async function retrySingleEntity(
     testContext: import("@/lib/justification/types").TestContext | undefined
     siblingNames?: string[]
     parentJustification?: JustificationDoc
+    historicalContext?: string[]
   }>,
   entityNameMap: Map<string, string>,
   prevJustMap: Map<string, JustificationDoc>,
   modelToUse: string,
   tier: string,
   results: JustificationDoc[],
-  now: string
+  now: string,
+  pipelineLog?: ReturnType<typeof createPipelineLogger>
 ): Promise<void> {
   const teInfo = tierEntities.find((te) => te.entity.id === be.entity.id)
   const prompt = buildJustificationPrompt(
@@ -615,6 +898,7 @@ async function retrySingleEntity(
       parentJustification: be.parentJustification,
       siblingNames: teInfo?.siblingNames,
       callerJustifications: teInfo?.callerJustifications,
+      historicalContext: teInfo?.historicalContext,
     }
   )
 
@@ -651,6 +935,7 @@ async function retrySingleEntity(
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
     console.warn(`[justifyBatch] Individual retry failed for ${be.entity.name}: ${message}`)
+    pipelineLog?.log("warn", "Justification", `Fallback created for ${be.entity.name}: ${message.slice(0, 120)}`)
     results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
   }
 }
@@ -719,7 +1004,9 @@ export async function propagateContextActivity(
 ): Promise<void> {
   const { propagateContext } = require("@/lib/justification/context-propagator") as typeof import("@/lib/justification/context-propagator")
   const container = getContainer()
+  const plog = createPipelineLogger(input.repoId, "justifying", input.runId)
   heartbeat("propagating context across entity hierarchy")
+  plog.log("info", "Step 6/10", "Fetching entities, edges, and justifications for context propagation...")
 
   const [allEntities, edges, justifications] = await Promise.all([
     container.graphStore.getAllEntities(input.orgId, input.repoId),
@@ -727,7 +1014,12 @@ export async function propagateContextActivity(
     container.graphStore.getJustifications(input.orgId, input.repoId),
   ])
 
-  if (justifications.length === 0) return
+  if (justifications.length === 0) {
+    plog.log("info", "Step 6/10", "No justifications to propagate — skipping")
+    return
+  }
+
+  plog.log("info", "Step 6/10", `Propagating context across ${justifications.length} justifications...`)
 
   const justMap = new Map<string, JustificationDoc>()
   for (const j of justifications) {
@@ -742,6 +1034,9 @@ export async function propagateContextActivity(
   )
   if (propagated.length > 0) {
     await container.graphStore.bulkUpsertJustifications(input.orgId, propagated)
+    plog.log("info", "Step 6/10", `Context propagation complete — ${propagated.length} entities enriched with propagated tags`)
+  } else {
+    plog.log("info", "Step 6/10", "Context propagation complete — no additional tags to propagate")
   }
 }
 
@@ -753,7 +1048,10 @@ export async function storeFeatureAggregations(
   input: JustificationInput
 ): Promise<void> {
   const container = getContainer()
+  const plog = createPipelineLogger(input.repoId, "justifying", input.runId)
   heartbeat("computing feature aggregations")
+  plog.log("info", "Step 7/10", "Computing feature aggregations from justifications...")
+
   const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
 
   // Cluster feature tags into higher-level feature areas by shared domain concepts
@@ -770,6 +1068,7 @@ export async function storeFeatureAggregations(
   }
 
   await container.graphStore.bulkUpsertFeatureAggregations(input.orgId, features)
+  plog.log("info", "Step 7/10", `Feature aggregations stored — ${features.length} features across ${areaMap.size} areas`)
 }
 
 /**
@@ -781,10 +1080,15 @@ export async function embedJustifications(
   input: JustificationInput
 ): Promise<number> {
   const container = getContainer()
+  const plog = createPipelineLogger(input.repoId, "justifying", input.runId)
   const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
   heartbeat(`embedding ${justifications.length} justifications`)
+  plog.log("info", "Step 8/10", `Generating vector embeddings for ${justifications.length} justifications...`)
 
-  if (justifications.length === 0) return 0
+  if (justifications.length === 0) {
+    plog.log("info", "Step 8/10", "No justifications to embed — skipping")
+    return 0
+  }
 
   // Load entities to resolve entity names (justifications only store entity_id)
   const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
@@ -856,10 +1160,17 @@ export async function embedJustifications(
     await container.vectorSearch.upsertJustificationEmbeddings(embeddings, metadata)
     totalStored += chunk.length
 
+    const chunkNum = Math.floor(i / CHUNK_SIZE) + 1
+    const totalChunks = Math.ceil(justifications.length / CHUNK_SIZE)
     if (global.gc) global.gc()
-    heartbeat(`embedded justification chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(justifications.length / CHUNK_SIZE)}`)
+    heartbeat(`embedded justification chunk ${chunkNum}/${totalChunks}`)
+    // Log progress every 5 chunks to avoid spamming
+    if (chunkNum % 5 === 0 || chunkNum === totalChunks) {
+      plog.log("info", "Step 8/10", `Embedded ${totalStored}/${justifications.length} justifications (chunk ${chunkNum}/${totalChunks})`)
+    }
   }
 
+  plog.log("info", "Step 8/10", `Embedding complete — ${totalStored} justification vectors stored`)
   return totalStored
 }
 

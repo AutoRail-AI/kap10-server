@@ -126,10 +126,11 @@ export async function handleGetFunction(
     )
   }
 
-  // Get callers and callees
-  const [callers, callees] = await Promise.all([
+  // Get callers, callees, and warnings
+  const [callers, callees, warnings] = await Promise.all([
     container.graphStore.getCallersOf(ctx.orgId, entity.id, 1),
     container.graphStore.getCalleesOf(ctx.orgId, entity.id, 1),
+    container.graphStore.getEntityWarnings(ctx.orgId, entity.id).catch(() => []),
   ])
 
   return formatToolResponse({
@@ -154,6 +155,14 @@ export async function handleGetFunction(
       kind: c.kind,
       line: Number(c.start_line) || 0,
     })),
+    ...(warnings.length > 0 ? {
+      warnings: warnings.slice(0, 5).map((w) => ({
+        severity: w.severity,
+        message: w.message,
+        reason: w.reason,
+        reverted_at: w.reverted_at,
+      })),
+    } : {}),
   })
 }
 
@@ -263,6 +272,9 @@ export async function handleGetClass(
       e.id !== classEntity.id
   )
 
+  // I-01: Fetch warnings for this class entity
+  const classWarnings = await container.graphStore.getEntityWarnings(ctx.orgId, classEntity.id).catch(() => [])
+
   return formatToolResponse({
     class: {
       name: classEntity.name,
@@ -280,6 +292,14 @@ export async function handleGetClass(
     })),
     extends: [],
     implements: [],
+    ...(classWarnings.length > 0 ? {
+      warnings: classWarnings.slice(0, 5).map((w) => ({
+        severity: w.severity,
+        message: w.message,
+        reason: w.reason,
+        reverted_at: w.reverted_at,
+      })),
+    } : {}),
   })
 }
 

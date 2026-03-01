@@ -1,13 +1,19 @@
 import { heartbeat } from "@temporalio/activity"
-import { readFileSync } from "node:fs"
+import { execFile } from "node:child_process"
+import { readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
+import { promisify } from "node:util"
+
+const execFileAsync = promisify(execFile)
 
 import { getContainer } from "@/lib/di/container"
 import { extractDocComment } from "@/lib/indexer/doc-extractor"
 import { entityHash } from "@/lib/indexer/entity-hash"
+import { readFileWithEncoding } from "@/lib/indexer/file-reader"
+import { resolveCrossFileCalls } from "@/lib/indexer/cross-file-calls"
 import { createFileEntity } from "@/lib/indexer/languages/generic"
 import { getPluginForExtension, getPluginsForExtensions, initializeRegistry } from "@/lib/indexer/languages/registry"
-import { detectWorkspaceRoots } from "@/lib/indexer/monorepo"
+import { detectLanguagePerRoot, detectWorkspaceRoots } from "@/lib/indexer/monorepo"
 import { detectLanguages, scanWorkspace } from "@/lib/indexer/scanner"
 import type { ParsedEdge, ParsedEntity } from "@/lib/indexer/types"
 import { MAX_BODY_LINES } from "@/lib/indexer/types"
@@ -30,6 +36,8 @@ export interface PrepareRepoIntelligenceSpaceResult {
   workspacePath: string
   languages: string[]
   workspaceRoots: string[]
+  /** A-05: Dominant language per workspace root for polyglot SCIP indexing */
+  languagePerRoot?: Record<string, string>
   lastSha?: string
 }
 
@@ -75,9 +83,14 @@ export async function prepareRepoIntelligenceSpace(input: PrepareRepoIntelligenc
   const workspaceInfo = detectWorkspaceRoots(workspacePath)
   const workspaceRoots = workspaceInfo.roots
 
-  log.info("Workspace prepared", { workspacePath, languages, rootCount: workspaceRoots.length, lastSha })
+  // A-05: Detect dominant language per workspace root for polyglot SCIP indexing
+  const languagePerRoot = workspaceRoots.length > 1
+    ? detectLanguagePerRoot(workspacePath, workspaceRoots)
+    : undefined
+
+  log.info("Workspace prepared", { workspacePath, languages, rootCount: workspaceRoots.length, languagePerRoot, lastSha })
   plog.log("info", "Step 1/7", `Workspace ready — detected languages: ${languages.join(", ") || "none"}`, { fileCount: files.length })
-  return { workspacePath, languages, workspaceRoots, lastSha }
+  return { workspacePath, languages, workspaceRoots, languagePerRoot, lastSha }
 }
 
 /**
@@ -149,6 +162,19 @@ export interface RunSCIPLightResult {
 }
 
 /**
+ * K-03: Check if a SCIP binary is available on the system PATH.
+ * Returns true if found, false otherwise.
+ */
+async function isSCIPBinaryAvailable(binary: string): Promise<boolean> {
+  try {
+    await execFileAsync("which", [binary])
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Run SCIP indexers, write entities/edges directly to ArangoDB,
  * and return only lightweight metadata. Large payloads never leave the worker.
  */
@@ -157,6 +183,29 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
   const plog = createPipelineLogger(input.repoId, "indexing")
   log.info("Starting SCIP indexers", { languages: input.languages })
   plog.log("info", "Step 2/7", `Running SCIP indexers for: ${input.languages.join(", ")}`)
+
+  // K-03: Pre-check SCIP binary availability and surface to pipeline log
+  const scipBinaries: Record<string, string> = {
+    typescript: "npx", // scip-typescript runs via npx
+    python: "scip-python",
+    go: "scip-go",
+  }
+  const missingBinaries: string[] = []
+  for (const lang of input.languages) {
+    const bin = scipBinaries[lang]
+    if (bin && bin !== "npx") {
+      const available = await isSCIPBinaryAvailable(bin)
+      if (!available) {
+        missingBinaries.push(`${bin} (${lang})`)
+      }
+    }
+  }
+  if (missingBinaries.length > 0) {
+    const msg = `SCIP binaries not found: ${missingBinaries.join(", ")}. These languages will use tree-sitter fallback.`
+    log.warn(msg)
+    plog.log("warn", "Step 2/7", msg)
+  }
+
   await initializeRegistry()
 
   const allEntities: ParsedEntity[] = []
@@ -182,7 +231,10 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
       allEdges.push(...result.edges)
       allCoveredFiles.push(...result.coveredFiles)
     } catch (error: unknown) {
-      log.warn(`SCIP plugin ${plugin.id} failed`, { pluginId: plugin.id, errorMessage: error instanceof Error ? error.message : String(error) })
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      log.warn(`SCIP plugin ${plugin.id} failed`, { pluginId: plugin.id, errorMessage })
+      // K-03: Surface SCIP failures to pipeline log so users see them in the UI
+      plog.log("warn", "Step 2/7", `SCIP indexer for ${plugin.id} failed: ${errorMessage}. Falling back to tree-sitter.`)
     }
   }
 
@@ -261,15 +313,37 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestLightRe
   const uncoveredFiles = files.filter((f) => !coveredSet.has(f.relativePath))
   let processed = 0
 
+  // K-05: Maximum file size for tree-sitter parsing (1 MB)
+  const MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024
+
   for (const file of uncoveredFiles) {
     const plugin = getPluginForExtension(file.extension)
     if (!plugin) continue
 
     try {
-      const content = readFileSync(file.absolutePath, "utf-8")
+      // K-05: Skip files that exceed the size limit to prevent OOM
+      const fileStat = statSync(file.absolutePath)
+      if (fileStat.size > MAX_FILE_SIZE_BYTES) {
+        log.warn("Skipping oversized file", {
+          filePath: file.relativePath,
+          sizeBytes: fileStat.size,
+          maxBytes: MAX_FILE_SIZE_BYTES,
+        })
+        continue
+      }
+
+      // K-07: Encoding-aware file reading — detect Latin-1/CP-1252, skip binary files
+      const fileResult = readFileWithEncoding(file.absolutePath)
+      if (!fileResult) {
+        log.debug("Skipping binary file", { filePath: file.relativePath })
+        continue
+      }
+      if (fileResult.encoding !== "utf-8") {
+        log.info("Non-UTF-8 file detected", { filePath: file.relativePath, encoding: fileResult.encoding })
+      }
       const result = await plugin.parseWithTreeSitter({
         filePath: file.relativePath,
-        content,
+        content: fileResult.content,
         orgId: input.orgId,
         repoId: input.repoId,
       })
@@ -289,6 +363,12 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestLightRe
       heartbeat(`parsed ${processed}/${uncoveredFiles.length} files`)
     }
   }
+
+  // L-02: Resolve cross-file call edges using import metadata
+  heartbeat("resolving cross-file call edges")
+  const crossFileEdges = resolveCrossFileCalls(allEntities, allEdges, input.repoId)
+  allEdges.push(...crossFileEdges)
+  log.info("Cross-file call edges resolved", { count: crossFileEdges.length })
 
   // Write directly to ArangoDB — no large payloads cross Temporal
   heartbeat("writing parse results to graph store")
@@ -333,8 +413,10 @@ function fillBodiesFromSource(entities: ParsedEntity[], workspacePath: string): 
 
   byFile.forEach((fileEntities, filePath) => {
     try {
-      const content = readFileSync(join(workspacePath, filePath), "utf-8")
-      const lines = content.split("\n")
+      // K-07: Encoding-aware file reading
+      const fileResult = readFileWithEncoding(join(workspacePath, filePath))
+      if (!fileResult) return // Binary file — skip
+      const lines = fileResult.content.split("\n")
 
       for (const entity of fileEntities) {
         const startIdx = (entity.start_line ?? 1) - 1

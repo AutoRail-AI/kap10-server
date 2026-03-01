@@ -7,8 +7,6 @@ import { withAuth } from "@/lib/middleware/api-handler"
 import { errorResponse, successResponse } from "@/lib/utils/api-response"
 import { logger } from "@/lib/utils/logger"
 
-const RETRY_RATE_LIMIT_KEY = "repo-retry:"
-const MAX_RETRIES_PER_HOUR = 3
 const RETRYABLE_STATUSES = ["error", "ready", "embed_failed", "justify_failed"]
 
 export const POST = withAuth(async (req: NextRequest, { userId }) => {
@@ -34,13 +32,6 @@ export const POST = withAuth(async (req: NextRequest, { userId }) => {
   if (!RETRYABLE_STATUSES.includes(repo.status)) {
     logger.warn("Retry failed: repo not in retryable state", { ...ctx, currentStatus: repo.status })
     return errorResponse(`Repo in '${repo.status}' state cannot be retried. Allowed: ${RETRYABLE_STATUSES.join(", ")}`, 400)
-  }
-
-  const rlKey = `${RETRY_RATE_LIMIT_KEY}${orgId}:${repoId}`
-  const underLimit = await container.cacheStore.rateLimit(rlKey, MAX_RETRIES_PER_HOUR, 3600)
-  if (!underLimit) {
-    logger.warn("Retry rate-limited", ctx)
-    return errorResponse("Max 3 retries per hour", 429)
   }
 
   const installations = await container.relationalStore.getInstallations(orgId)

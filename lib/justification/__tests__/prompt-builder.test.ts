@@ -78,14 +78,21 @@ describe("buildJustificationPrompt", () => {
     expect(prompt).toContain("VERTICAL")
   })
 
-  it("includes test context when provided", () => {
+  it("includes test context when provided via intent signals", () => {
     const testContext = {
       testFiles: ["src/orders/service.test.ts"],
       assertions: ["it should process a valid order"],
     }
-    const prompt = buildJustificationPrompt(entity, graphContext, null, [], testContext)
-    expect(prompt).toContain("service.test.ts")
+    const prompt = buildJustificationPrompt(entity, graphContext, null, [], testContext, {
+      intentSignals: {
+        fromTests: ["it should process a valid order"],
+        fromEntryPoints: [],
+        fromNaming: null,
+        fromCommits: [],
+      },
+    })
     expect(prompt).toContain("process a valid order")
+    expect(prompt).toContain("Intent Signal")
   })
 
   it("includes JSON response instructions", () => {

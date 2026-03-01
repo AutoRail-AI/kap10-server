@@ -42,6 +42,26 @@ export class RedisCacheStore implements ICacheStore {
     await redis.del(PREFIX + key)
   }
 
+  /**
+   * K-17: Delete all keys matching a prefix using SCAN (non-blocking).
+   * Uses cursor-based iteration to avoid blocking Redis with KEYS command.
+   */
+  async invalidateByPrefix(prefix: string): Promise<number> {
+    const redis = getRedis()
+    const fullPrefix = PREFIX + prefix
+    let cursor = "0"
+    let deleted = 0
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, "MATCH", `${fullPrefix}*`, "COUNT", 100)
+      cursor = nextCursor
+      if (keys.length > 0) {
+        await redis.del(...keys)
+        deleted += keys.length
+      }
+    } while (cursor !== "0")
+    return deleted
+  }
+
   async rateLimit(key: string, limit: number, windowSeconds: number): Promise<boolean> {
     const redis = getRedis()
     const rk = RATE_PREFIX + key

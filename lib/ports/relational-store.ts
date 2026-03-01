@@ -40,6 +40,8 @@ export interface RepoRecord {
   currentIndexVersion?: string | null
   pendingIndexVersion?: string | null
   reindexStatus?: string | null
+  // TBI-C-03: Workspace manifest metadata
+  manifestData?: string | null
 }
 
 export interface GitHubInstallationRecord {
@@ -261,4 +263,7 @@ export interface IRelationalStore {
   listPrReviewComments(reviewId: string): Promise<PrReviewCommentRecord[]>
   updateRepoReviewConfig(repoId: string, config: ReviewConfig): Promise<void>
   getRepoReviewConfig(repoId: string): Promise<ReviewConfig>
+
+  // TBI-C-03: Workspace manifest persistence
+  updateRepoManifest(repoId: string, manifestData: string | null): Promise<void>
 }

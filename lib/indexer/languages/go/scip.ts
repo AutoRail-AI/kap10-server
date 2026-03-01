@@ -1,14 +1,16 @@
 /**
  * SCIP indexer for Go.
  *
- * Runs scip-go to produce a .scip file. Falls back gracefully
- * if scip-go is not installed.
+ * Runs scip-go to produce a .scip file, then parses the output
+ * using the shared SCIP protobuf decoder.
+ * Falls back gracefully if scip-go is not installed.
  */
 import { execFile } from "node:child_process"
 import { existsSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
+import { parseSCIPOutput } from "../../scip-decoder"
 import type { ParsedEdge, ParsedEntity } from "../../types"
 import type { SCIPOptions } from "../types"
 
@@ -23,8 +25,8 @@ export interface SCIPGoResult {
 }
 
 /**
- * Run scip-go on a workspace root.
- * Currently returns empty — tree-sitter fallback handles Go in Phase 1.
+ * Run scip-go on a workspace root and parse the output.
+ * Falls back gracefully if scip-go is not installed.
  */
 export async function runSCIPGo(
   opts: SCIPOptions,
@@ -44,15 +46,25 @@ export async function runSCIPGo(
       maxBuffer: 100 * 1024 * 1024,
     })
 
-    // TODO: Parse SCIP output using shared decoder
+    // Parse the .scip output file using the shared decoder
+    if (!existsSync(outputFile)) {
+      return { entities: [], edges: [], coveredFiles: [] }
+    }
+
+    const result = parseSCIPOutput(outputFile, opts.repoId, "go")
+
+    // Clean up
     try {
       unlinkSync(outputFile)
     } catch {
-      // ignore
+      // ignore cleanup errors
     }
 
-    return { entities: [], edges: [], coveredFiles: [] }
-  } catch {
+    return result
+  } catch (error: unknown) {
+    // scip-go not installed or failed — fall through to tree-sitter
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn(`[scip-go] Failed for ${absRoot}: ${message}`)
     return { entities: [], edges: [], coveredFiles: [] }
   }
 }

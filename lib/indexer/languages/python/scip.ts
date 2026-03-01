@@ -1,7 +1,8 @@
 /**
  * SCIP indexer for Python.
  *
- * Runs scip-python to produce a .scip file, then parses the output.
+ * Runs scip-python to produce a .scip file, then parses the output
+ * using the shared SCIP protobuf decoder.
  * Falls back gracefully if scip-python is not installed.
  */
 import { execFile } from "node:child_process"
@@ -9,6 +10,7 @@ import { existsSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
+import { parseSCIPOutput } from "../../scip-decoder"
 import type { ParsedEdge, ParsedEntity } from "../../types"
 import type { SCIPOptions } from "../types"
 
@@ -23,9 +25,8 @@ export interface SCIPPythonResult {
 }
 
 /**
- * Run scip-python on a workspace root.
- * Currently returns empty (scip-python is less mature than scip-typescript).
- * The tree-sitter fallback handles Python parsing in Phase 1.
+ * Run scip-python on a workspace root and parse the output.
+ * Falls back gracefully if scip-python is not installed.
  */
 export async function runSCIPPython(
   opts: SCIPOptions,
@@ -52,20 +53,25 @@ export async function runSCIPPython(
       maxBuffer: 100 * 1024 * 1024,
     })
 
-    // If we get here, scip-python succeeded
-    // For Phase 1, we rely on tree-sitter for Python parsing
-    // since scip-python output parsing shares the same protobuf format
-    // TODO: Parse SCIP output using shared decoder
+    // Parse the .scip output file using the shared decoder
+    if (!existsSync(outputFile)) {
+      return { entities: [], edges: [], coveredFiles: [] }
+    }
 
+    const result = parseSCIPOutput(outputFile, opts.repoId, "python")
+
+    // Clean up
     try {
       unlinkSync(outputFile)
     } catch {
-      // ignore
+      // ignore cleanup errors
     }
 
-    return { entities: [], edges: [], coveredFiles: [] }
-  } catch {
-    // scip-python not installed or failed — expected in Phase 1
+    return result
+  } catch (error: unknown) {
+    // scip-python not installed or failed — fall through to tree-sitter
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn(`[scip-python] Failed for ${absRoot}: ${message}`)
     return { entities: [], edges: [], coveredFiles: [] }
   }
 }

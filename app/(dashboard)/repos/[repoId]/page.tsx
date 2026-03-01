@@ -238,9 +238,9 @@ async function OverviewStats({ repoId }: { repoId: string }) {
             )}
             {domainTerms.length > 0 && (
               <div className="flex flex-wrap gap-1.5 pt-1">
-                {domainTerms.map((t) => (
+                {domainTerms.map((t, i) => (
                   <span
-                    key={t.term}
+                    key={`${t.term}-${i}`}
                     className="inline-block px-2 py-0.5 rounded text-xs text-foreground bg-white/5 border border-white/10"
                     style={{ opacity: 0.4 + 0.6 * (t.frequency / maxFreq) }}
                   >

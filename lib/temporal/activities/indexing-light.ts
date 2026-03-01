@@ -128,16 +128,61 @@ export async function finalizeIndexing(input: FinalizeIndexingInput): Promise<vo
 
   await container.graphStore.bootstrapGraphSchema()
 
+  // K-08: Shadow swap cleanup — delete entities/edges from previous index versions
+  if (input.indexVersion) {
+    log.info("Cleaning up stale entities from previous index versions", { currentIndexVersion: input.indexVersion })
+    try {
+      await container.graphStore.deleteStaleByIndexVersion(input.orgId, input.repoId, input.indexVersion)
+      log.info("Shadow swap cleanup complete", { currentIndexVersion: input.indexVersion })
+      plog.log("info", "Step 4/7", `Shadow swap: removed stale entities from previous index versions`)
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      log.warn("Shadow swap cleanup failed (non-fatal)", { error: message })
+      plog.log("warn", "Step 4/7", `Shadow swap cleanup failed: ${message}`)
+    }
+  }
+
+  // K-09: Verify actual entity counts against ArangoDB and use them for repo status
+  let fileCount = input.fileCount
+  let functionCount = input.functionCount
+  let classCount = input.classCount
+  try {
+    const actual = await container.graphStore.verifyEntityCounts(input.orgId, input.repoId)
+    const actualTotal = actual.files + actual.functions + actual.classes
+    const expectedTotal = input.fileCount + input.functionCount + input.classCount
+
+    // Log divergence if >10%
+    if (expectedTotal > 0) {
+      const divergence = Math.abs(actualTotal - expectedTotal) / expectedTotal
+      if (divergence > 0.1) {
+        log.warn("Entity count divergence detected", {
+          expected: { files: input.fileCount, functions: input.functionCount, classes: input.classCount },
+          actual,
+          divergencePercent: Math.round(divergence * 100),
+        })
+        plog.log("warn", "Step 4/7", `Entity count divergence: expected ${expectedTotal} total, got ${actualTotal} (${Math.round(divergence * 100)}% off)`)
+      }
+    }
+
+    // Always use actual ArangoDB counts
+    fileCount = actual.files
+    functionCount = actual.functions
+    classCount = actual.classes
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    log.warn("Entity count verification failed (using pipeline counts)", { error: message })
+  }
+
   await container.relationalStore.updateRepoStatus(input.repoId, {
     status: "indexing",
     progress: 90,
-    fileCount: input.fileCount,
-    functionCount: input.functionCount,
-    classCount: input.classCount,
+    fileCount,
+    functionCount,
+    classCount,
     errorMessage: null,
   })
-  plog.log("info", "Step 4/7", `Index finalized — ${input.fileCount} files, ${input.functionCount} functions, ${input.classCount} classes`)
-  log.info("Index finalized", { fileCount: input.fileCount, functionCount: input.functionCount, classCount: input.classCount })
+  plog.log("info", "Step 4/7", `Index finalized — ${fileCount} files, ${functionCount} functions, ${classCount} classes`)
+  log.info("Index finalized", { fileCount, functionCount, classCount })
 }
 
 export async function updateRepoError(repoId: string, errorMessage: string): Promise<void> {
@@ -157,12 +202,34 @@ export async function wipeRepoGraphData(input: { orgId: string; repoId: string }
 
 export async function deleteRepoData(input: DeleteRepoDataInput): Promise<void> {
   const log = logger.child({ service: "indexing-light", organizationId: input.orgId, repoId: input.repoId })
-  log.info("Deleting repo data (graph + relational)")
+  const start = Date.now()
+  log.info("Deleting all repo data (graph + relational + cache)")
   const container = getContainer()
+
+  // 1. Delete all ArangoDB graph data (entities, edges, metadata collections)
   await container.graphStore.deleteRepoData(input.orgId, input.repoId)
   log.info("Graph data deleted")
+
+  // 2. Invalidate known cache keys for this repo
+  const cacheKeys = [
+    `topo:${input.orgId}:${input.repoId}:meta`,
+    `repo-retry:${input.orgId}:${input.repoId}`,
+    `repo-resume:${input.orgId}:${input.repoId}`,
+  ]
+  for (const key of cacheKeys) {
+    try {
+      await container.cacheStore.invalidate(key)
+    } catch {
+      // Cache invalidation failure is non-fatal
+    }
+  }
+  log.info("Cache keys invalidated")
+
+  // 3. Delete the repo record — CASCADE FKs automatically remove:
+  //    pipeline_runs, api_keys, entity_embeddings, justification_embeddings,
+  //    rule_embeddings, ledger_snapshots, workspaces, graph_snapshot_meta
   await container.relationalStore.deleteRepo(input.repoId)
-  log.info("Relational repo record deleted")
+  log.info("Relational repo record and all cascaded data deleted", { durationMs: Date.now() - start })
 }
 
 /**

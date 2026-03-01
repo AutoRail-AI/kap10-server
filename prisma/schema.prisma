@@ -27,6 +27,7 @@ enum PipelineTriggerType {
   retry
   reindex
   webhook
+  resume
 
   @@schema("unerr")
 }
@@ -107,13 +108,18 @@ model Repo {
   // Context seeding: user-provided docs for anchoring LLM taxonomy
   contextDocuments   String?  @map("context_documents")
   // Phase 2: Relations
-  apiKeys           ApiKey[]
+  apiKeys                 ApiKey[]
   // Phase 3: Embeddings relation
-  entityEmbeddings  EntityEmbedding[]
+  entityEmbeddings        EntityEmbedding[]
+  justificationEmbeddings JustificationEmbedding[]
+  ruleEmbeddings          RuleEmbedding[]
   // Phase 5.5: Ledger snapshots relation
-  ledgerSnapshots   LedgerSnapshot[]
+  ledgerSnapshots         LedgerSnapshot[]
   // Pipeline run tracking
-  pipelineRuns      PipelineRun[]
+  pipelineRuns            PipelineRun[]
+  // Workspaces, snapshots
+  workspaces              Workspace[]
+  graphSnapshotMeta       GraphSnapshotMeta?
 
   @@unique([organizationId, provider, providerId])
   @@index([organizationId])
@@ -182,6 +188,8 @@ model Workspace {
   expiresAt   DateTime  @map("expires_at")
   createdAt   DateTime  @default(now()) @map("created_at")
 
+  repo        Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
   @@unique([userId, repoId, branch])
   @@index([expiresAt])
   @@map("workspaces")
@@ -210,6 +218,8 @@ model GraphSnapshotMeta {
   generatedAt   DateTime?      @map("generated_at")
   createdAt     DateTime       @default(now()) @map("created_at")
   updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  repo          Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
 
   @@index([orgId])
   @@map("graph_snapshot_meta")
@@ -256,6 +266,8 @@ model JustificationEmbedding {
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
+  repo            Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
   @@unique([repoId, entityId, modelVersion])
   @@index([orgId, repoId])
   @@index([taxonomy])
@@ -300,6 +312,8 @@ model RuleEmbedding {
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt @map("updated_at")
 
+  repo          Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
   @@unique([repoId, ruleId, modelVersion])
   @@index([orgId, repoId])
   @@index([ruleType])
@@ -330,7 +344,7 @@ model PipelineRun {
   entitiesWritten Int?                @map("entities_written")
   edgesWritten    Int?                @map("edges_written")
 
-  repo            Repo                @relation(fields: [repoId], references: [id])
+  repo            Repo                @relation(fields: [repoId], references: [id], onDelete: Cascade)
 
   @@index([repoId])
   @@index([organizationId])

@@ -8,10 +8,14 @@ import {
   condition,
   defineQuery,
   defineSignal,
+  ParentClosePolicy,
   proxyActivities,
   setHandler,
+  startChild,
   workflowInfo,
 } from "@temporalio/workflow"
+import { indexRepoWorkflow } from "./index-repo"
+import type * as contextRefresh from "../activities/context-refresh"
 import type * as driftAlert from "../activities/drift-alert"
 import type * as incremental from "../activities/incremental"
 import type * as light from "../activities/indexing-light"
@@ -37,6 +41,13 @@ const lightWriteActivities = proxyActivities<Pick<typeof light, "writeToArango" 
   startToCloseTimeout: "5m",
   heartbeatTimeout: "1m",
   retry: { maximumAttempts: 3 },
+})
+
+const contextRefreshActivities = proxyActivities<typeof contextRefresh>({
+  taskQueue: "light-llm-queue",
+  startToCloseTimeout: "5m",
+  heartbeatTimeout: "1m",
+  retry: { maximumAttempts: 2 },
 })
 
 const _driftActivities = proxyActivities<typeof driftAlert>({
@@ -121,8 +132,7 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
     // Step 2: Fallback guard — if too many files changed, trigger full re-index
     const fallbackThreshold = 200
     if (pullResult.changedFiles.length > fallbackThreshold) {
-      // Too many changes — fall back to full re-index
-      progress = 100
+      // D-01: Too many changes — auto-trigger full re-index as a child workflow
       const event = {
         org_id: input.orgId,
         repo_id: input.repoId,
@@ -142,6 +152,22 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
         created_at: new Date().toISOString(),
       }
       await lightActivities.writeIndexEvent({ orgId: input.orgId, repoId: input.repoId, event })
+
+      // Fire-and-forget full re-index — ABANDON so the child survives if this workflow completes
+      await startChild(indexRepoWorkflow, {
+        workflowId: `index-${input.orgId}-${input.repoId}-fallback-${workflowInfo().runId.slice(0, 8)}`,
+        taskQueue: "heavy-compute-queue",
+        args: [{
+          orgId: input.orgId,
+          repoId: input.repoId,
+          installationId: input.installationId,
+          cloneUrl: input.cloneUrl,
+          defaultBranch: input.defaultBranch,
+        }],
+        parentClosePolicy: ParentClosePolicy.ABANDON,
+      })
+
+      progress = 100
       return { entitiesAdded: 0, entitiesUpdated: 0, entitiesDeleted: 0, edgesRepaired: 0, embeddingsUpdated: 0, cascadeEntities: 0 }
     }
 
@@ -205,6 +231,20 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
       repoId: input.repoId,
       changedEntityKeys: changedKeys,
     })
+
+    // Step 7.5 (J-03): Incremental context refresh — update knowledge document sections
+    try {
+      await contextRefreshActivities.refreshKnowledgeSections({
+        orgId: input.orgId,
+        repoId: input.repoId,
+        changedEntityCount: allEntityIds.length,
+        addedEntityCount: diffResult.entitiesAdded,
+        deletedEntityCount: diffResult.entitiesDeleted,
+        cascadeEntityCount: cascadeResult.cascadeEntities,
+      })
+    } catch {
+      // Best-effort — context refresh failure should not block the pipeline
+    }
 
     // Step 8: Invalidate caches
     progress = 90

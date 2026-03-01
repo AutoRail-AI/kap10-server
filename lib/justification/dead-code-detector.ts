@@ -40,7 +40,7 @@ export function detectDeadCode(
   // Build set of entities with inbound references (calls or references)
   const hasInbound = new Set<string>()
   for (const edge of edges) {
-    if (edge.kind === "calls" || edge.kind === "imports") {
+    if (edge.kind === "calls" || edge.kind === "references" || edge.kind === "imports") {
       const toId = edge._to.split("/").pop()!
       hasInbound.add(toId)
     }

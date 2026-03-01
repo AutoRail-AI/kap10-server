@@ -61,25 +61,16 @@ export async function justifyEntityWorkflow(input: JustifyEntityInput): Promise<
   await activities.embedJustifications(justificationInput)
 
   // Step 5: Cascade — justify direct callers
-  // Use performTopologicalSort to get the full level ordering,
-  // then find callers from the sort result. For single entity re-justification,
-  // we use a dedicated cascade activity call with caller IDs.
-  const levels = await activities.performTopologicalSort(justificationInput)
-
-  // Find the level containing our entity's callers:
-  // callers are entities in higher levels that depend on our entity
+  // findEntityCallerIds runs topological sort internally and returns only the
+  // caller IDs for the next level up — keeps the Temporal payload small.
   let cascadeCount = 0
-  const entityLevelIdx = levels.findIndex((level) => level.includes(input.entityId))
-  if (entityLevelIdx >= 0 && entityLevelIdx < levels.length - 1) {
-    // Justify next level up (direct callers)
-    const callerLevel = levels[entityLevelIdx + 1]
-    if (callerLevel && callerLevel.length > 0) {
-      const cascadeResult = await activities.justifyBatch(justificationInput, callerLevel)
-      cascadeCount = cascadeResult.justifiedCount
+  const callerIds = await activities.findEntityCallerIds(justificationInput, input.entityId)
+  if (callerIds.length > 0) {
+    const cascadeResult = await activities.justifyBatch(justificationInput, callerIds)
+    cascadeCount = cascadeResult.justifiedCount
 
-      if (cascadeCount > 0) {
-        await activities.embedJustifications(justificationInput)
-      }
+    if (cascadeCount > 0) {
+      await activities.embedJustifications(justificationInput)
     }
   }
 

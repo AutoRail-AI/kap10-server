@@ -339,6 +339,14 @@ export interface DomainOntologyDoc {
   project_domain?: string
   /** Detected tech stack (e.g., ["Next.js", "PostgreSQL", "Redis"]) */
   tech_stack?: string[]
+  /** Three-tier term classification (L-25) */
+  term_tiers?: {
+    domain: string[]
+    architectural: string[]
+    framework: string[]
+  }
+  /** Domain concept → architectural entity name mapping (L-25) */
+  domain_to_architecture?: Record<string, string[]>
   generated_at: string
 }
 
@@ -403,6 +411,21 @@ export interface EntityDiff {
   deleted: EntityDoc[]
 }
 
+// Phase I-01: Negative Knowledge — entity-level warnings from reverted AI changes
+export interface EntityWarningDoc {
+  id: string
+  org_id: string
+  repo_id: string
+  entity_id: string
+  rule_id?: string
+  severity: "info" | "warning" | "error"
+  message: string
+  reason: string
+  ledger_entry_id?: string
+  reverted_at?: string
+  created_at: string
+}
+
 export interface IndexEventDoc {
   org_id: string
   repo_id: string
@@ -436,7 +459,10 @@ export type PipelineStepName =
   | "scip"
   | "parse"
   | "finalize"
+  | "blastRadius"
   | "embed"
+  | "ontology"
+  | "justification"
   | "graphSync"
   | "patternDetection"
 
@@ -448,6 +474,8 @@ export interface PipelineStepRecord {
   completedAt?: string
   durationMs?: number
   errorMessage?: string
+  /** TBI-F-01: Step-level metrics (entity counts, batch sizes, etc.) */
+  meta?: Record<string, unknown>
 }
 
 export interface DriftAlert {

@@ -34,6 +34,8 @@ export interface ParsedEntity {
   return_type?: string
   /** Cyclomatic complexity estimate (baseline = 1) */
   complexity?: number
+  /** C-01: Decorators/annotations attached to this entity (e.g., ["@Injectable()", "@Controller('/api')"]) */
+  decorators?: string[]
 }
 
 /** Maximum number of source lines to store per entity body */
@@ -110,5 +112,5 @@ export interface WorkspaceInfo {
   /** Root paths for monorepo packages (or ["."] for single-package repos) */
   roots: string[]
   /** Type of monorepo tooling detected */
-  type: "pnpm" | "yarn" | "npm" | "nx" | "lerna" | "single"
+  type: "pnpm" | "yarn" | "npm" | "nx" | "lerna" | "maven" | "gradle" | "single"
 }

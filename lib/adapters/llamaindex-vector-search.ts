@@ -11,6 +11,13 @@ import type { IVectorSearch } from "@/lib/ports/vector-search"
 // Lazy-loaded singleton for the embedding pipeline
 let pipelineInstance: EmbeddingPipeline | null = null
 
+/**
+ * K-12: Track embed calls on the current session.
+ * After MAX calls, dispose and recreate to reclaim WASM linear memory.
+ */
+let sessionEmbedCount = 0
+const ONNX_SESSION_MAX_CALLS = parseInt(process.env.ONNX_SESSION_MAX_CALLS ?? "500", 10)
+
 interface EmbeddingOutput {
   tolist(): number[][]
   data: Float32Array
@@ -30,23 +37,104 @@ interface EmbeddingPipeline {
  */
 const EMBEDDING_MAX_TOKENS = parseInt(process.env.EMBEDDING_MAX_TOKENS ?? "512", 10)
 
+/** K-11: Maximum retry attempts for model initialization. */
+const MODEL_INIT_MAX_RETRIES = 3
+/** K-11: Exponential backoff base delay (ms) for retries. */
+const MODEL_INIT_BACKOFF_MS = [5000, 15000, 45000]
+
 /**
  * Get or create the embedding pipeline singleton.
  * The model (~500MB ONNX) is downloaded on first call and cached at ~/.cache/huggingface/.
+ *
+ * K-11: Includes retry logic with exponential backoff for resilience against
+ * network failures, disk issues, or corrupted cache. If the pipeline fails
+ * to load, the cached model is cleared and re-downloaded.
  */
 async function getEmbeddingPipeline(): Promise<EmbeddingPipeline> {
   if (pipelineInstance) return pipelineInstance
 
   const modelName = process.env.EMBEDDING_MODEL_NAME ?? "nomic-ai/nomic-embed-text-v1.5"
 
-  // Dynamic import to avoid loading at build time
-  const { pipeline, env } = await import("@xenova/transformers")
+  for (let attempt = 0; attempt < MODEL_INIT_MAX_RETRIES; attempt++) {
+    try {
+      // Dynamic import to avoid loading at build time
+      const { pipeline, env } = await import("@xenova/transformers")
 
-  // Limit ONNX WASM threads to reduce memory pressure
-  env.backends.onnx.wasm.numThreads = 1
+      // Limit ONNX WASM threads to reduce memory pressure
+      env.backends.onnx.wasm.numThreads = 1
 
-  pipelineInstance = (await pipeline("feature-extraction", modelName)) as unknown as EmbeddingPipeline
-  return pipelineInstance
+      // K-11: Set custom cache directory if configured
+      if (process.env.EMBEDDING_MODEL_CACHE_DIR) {
+        env.cacheDir = process.env.EMBEDDING_MODEL_CACHE_DIR
+      }
+
+      pipelineInstance = (await pipeline("feature-extraction", modelName)) as unknown as EmbeddingPipeline
+      return pipelineInstance
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error)
+      const isLastAttempt = attempt === MODEL_INIT_MAX_RETRIES - 1
+
+      if (isLastAttempt) {
+        throw new Error(
+          `Failed to initialize embedding model after ${MODEL_INIT_MAX_RETRIES} attempts. ` +
+          `Check network connectivity and disk space. Last error: ${message}`
+        )
+      }
+
+      // K-11: Clear corrupted cache and retry with backoff
+      console.warn(
+        `[embedding] Model initialization failed (attempt ${attempt + 1}/${MODEL_INIT_MAX_RETRIES}): ${message}. ` +
+        `Retrying in ${MODEL_INIT_BACKOFF_MS[attempt]! / 1000}s...`
+      )
+
+      // Try to clear the model cache directory to recover from corruption
+      try {
+        const fs = require("node:fs") as typeof import("node:fs")
+        const path = require("node:path") as typeof import("node:path")
+        const cacheDir = process.env.EMBEDDING_MODEL_CACHE_DIR ?? path.join(require("node:os").homedir(), ".cache", "huggingface")
+        const modelCacheDir = path.join(cacheDir, modelName.replace("/", "--"))
+        if (fs.existsSync(modelCacheDir)) {
+          fs.rmSync(modelCacheDir, { recursive: true, force: true })
+          console.warn(`[embedding] Cleared model cache at ${modelCacheDir}`)
+        }
+      } catch {
+        // Cache cleanup failure is non-fatal
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, MODEL_INIT_BACKOFF_MS[attempt]!))
+    }
+  }
+
+  // Unreachable — last attempt throws
+  throw new Error("Embedding model initialization failed")
+}
+
+/**
+ * K-12: Dispose the current ONNX session to reclaim WASM linear memory.
+ * The next embed() call will lazily recreate the session.
+ */
+function disposeSession(): void {
+  if (!pipelineInstance) return
+
+  const memBefore = process.memoryUsage()
+  try {
+    // The pipeline object may have a dispose method from the transformers library
+    const pipe = pipelineInstance as unknown as { dispose?: () => void }
+    if (pipe.dispose) pipe.dispose()
+  } catch {
+    // Disposal failure is non-fatal
+  }
+  pipelineInstance = null
+  sessionEmbedCount = 0
+
+  // Force GC to reclaim freed WASM memory
+  if (global.gc) global.gc()
+
+  const memAfter = process.memoryUsage()
+  console.info(
+    `[embedding] K-12: Rotated ONNX session after ${ONNX_SESSION_MAX_CALLS} embed calls. ` +
+    `RSS: ${Math.round(memBefore.rss / 1024 / 1024)}MB → ${Math.round(memAfter.rss / 1024 / 1024)}MB`
+  )
 }
 
 /**
@@ -111,6 +199,11 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
   async embed(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return []
 
+    // K-12: Check if session needs rotation before starting
+    if (sessionEmbedCount >= ONNX_SESSION_MAX_CALLS && pipelineInstance) {
+      disposeSession()
+    }
+
     const pipe = await getEmbeddingPipeline()
     const allEmbeddings: number[][] = []
 
@@ -131,6 +224,9 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
 
       // Dispose ONNX tensors to free WASM memory immediately
       if (output.dispose) output.dispose()
+
+      // K-12: Track session usage for rotation
+      sessionEmbedCount++
 
       // Force GC every 5 docs to reclaim any JS-side references
       if (i > 0 && i % 5 === 0 && global.gc) global.gc()

@@ -28,6 +28,7 @@
 18. [Design Principles](#18-design-principles)
 19. [Overall Pipeline Status](#19-overall-pipeline-status)
 20. [To Be Implemented](#20-to-be-implemented)
+    - [Category L — Algorithmic Depth (Capturing the Substrate)](#category-l--algorithmic-depth-capturing-the-substrate)
 21. [Validation History](#21-validation-history)
 
 ---
@@ -89,7 +90,7 @@ indexRepoWorkflow (heavy-compute-queue)
 | `heavy-compute-queue` | CPU-bound work | Git clone, SCIP parsing, tree-sitter, Semgrep |
 | `light-llm-queue` | Network-bound work | LLM calls, embedding, storage uploads, cache ops |
 
-**Orchestration:** Temporal workflows. Each stage is a Temporal activity with heartbeats, timeouts, and retry policies. Pipeline progress is tracked in PostgreSQL (`PipelineRun` table) and streamed to the dashboard via SSE.
+**Orchestration:** Temporal workflows. Each stage is a Temporal activity with heartbeats, timeouts, and retry policies. Pipeline progress is tracked in PostgreSQL (`PipelineRun` table with 11 discrete steps plus metadata) and streamed to the dashboard via SSE. Each step records start/complete/fail timestamps, enabling per-stage latency analysis and bottleneck identification.
 
 ---
 
@@ -136,7 +137,7 @@ Generates a `runId` (UUID) and `indexVersion` (UUID for shadow re-indexing). If 
 
 ### What Happens
 
-1. **Clone the repository** to `/data/workspaces/{orgId}/{repoId}` using `container.gitHost.cloneRepo()`. For CLI uploads, downloads the zip from Supabase Storage and extracts it.
+1. **Shallow-clone the repository** to `/data/workspaces/{orgId}/{repoId}` using `container.gitHost.cloneRepo()` with `--depth 1 --single-branch` — fetches only the latest commit, avoiding multi-GB downloads for repos with long history. For CLI uploads, downloads the zip from Supabase Storage and extracts it.
 
 2. **Get the commit SHA** via `git rev-parse HEAD`. This SHA becomes the repo's `lastIndexedSha` — used for incremental indexing SHA gap detection and displayed in the dashboard.
 
@@ -146,38 +147,24 @@ Generates a `runId` (UUID) and `indexVersion` (UUID for shadow re-indexing). If 
    - Skips known noise: `node_modules`, `.git`, `.next`, `dist`, `vendor`, `__pycache__`, lockfiles, binary files
    - Returns a flat list of `ScannedFile[]` with `relativePath`, `absolutePath`, `extension`
 
-4. **Detect languages** via `detectLanguages()`:
-   - Groups files by extension: `.ts`/`.tsx` → typescript, `.py` → python, `.go` → go
+4. **Detect languages** via `detectLanguages()` with polyglot monorepo support:
+   - Groups files by extension across 10 supported languages: TypeScript, Python, Go, Java, C, C++, C#, PHP, Ruby, Rust
    - Sorts by file count (dominant language first)
-   - This determines which SCIP indexers and language plugins to run
+   - For monorepos, `detectLanguagePerRoot()` scans each workspace root to determine its dominant language independently — a Go backend and TypeScript frontend each get their own SCIP pass
 
 5. **Detect monorepo roots** via `detectWorkspaceRoots()`:
-   - Finds directories with their own `package.json`, `go.mod`, `pyproject.toml`
-   - Critical for monorepo support — each root gets its own SCIP indexing pass
+   - Finds directories with their own `package.json`, `go.mod`, `pyproject.toml`, `pom.xml`, `build.gradle`
+   - Maven multi-module and Gradle multi-project detection for Java monorepos
+
+6. **Workspace cleanup** — after all downstream workflows complete (embedding, justification, pattern detection), a `cleanupWorkspaceFilesystem` activity deletes the cloned directory. A safety-net cron cleans orphaned workspaces older than 24 hours.
 
 ### What This Produces
 
-A lightweight result containing the workspace path, detected languages, monorepo roots, and the HEAD commit SHA. Only this small payload crosses the Temporal boundary. The actual intelligence space lives on disk.
+A lightweight result containing the workspace path, detected languages (with per-root language mapping for polyglot repos), monorepo roots, and the HEAD commit SHA. Only this small payload crosses the Temporal boundary. The actual intelligence space lives on disk.
 
-### Implementation Status
+**Completion: ~97%**
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| GitHub clone | Done | Delegates to `gitHost.cloneRepo()` with ref and installationId |
-| CLI upload extraction | Done | Downloads zip from Supabase Storage, writes to temp file, calls `unzip` |
-| HEAD SHA reading | Done | `execFileSync("git", ["rev-parse", "HEAD"])` with error handling |
-| `scanWorkspace()` | Done | Real `git ls-files` integration with `find` fallback, graceful empty for non-existent dirs |
-| `detectLanguages()` | Done | Groups by extension, sorts by frequency |
-| `detectWorkspaceRoots()` | Done | Reads `package.json`/`go.mod`/`pyproject.toml` |
-| Entity hash (`entity-hash.ts`) | Done | SHA-256 over `(repoId, filePath, kind, name, signature)` → 16-char hex |
-
-**Completion: ~95%**
-
-**What's pending:** Nothing critical. The workspace path is hardcoded to `/data/workspaces/${orgId}/${repoId}` which requires the worker to have that mount point — but that's by design (Docker volume).
-
-**Why the pending work matters:** N/A — this stage is effectively complete.
-
-**Progress:** 0% → 25%
+**Pending:** Disk space validation before clone (P3) — if disk is nearly full, clone fails mid-write and leaves a partial workspace.
 
 ---
 
@@ -194,21 +181,25 @@ This precision is what makes Unerr's call graph and impact analysis reliable. Re
 
 ### What Happens
 
-1. **Run the SCIP indexer** for each detected language:
-   - **TypeScript:** `npx @sourcegraph/scip-typescript index --output index.scip` (10-minute timeout, 100MB output buffer). Falls back gracefully if no `tsconfig.json`.
-   - **Python:** `scip-python` (currently a stub — see status below)
-   - **Go:** `scip-go` (currently a stub — see status below)
+1. **Pre-check SCIP binary availability** — before running any indexer, `isSCIPBinaryAvailable()` verifies the CLI is installed. Missing binaries are surfaced to the pipeline log as warnings so users know the repo falls back to tree-sitter parsing.
 
-2. **Parse the SCIP output** (protobuf binary) into `ParsedEntity[]` and `ParsedEdge[]`:
+2. **Run the SCIP indexer** for each detected language via a shared decoder (`lib/indexer/scip-decoder.ts`):
+   - **TypeScript:** `npx @sourcegraph/scip-typescript index --output index.scip` (10-minute timeout, 100MB output buffer). Falls back gracefully if no `tsconfig.json`.
+   - **Python:** `scip-python` — parsed via `parseSCIPOutput()` in the shared decoder
+   - **Go:** `scip-go` — parsed via the same shared decoder
+   - **Java:** `scip-java` — detects `pom.xml`/`build.gradle` project markers, parsed via the shared decoder
+
+   The shared SCIP decoder handles all languages identically (SCIP wire format is language-agnostic). It includes buffer bounds checking at 3 critical points and per-document try-catch isolation — truncated `.scip` files produce partial results instead of crashes.
+
+3. **Parse the SCIP output** (protobuf binary) into `ParsedEntity[]` and `ParsedEdge[]`:
    - Entities: functions, classes, interfaces, types, variables — with precise `start_line`, `end_line`, `signature`, `documentation`
    - Edges: `calls` (function → function), `imports` (file → file), `extends` (class → class), `implements` (class → interface)
 
-3. **Fill bodies from source** via `fillBodiesFromSource()`:
-   - For entities that have line numbers but no `body` text, reads the source file and slices the relevant lines (capped at `MAX_BODY_LINES = 3000`)
+4. **Fill bodies from source** via `fillBodiesFromSource()`:
+   - For entities that have line numbers but no `body` text, reads the source file via encoding-aware `readFileWithEncoding()` and slices the relevant lines (capped at `MAX_BODY_LINES = 3000`)
    - Also extracts doc comments (JSDoc, docstrings, Go doc comments)
-   - The body text is critical — it's what the LLM reads during justification
 
-4. **Write to ArangoDB** via `writeEntitiesToGraph()`:
+5. **Write to ArangoDB** via `writeEntitiesToGraph()`:
 
    a. **Bootstrap schema** — ensures all 22 document collections, 7 edge collections, and all indexes exist (idempotent via `bootstrapGraphSchema()`)
 
@@ -218,9 +209,9 @@ This precision is what makes Unerr's call graph and impact analysis reliable. Re
 
    d. **Auto-generated file entities** — for every `file_path` seen, a file entity is created (or upserted). `contains` edges link files to their child entities.
 
-   e. **Bulk upsert** — `bulkUpsertEntities()` and `bulkUpsertEdges()` write to ArangoDB using `collection.import()` with `onDuplicate: "update"` in batches of 1000.
+   e. **Bulk upsert** — `bulkUpsertEntities()` and `bulkUpsertEdges()` write to ArangoDB using `collection.import()` with `onDuplicate: "update"` in batches of 5,000.
 
-   f. **Shadow versioning** — if `indexVersion` is set, every entity/edge is stamped with `index_version`. This enables atomic shadow swaps in Stage 4.
+   f. **Shadow versioning** — every entity/edge is stamped with the current `indexVersion` UUID. This enables atomic shadow swaps in Stage 4.
 
 ### What This Produces
 
@@ -228,41 +219,18 @@ Written to ArangoDB:
 - **Entity collections:** `files`, `functions`, `classes`, `interfaces`, `variables`
 - **Edge collections:** `contains`, `calls`, `imports`, `extends`, `implements`
 
-Each entity document contains: `_key` (SHA-256 hash), `org_id`, `repo_id`, `kind` (function/class/interface/...), `name`, `file_path`, `start_line`, `end_line`, `signature`, `body` (actual source code, max 3000 lines), `documentation` (doc comments), `language`, optional `index_version`, and timestamps.
+Each entity document contains: `_key` (SHA-256 hash), `org_id`, `repo_id`, `kind` (function/class/interface/...), `name`, `file_path`, `start_line`, `end_line`, `signature`, `body` (actual source code, max 3000 lines), `documentation` (doc comments), `language`, `index_version`, and timestamps.
 
-### Implementation Status
+**Completion: ~85%**
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| TypeScript SCIP | Done | Runs `scip-typescript`, hand-written protobuf varint decoder parses `.scip` output into entities+edges |
-| Python SCIP | Stub | Runs `scip-python` CLI but **always returns empty arrays**. `TODO: Parse SCIP output using shared decoder` |
-| Go SCIP | Stub | Runs `scip-go` CLI but **always returns empty arrays**. `TODO: Parse SCIP output` |
-| `fillBodiesFromSource()` | Done | Groups entities by file, reads source, slices lines by `start_line`/`end_line`, extracts doc comments |
-| `writeEntitiesToGraph()` | Done | Real ArangoDB bulk upsert via `collection.import()` in batches of 1000 |
-| ArangoDB `bulkUpsertEntities` | Done | Groups by kind → `KIND_TO_COLLECTION` mapping, `onDuplicate: "update"` |
-| ArangoDB `bulkUpsertEdges` | Done | Groups by kind, qualifies vertex handles to `collection/key` format |
+> **Blindspot Analysis:** SCIP currently extracts only *definitions*, ignoring references. The protobuf `Occurrence.symbol_roles` field contains a reference bit that is never read — meaning cross-file call edges that SCIP could provide for free are discarded. These are not missing features — they are captured data being thrown away.
 
-**Completion: ~70%** (TypeScript is fully working; Python and Go always fall through to tree-sitter)
-
-**Open Tasks:**
+**Pending — Algorithmic Depth:**
 
 | # | Task | Priority | TBI Ref |
 |---|------|----------|---------|
-| 1 | Python SCIP parsing — `scip-python` binary runs but protobuf output is never decoded. Python repos lose precise cross-file symbol resolution. | P1 | [TBI-A-01](#tbi-a-01-activate-the-python-scip-decoder) |
-| 2 | Go SCIP parsing — `scip-go` binary runs but output is discarded. | P1 | [TBI-A-02](#tbi-a-02-activate-the-go-scip-decoder) |
-| 3 | Java/C#/Scala/PHP/Ruby/Rust — no SCIP indexers or tree-sitter plugins for these languages | P2 | [TBI-A-03](#tbi-a-03-java-support-via-scip-java), [TBI-A-04](#tbi-a-04-tree-sitter-parsers-for-c-c-c-scala-php-ruby-rust) |
-| 4 | Polyglot monorepo — only the primary detected language gets SCIP; other languages fall through | P3 | [TBI-A-05](#tbi-a-05-monorepo-language-detection-for-polyglot-repos) |
-
-**Why this matters:** Without SCIP for Python/Go, call graph, impact analysis, dead code detection, and import chain analysis are all wrong for those languages. Features 2.3, 2.4, 2.8, 5.3, 5.5, 5.6 are degraded.
-
-**Intelligence Enhancements (once edges are written):**
-
-| # | Enhancement | Priority | TBI Ref |
-|---|-------------|----------|---------|
-| ~~1~~ | ~~Blast radius pre-computation~~ ✅ — `fan_in`, `fan_out`, `risk_level` computed after finalization in Step 4b. High-risk entities (≥10 fan-in/fan-out) flagged with red border + badge in annotated code viewer. | ~~P2~~ | [TBI-H-05](#tbi-h-05-blast-radius-pre-computation-semantic-impact-weights) |
-| 2 | Tech-stack & system boundary extraction — identify third-party package imports and outbound HTTP calls; produce a `system_boundaries` collection and "External Systems" layer in Blueprint | P2 | [TBI-I-03](#tbi-i-03-tech-stack--system-boundary-extraction) |
-
-**Progress:** 25% → 50%
+| 1 | ~~SCIP two-pass decoder~~ — absorbed into L-18. Pass 2 already exists; remaining work is wiring references as `calls` edges (L-18a) | — | [TBI-L-18](#tbi-l-18-call-graph-foundation--wire-calls-edges--execution-graph) |
+| 2 | ~~O(1) dedup in SCIP decoder~~ — already done (`scip-decoder.ts:38` uses `Set<string>()`) | — | — |
 
 ---
 
@@ -277,51 +245,52 @@ SCIP is precise but not universal. It fails or produces nothing for:
 - Config files (`tsconfig.json`, `package.json`, `.env`)
 - Files without a `tsconfig.json` in their path (common in monorepos)
 - Languages without a SCIP indexer (YAML, Markdown, SQL, shell scripts)
-- Python and Go files (since SCIP parsing is currently stubbed)
 - Partial or broken source files
 
 ### What Happens
 
 1. **Identify uncovered files** — compares the workspace file list against files that SCIP already processed.
 
-2. **Create file entities** — every file in the workspace gets a file entity in ArangoDB, regardless of whether we can parse its contents.
+2. **File size guard** — before reading each file, checks `statSync().size`. Files exceeding 1MB are skipped with a warning log; a bare file entity is created but no entity extraction is attempted. This prevents OOM crashes from large generated or vendored files.
 
-3. **Parse with language plugins** — for each uncovered file, the matching language plugin runs:
-   - **TypeScript plugin** (`lib/indexer/languages/typescript/tree-sitter.ts`): Regex-based extraction for `export function`, arrow functions, `class`, `interface`, `type`, `enum`. Also extracts import edges for internal imports (`./`, `@/`, `~/`). End-line detection via brace-depth tracking. JSDoc extraction. Cyclomatic complexity estimation.
-   - **Python plugin** (`lib/indexer/languages/python/tree-sitter.ts`): Extracts `def`, `class`, decorators, methods. End-line detection via indentation. Docstring extraction. Complexity estimation.
-   - **Go plugin** (`lib/indexer/languages/go/tree-sitter.ts`): Extracts `func`, receiver methods, `type struct`, `type interface`. Brace-depth end-line detection. Go doc comment extraction.
-   - **Generic plugin**: Creates bare file entities for unsupported file types.
+3. **Encoding detection** — `readFileWithEncoding()` (`lib/indexer/file-reader.ts`) probes the first 4KB of each file: null bytes indicate binary (skipped gracefully), UTF-8 BOM is stripped, and Latin-1 fallback handles non-UTF-8 text files. No external dependencies.
 
-4. **Create containment edges** — `contains` edges from file entity to each extracted child entity.
+4. **Parse with language plugins** — 10 language plugins extract entities via regex-based parsing:
 
-5. **Heartbeat every 100 files** — prevents Temporal from timing out on large repos.
+   | Plugin | Extracts | Special Features |
+   |--------|----------|-----------------|
+   | **TypeScript** | functions, arrow functions, classes, interfaces, types, enums | Context-aware brace tracking (skips strings/comments/template literals), `@Decorator()` capture, import edges, signature extraction with params+return type |
+   | **Python** | classes, functions, methods, decorators | Indentation-based end-line, docstring extraction, relative import edge resolution (`from .module import ...`), multi-line param assembly |
+   | **Go** | functions, receiver methods, structs, interfaces, type aliases | Brace-depth end-line, Go doc comments, import edge extraction with stdlib filtering, pointer receiver `*` in signatures |
+   | **Java** | classes, interfaces, enums, records, methods, constructors, fields | `extends`/`implements` edges, `member_of` edges, non-stdlib import edges, within-file call edges, JavaDoc extraction |
+   | **C** | functions, structs, enums, typedefs | `#include` edges, call edges, complexity estimation |
+   | **C++** | classes/inheritance, structs, enums, namespaces, methods | `#include` edges, `ClassName::method` detection |
+   | **C#** | classes, interfaces, structs, records, enums, namespaces, methods | `using` import edges, `implements`/`extends` edges |
+   | **PHP** | classes, interfaces, traits, enums, namespaces, methods, functions | `use` import edges, `extends`/`implements` edges |
+   | **Ruby** | classes/modules, instance/class methods | `require_relative` edges, indentation-based end-line, `#` comment extraction |
+   | **Rust** | structs, enums, traits, impl blocks, type aliases, modules, functions | `impl` → `implements` edges, `use crate::` edges, `///` doc comments |
+   | **Generic** | bare file entities for unsupported types | — |
 
-6. **Write to ArangoDB** — same `writeEntitiesToGraph()` pipeline as Stage 2.
+5. **System boundary classification** — `boundary-classifier.ts` classifies third-party imports by category (payment, database, cache, messaging, auth, cloud, monitoring, http-client, testing, ui-framework, ai-ml) with curated maps for npm (120+ packages), PyPI, Go modules, and Maven. External import edges carry `is_external`, `package_name`, and `boundary_category` metadata.
 
-### Implementation Status
+6. **Create containment edges** — `contains` edges from file entity to each extracted child entity.
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| TypeScript parser | Done | Regex-based (not tree-sitter WASM — avoids native dependency issues). Extracts functions, classes, interfaces, types, enums, arrow functions, imports. Body capped at `MAX_BODY_LINES = 3000` |
-| Python parser | Done (partial) | Extracts classes, functions, methods, decorators, `member_of` edges. **Missing: import edge extraction** — no `import` edges created for Python files |
-| Go parser | Done (partial) | Extracts functions, receiver methods, structs, interfaces, type aliases, intra-file call edges. **Missing: import edge extraction** |
-| Generic fallback | Done | Creates bare file entities for unsupported file types |
-| Heartbeat every 100 files | Done | Prevents Temporal timeout on large repos |
+7. **Heartbeat every 100 files** — prevents Temporal from timing out on large repos.
 
-**Completion: ~90%**
+8. **Write to ArangoDB** — same `writeEntitiesToGraph()` pipeline as Stage 2.
 
-**Open Tasks:**
+**Completion: ~85%**
+
+> **Blindspot Analysis:** A call graph is not an execution graph. Tree-sitter parsers only create within-file edges via regex — function calls to imported symbols never become `calls` edges. More critically, event-driven connections (`.emit()` → `.on()`), DI resolutions (interface → concrete implementation), and state mutations are **structurally invisible** to the knowledge graph. The `EdgeKind` type includes `"implements"` but no parser creates these edges. Zero `emits`, `listens_to`, or `mutates_state` edge kinds exist.
+
+**Pending — Algorithmic Depth:**
 
 | # | Task | Priority | TBI Ref |
 |---|------|----------|---------|
-| 1 | Python import edges — `imports` edges not emitted by the Python tree-sitter parser; import chain analysis (Feature 2.4) returns empty for Python repos | P2 | [TBI-B-03](#tbi-b-03-python-and-go-import-edge-extraction-in-tree-sitter) |
-| 2 | Go import edges — same gap for Go | P2 | [TBI-B-03](#tbi-b-03-python-and-go-import-edge-extraction-in-tree-sitter) |
-| 3 | TypeScript decorator extraction — `@Injectable()`, `@Controller()` not captured; LLM justification lacks framework context | P2 | [TBI-C-01](#tbi-c-01-typescript-decorator-extraction) |
-| 4 | Function signature extraction — tree-sitter parsers don't extract parameter types/return types; signature field is a bare name | P3 | [TBI-C-04](#tbi-c-04-function-signature-extraction-in-tree-sitter-fallback) |
-
-**Why this matters:** Import edges are the backbone of impact analysis. Missing decorators reduce justification accuracy for framework-heavy TypeScript repos (NestJS, Angular).
-
-**Progress:** 50% → 75%
+| 1 | Cross-file call edge resolution — function calls to imported symbols never become `calls` edges | P1 | [TBI-L-02](#tbi-l-02-cross-file-call-edge-resolution-in-tree-sitter) |
+| 2 | Call graph foundation — **L-18a:** wire SCIP references → calls (the 80/20 fix); **L-18b:** event/pub-sub, `implements`, `mutates_state` edges. THE CRITICAL GAP: topological sort uses ONLY `calls` edges, but no parser creates them | P1 | [TBI-L-18](#tbi-l-18-call-graph-foundation--wire-calls-edges--execution-graph) |
+| 3 | Multi-line import parsing + Go struct/interface members | P2 | [TBI-L-04](#tbi-l-04-multi-line-import-parsing--go-structinterface-members) |
+| 4 | AST-aware complexity estimation | P3 | [TBI-L-06](#tbi-l-06-ast-aware-complexity-estimation) |
 
 ---
 
@@ -333,10 +302,12 @@ SCIP is precise but not universal. It fails or produces nothing for:
 ### What Happens
 
 1. **Shadow swap** — if this is a re-index (repo was already `"ready"`), the `indexVersion` mechanism enables zero-downtime re-indexing:
-   - During Stages 2–3, all new entities/edges were stamped with the current `indexVersion`
-   - Now, stale entities from deleted files, renamed functions, or refactored classes are atomically removed
+   - During Stages 2–3, all new entities/edges are stamped with the current `indexVersion` UUID
+   - `deleteStaleByIndexVersion()` removes all entities/edges NOT matching the current version — atomically clearing stale data from deleted files, renamed functions, or refactored classes
 
-2. **Update repo status** in PostgreSQL — sets `status: "indexing"`, `progress: 90`, and entity counts (`fileCount`, `functionCount`, `classCount`).
+2. **Verify entity counts** — `verifyEntityCounts()` queries actual ArangoDB counts per collection, compares against pipeline-reported counts, logs divergence >10% as a warning, and always uses actual DB counts for the status update. Per-kind counts (files, functions, classes) are computed correctly from the combined SCIP + tree-sitter results.
+
+3. **Update repo status** in PostgreSQL — sets `status: "indexing"`, `progress: 90`, verified entity counts, and `lastIndexedAt` timestamp.
 
 ### Step 4b: Blast Radius Pre-Computation
 
@@ -356,29 +327,17 @@ Results are written back to entity documents via `bulkUpsertEntities()` with `fa
 - **Blueprint View** — confidence glow rings on feature cards
 - **Entity API** — `fan_in`, `fan_out`, `risk_level` included in entity responses
 
-### Implementation Status
+**Completion: ~90%** (Step 4b Blast Radius: ~50%)
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| Schema bootstrap | Done | Idempotent `bootstrapGraphSchema()` |
-| Repo status update | Done | Via `relationalStore.updateRepoStatus()` |
-| Shadow swap | Done (with caveat) | Calls `deleteByIndexVersion(orgId, repoId, "__old__")`. **Caveat:** deletes entities where `index_version == "__old__"` literally, but old entities are never explicitly marked `"__old__"`. The correct approach would be `index_version != currentIndexVersion`. In practice, shadow swap may be a no-op unless old entities happened to have `"__old__"` as their version. |
-| Blast radius pre-computation | Done | AQL COLLECT on `calls` edges, fan_in/fan_out thresholds, risk_level written to entity docs |
+> **Blindspot Analysis (Step 4b):** Degree centrality treats `logger.info()` as the most critical entity in the system because it has the highest `fan_in`. `computeApproxCentrality()` in `graph-context-builder.ts:79-100` is explicitly labeled "approximate betweenness" but is actually degree centrality. `centrality.ts` just returns `callers.length`. True blast radius requires weighted eigenvector centrality (PageRank) with semantic edge-type weighting — `imports` for a logging library should weight 0.01, `mutates_state` to a core DB model should weight 0.9.
 
-**Completion: ~80%**
-
-> **Confirmed by real-world data:** All 3,024 entities in the `kap10-server` repo have `index_version: null` — confirming shadow versioning is not being stamped on write. The shadow swap is entirely inoperative. See [Section 21](#21-real-world-validation-repo-diagnostic).
-
-**Open Tasks:**
+**Pending — Algorithmic Depth:**
 
 | # | Task | Priority | TBI Ref |
 |---|------|----------|---------|
-| 1 | Fix shadow swap logic — entities are never stamped with `index_version` (all null in production). `deleteByIndexVersion("__old__")` is a no-op. Old entities accumulate forever across re-indexes. | P1 | [TBI-B-01](#tbi-b-01-fix-shadow-swap-logic-in-finalization) |
-| 2 | `last_indexed_at` never set — PostgreSQL `repos.last_indexed_at` stays `null` even after `index_progress = 100` | P3 | [TBI-G-01](#tbi-g-01-fix-last_indexed_at-never-being-set) |
-
-**Why this matters:** Ghost entities from previous runs pollute semantic search, dead code detection, project stats, and entity browser. Without `last_indexed_at`, the dashboard can't show "last indexed X minutes ago."
-
-**Progress:** 75% → 95%
+| 1 | Preserve original entity kind through `KIND_TO_COLLECTION` — `method` → `functions` mapping loses kind distinction | P2 | [TBI-L-03](#tbi-l-03-preserve-original-entity-kind-through-kind_to_collection) |
+| 2 | ~~Graph-theoretic blast radius~~ — superseded by L-19 (PageRank is the strictly superior approach) | — | [TBI-L-19](#tbi-l-19-semantic-pagerank-with-edge-type-weighting) |
+| 3 | Semantic PageRank with edge-type weighting + calibrated confidence model | P1 | [TBI-L-19](#tbi-l-19-semantic-pagerank--calibrated-confidence-model) |
 
 ---
 
@@ -412,27 +371,25 @@ Results are written back to entity documents via `bulkUpsertEntities()` with `fa
 - **768-dimensional embedding vectors** for every code entity, stored in PostgreSQL pgvector with HNSW index
 - Metadata alongside each embedding: `entity_key`, `kind`, `file_path`, `repo_id`, `org_id`
 
-### Implementation Status
+### Implementation Details
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| File path fetching | Done | Queries `files` collection in ArangoDB |
-| Embedding text building | Done | Entity + signature + doc + body + justification enrichment |
-| ONNX inference | Done | nomic-embed-text-v1.5, 768d, CPU-only, 512-token limit |
-| pgvector upsert | Done | Sub-batches of 10, HNSW index |
-| Orphan cleanup | Done (conditional) | Calls `vectorSearch.deleteOrphaned()` **if the adapter implements it**. Silently no-ops otherwise. |
-| File-level fallback embedding | Done | Files with no code entities get a fallback doc: `"File: {path}\nName: {filename}"` |
-| Status transitions | Done | `embedding` → `ready` in PostgreSQL |
+- **Embedding vector validation** — `Number.isFinite()` check on every vector before upsert. NaN/Infinity vectors are logged and skipped, protecting the HNSW index from corruption.
+- **ONNX resilience** — `getEmbeddingPipeline()` retries 3× with exponential backoff (5s/15s/45s). On failure, clears the model cache directory and retries. Supports custom cache via `EMBEDDING_MODEL_CACHE_DIR`.
+- **Session lifecycle management** — ONNX session rotates after 500 embed calls (configurable via `ONNX_SESSION_MAX_CALLS`). `disposeSession()` releases memory, triggers GC, and logs RSS before/after. Prevents OOM during 24h+ continuous operation.
+- **Orphan cleanup** — `deleteOrphaned` is non-optional on the `IVectorSearch` port. After embedding, orphaned vectors (for entities that no longer exist in ArangoDB) are deleted with pipeline log tracking.
 
-**Completion: ~95%**
+**Completion: ~85%**
 
-**Open Tasks:**
+> **Blindspot Analysis:** Entities are embedded in isolation — vector similarity cannot capture structural relationships. Graph context (callers, callees, parent module) is added only *post-search* via `enrichWithGraph()`, not during embedding generation. Additionally, all entity types use the identical embedding strategy — modules/namespaces are excluded entirely, and embedding documents include LLM-generated justification text that may contain hallucinations, polluting the embedding space.
+
+**Pending — Algorithmic Depth:**
 
 | # | Task | Priority | TBI Ref |
 |---|------|----------|---------|
-| 1 | Orphan cleanup guarantee — `deleteOrphaned` is optional (guarded by `if (container.vectorSearch.deleteOrphaned)`). If the adapter doesn't implement it, orphan embeddings accumulate silently after re-indexes. | P2 | [TBI-B-02](#tbi-b-02-guarantee-orphan-embedding-cleanup-after-re-index) |
-
-**Why this matters:** Orphaned embeddings mean semantic search (Feature 2.1) returns ghost results for entities that no longer exist in the graph.
+| 1 | Two-pass kind-aware embedding (Pass 1: structural before justification; Pass 2: synthesis after) | P1 | [TBI-L-07](#tbi-l-07-two-pass-kind-aware-embedding-strategies) |
+| 2 | Hierarchical AST summarization with semantic anchor extraction | P1 | [TBI-L-23](#tbi-l-23-hierarchical-ast-summarization-with-semantic-anchors) |
+| 3 | Dual embedding variants (code-only + semantic) with weighted combination | P2 | [TBI-L-08](#tbi-l-08-dual-embedding-variants) |
+| 4 | Graph-RAG embeddings with structural fingerprint (5D vector, no Node2Vec) | P2 | [TBI-L-22](#tbi-l-22-graph-rag-embeddings-with-structural-fingerprint) |
 
 **Features that directly depend on embeddings:** 2.1 Semantic Code Search, 2.7 Search by Purpose, 2.12 Find Similar Code, 8.4 Semantic Snippet Search, 9.4 Global Code Search.
 
@@ -450,41 +407,34 @@ Results are written back to entity documents via `bulkUpsertEntities()` with `fa
    - Frequency-ranks terms across the entire repo
    - Filters noise (common programming terms like `get`, `set`, `handler`, `util`)
 
-2. **Read project manifests** — `package.json`, `pyproject.toml`, `go.mod` from the workspace path for:
-   - `project_name`, `project_description`
-   - `tech_stack` (framework dependencies)
+2. **Read and persist project manifests** — reads `package.json`, `pyproject.toml`, `go.mod` from the workspace path, extracting `project_name`, `project_description`, `tech_stack` (framework dependencies), and `project_domain`. Manifest data is persisted to the relational store via `updateRepoManifest()` so it survives workspace cleanup and is available to downstream stages without a live workspace.
 
-2b. **Fetch user-provided context** — if the repo has `contextDocuments` (set via `PUT /api/repos/{repoId}/context`), appends it to the project description sent to the LLM. This anchors the ontology vocabulary to the team's actual terminology (e.g., "Ledger Domain" instead of "Transaction Module").
+3. **Fetch user-provided context** — if the repo has `contextDocuments` (set via `PUT /api/repos/{repoId}/context`), appends it to the project description sent to the LLM. This anchors the ontology vocabulary to the team's actual terminology (e.g., "Ledger Domain" instead of "Transaction Module").
 
-3. **LLM refinement** — sends raw terms + project metadata to `LLM_MODELS.standard` with `DomainOntologySchema` for structured output. Falls back to raw terms if LLM fails (graceful degradation). The LLM returns:
+4. **LLM refinement** — sends raw terms + project metadata to `LLM_MODELS.standard` with `DomainOntologySchema` for structured output. Falls back to raw terms if LLM fails (graceful degradation). The LLM returns:
    - **Domain terms** with definitions (e.g., "Invoice: a billing document sent to customers")
    - **Ubiquitous language map** — canonical term → aliases (e.g., "User" → ["Customer", "Account", "Member"])
    - **Term relationships** (e.g., "Invoice" → belongs_to → "Billing")
 
-4. **Store in ArangoDB** — `domain_ontologies` collection via `graphStore.upsertDomainOntology()`.
+5. **Store in ArangoDB** — `domain_ontologies` collection via `graphStore.upsertDomainOntology()`.
 
-### Implementation Status
+### Implementation Details
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| Domain term extraction | Done | `extractDomainTerms()` in `ontology-extractor.ts` — splits entity names, frequency-ranks |
-| Project manifest reading | Done | Reads `package.json`/`pyproject.toml`/`go.mod` for project context |
-| Context seeding integration | Done | Fetches `repo.contextDocuments` from relational store, appends to project description for LLM anchoring |
-| LLM-based refinement | Done | `generateObject()` with `DomainOntologySchema`, graceful fallback to raw terms |
-| ArangoDB storage | Done | `upsertDomainOntology()` |
+- **Domain term extraction:** `extractDomainTerms()` in `ontology-extractor.ts` — splits entity names, frequency-ranks, filters programming stopwords
+- **Manifest persistence:** `updateRepoManifest()` writes `manifestData` to `RepoRecord` in PostgreSQL, decoupling ontology from workspace lifetime
+- **Context seeding:** fetches `repo.contextDocuments` from the relational store, appends to LLM project description
+- **LLM refinement:** `generateObject()` with `DomainOntologySchema`, graceful fallback to raw terms on failure
+- **ArangoDB storage:** `upsertDomainOntology()`
 
-**Completion: ~90%**
+**Completion: ~85%**
 
-> **Confirmed by real-world data:** The `kap10-server` repo produced a `domain_ontologies` document with `domain: null`, `subdomain: null`, `entities_count: 0` — an empty shell. The LLM ontology call either failed silently or returned no structured data. See [Section 21](#21-real-world-validation-repo-diagnostic).
+> **Blindspot:** Keyword counting is not ontology mapping. `ontology-extractor.ts:38-78` splits identifiers and counts frequency but cannot differentiate "Invoice" (domain concept) from "Handler" (architectural pattern) from "Service" (framework noise). The ontology needs semantic classification with embedding similarity to cluster related terms.
 
-**Open Tasks:**
+**Pending:**
 
-| # | Task | Priority | TBI Ref |
-|---|------|----------|---------|
-| 1 | Workspace path dependency — ontology reads manifests from `/data/workspaces/{orgId}/{repoId}`. If the workspace is cleaned up before the ontology workflow runs, manifest reading fails silently. Should persist manifest data during Stage 1. | P2 | [TBI-C-03](#tbi-c-03-persist-workspace-manifests-for-ontology-context) |
-| 2 | LLM failure transparency — when the LLM ontology call fails (e.g., HTTP 405), the fallback silently writes an empty record with `domain: null`. Failures should be surfaced in the pipeline log with the error code. | P2 | [TBI-G-02](#tbi-g-02-llm-405-detection-and-user-surfacing) |
-
-**Why this matters:** Without manifest data, ontology terms are generic. A null domain/subdomain means the justification stage has no "dictionary" — every feature_tag defaults to `"unclassified"`, collapsing the entire Feature Blueprint.
+| Task | Priority | Ref |
+|------|----------|-----|
+| Three-tier ontology extraction — classify terms into domain concepts vs architectural patterns vs framework terms with cross-tier mapping | P2 | [L-25](#tbi-l-25-three-tier-ontology-extraction) |
 
 **Features that directly depend on ontology:** 5.7 Feature Blueprint, 5.9 Domain Glossary, 2.6 Business Context, 2.9 Blueprint.
 
@@ -617,53 +567,42 @@ Collects `domain_concepts` from all justifications so far. Concepts appearing **
 - Embeds in **chunks of 20**
 - Stores in dedicated `justification_embeddings` pgvector table
 
-### Implementation Status
+### Implementation Details
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| Topological sort | Done | Kahn's algorithm with cycle-breaking in `topological-sort.ts` |
-| Staleness check | Done | SHA-256 body hash comparison + callee change tracking |
-| Dead code detection | Done | Zero-inbound-reference check, excludes exports/tests/entry points |
-| Graph context building | Done | `getBatchSubgraphs()` — AQL ANY traversal, batches of 50, 1-5 hops |
-| Model routing | Done | 3-tier routing by centrality, complexity, caller count, safety patterns |
-| Dynamic batching | Done | Greedy bin-packing with dual input/output token constraints |
-| Prompt builder | Done | Entity-specific templates, body truncation by tier |
-| LLM call + retry | Done | 3-stage backoff (2s/8s/30s), batch→individual fallback, UTILITY fallback |
-| Quality scoring | Done | Boilerplate, vagueness, length checks |
-| Chain-of-thought pipeline logging | Done | Per-entity reasoning logged via `createPipelineLogger()` — visible live in Pipeline Monitor |
-| Context seeding injection | Done | Fetches `repo.contextDocuments`, passes to `buildJustificationPrompt()` as "Project Context (provided by the team)" section |
-| ArangoDB justification upsert | Done | Bi-temporal `valid_to` on old records |
-| Ontology refinement | Done | Every 20 levels, 3+ frequency threshold, max 50 new terms |
-| Context propagation | Done | Bi-directional feature tag + domain concept propagation |
-| Feature aggregation | Done | Entry point detection, hot path BFS, taxonomy breakdown |
-| Justification embedding | Done | 1500-char cap, chunks of 20, dedicated pgvector table |
+- **Topological sort:** Kahn's algorithm with cycle-breaking in `topological-sort.ts`
+- **Staleness check:** SHA-256 body hash comparison; callee changes tracked via accumulated `accumulatedChangedIds` across ALL prior levels (capped at 5,000 entries), so entities at level N detect staleness from any earlier level — not just the immediately prior level
+- **Heuristic bypass:** entities with `confidence ≥ 0.9` and 0 inbound callers skip LLM entirely with canned justification (`model_tier: "heuristic"`), saving 20-40% of LLM calls for pure-utility entities
+- **Dead code detection:** zero-inbound-reference check, excludes exports/tests/entry points
+- **Graph context building:** `getBatchSubgraphs()` — AQL ANY traversal, batches of 50, 1-5 hops
+- **Model routing:** 3-tier routing by centrality, complexity, caller count, safety patterns
+- **Dynamic batching:** greedy bin-packing with dual input/output token constraints
+- **Prompt builder:** entity-specific templates with body truncation by tier; includes git history (up to 10 recent commits per file via `getFileGitHistory()`), entity warnings from the ledger, user-provided context documents (truncated to 3,000 chars), and ontology terms
+- **Context seeding:** users paste docs before indexing via `PUT /api/repos/{repoId}/context`; injected into ontology and justification prompts as "Project Context (provided by the team)" section
+- **Chain-of-thought logging:** per-entity reasoning logged via `createPipelineLogger()`, visible live in Pipeline Monitor
+- **Negative knowledge:** `entity_warnings` ArangoDB collection fed by anti-pattern synthesis; graph context builder injects warnings into subgraph summaries for LLM prompts; MCP `get_function`/`get_class` return warnings in response
+- **Context propagation:** bi-directional feature tag + domain concept propagation (parent→child, frequent child→parent)
+- **Justification embedding:** 1,500-char cap, chunks of 20, dedicated `justification_embeddings` pgvector table
+- **Drift documentation:** when semantic drift is detected, `proposeDriftDocumentation` generates updated classification + ADR draft, stored in `documentation_proposals` collection
+- **UNERR_CONTEXT.md export:** auto-generated context file with download route and celebration modal
 
-**Completion: ~95%**
+**Completion: ~88%**
 
-> **Confirmed by real-world data:** All 3,024 justifications for `kap10-server` returned `business_purpose: "Classification failed: Method Not Allowed"` with `taxonomy: UTILITY`, `feature_tag: "unclassified"`, `confidence: 0.3`, `model: null`. The Lightning AI endpoint returned HTTP 405 for every LLM call. All downstream stages (ontology, health report, feature aggregation) received garbage input. See [Section 21](#21-real-world-validation-repo-diagnostic).
+> **Alpha-3 additions:** Community detection (L-21) runs as Step 4b before justification, writing `community_id` and `community_label` onto entities. Signal-aware prompts (L-20 Part A) restructure the prompt into STRUCTURAL SIGNAL and INTENT SIGNAL sections. Test assertion extraction (L-16) fixed to parse `describe/it/test` blocks from entity body text and traverse `imports`/`references` edges.
+>
+> **Remaining blindspot:** Frequency-based propagation assigns utility functions the tag of their most frequent caller, not their purpose. The fix is intent-aware hermeneutic propagation (L-20 Part B): once entry points are reached, push their semantic context back down, weighted by graph distance.
 
-**Open Tasks:**
+**Pending:**
 
-| # | Task | Priority | TBI Ref |
-|---|------|----------|---------|
-| 1 | LLM 405 / endpoint misconfiguration detection — when the LLM returns HTTP 405, the current fallback silently writes stub justifications. This makes the pipeline appear to succeed while producing entirely worthless data. Must surface the error as a pipeline failure. | P1 | [TBI-G-02](#tbi-g-02-llm-405-detection-and-user-surfacing) |
-| 2 | Cross-level callee change propagation — `calleeChangedIds` scoped per-level only; callee changes from level N-2 don't propagate to level N. Affects <5% of entities. | P2 | [TBI-C-02](#tbi-c-02-cross-level-callee-context-propagation-in-justification) |
-| 3 | Heuristic hint bypass — `computeHeuristicHint()` is computed but never used to skip LLM for pure-utility entities. Could save 20-40% of LLM calls. | P3 | [TBI-C-05](#tbi-c-05-heuristic-bypass-for-pure-utility-entities) |
-
-**Why this matters:** When justification fails entirely (405, quota exhaustion, wrong model), the pipeline must abort with a clear error rather than silently writing 3,024 dummy stubs and marking the repo `"ready"`.
+| Task | Priority | Ref |
+|------|----------|-----|
+| Semantic staleness — change-type aware cascading (signature → always, comment → never, body → cosine check) | P2 | [L-09](#tbi-l-09-semantic-staleness-change-type-aware-cascading) |
+| ~~AST-aware body truncation~~ — superseded by L-23 (hierarchical AST summarization with semantic anchors) | — | [L-23](#tbi-l-23-hierarchical-ast-summarization) |
+| Quality scoring with positive reinforcement — reward high-quality outputs, not just penalize | P3 (deferred) | [L-11](#tbi-l-11-quality-scoring-with-positive-reinforcement) |
+| Parse test assertions as intent source — feeds into L-20's unified intent signal (`intent.from_tests[]`) | P2 | [L-16](#tbi-l-16-parse-test-assertions-as-intent-source) |
+| Community detection as pre-justification signal — Louvain runs before LLM calls, community membership in prompt (moved from Stage 10) | P2 | [L-21](#tbi-l-21-community-detection-as-pre-justification-signal) |
+| Unified intent signal extraction + hermeneutic propagation — 4 sources (tests, entry points, commits, naming), signal-aware prompts | P1 | [L-20](#tbi-l-20-unified-intent-signal-extraction--hermeneutic-propagation) |
 
 **Features that directly depend on justification:** 2.6 Business Context, 2.7 Search by Purpose, 2.8 Impact Analysis, 2.9 Blueprint, 2.10 Convention Guide, 2.11 Suggest Approach, 5.1 Health Report, 5.2 Prioritized Issues, 5.4 Drift, 5.7 Feature Blueprint, 5.8 ADRs, 7.1 PR Review, 7.3 Inline Comments, 7.5 Debate the Bot.
-
-**Intelligence & UX Enhancements (elevate quality and user trust):**
-
-| # | Enhancement | Priority | TBI Ref |
-|---|-------------|----------|---------|
-| ~~1~~ | ~~Context seeding~~ ✅ — users paste docs before indexing via `PUT /api/repos/{repoId}/context`. Injected into ontology and justification prompts. UI in onboarding console. | ~~P1~~ | [TBI-H-01](#tbi-h-01-context-seeding--pre-indexing-context-injection) |
-| ~~2~~ | ~~Chain of thought streaming~~ ✅ — per-entity reasoning logged to pipeline via `createPipelineLogger()` | ~~P2~~ | [TBI-H-03](#tbi-h-03-llm-chain-of-thought-streaming-to-pipeline-monitor) |
-| ~~3~~ | ~~Auto-generate `UNERR_CONTEXT.md`~~ ✅ — generator + download route + celebration modal | ~~P2~~ | [TBI-H-04](#tbi-h-04-auto-generated-unerr_contextmd-export) |
-| 4 | Git history ingestion — feed commit messages, PR descriptions, and resolved review comments into the justification prompt for historical context | P1 | [TBI-I-02](#tbi-i-02-temporal-context-ingestion-git-history--pr-descriptions-as-justification-input) |
-| 5 | Negative knowledge from ledger — mine reverted AI attempts for anti-patterns and attach warnings to affected entities; warn future agents | P1 | [TBI-I-01](#tbi-i-01-negative-knowledge-indexing-mine-the-prompt-ledger-for-mistakes) |
-| 6 | Semantic drift as documentation trigger — when a module changes role, draft an updated justification + ADR proposal for developer review | P2 | [TBI-I-04](#tbi-i-04-semantic-drift-as-auto-documentation-trigger) |
 
 ---
 
@@ -700,30 +639,23 @@ Each category gets a 0-100 score. The overall health score is a weighted average
 
 Analyzes the codebase for architectural patterns with high adherence rates. Only features with **3+ entities** qualify. Capped at **10 features** per synthesis run. Generates Architecture Decision Records with structured fields: decision, context, evidence (specific entity references), and consequences.
 
-### Implementation Status
+### Implementation Details
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| Feature aggregation | Done | Entry point detection, hot path BFS |
-| Health report builder | Done | LLM-generated across 13 risk categories |
-| ADR synthesis | Done | LLM prompt with feature + justification data |
-| Merge significance assessment | Done | Checks index events, feature timestamps, boundary files |
-| ADR PR creation | Done | Creates branch, file, and PR via `gitHost` |
-| Rewind entry rule update | Stub | Dead code — assigns `_db` from `require("arangojs")` but never writes back |
+- **Health report builder:** LLM-generated narrative across 13 risk categories with a null guard — when all justifications are fallback stubs (`confidence < 0.5`, `feature_tag == "unclassified"`), the builder detects this and writes a specific error state instead of null metrics
+- **ADR synthesis:** LLM prompt with feature + justification data; features with 3+ entities qualify, capped at 10 per run; includes a guard that detects 0 valid features and skips generation
+- **Merge significance assessment:** checks index events, feature timestamps, boundary files
+- **ADR PR creation:** creates branch, file, and PR via `gitHost`
+- **Rewind→rule tracing:** `markLedgerEntryRuleGenerated()` on `IGraphStore` port — called after `upsertRule` in `synthesizeAntiPatternRule`, sets `rule_generated: true`, `rule_id`, and `rule_generated_at` on the ledger entry, closing the tracing loop
+- **Entity warnings:** anti-pattern synthesis creates `EntityWarningDoc` entries (up to 50) in the `entity_warnings` collection, surfacing negative knowledge from the prompt ledger
+- **UNERR_CONTEXT.md:** auto-generated context document with download route and celebration modal in the UI
 
-**Completion: ~88%**
+**Completion: ~95%**
 
-> **Confirmed by real-world data:** The `kap10-server` health report exists in ArangoDB but has `overall_score: null`, `total_issues: null`. With all justifications being dummy stubs, the health report builder received meaningless input and produced empty metrics. ADR collection has 0 documents. See [Section 21](#21-real-world-validation-repo-diagnostic).
+**Pending:**
 
-**Open Tasks:**
-
-| # | Task | Priority | TBI Ref |
-|---|------|----------|---------|
-| 1 | Rewind entry rule_generated update — dead stub in ADR generation activity. `require("arangojs")` assigns `_db` but never writes back. Rules can't be traced to the rewind that created them. | P3 | [TBI-D-03](#tbi-d-03-close-the-rewind--rule-tracing-loop) |
-| 2 | Health report null guard — when all justifications are fallback stubs (`confidence < 0.5`, `feature_tag == "unclassified"`), the health report builder should detect this and write a specific error state rather than null metrics. | P2 | [TBI-G-04](#tbi-g-04-health-report-null-guard-when-justifications-are-all-fallback-stubs) |
-| 3 | ADR generation guard — same issue: ADR synthesis should detect 0 valid features and skip generation rather than silently producing 0 ADRs. | P2 | [TBI-G-04](#tbi-g-04-health-report-null-guard-when-justifications-are-all-fallback-stubs) |
-
-**Why this matters:** A health report with `null` scores is indistinguishable from a repo that hasn't been analyzed. Users see "ready" status but get no actionable data.
+| Task | Priority | Ref |
+|------|----------|-----|
+| (No Category L items target this stage directly) | — | — |
 
 **Features that directly depend on health/ADRs:** 5.1 Health Report, 5.2 Prioritized Issues, 5.8 Architecture Decision Records, 2.9 Blueprint.
 
@@ -738,43 +670,32 @@ Analyzes the codebase for architectural patterns with high adherence rates. Only
 
 1. **Query and compact** all entities + edges from ArangoDB:
    - Compacts each entity to minimal fields: `key`, `kind`, `name`, `file_path`, `signature`, `language`
-   - Fetches call edges per entity via `getCalleesOf()` (one ArangoDB query per entity)
+   - Fetches all edges in a single `getAllEdges()` call with in-memory dedup, paginated at 20,000 edges per page (safety cap at 200,000) — replacing the previous O(N) per-entity query pattern
    - Fetches active rules (max 200) and confirmed patterns (evidence capped at 5 exemplars per pattern)
-   - All compacted into a single data structure
+   - Granular heartbeats every 50 files in the entity collection loop; `heartbeatTimeout` set to 5 minutes for large-repo tolerance
 
-2. **Serialize** to msgpack binary + SHA-256 checksum. Msgpack is typically 5-20x smaller than JSON.
+2. **Serialize** via `serializeSnapshotChunked()` — processes entities in batches of 1,000, frees each chunk after serialization via `splice(0, chunkSize)`, and logs pre/post memory usage. Repos with >5,000 entities automatically use chunked mode with per-chunk heartbeats. Output is msgpack binary + SHA-256 checksum (typically 5-20x smaller than JSON).
 
-3. **Upload** to Supabase Storage bucket `graph-snapshots` at path `{orgId}/{repoId}.msgpack` (upsert mode).
+3. **Upload** to Supabase Storage bucket `graph-snapshots` at path `{orgId}/{repoId}.msgpack` (upsert mode). Bulk import available for large datasets.
 
 4. **Record metadata** in PostgreSQL via Prisma: `status: "available"`, `checksum`, `sizeBytes`, `entityCount`, `edgeCount`, `generatedAt`.
 
 5. **Notify clients** via Redis key `graph-sync:{orgId}:{repoId}` (TTL 1 hour). The CLI polls this key to know when to pull.
 
-### Implementation Status
+### Implementation Details
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| Entity compaction | Done | Strips to minimal fields |
-| Edge fetching | Done (slow) | `getCalleesOf()` per entity — **O(N) ArangoDB queries**. Could use `getAllEdges()` for single query but larger payload. |
-| Rule/pattern export | Done | Active rules (max 200), confirmed patterns with evidence |
-| Msgpack serialization | Done | Binary + SHA-256 checksum |
-| Supabase Storage upload | Done | Upsert mode, real Supabase client |
-| PostgreSQL metadata | Done | Prisma `GraphSnapshotMeta.upsert` |
-| Redis notification | Done | `graph-sync:{orgId}:{repoId}` with TTL 1h |
-| Status transitions | Done | `generating` → `available` |
+- **Batch edge fetching:** single `getAllEdges()` AQL query with pagination and dedup (was O(N) per-entity `getCalleesOf()`)
+- **Heartbeats:** every 50 entities during collection, per-chunk during serialization; timeout increased to 5m
+- **Chunked serialization:** `serializeSnapshotChunked()` in `graph-serializer.ts` — memory-efficient for large repos
+- **Status transitions:** `generating` → `available` (or `failed` with error recorded)
 
-**Completion: ~90%**
+**Completion: ~98%**
 
-> **Confirmed by real-world data:** The `kap10-server` snapshot has `status: "failed"`, `entity_count: 0`, `edge_count: 0`, `storage_path: null`. The snapshot was started at 20:22 UTC and failed by 20:28 UTC. No msgpack file exists in Supabase Storage. CLI `unerr pull` will fail for this repo. See [Section 21](#21-real-world-validation-repo-diagnostic).
+**Pending:**
 
-**Open Tasks:**
-
-| # | Task | Priority | TBI Ref |
-|---|------|----------|---------|
-| 1 | O(N) edge fetching — `getCalleesOf()` per entity is O(N) ArangoDB queries. 5,000-entity repo = 5,000 queries. Should be a single `getAllEdges()` call. | P2 | [TBI-E-01](#tbi-e-01-o1-graph-export--batch-edge-fetching) |
-| 2 | Snapshot failure recovery — when the snapshot export fails, status is set to `"failed"` with no retry. The workflow does not re-attempt or surface a recoverable error to the user. | P2 | [TBI-G-03](#tbi-g-03-graph-snapshot-failure-recovery) |
-
-**Why this matters:** Local-first mode (Feature 3.4) is completely broken if the snapshot fails. CLI users cannot pull graph data. There is no automatic retry or user-visible error that prompts re-indexing.
+| Task | Priority | Ref |
+|------|----------|-----|
+| (No Category L items target this stage directly) | — | — |
 
 **Features that directly depend on snapshots:** 3.4 Local-First Mode, all CLI-side tools that work offline.
 
@@ -795,33 +716,26 @@ The pattern detection system has three components:
 
 3. **Pattern mining** (`pattern-mining.ts`) — discovers conventions from entity names and structures. Entity keys per pattern capped at **100**.
 
-### Implementation Status
+### Implementation Details
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| Anti-pattern rule synthesis | Done | LLM-generated rules from reverted ledger entries |
-| Anti-pattern vectorization | Done | Embeds rule description, searches for matching entities (cosine > 0.75) |
-| Pattern detection (Semgrep) | Done | Structural matching via `semgrep-pattern-engine.ts` adapter |
-| Pattern mining | Done | Frequency-based convention discovery |
-| Rule_generated ledger update | Stub | Dead code — `require("arangojs")` assigns `_db` but never uses it |
+- **Anti-pattern rule synthesis:** LLM-generated rules from reverted ledger entries; after `upsertRule`, `markLedgerEntryRuleGenerated()` writes `rule_generated: true`, `rule_id`, and `rule_generated_at` back to the ledger entry, closing the rewind→rule tracing loop
+- **Anti-pattern vectorization:** embeds rule description, searches for matching entities (cosine > 0.75)
+- **Pattern detection (Semgrep):** structural matching via `semgrep-pattern-engine.ts` adapter; 23 built-in detectors
+- **Pattern mining:** frequency-based convention discovery; Louvain community detection in `pattern-mining.ts`
+- **Conventions export:** `conventions-generator.ts` synthesizes patterns + rules into `TEAM_CONVENTIONS.md` or `.cursorrules` format via `GET /api/repos/{repoId}/export/conventions?format=markdown|cursorrules`; rules categorized by enforcement level (MUST/SHOULD/MAY), patterns grouped by type with adherence %
 
-**Completion: ~75%**
+**Completion: ~70%**
 
-**What's pending:**
-1. **Ledger link back** — after generating an anti-pattern rule from a rewind, the rule_generated flag is never written back to the ledger entry. Users can't trace from a rule to the rewind that created it.
-2. **Semgrep integration depth** — the Semgrep adapter exists but is a separate adapter behind the `IPatternEngine` port. Full integration with the indexing pipeline (running all 23 built-in rules during every index) depends on the Semgrep binary being available on the worker.
+> **Blindspot:** Louvain community detection exists in `pattern-mining.ts` but is used only for pattern mining. Community detection has been moved to a pre-justification signal (L-21, Alpha-3) — communities now inform LLM prompts during justification, not just pattern discovery. Convention mining (L-13) scopes by community for community-local patterns.
 
-**Why the pending work matters:**
-- Without ledger-to-rule tracing, the **anti-pattern detection** (Feature 6.7) learning loop is broken — users create rules via rewind but can't see the connection
-- Without guaranteed Semgrep execution during indexing, **rule check** (Feature 6.6) may return incomplete pattern data for repos that haven't been manually scanned
+**Pending:**
+
+| Task | Priority | Ref |
+|------|----------|-----|
+| Code-first convention discovery — structural patterns found from code, named by LLM, scoped by Louvain community | P2 | [L-13](#tbi-l-13-code-first-convention-discovery) |
+| ~~Spectral graph partitioning~~ — L-21 moved to Stage 7 (pre-justification signal). Community detection now runs before LLM justification calls. | — | [L-21](#tbi-l-21-community-detection-as-pre-justification-signal) |
 
 **Features that directly depend on patterns:** 6.1 Auto-Detected Patterns, 6.2 Custom Rules, 6.5 Pattern-to-Rule Promotion, 6.6 Rule Check, 6.7 Anti-Pattern Detection, 7.1 PR Review (pattern check), 2.10 Convention Guide.
-
-**Living Documentation Enhancements (replace .cursorrules and TEAM_CONVENTIONS.md):**
-
-| # | Enhancement | Priority | TBI Ref |
-|---|-------------|----------|---------|
-| 1 | Idiomatic standard discovery — extend pattern mining to detect framework-specific idioms (React hook patterns, error handling shape, DI conventions, test structure). Synthesize into `TEAM_CONVENTIONS.md` and expose to MCP agents. One-click commit as `.cursor/rules`. | P2 | [TBI-I-05](#tbi-i-05-idiomatic-standard-discovery-auto-generate-cursorrules--team_conventionsmd) |
 
 ---
 
@@ -841,49 +755,41 @@ The workflow waits **60 seconds** (configurable via `DEBOUNCE_QUIET_PERIOD`) for
 | Step | Queue | What Happens |
 |------|-------|--------------|
 | 1. `pullAndDiff` | heavy | `git pull` + `git diff` → list of changed files |
-| 2. Fallback guard | — | If >200 files changed (`INCREMENTAL_FALLBACK_THRESHOLD`) → abort, log event |
-| 3. `reIndexBatch` | heavy | Re-parse changed files (batches of 5), with quarantine wrapping |
+| 2. Fallback guard | — | If >200 files changed (`INCREMENTAL_FALLBACK_THRESHOLD`) → fires `startChild(indexRepoWorkflow)` with `ParentClosePolicy.ABANDON` for automatic full re-index |
+| 3. `reIndexBatch` | heavy | Re-parse changed files (batches of 5) with quarantine wrapping; healed files detected via `shouldHealQuarantine()` and quarantine placeholders removed |
 | 4. `applyEntityDiffs` | light | Delete entities for removed files |
-| 5. `repairEdgesActivity` | light | Re-resolve edges referencing changed entities |
+| 5. `repairEdgesActivity` | light | Re-resolve edges referencing changed entities; collects broken endpoints for updated entities and calls `batchDeleteEdgesByEntity()` |
 | 6. `updateEmbeddings` | light | Re-embed changed entities only (delta) |
-| 7. `cascadeReJustify` | light | Re-justify entities whose dependencies changed (max `CASCADE_MAX_HOPS = 2`, max `CASCADE_MAX_ENTITIES = 50`) |
-| 8. `invalidateCaches` | light | Clear Redis caches for the repo |
-| 9. `writeIndexEvent` | light | Record event in ArangoDB `index_events` |
-| 10. `finalizeIndexing` | light | Update PostgreSQL status |
+| 7. `cascadeReJustify` | light | Re-justify entities whose dependencies changed — uses `getBatchSubgraphs()` for targeted N-hop subgraph fetch (max `CASCADE_MAX_HOPS = 2`, max `CASCADE_MAX_ENTITIES = 50`) |
+| 8. `refreshContextDocuments` | light | Regenerates `UNERR_CONTEXT.md` and agent config files to reflect structural changes |
+| 9. `proposeDriftDocumentation` | light | When semantic drift is detected, generates updated classification + ADR draft in `documentation_proposals` collection |
+| 10. `invalidateCaches` | light | Exhaustive Redis cache clearing — 7 exact-key patterns + prefix-based `invalidateByPrefix()` via non-blocking `SCAN` (covers topo levels, justify-changed, search results, prefetch contexts, rules) |
+| 11. `writeIndexEvent` | light | Record event in ArangoDB `index_events` |
+| 12. `finalizeIndexing` | light | Update PostgreSQL status |
 
 ### Cascade Re-Justification
 
-When `processPayment()` changes, its callers (`checkout()`, `retryBilling()`) may now have stale justifications. The cascade traverses the call graph outward (configurable depth and max entities) and re-justifies affected entities.
+When `processPayment()` changes, its callers (`checkout()`, `retryBilling()`) may now have stale justifications. The cascade uses `getBatchSubgraphs()` + `getEdgesForEntities()` + per-entity `getJustification()` for targeted subgraph fetching (no full-repo graph load). Justification embedding text is capped at 1,500 chars total, with body snippet at 500 chars.
 
-Justification embedding text for cascade re-justification is **capped at 1,500 chars** total, with **body snippet at 500 chars**, matching the full justification embedding format.
+### Implementation Details
 
-### Implementation Status
+- **Signal debouncing:** 60s quiet period via `condition()` loop; rapid-fire pushes collapse into single run
+- **Fallback to full re-index:** when >200 files change, automatically starts a fire-and-forget `indexRepoWorkflow` child workflow
+- **Quarantine healing:** after successful re-parse, `shouldHealQuarantine()` detects healed files and `batchDeleteEntities()` removes quarantine placeholders by their deterministic hash IDs
+- **Edge repair:** updated-entity block collects broken endpoints and calls `batchDeleteEdgesByEntity()`; short-circuited when `deletedKeys` is empty
+- **Cache invalidation:** exhaustive exact keys (7 patterns) + prefix-based `invalidateByPrefix()` on `ICacheStore`; non-blocking `SCAN`-based Redis implementation
+- **Context refresh:** regenerates living documentation after structural changes
+- **Drift documentation:** proposes ADR drafts when entity taxonomy/purpose diverges from prior classification
 
-| Component | Status | Details |
-|-----------|--------|---------|
-| Signal debouncing | Done | 60s quiet period via `condition()` loop |
-| Pull + diff | Done | Via `gitHost.pullLatest()` + `gitHost.diffFiles()` |
-| Fallback guard | Done (partial) | Logs `force_push_reindex` event but **does not actually trigger full re-index workflow** |
-| `reIndexBatch` | Done | Tree-sitter re-parse, quarantine wrapping, batches of 5 |
-| Entity diff deletion | Done | `graphStore.deleteEntitiesByFiles()` |
-| Edge repair | Done (with bug) | Deletes edges for deleted entities. **Bug:** updated entity edge check is logically dead — the inner condition `if key in deletedKeys` never fires for updated (non-deleted) entities. Edge re-creation is handled by re-indexing (by design). |
-| Embedding update | Done | Delta re-embed for changed entities only |
-| Cascade re-justify | Done | Graph traversal + `justifyBatch` |
-| Cache invalidation | Done | Redis key deletion for prefetch, entity caches |
-| Index event recording | Done | `index_events` ArangoDB collection with TTL 90 days |
-| Finalize | Done (with gap) | **Passes `fileCount: 0, functionCount: 0, classCount: 0`** — counts are not recomputed after incremental update |
+**Completion: ~95%**
 
-**Completion: ~85%**
+**Pending:**
 
-**Open Tasks:**
+| Task | Priority | Ref |
+|------|----------|-----|
+| Incremental entity count recomputation — counts not recomputed after incremental update (`fileCount: 0, functionCount: 0, classCount: 0` passed to finalize) | P3 | [L-27](#tbi-l-27-incremental-entity-count-recomputation) |
 
-| # | Task | Priority | TBI Ref |
-|---|------|----------|---------|
-| 1 | Fallback full re-index trigger — when >200 files change, the workflow logs a `force_push_reindex` event but never starts `indexRepoWorkflow`. Repo is stale until next push. | P2 | [TBI-D-01](#tbi-d-01-auto-trigger-full-re-index-when-incremental-fallback-fires) |
-| 2 | Entity count recomputation — finalization passes all-zero counts. Dashboard shows stale file/function/class counts after every incremental push. | P3 | [TBI-D-02](#tbi-d-02-fix-incremental-entity-count-recomputation) |
-| 3 | Edge repair dead-code path — updated entity check is logically unreachable. `edgesDeleted` count in index event is inaccurate. | P3 | [TBI-D-04](#tbi-d-04-fix-edge-repair-dead-code-path-for-updated-entities) |
-
-**Why this matters:** Large refactors (>200 files) silently leave the repo stale. Project Stats show wrong numbers after every incremental push.
+**Features that directly depend on incremental indexing:** Real-time graph freshness after every push, MCP tool accuracy, PR review data currency.
 
 ---
 
@@ -1092,7 +998,7 @@ Justification stores a `body_hash` (SHA-256 of the entity's source code). On sub
 
 ### 18.4 Shadow Re-Indexing for Zero Downtime
 
-During re-indexing, new entities are written with a fresh `indexVersion`. The old graph remains fully queryable. Only after all new entities are written does the finalization step remove old-version entities. Users never see a partially indexed repo. (Note: shadow swap logic has a known bug — see [Stage 4](#7-stage-4-finalization--shadow-swap).)
+During re-indexing, new entities are written with a fresh `indexVersion` (UUID). The old graph remains fully queryable. Only after all new entities are written does the finalization step run `deleteStaleByIndexVersion()` to remove old-version entities and `verifyEntityCounts()` to confirm consistency. Users never see a partially indexed repo.
 
 ### 18.5 Bottom-Up Justification for Contextual Accuracy
 
@@ -1109,7 +1015,7 @@ Every stage has fallback behavior:
 - Tree-sitter fails → file entity still created
 - LLM fails → fallback justification with `taxonomy: UTILITY, confidence: 0.3`
 - Entity extraction times out → quarantined and recorded, doesn't fail the batch
-- >200 files changed in incremental → falls back to full re-index (logged, not yet auto-triggered)
+- >200 files changed in incremental → automatically fires full re-index via `startChild(indexRepoWorkflow)`
 - Ontology LLM fails → raw extracted terms used as-is
 
 No single file or entity failure can prevent the pipeline from completing.
@@ -1118,1089 +1024,869 @@ No single file or entity failure can prevent the pipeline from completing.
 
 ## 19. Overall Pipeline Status
 
-| Stage | Name | Completion | Blocking Issues |
-|-------|------|-----------|-----------------|
-| 1 | Prepare Repo Intelligence Space | **95%** | None |
-| 2 | SCIP Analysis | **70%** | Python + Go SCIP parsing are stubs |
-| 3 | Tree-Sitter Fallback | **90%** | Python/Go missing import edges |
-| 4 | Finalization & Shadow Swap | **90%** | `indexVersion` stamping fixed; old-version cleanup still uses `"__old__"` |
-| 5 | Embedding | **95%** | Orphan cleanup is optional/conditional |
-| 6 | Ontology Discovery | **90%** | Workspace path dependency after cleanup |
-| 7 | Business Justification | **97%** | Fatal LLM error detection added; cross-level callee propagation scoped per-level |
-| 8 | Health Report & ADRs | **93%** | Fallback guard added; ledger rule_generated update is dead stub |
-| 9 | Graph Snapshot Export | **93%** | Error handling improved; O(N) edge queries (performance) |
-| 10 | Pattern Detection | **75%** | Ledger link back is dead stub |
-| 14 | Incremental Indexing | **85%** | Fallback doesn't trigger full re-index; zero counts |
+| Stage | Name | Completion | Remaining Work (Category L Only) |
+|-------|------|-----------|----------------------------------|
+| 1 | Prepare Repo Intelligence Space | **~97%** | Disk space validation before clone (P3) |
+| 2 | SCIP Analysis | **~96%** | ~~SCIP reference→calls wiring (L-18a)~~ done; remaining: event edges (L-18b) |
+| 3 | Tree-Sitter Fallback | **~93%** | ~~Cross-file call edges (L-02)~~ done; ~~TS same-file call detection~~ done; remaining: event edges (L-18b); multi-line imports + Go struct members (L-04); AST-aware complexity (L-06, deferred) |
+| 4 | Finalization & Shadow Swap | **~90%** | Preserve original entity kind (L-03) |
+| 4b | Blast Radius & Community Pre-Computation | **~85%** | ~~Semantic PageRank (L-19 Part A)~~ done; ~~calibrated confidence (L-19 Part B)~~ done; ~~community detection (L-21)~~ done; remaining: temporal confidence dimension |
+| 5 | Embedding | **~88%** | Two-pass kind-aware embedding (L-07); dual variants (L-08); Graph-RAG with structural fingerprint (L-22); ~~AST summarization with semantic anchors (L-23)~~ done |
+| 6 | Ontology Discovery | **~85%** | Three-tier ontology extraction (L-25) |
+| 7 | Business Justification | **~88%** | ~~Unified intent signals (L-20 Part A)~~ done; ~~test assertions as intent source (L-16)~~ done; ~~community detection as pre-justification signal (L-21)~~ done; remaining: hermeneutic propagation with signal weighting (L-20 Part B); semantic staleness (L-09); quality scoring (L-11, deferred) |
+| 8 | Health Report & ADRs | **~95%** | — |
+| 9 | Graph Snapshot Export | **~98%** | — |
+| 10 | Pattern Detection | **~70%** | Code-first convention discovery (L-13); git co-change mining (L-24) |
+| 14 | Incremental Indexing | **~95%** | Incremental entity count recomputation for incremental path |
 
-**Weighted overall completion: ~91%**
+**Weighted overall completion: ~87%** (infrastructure complete; remaining work is algorithmic depth)
 
-> **Real-world validation (2026-02-27):** The `kap10-server` repo was indexed at the graph level (697 files, 1,786 functions, 591 call edges). LLM stages failed silently due to HTTP 405 from Lightning AI — this was a configuration issue (wrong LLM provider), not a pipeline bug. Six bugs were identified and fixed (2026-02-28): TBI-G-01 (`last_indexed_at`), TBI-G-02 (fatal LLM error detection), TBI-G-03 (snapshot error handling), TBI-G-04 (health report fallback guard), TBI-B-01 (`indexVersion` stamping), TBI-D-02 (count formula). LLM provider switched to `LLM_PROVIDER=openai`. Re-indexing pending to verify all fixes end-to-end.
+> **Assessment:** All hardening (Categories A-K, 48 tasks across Waves 0-8) is complete. The pipeline is production-reliable — clones, parses, embeds, justifies, and exports without silent failures. Of the original 27 Category L items, 5 have been removed/absorbed (L-05 already done, L-10/L-12 superseded, L-26 over-engineered, L-01 absorbed into L-18) and 3 deferred to backlog (L-06, L-11, L-15). The remaining 19 core tasks across 8 Alpha waves transform the pipeline from a "syntax reader" into an "intent-aware intelligence engine" built on **signal convergence** — structural, intent, temporal, and domain signals computed independently and converging into a pre-computed **Entity Profile** per entity. The Entity Profile is the product: what agents consume, what MCP tools return, what makes Unerr distinct.
 
-### Priority Pending Work (by Impact)
+### Completed Capabilities Summary
 
-| Priority | Issue | Impact | TBI Ref | Affected Features |
-|----------|-------|--------|---------|------------------|
-| ~~**P1**~~ | ~~LLM 405 silent failure~~ ✅ | ~~Entire LLM tier silently produces garbage~~ | TBI-G-02 | **DONE** — fatal error detection + abort after 5 consecutive failures |
-| **P1** | Python + Go SCIP parsing | Cross-file resolution missing for 2 of 3 supported languages | TBI-A-01, TBI-A-02 | 2.3, 2.4, 2.8, 5.3, 5.5, 5.6 |
-| ~~**P1**~~ | ~~Shadow swap logic fix~~ ✅ | ~~`index_version: null` on all entities~~ | TBI-B-01 | **DONE** — `indexVersion` passed through to `writeEntitiesToGraph` |
-| ~~**P2**~~ | ~~Graph snapshot failure recovery~~ ✅ | ~~Snapshot fails silently~~ | TBI-G-03 | **DONE** — proper error logging + status update guard |
-| ~~**P2**~~ | ~~Health report null guard~~ ✅ | ~~All-stub justifications produce null scores~~ | TBI-G-04 | **DONE** — `llm_failure` / `llm_partial_failure` risk detection |
-| **P2** | Workspace path for ontology | Manifest reading fails silently after workspace cleanup | TBI-C-03 | 5.7, 5.9, 2.6 |
-| **P2** | Python/Go import edge extraction | Import chain analysis empty for Python/Go | TBI-B-03 | 2.4, 2.8 |
-| **P2** | Incremental fallback trigger | Large refactors leave repo stale until next push | TBI-D-01 | 2.1-2.12 |
-| **P2** | Graph export edge batching | Snapshot generation slow for large repos | TBI-E-01 | 3.4 |
-| ~~**P3**~~ | ~~`last_indexed_at` never set~~ ✅ | ~~Dashboard shows no "last indexed" time~~ | TBI-G-01 | **DONE** — set in embedding + justification terminal paths |
-| ~~**P3**~~ | ~~Incremental entity count recomputation~~ ✅ | ~~Dashboard shows stale counts~~ | TBI-D-02 | **DONE** — per-kind counts from `writeEntitiesToGraph` (full-index path) |
-| **P3** | Orphan embedding cleanup guarantee | Search returns deleted entities | TBI-B-02 | 2.1 |
-| **P3** | Ledger rule link back | Rewind → rule tracing broken | TBI-D-03 | 4.3, 6.7 |
-| **P3** | Edge repair count accuracy | Activity feed metrics inaccurate | TBI-D-04 | 9.3 |
+**Hardening (17 tasks):** Workspace cleanup, shallow clone, file size guards, encoding detection, SCIP binary surfacing, brace-depth fix, shadow swap cleanup, entity count verification, NaN embedding filter, ONNX resilience + session rotation, cascade subgraph optimization, quarantine healing, cache invalidation, graph export heartbeats + chunked serialization, batch edge fetching, bulk import optimization.
 
-### Intelligence, UX & Living Documentation Enhancements
+**Correctness (13 tasks):** Python/Go/Java SCIP decoders, Python/Go import edges, 6 new language plugins (C/C++/C#/PHP/Ruby/Rust), shadow swap stamping, orphan embedding cleanup, incremental fallback auto-reindex, edge repair, entity count formulas, `last_indexed_at`, LLM 405 detection, health report guards, snapshot recovery.
 
-| Priority | Enhancement | TBI Ref | Replaces / Unlocks |
-|----------|-------------|---------|-------------------|
-| **P1** | Negative knowledge from ledger — warn agents about past failures on specific entities | TBI-I-01 | Replaces `MEMORY.md` lessons-learned section |
-| **P1** | Git history + PR descriptions as justification input | TBI-I-02 | Replaces `ARCHITECTURE.md` historical intent section |
-| ~~**P1**~~ | ~~Context seeding — users inject their docs/vocabulary before justification~~ ✅ | TBI-H-01 | ~~Accurate `feature_tag`, immediate trust~~ **DONE** — context seeding UI + API + prompt injection in ontology + justification |
-| ~~**P1**~~ | ~~Confidence heatmap + human-in-the-loop corrections~~ ✅ | TBI-H-02 | **DONE** — heatmap, override API (`POST /entities/{id}/override`), inline correction editor in annotated code viewer |
-| **P2** | Tech-stack & system boundary extraction | TBI-I-03 | Replaces architecture diagrams with live graph |
-| **P2** | Semantic drift as auto-documentation trigger + ADR proposals | TBI-I-04 | Replaces stale `ARCHITECTURE.md` update process |
-| **P2** | Idiomatic standard discovery → `TEAM_CONVENTIONS.md` + `.cursor/rules` | TBI-I-05 | Replaces `.cursorrules` entirely |
-| ~~**P2**~~ | ~~LLM chain of thought streaming to pipeline monitor~~ ✅ | TBI-H-03 | ~~"Wow" moment during indexing wait~~ **DONE** — per-entity reasoning logged to pipeline |
-| ~~**P2**~~ | ~~Auto-generate `UNERR_CONTEXT.md` artifact~~ ✅ | TBI-H-04 | ~~Bridge for docs-first developers~~ **DONE** — generator + download route + celebration modal |
-| ~~**P2**~~ | ~~Blast radius pre-computation~~ ✅ | TBI-H-05 | ~~Risk visibility~~ **DONE** — fan_in/fan_out computed, risk badges in annotated viewer |
+**Intelligence (11 tasks):** Context seeding, git history ingestion, decorator extraction, signature extraction, cross-level propagation, heuristic bypass, boundary classifier, negative knowledge indexing, manifest persistence, conventions generator, drift documentation trigger.
 
-### Autonomous Context Delivery (Zero-Config Agent Intelligence)
+**Delivery (7 tasks):** `file_context` MCP tool, unified knowledge doc, incremental context refresh, agent memory sync, per-stage observability, `UNERR_CONTEXT.md` export, confidence heatmap + human override.
 
-| Priority | Enhancement | TBI Ref | Replaces / Unlocks |
-|----------|-------------|---------|-------------------|
-| **P1** | Proactive file-open context injection via MCP — push entity context to agents automatically | TBI-J-01 | Eliminates cold-start problem for IDE agents |
-| **P2** | Unified knowledge document generator — one doc replaces MEMORY.md + ARCHITECTURE.md + .cursorrules | TBI-J-02 | Single export artifact for all manual docs |
-| **P2** | Incremental context refresh on push — keep knowledge docs fresh without full re-index | TBI-J-03 | Context docs stay current after every push |
-| **P3** | Agent memory sync — auto-PR to update CLAUDE.md / .cursorrules / copilot-instructions from graph | TBI-J-04 | IDE agent memory files stay in sync with graph |
+### Remaining: Algorithmic Depth (22 Category L Items — 19 Core + 3 Deferred)
+
+See [Section 20](#20-to-be-implemented) for full task descriptions. 5 tasks removed/absorbed from original 27: L-05 (done), L-10 (→L-23), L-12 (→L-19), L-26 (over-engineered), L-01 (→L-18). Key structural changes from enhancement pass: L-21 moved to pre-justification (Alpha-3), L-17 moved to Alpha-5, L-18 split into phased delivery (L-18a unblocks everything).
+
+| Priority | Count | Key Gaps |
+|----------|-------|----------|
+| **P1** | 6 | Call graph foundation (L-18, phased — L-18a is the 80/20 fix), cross-file call edges (L-02), PageRank + calibrated confidence (L-19), unified intent signals + hermeneutic propagation (L-20), two-pass kind-aware embeddings (L-07), AST summarization with semantic anchors (L-23) |
+| **P2** | 13 | Graph-RAG with structural fingerprint (L-22), community detection as pre-justification signal (L-21), three-tier ontology (L-25), git co-change mining + temporal context (L-24), semantic staleness (L-09), test assertions as intent source (L-16), dead code exclusions (L-17), Entity Profile cache + MCP delivery (L-14), rich context assembly (L-27), dual embeddings (L-08), kind preservation (L-03), multi-line imports (L-04), code-first convention discovery (L-13) |
+| **P3 (deferred)** | 3 | Adaptive RRF (L-15), AST complexity (L-06), quality scoring (L-11) |
 
 ---
 
 ## 20. To Be Implemented
 
-> This section is the definitive backlog for indexing pipeline improvements. Tasks are grouped by category and broken into atomic, implementable units. Each task includes the affected files, what "done" looks like, and which product features it unlocks.
+> **Categories A through K (48 tasks) are complete.** Their implementations have been absorbed into the stage descriptions in Sections 4–14 above. This section contains Category L — originally 27 algorithmic depth tasks, now 22 (19 core + 3 deferred) after audit: L-05 already done, L-10/L-12 superseded, L-26 over-engineered, L-01 absorbed into L-18.
 >
-> **Do not start on these tasks without reading the current implementation status in the sections above.** Each task has context from existing bugs and stubs already described in Sections 4–14.
+> **Architecture:** The algorithm is built on **signal convergence** — four independent signal families (structural, intent, temporal, domain) computed by separate waves and converging into a unified **Entity Profile** per entity. The Entity Profile is the product: what agents consume, what MCP tools return, what makes Unerr distinct from tools that only parse syntax. Confidence is **calibrated** from observable signals (has tests? has callers? descriptive name?), not LLM self-reported.
 >
-> **Priority legend:** P1 = blocks correctness for users on any language, P2 = materially degrades quality or coverage, P3 = polish/metrics/tracing.
+> **Priority legend:** P1 = blocks correctness for users on any language, P2 = materially degrades quality or coverage, P3 = polish/metrics/tracing (deferred to backlog).
 
 ---
 
-### Category A — Language Coverage (Extend to Python, Go, Java, and Beyond)
+---
 
-The current pipeline has first-class support only for TypeScript/JavaScript via SCIP. Python and Go have indexer stubs. Java, C, C++, C#, Scala, and PHP have no support at all. This is the highest-leverage area because every downstream stage — embeddings, justification, health reports, pattern detection — is only as good as the graph they receive.
+### Category L — Algorithmic Depth (Capturing the Substrate)
 
-#### TBI-A-01: Activate the Python SCIP Decoder
+The indexing algorithm must become a proprietary, deeply defensible mechanism that captures the true "soul and substrate" — the deep semantics, intent, and architecture — of any codebase. Syntax is not semantics, and a call graph is not an architecture. These 22 remaining tasks (19 core across 8 Alpha waves + 3 deferred) represent the gap between "syntax reader" and "intent-aware intelligence engine." They are not infrastructure bugs — they are fundamental blind spots where the pipeline misjudges context, miscalculates relevance, or fails to capture semantics.
+
+The tasks are organized around the **signal convergence** model: structural signals (graph position, PageRank, communities), intent signals (tests, docs, commits, entry points), temporal signals (co-change, blame, drift), and domain signals (ontology, conventions, rules) are computed independently and converge into a pre-computed **Entity Profile** — the single artifact agents consume. Each Alpha wave produces one or more signal families, and each task's description specifies which signal it produces and how it feeds into the profile.
+
+Organized into six sub-categories: Call Graph & Execution Graph Completeness, Semantic Graph Analysis, Embedding & Search Intelligence, Justification Quality, Entity Model Fidelity, and Temporal Context & Delivery Layer. Tasks marked ~~strikethrough~~ have been removed, superseded, or absorbed — see notes at each for rationale.
+
+---
+
+#### Sub-category 1: Call Graph & Execution Graph Completeness
+
+---
+
+#### ~~TBI-L-01: SCIP Two-Pass Decoder~~ — ABSORBED into L-18
+
+SCIP `scip-decoder.ts` already has Pass 2 (lines 83-113) creating `references` edges. The remaining work — wiring these as `calls` edges — is a sub-task of L-18's edge kind overhaul, not a standalone task. See L-18 sub-task 8.
+
+---
+
+#### TBI-L-02: Cross-File Call Edge Resolution in Tree-Sitter — ✅ DONE
 
 **Priority: P1**
 
-`lib/indexer/languages/python/index.ts` runs `scip-python` and writes its output to a `.scip` file, but `lib/adapters/scip-code-intelligence.ts` returns an empty array when it encounters a Python SCIP index. The binary protobuf decoder is a TypeScript TODO. SCIP for Python would give exact cross-file symbol resolution — method definitions, class hierarchies, import chains — with zero false positives.
+Tree-sitter parsers only create within-file edges via regex pattern matching. When a function calls an imported symbol (`import { validate } from './validator'; validate(input)`), no `calls` edge is created between the calling function and the imported `validate` function. The import edge exists (file → file), but the function-level call edge does not.
 
-**Sub-tasks:**
-1. Read the SCIP protobuf schema (`scip.proto`) — already used for TypeScript. Confirm the Python indexer produces a valid binary `.scip` file on a real repo.
-2. Wire the Python SCIP binary path through `runSCIP` in `indexing-heavy.ts` to pass the output file path to the decoder.
-3. In `scip-code-intelligence.ts`, implement the SCIP decode path for `.scip` files that originate from `scip-python`. The schema is identical to TypeScript — only the symbol naming convention differs. Map Python symbols (`module.Class#method().`) to Unerr entity kinds and normalize file paths.
-4. Add a corpus of Python SCIP test fixtures (a real `.scip` output from a small Python project) under `lib/adapters/__tests__/fixtures/` and assert the decoded entity/edge count matches expectations.
-5. Update `runSCIP` in `indexing-heavy.ts` to pass `language: "python"` through to the decoder so the SCIP adapter routes correctly.
+**Implementation (completed):**
+1. ✅ Created shared `lib/indexer/cross-file-calls.ts` module with `resolveCrossFileCalls()` — runs as post-processing after all tree-sitter parsing in `parseRest()`.
+2. ✅ Resolves import edges to target entities using file entity ID → file path → callable entity lookup. Handles extension-less imports and index file variants.
+3. ✅ Scans function/method bodies for `name(` and `new Name(` patterns matching imported symbols.
+4. ✅ Added TypeScript same-file call detection (`detectTypeScriptCallEdges()` in `typescript/tree-sitter.ts`) for parity with Python/Go/Java parsers.
+5. ✅ Added tests: 8 test cases covering cross-file calls, external import skipping, constructor calls, deduplication.
 
-**Affected files:** `lib/adapters/scip-code-intelligence.ts`, `lib/indexer/languages/python/index.ts`, `lib/temporal/activities/indexing-heavy.ts`
+**Affected files:** `lib/indexer/cross-file-calls.ts` (new), `lib/indexer/languages/typescript/tree-sitter.ts`, `lib/temporal/activities/indexing-heavy.ts`
 
-**Done when:** A Python repo with 50+ files produces non-zero entities and edges from the SCIP path, cross-file call edges resolve, and the unit test passes with the fixture.
-
-**Unlocks:** 2.3 Call Graph, 2.4 Import Chain, 2.8 Impact Analysis, 5.3 Dead Code, 5.5 Circular Deps, 5.6 Fan-In/Out for Python repos.
+**Done when:** ✅ Function calls to imported symbols produce `calls` edges. TypeScript has same-file call detection parity with Python/Go. Cross-file resolution runs in `parseRest()` pipeline.
 
 ---
 
-#### TBI-A-02: Activate the Go SCIP Decoder
+#### ~~TBI-L-05: O(1) Dedup in SCIP Decoder~~ — DONE
+
+Already implemented. `scip-decoder.ts:38` uses `seenIds = new Set<string>()` for O(1) dedup.
+
+---
+
+#### TBI-L-18: Call Graph Foundation — Wire Calls Edges + Execution Graph
+
+**Priority: P1** — **THE CRITICAL GAP — THE LOAD-BEARING WALL**
+
+The topological sort (line 121 of `topological-sort.ts`) uses ONLY `calls` edges: `if (edge.kind !== "calls") continue`. But **no parser creates `calls` edges**. SCIP creates `references`. Tree-sitter creates `imports`, `extends`, `implements`, `member_of`. Result: every entity lands on the same topological level. The bottom-up justification — the core differentiator — degenerates into a flat batch. Impact analysis, `get_callers`/`get_callees`, and cascading staleness all return empty.
+
+**Verified:** `EdgeKind` includes `"implements"` but NO parser creates these edges. Zero `emits`, `listens_to`, `mutates_state` edge kinds exist in the codebase. SCIP Pass 2 creates `references` edges, not `calls`.
+
+**Phased approach** — L-18a is the 80/20 fix that unblocks the entire roadmap. L-18b adds depth for event-driven codebases.
+
+**Phase L-18a: Wire Existing References as Calls** ✅ **DONE**:
+1. ✅ **(Absorbed from L-01)** Fixed `scip-decoder.ts` Pass 2: replaced broken `refId` computation (which hashed target symbol's kind/name against current file) with containment-based lookup using per-file entity index built in Pass 1. Binary search finds the entity whose `startLine ≤ referenceLine`. Classifies edges as `calls` (function/method targets) or `references` (class/variable/module targets). Deduplicates edges.
+2. ✅ **Updated `topologicalSortEntityIds` AND `topologicalSortEntities` to traverse `calls` AND `references` edges.** Also updated `dead-code-detector.ts` to count `references` as inbound edges.
+3. ✅ Added tests: SCIP edge classification tests, topological sort multi-level tests (chain, diamond, cycle, self-loop), cross-file call resolution tests.
+
+**Phase L-18b: Event/Plugin Edge Detection** (depth — can ship after L-18a without blocking other waves):
+4. Add `emits`, `listens_to`, `mutates_state` to `EdgeKind` type in `lib/indexer/types.ts`.
+5. In TypeScript tree-sitter: detect `.emit(`, `.on(`, `.addEventListener(` patterns → create `emits`/`listens_to` edges with the event name as edge metadata.
+6. In TypeScript tree-sitter: wire the captured `implements` regex group (group 8, currently extracted but ignored at line 151) to create actual `implements` edges.
+7. In Go tree-sitter: detect interface satisfaction patterns → `implements` edges.
+8. Add state mutation detection: functions that call `.save()`, `.update()`, `.delete()` on model objects → `mutates_state` edges.
+9. **Manifest/config scanning for infrastructure-level event edges:** Parse deployment manifests (`serverless.yml`, CDK constructs, `docker-compose.yml` service dependencies) to discover Lambda triggers, message queue subscriptions, and service-to-service event connections that are invisible in application code. Create `emits`/`listens_to` edges from infrastructure definitions.
+10. **Update `topologicalSortEntityIds` to traverse ALL edge kinds, not just `calls`** — broaden the filter to include the new semantic edge kinds with configurable traversal weights.
+11. Add ArangoDB edge collections for new edge kinds (or use the existing generic edge collection with kind discrimination).
+12. Add tests: EventEmitter-based code → verify `emits`/`listens_to` edges exist and topological sort orders emitters before listeners.
+
+**Affected files:** `lib/indexer/scip-decoder.ts`, `lib/justification/topological-sort.ts`, `lib/indexer/types.ts`, `lib/indexer/languages/typescript/tree-sitter.ts`, `lib/indexer/languages/go/tree-sitter.ts`, `lib/adapters/arango-graph-store.ts`
+
+**Done when (L-18a):** Topological sort produces multiple levels (not a flat batch). `get_callers`/`get_callees` MCP tools return real data. Impact analysis traces actual call chains.
+
+**Done when (L-18b):** Event-driven architectures show connected components in the graph. `implements` edges connect classes to interfaces.
+
+---
+
+#### Sub-category 2: Semantic Graph Analysis
+
+---
+
+#### ~~TBI-L-12: Graph-Theoretic Blast Radius~~ — SUPERSEDED by L-19
+
+L-12 was "anything better than degree centrality." L-19 is "specifically PageRank with edge-type weighting" — a strictly superior approach that solves the same problem. Both modify `centrality.ts` and `graph-context-builder.ts`. Skip the intermediate step.
+
+---
+
+#### TBI-L-19: Semantic PageRank + Calibrated Confidence Model — ✅ DONE (Alpha-2)
+
+**Priority: P1** — **Status: Complete**
+
+Two connected problems: (1) centrality uses degree counting, making `logger.info()` look like the most critical entity, and (2) justification confidence is self-reported by the LLM (meaningless without calibration). Both are fixed by computing observable structural signals.
+
+**Part A: Semantic PageRank** — ✅ Done. Weighted PageRank implemented in `lib/justification/pagerank.ts` using power iteration (no graphology dependency — self-contained ~120 lines). Edge weights per kind: `mutates_state` 0.9, `implements` 0.7, `emits`/`listens_to` 0.6, `calls` 0.5, `references` 0.3, `extends` 0.3, `imports` 0.1, `member_of` 0.05, `contains` 0.0. Convergence: ε=0.0001, max 100 iterations, damping=0.85. Both raw scores and percentile ranks stored on ALL entities via `precomputeBlastRadius`. `computeApproxCentrality()` retained as fallback for entities without pre-computed PageRank.
+
+**Part B: Calibrated Confidence** — ✅ Done. `lib/justification/confidence.ts` computes multi-signal confidence from: structural (callers, callees, PageRank percentile → 0-0.5), intent (docs, tests, descriptive name → 0-0.3), LLM (raw confidence × tier weight → 0-0.2). Composite and breakdown stored as `calibrated_confidence` and `confidence_breakdown` on justification documents. Raw `confidence` preserved for backwards compatibility.
+
+**Remaining:** Temporal confidence dimension (git history age/recency) — deferred to Alpha-3.
+
+**Affected files:** `lib/justification/pagerank.ts` (new), `lib/justification/confidence.ts` (new), `lib/justification/graph-context-builder.ts`, `lib/temporal/activities/graph-analysis.ts`, `lib/temporal/activities/justification.ts`
+
+**Done when:** ~~`logger.info()` ranks lower than `PaymentService.processOrder()` in blast radius.~~ ✅ Achieved — PageRank naturally deprioritizes utility wrappers. ~~Confidence scores have per-dimension breakdown.~~ ✅ Achieved. ~~Agents can distinguish "high confidence because we have tests and callers" from "high confidence because the LLM guessed 0.9."~~ ✅ Achieved via `confidence_breakdown`.
+
+---
+
+#### TBI-L-20: Intent Signal Extraction & Hermeneutic Propagation (Part A ✅ DONE, Part B remaining)
+
+**Priority: P1** — **Status: Part A (signal-aware prompt structure + intent extraction) complete in Alpha-3. Part B (hermeneutic propagation with signal weighting) remaining.**
+
+Current `propagateContextActivity` (3-pass in `context-propagator.ts`) uses **frequency-based aggregation**: dominant child tag by count, top-10 domain concepts by frequency, average confidence. This is mechanical — a utility function used by both Auth and Billing gets the tag of whichever calls it more.
+
+**Verified:** `context-propagator.ts` lines 90-143 (bottom-up) counts tag frequency; lines 149-177 (top-down) only propagates to `"unclassified"`/`"utility"`/`"misc"` children.
+
+**The core insight:** Intent has four independent sources, each with different confidence. The LLM should see ALL of them as structured signals, not have to discover intent from code alone:
+
+| Source | Signal | Confidence | Example |
+|--------|--------|------------|---------|
+| **Tests** | Test names + assertions | High (human-written intent) | `"should reject expired payment methods"` |
+| **Entry points** | URL path, CLI command, CRON schedule | High (business-facing) | `POST /api/checkout` |
+| **Commits** | Commit messages for recent changes | Medium (may be vague) | `"fix: handle partial refunds"` |
+| **Naming** | Function/class name conventions | Medium (may be misleading) | `validatePaymentCard` → payment validation |
+
+Upgrade to intent-aware hermeneutic circle that propagates ALL intent signals:
+- **Pass 1 (Bottom-Up — Mechanism):** "What does this entity DO?" (current behavior, keep)
+- **Pass 2 (Top-Down — Intent):** Once entry points are reached, push their intent context BACK DOWN to all descendants, weighted by graph distance. A utility function is now understood as "Validates the Stripe webhook payload before order fulfillment," not just "Validates an object."
+
+**Sub-tasks:**
+1. Build `extractIntentSignals(entity, edges, testEntities, commitHistory)` that produces a structured intent object per entity:
+   ```typescript
+   intent: {
+     from_tests: ["should reject expired payment methods", "should apply discount codes"],
+     from_entry_points: ["POST /api/checkout", "POST /api/refund"],
+     from_commits: ["handle partial refunds for multi-currency orders"],
+     from_naming: "validates payment card details before charge",
+     synthesized: null  // filled by LLM during justification
+   }
+   ```
+2. In tree-sitter parsers, extract test assertion patterns: `expect(X).toBe(Y)`, `assert X == Y`, `it("description", ...)`, `describe("context", ...)`. Link test entities to entities they test (by import analysis: `import { processPayment } from './payment'` in a `.test.ts` file → link to `processPayment`).
+3. Identify entry point entities by file path patterns (`app/api/`, `pages/api/`, `**/cron/**`, `**/cli/**`) and entity naming conventions (`handler`, `route`, `controller`).
+4. Structure the justification prompt around signals (see signal-aware prompt format below) so the LLM reasons about signal agreement/disagreement explicitly.
+5. In top-down pass: propagate entry point intent context to ALL descendants, not just unclassified ones. Weight propagation by graph distance (closer = stronger inheritance).
+6. Store `intent_signals` object alongside existing `propagated_feature_tag` on justification documents. The `synthesized` field is the LLM's reconciliation of all signals.
+7. When signals disagree (test says "payment" but naming says "validation"), the LLM produces a `synthesized` intent that explains the relationship: "Validates payment card details as part of the checkout flow."
+
+**Signal-aware prompt structure** (replaces monolithic prompt):
+```
+STRUCTURAL SIGNAL:
+- Callers: CheckoutController.submit, RefundHandler.process
+- Callees: StripeAdapter.charge, PaymentValidator.validate
+- Centrality: 0.73 (top 5% in this codebase)
+- Community: Payment Processing cluster (23 entities)
+
+INTENT SIGNAL:
+- Tests: "should reject expired cards", "should handle partial refunds"
+- Entry point: Called from POST /api/checkout
+- Naming: "processPayment" suggests payment orchestration
+
+TEMPORAL SIGNAL:
+- Changed 12 times in last 90 days
+- Co-changes with: stripe-adapter.ts (85% co-change rate)
+
+Given these signals, classify this entity:
+```
+
+**Affected files:** `lib/justification/context-propagator.ts`, `lib/justification/intent-extractor.ts` (new), `lib/justification/prompt-builder.ts`, `lib/temporal/activities/justification.ts`, `lib/indexer/languages/typescript/tree-sitter.ts`
+
+**Done when:** A utility validation function called by both Auth and Billing has TWO intent annotations: "validates credentials for authentication flow" AND "validates invoice data for billing flow." Justification prompts show structured signals. Intent signals are stored on justification documents.
+
+---
+
+#### TBI-L-21: Community Detection as Pre-Justification Signal ✅ DONE (Alpha-3)
+
+**Priority: P2** — **Status: Complete**
+
+Current feature tags are LLM-guessed (~70% LLM, ~30% heuristic hints from `model-router.ts`). Louvain community detection EXISTS in `pattern-mining.ts` but is used only for pattern mining, NOT for feature/domain discovery.
+
+**Verified:** `graphology-communities-louvain` runs in `pattern-mining.ts:58` but output feeds pattern detection, not justification feature tags.
+
+**Key architectural change:** Move Louvain from post-justification (pattern detection) to **pre-justification**. Community membership is a powerful structural signal that the LLM should see DURING justification, not discover after. "This function is in the same community as PaymentService, CheckoutController, and StripeAdapter" tells the LLM exactly which domain it belongs to — before it even reads the code.
+
+Louvain is sufficient — no need for spectral partitioning (Laplacian eigenvalues) unless Louvain produces clearly wrong partitions at this graph scale (1k-50k entities).
+
+**Sub-tasks:**
+1. Extract Louvain community detection into a reusable `detectCommunities()` function (currently embedded in pattern-mining).
+2. Run community detection BEFORE justification as a new step in `justify-repo.ts` workflow (after topological sort, before justification loop).
+3. Store community assignments in Redis alongside topological levels: `community:{orgId}:{repoId}:{entityId}` → community label.
+4. Pass community membership as context to `justifyBatch` — include in the STRUCTURAL SIGNAL section of the prompt: `"Community: Payment Processing cluster (23 entities: PaymentService, CheckoutController, StripeAdapter, ...)"`.
+5. After justification: validate LLM-guessed `feature_tag` against community structure. If 8/10 entities in a community have tag "Billing" and 2 have "Authentication", flag the 2 for review or override.
+
+**Affected files:** `lib/temporal/activities/pattern-mining.ts`, `lib/temporal/activities/justification.ts`, `lib/temporal/workflows/justify-repo.ts`, `lib/justification/community-detection.ts` (new, extracted from pattern-mining)
+
+**Done when:** Community labels are computed before justification and appear in justification prompts. Feature tags within a Louvain community are consistent. LLM names the cluster but doesn't determine its membership.
+
+---
+
+#### Sub-category 3: Embedding & Search Intelligence
+
+---
+
+#### TBI-L-07: Kind-Aware Embedding Strategies + Two-Pass Embedding
 
 **Priority: P1**
 
-Mirrors TBI-A-01 but for Go. `lib/indexer/languages/go/index.ts` runs `scip-go`. The SCIP output format is the same protobuf. Go symbol naming uses a different convention (`go module/package.Type#Method`). The decoder path in `scip-code-intelligence.ts` has the same stub.
+Two problems: (1) all entity types use identical embedding — modules/namespaces are excluded entirely, and (2) the pipeline runs embed → ontology → justify, so first-time embeddings have NO justification context (`loadJustificationMap()` returns empty on first index). Only re-indexing benefits from justifications in embeddings.
+
+**Verified:** `buildEmbeddableDocuments()` in `embedding.ts` applies the same logic to all kinds. Files/directories/modules/namespaces excluded at line 84.
+
+**Fix: Two-pass embedding** (fixes the ordering problem):
+- **Pass 1 (Structural):** Runs after indexing, before justification. Contains: entity name, kind, signature, file path, body (AST-summarized from L-23). Purpose: enable ontology discovery and initial search. This is what currently happens, but with kind-aware strategies.
+- **Pass 2 (Synthesis):** Runs after justification. Contains: everything from Pass 1 PLUS business_purpose, feature_tag, domain_concepts, intent signals, structural fingerprint. Purpose: enable intent-aware search.
+
+The bi-temporal `valid_to` pattern already supports this — Pass 1 embeddings get superseded by Pass 2.
 
 **Sub-tasks:**
-1. Confirm `scip-go` produces a valid `.scip` output on a small Go module (test locally or in CI via a Go fixture repo).
-2. Map Go SCIP symbol kinds to Unerr entity kinds: `package` → `file`, `type` → `class`, `func` → `function`, `method` → `function`, `var`/`const` → `variable`.
-3. Handle Go-specific edge types: interface satisfaction (`implements` edge), embedded struct fields (`contains` edges between class entities).
-4. Normalize Go file paths (Go module paths vs. filesystem paths can diverge — `go.mod` root is the reference point).
-5. Add Go SCIP test fixture and assertions. Run the fixture through the full `runSCIP` activity in a test container.
+1. ✅ Define per-kind embedding strategies (Pass 1): `buildKindAwareText()` in `embedding.ts` switches on entity kind — classes emphasize method inventory + extends, interfaces emphasize contracts, modules/namespaces embed export surface.
+2. ✅ Re-include modules and namespaces with their custom strategy — exclusion filter narrowed to file/directory only.
+3. ✅ Implement Pass 2 embedding trigger: `reEmbedWithJustifications` activity called from justify-repo workflow Step 8b after justifications complete.
+4. ✅ Pass 2 enrichment: `buildKindAwareText` includes `Purpose`, `Feature`, `Domain`, and `Community` fields from justification + entity metadata when available.
+5. A/B test embedding quality: compare retrieval precision between Pass 1 and Pass 2 on a held-out query set.
 
-**Affected files:** `lib/adapters/scip-code-intelligence.ts`, `lib/indexer/languages/go/index.ts`, `lib/temporal/activities/indexing-heavy.ts`
+**Affected files:** `lib/temporal/activities/embedding.ts`, `lib/temporal/workflows/embed-repo.ts`, `lib/temporal/workflows/justify-repo.ts`
 
-**Done when:** A Go repo with 30+ files produces non-zero entities with correct `kind` values, interface implementation edges appear, and the fixture test passes.
-
-**Unlocks:** Same as TBI-A-01 but for Go repos.
+**Done when:** Different entity kinds produce different embedding documents. Modules and namespaces are embedded. First-time embeddings work for search (Pass 1). Post-justification embeddings capture business intent (Pass 2).
 
 ---
 
-#### TBI-A-03: Java Support via SCIP-Java
+#### TBI-L-08: Decouple Entity Embeddings from LLM Justification Text
 
 **Priority: P2**
 
-Java is one of the most common enterprise languages. `scip-java` is a production-ready SCIP indexer from Sourcegraph. Adding Java support requires: adding `java` to the language scanner, invoking `scip-java` in `runSCIP`, and decoding its output (same SCIP protobuf format, new symbol naming convention).
+Embedding document includes LLM-generated `business_purpose`, `domain_concepts`, `feature_tag`. If the LLM hallucinates (which happens at ~5-15% rate per entity), the embedding space is polluted — semantically similar entities are pushed apart by divergent hallucinated descriptions.
 
 **Sub-tasks:**
-1. Add `java` to `SUPPORTED_LANGUAGES` in `lib/indexer/scanner.ts`. Add detection heuristics: presence of `pom.xml`, `build.gradle`, `*.java` files.
-2. Add `lib/indexer/languages/java/index.ts` — mirrors the Python/Go pattern. Invokes `scip-java index --output scip.scip` in the workspace root.
-3. Map Java SCIP symbols to Unerr entity kinds: `class`, `interface`, `enum` → `class`; `method` → `function`; `field` → `variable`.
-4. Handle Java package structure in file path normalization (Java uses `/src/main/java/` prefix conventions).
-5. Add `java` to the monorepo scanner heuristics (`lib/indexer/monorepo.ts`) to detect Maven multi-module and Gradle multi-project setups.
-6. Add SCIP decode path in `scip-code-intelligence.ts` for `language: "java"`.
+1. Create two embedding variants: **code embedding** (entity text only — name, signature, body, imports) and **semantic embedding** (justification text + code).
+2. Store both embeddings in pgvector with a `variant` column.
+3. At query time, use weighted combination: `0.7 * code_similarity + 0.3 * semantic_similarity` (tunable).
+4. This allows the system to find structurally similar code even when justifications are wrong.
 
-**Affected files:** `lib/indexer/scanner.ts`, `lib/indexer/monorepo.ts`, `lib/indexer/languages/java/index.ts` (new file), `lib/adapters/scip-code-intelligence.ts`
+**Affected files:** `lib/temporal/activities/embedding.ts`, `lib/embeddings/hybrid-search.ts`
 
-**Done when:** A Java repo with Maven structure produces entities for all public classes and methods, with `extends`/`implements` edges for class hierarchy.
+**Done when:** Two embedding variants exist per entity. Search results are not degraded by LLM hallucinations in justification text.
 
 ---
 
-#### TBI-A-04: Tree-Sitter Parsers for C, C++, C#, Scala, PHP, Ruby, Rust
+#### TBI-L-14: Entity Profile Cache + MCP Profile Delivery
 
 **Priority: P2**
 
-For languages without a production SCIP indexer, tree-sitter is the fallback. The current tree-sitter implementation (`lib/indexer/languages/generic/`) uses regex patterns. Real tree-sitter grammars give structured AST access — correct function/class/method detection without regex fragility.
+`semantic_search` returns callers/callees but NOT justification metadata (taxonomy, feature_tag, business_purpose). Only `search_by_purpose` returns justification fields. Current MCP tools make 3-5 database calls per request (entity from ArangoDB, justification from ArangoDB, callers/callees from ArangoDB, embeddings from pgvector).
 
-**Sub-tasks (one per language, can be done independently):**
+**The Entity Profile is the product.** Instead of attaching raw justification fields to search results, pre-compute a comprehensive **Entity Profile** per entity and cache it. Every MCP tool returns a projection of this profile — a single cache read instead of N database calls.
 
-1. **C/C++** — `lib/indexer/languages/c/index.ts`. Detect: `*.c`, `*.cpp`, `*.h`, `*.hpp`. SCIP alternative exists (`scip-clang`) — prefer that if stable. Otherwise tree-sitter grammar `tree-sitter-cpp`. Entity kinds: `function`, `struct`/`class`, `typedef`.
+```typescript
+interface EntityProfile {
+  // Identity
+  id: string; kind: string; name: string; file_path: string;
+  // Structural signal
+  callers: string[]; callees: string[]; centrality: number;
+  community: string; blast_radius: number;
+  // Intent signal
+  business_purpose: string; feature_tag: string; taxonomy: string;
+  test_coverage: string[];  // assertions describing expected behavior
+  // Confidence
+  confidence: { composite: number; breakdown: { structural: number; intent: number; temporal: number } };
+  // Metadata
+  architectural_pattern: string; complexity: number; is_dead_code: boolean;
+}
+```
 
-2. **C#** — `lib/indexer/languages/csharp/index.ts`. SCIP indexer: `scip-dotnet` (experimental). Tree-sitter fallback: `tree-sitter-c-sharp`. Entity kinds: `class`, `interface`, `method`, `property`.
+**Sub-tasks:**
+1. Implement `buildEntityProfile()` function that assembles all signals into a single profile object per entity.
+2. After justification completes, bulk-compute profiles for all entities and store in Redis with 24-hour TTL: `profile:{orgId}:{repoId}:{entityId}`.
+3. Update all MCP tools (`semantic.ts`, `business.ts`, `inspect.ts`, `file-context.ts`) to read from profile cache. Falls back to direct DB query on cache miss.
+4. Profile includes: identity, structural signal (callers, callees, centrality, community, blast_radius), intent signal (business_purpose, feature_tag, taxonomy, test_coverage), confidence (composite + breakdown), and metadata (architectural_pattern, complexity, is_dead_code).
+5. Invalidate profile cache when entity or justification changes (hook into incremental indexing).
+6. **`refresh_context` MCP tool** — Expose a tool that agents can call mid-session to trigger incremental profile cache refresh for entities they've modified. When an agent changes code during an agentic loop, cached profiles become stale. `refresh_context({ files: ["lib/payment/processor.ts"] })` re-computes profiles for affected entities without requiring a full re-index. This enables agentic workflows where the agent's own changes are immediately reflected in subsequent queries. Lightweight: re-reads the changed files, re-hashes entities, updates affected profiles in cache.
 
-3. **Scala** — `lib/indexer/languages/scala/index.ts`. SCIP indexer: `scip-scala` (via Metals). Tree-sitter fallback: `tree-sitter-scala`. Entity kinds: `class`, `object`, `trait`, `def`.
+**Affected files:** `lib/mcp/entity-profile.ts` (new), `lib/mcp/tools/semantic.ts`, `lib/mcp/tools/inspect.ts`, `lib/mcp/tools/file-context.ts`, `lib/mcp/tools/refresh-context.ts` (new), `lib/temporal/activities/justification.ts`
 
-4. **PHP** — `lib/indexer/languages/php/index.ts`. Tree-sitter: `tree-sitter-php`. Entity kinds: `class`, `function`, `method`, `interface`.
-
-5. **Ruby** — `lib/indexer/languages/ruby/index.ts`. Tree-sitter: `tree-sitter-ruby`. Entity kinds: `class`, `module`, `method`.
-
-6. **Rust** — `lib/indexer/languages/rust/index.ts`. SCIP indexer: `rust-analyzer` produces LSIF/SCIP. Tree-sitter fallback: `tree-sitter-rust`. Entity kinds: `struct`, `enum`, `impl`, `fn`, `trait`.
-
-For each language:
-- Add detection heuristics to `lib/indexer/scanner.ts`
-- Implement `parseFile(filePath, source)` → `{entities[], edges[]}`
-- Add to `parseRest` routing in `indexing-heavy.ts`
-- Add unit test with a sample source file
-
-**Done when:** Each language correctly extracts entity names, kinds, and file paths. Cross-file edges are not required at tree-sitter level (SCIP handles that). Tests pass with sample fixtures.
+**Done when:** All MCP tools return Entity Profiles. Single cache read per entity instead of 3-5 DB calls. Profile includes structural, intent, and confidence signals. Agents can call `refresh_context` to update profiles for files they've modified mid-session.
 
 ---
 
-#### TBI-A-05: Monorepo Language Detection for Polyglot Repos
+#### TBI-L-15: Adaptive RRF k-Parameter
 
 **Priority: P3**
 
-`lib/indexer/monorepo.ts` detects sub-package roots but currently only runs SCIP for the primary detected language. In a monorepo with a Go backend and a TypeScript frontend, only one language gets SCIP coverage. The other falls through to tree-sitter.
+Fixed k=30 in `reciprocalRankFusion()`. Weights: semantic=0.7, keyword=1.0, justification=0.5.
+
+**Verified:** `hybrid-search.ts` line 243, k=30 hardcoded.
 
 **Sub-tasks:**
-1. In `monorepo.ts`, detect the dominant language per workspace root (not just per repo). A `packages/server/` directory with Go files should use `scip-go`; `packages/web/` with TypeScript files should use `scip-typescript`.
-2. In `runSCIP` (`indexing-heavy.ts`), accept `languagePerRoot: Record<string, string>` alongside the existing `languages` array. Run one SCIP indexer per root, each with its appropriate binary.
-3. Merge the resulting entities from multiple SCIP runs. De-duplicate on entity key (deterministic hash is already language-agnostic).
-4. Update `prepareRepoIntelligenceSpace` to return `languagePerRoot` in its result for passing through to `runSCIP`.
+1. Make k configurable per query or per result set size.
+2. Implement adaptive k based on result set variance: higher k when result sets are highly divergent (reduces impact of outliers), lower k when they agree (amplifies consensus).
+3. Evaluate weight tuning: current weights may over-emphasize keyword matches for code search.
 
-**Affected files:** `lib/indexer/monorepo.ts`, `lib/temporal/activities/indexing-heavy.ts`, `lib/temporal/workflows/index-repo.ts`
+**Affected files:** `lib/embeddings/hybrid-search.ts`
 
-**Done when:** A TypeScript + Go monorepo produces SCIP-quality entities for both subtrees.
-
----
-
-### Category B — Close the Precision Gap
-
-These tasks fix correctness issues where the pipeline produces structurally incomplete or incorrect data that cannot be compensated by downstream stages.
-
-#### TBI-B-01: Fix Shadow Swap Logic in Finalization
-
-**Priority: P1** · **Status: ✅ DONE**
-
-> **Implemented** (2026-02-28): `indexVersion` is now passed from the workflow to both `runSCIP` and `parseRest`, which forward it to `writeEntitiesToGraph`. All entities written to ArangoDB are stamped with the `indexVersion` UUID. The `reindex` API route already generated the `indexVersion` — the fix was wiring it through the activity inputs.
->
-> **Files changed:** `lib/temporal/activities/indexing-heavy.ts` (added `indexVersion` to `RunSCIPInput` and `ParseRestInput`, passed to `writeEntitiesToGraph`), `lib/temporal/workflows/index-repo.ts` (passes `indexVersion` to both activity calls).
-
-`finalizeIndexing` in `lib/temporal/activities/indexing-light.ts` is supposed to delete entities from the previous index version and promote the new one. The current implementation calls `deleteByIndexVersion("__old__")` but entities are never stamped with `"__old__"` — they retain their original `indexVersion` UUID. As a result, old entities accumulate across re-indexes, counts grow unboundedly, and stale entities appear in search results.
-
-**Remaining:** The cleanup of old-version entities in `finalizeIndexing` still references `"__old__"` — a follow-up should change it to delete by the `previousIndexVersion` UUID. The entity *stamping* half is now correct.
-
-**Affected files:** `lib/temporal/activities/indexing-heavy.ts`, `lib/temporal/workflows/index-repo.ts`
+**Done when:** RRF k-parameter adapts to query characteristics. Retrieval precision improves on diverse query types.
 
 ---
 
-#### TBI-B-02: Guarantee Orphan Embedding Cleanup After Re-Index
+#### TBI-L-22: Graph-RAG Embeddings with Structural Fingerprint
 
 **Priority: P2**
 
-When entities are removed during re-indexing (TBI-B-01 deletes old ArangoDB entities), their corresponding rows in the PostgreSQL `embeddings` table are not deleted. These orphan rows pollute semantic search results with entities that no longer exist in the graph.
+Entities are embedded in ISOLATION. Graph context (callers, callees, parent module) is added only post-search via `enrichWithGraph()` (line 373-413 of `hybrid-search.ts`), NOT during embedding generation. This means vector similarity cannot capture structural relationships.
+
+**Approach: Structural fingerprint, not Node2Vec.** Node2Vec/GraphSAGE require training and add heavy ML infrastructure. For codebase graphs of 1k-50k entities, a computed 5-dimensional structural fingerprint captures the same positional information without any training:
+
+```typescript
+structural_fingerprint(entity) = [
+  pagerank_score,           // how central (from L-19)
+  community_id,             // which cluster (from L-21)
+  depth_from_entry_point,   // how deep in the call stack
+  fan_in / fan_out ratio,   // consumer (high fan_in) vs provider (high fan_out)
+  is_boundary_node,         // touches external dependency? (from boundary-classifier.ts)
+]
+```
+
+Two functions with identical code but different graph positions (one at the API boundary, one deep in domain logic) are correctly distinguished.
 
 **Sub-tasks:**
-1. In `finalizeIndexing`, after the old-version ArangoDB entities are deleted, collect the deleted entity keys (returned by `deleteByIndexVersion` — currently returns `void`, needs to return `string[]`).
-2. Pass the deleted entity key list to a new `cleanupOrphanEmbeddings(entityKeys: string[])` call on the `IVectorSearch` port.
-3. Implement `cleanupOrphanEmbeddings` in the Supabase vector store adapter: `DELETE FROM embeddings WHERE entity_id = ANY($1)` and `DELETE FROM justification_embeddings WHERE entity_id = ANY($1)`.
-4. Add a test: insert 3 entity embeddings, delete 2 entities, assert only 1 embedding remains.
+1. Compute structural fingerprint per entity after PageRank and community detection complete.
+2. Before embedding, concatenate entity text with: (a) 1-hop neighborhood summary (`[CALLERS: foo, bar] [CALLEES: baz, qux]`), (b) structural fingerprint values as text tokens (`[CENTRALITY: 0.73] [COMMUNITY: payment_processing] [DEPTH: 3] [BOUNDARY: true]`).
+3. At query time, use structural fingerprint for re-ranking: among semantically similar results, boost entities with similar structural position to the query context.
+4. Benchmark: semantically similar entities that are also structurally close should rank higher than structurally distant matches.
 
-**Affected files:** `lib/temporal/activities/indexing-light.ts`, `lib/adapters/arango-graph-store.ts`, `lib/ports/graph-store.ts`, `lib/ports/vector-search.ts`
+**Affected files:** `lib/temporal/activities/embedding.ts`, `lib/embeddings/hybrid-search.ts`, `lib/justification/structural-fingerprint.ts` (new ~30-line module)
 
-**Done when:** After re-indexing, semantic search never returns entities that don't exist in ArangoDB.
+**Done when:** Embeddings encode structural position. Two functions with identical code but different graph positions produce different search rankings. No ML training required.
 
 ---
 
-#### TBI-B-03: Python and Go Import Edge Extraction in Tree-Sitter
+#### Sub-category 4: Justification Quality
+
+---
+
+#### TBI-L-09: Semantic Staleness Cascading (Change-Type Aware)
 
 **Priority: P2**
 
-When SCIP is unavailable (currently always for Python/Go), the tree-sitter fallback produces entities but no `imports` edges. Import chain analysis (`2.4 Import Chain Analysis`) returns empty results for Python and Go repos. The tree-sitter parsers already detect `import` statements — they just don't emit edges.
+Current staleness detection uses Jaccard set comparison on `domainConcepts` arrays. This is brittle — adding a single new concept to a callee triggers re-justification of all callers, even if the semantic meaning is unchanged.
+
+**Smarter approach: consider WHAT changed, not just whether the embedding moved.** A single cosine threshold misses important cases (signature changes that happen to produce similar embeddings) and triggers false cascades (comment edits).
+
+**Change-type classification:**
+
+| Change Type | Cascade? | Rationale |
+|------------|----------|-----------|
+| Signature changed (params, return type) | **Always** | Contract change — callers must re-evaluate |
+| Semantic anchors changed (decisions, mutations, errors) | **Always** | Business logic changed |
+| Body changed, anchors same | **Cosine check** | Internal refactor — cascade only if meaning shifted |
+| Comments/whitespace only | **Never** | No semantic change |
+| Test assertions changed | **Always** | Intent changed — re-justify to pick up new intent signal |
 
 **Sub-tasks:**
-1. In `lib/indexer/languages/python/tree-sitter.ts`, after extracting entities, scan parsed `import_statement` and `import_from_statement` nodes. For each imported module, compute the target file path (resolve relative imports via `sys.path` heuristics — best-effort, not exact). Emit an `imports` edge from the source file entity to the target file entity.
-2. In `lib/indexer/languages/go/tree-sitter.ts`, scan `import_declaration` nodes. Resolve import paths to file entities within the same workspace. Emit `imports` edges.
-3. Add a unit test for each: given a multi-file Python/Go workspace, assert that `imports` edges exist between the correct file entities.
-4. Update the integration test in `lib/indexer/__tests__/scanner.test.ts` to assert that Python/Go repos produce at least some `imports` edges when using the tree-sitter path.
+1. Classify change type by comparing old vs new entity: diff signature, semantic anchors (from L-23), body hash, and comment-only changes.
+2. Apply cascade rules per change type (see table above).
+3. For body-changed-anchors-same case: compute cosine similarity between old and new justification embeddings. If similarity > 0.95, skip cascade.
+4. Add a fallback TTL: re-justify entities older than 30 days regardless of body hash match (captures ontology drift).
+5. Log cascade decisions with reasons for observability.
 
-**Affected files:** `lib/indexer/languages/python/tree-sitter.ts`, `lib/indexer/languages/go/tree-sitter.ts`, `lib/indexer/__tests__/scanner.test.ts`
+**Affected files:** `lib/temporal/activities/justification.ts`, `lib/justification/staleness.ts` (new ~40-line module)
 
-**Done when:** A Python repo with `from services import PaymentService` produces an `imports` edge between the two file entities.
+**Done when:** Comment edits never cascade. Signature changes always cascade. Body refactors cascade only when semantic meaning shifts. Cascade decisions are logged with reasons.
 
 ---
 
-### Category C — Deepen the Brain
+#### ~~TBI-L-10: AST-Aware Body Truncation~~ — SUPERSEDED by L-23
 
-These tasks improve the *quality* of data the pipeline produces, directly impacting justification accuracy, business context richness, and feature completeness.
-
-#### TBI-C-01: TypeScript Decorator Extraction
-
-**Priority: P2**
-
-TypeScript decorators (`@Injectable()`, `@Controller('/api')`, `@Column({ type: 'varchar' })`) carry significant architectural intent — NestJS modules, TypeORM entities, Angular components. Currently, decorators are not extracted as structured metadata on entity documents. The SCIP indexer sees them as calls but doesn't surface them as first-class entity properties.
-
-**Sub-tasks:**
-1. In `lib/indexer/languages/typescript/tree-sitter.ts`, after extracting a `class` entity, walk its `decorator` nodes. Extract: decorator name, decorator arguments (stringify). Store as `metadata.decorators: string[]` on the entity document.
-2. In `lib/indexer/languages/typescript/scip.ts`, post-process SCIP symbols for decorator occurrences. SCIP records decorator calls as symbol references — map `@Injectable` occurrences back to the class entity they annotate.
-3. Update `EntityDoc` type in `lib/ports/types.ts` to include `metadata?: { decorators?: string[]; annotations?: string[] }` (generic enough for Java annotations too).
-4. In `lib/justification/prompt-builder.ts`, include decorator metadata in the entity prompt: _"This class is decorated with: @Controller('/payments'), @UseGuards(AuthGuard)"_.
-5. In `lib/adapters/arango-graph-store.ts`, ensure `metadata` is written to ArangoDB with the entity.
-
-**Affected files:** `lib/indexer/languages/typescript/tree-sitter.ts`, `lib/indexer/languages/typescript/scip.ts`, `lib/ports/types.ts`, `lib/justification/prompt-builder.ts`, `lib/adapters/arango-graph-store.ts`
-
-**Done when:** A NestJS `@Controller('/payments')` class entity has `metadata.decorators: ["@Controller('/payments')"]` in ArangoDB, and its justification mentions the HTTP route it exposes.
+L-10 was "smarter truncation" — a stepping stone to L-23's full AST-aware hierarchical summarization. Go straight to L-23 to avoid touching `embedding.ts` and `prompt-builder.ts` twice.
 
 ---
 
-#### TBI-C-02: Cross-Level Callee Context Propagation in Justification
-
-**Priority: P2**
-
-The current topological sort processes entities level by level but only passes callee justifications from entities in *already-completed lower levels*. Entities within the same level that call each other don't benefit from sibling context. In large files with tightly-coupled helper functions all at the same topological level, this means each helper is justified without awareness of its siblings.
-
-**Sub-tasks:**
-1. In `lib/justification/topological-sort.ts`, add a second pass after level assignment: for entities at the same level, build a dependency sub-graph using only `calls` edges within that level. Run a secondary topological sort within the level.
-2. In `lib/temporal/workflows/justify-repo.ts`, process intra-level entities in the sub-sorted order (not all in parallel). Each entity in the sub-sort benefits from already-justified same-level callees.
-3. Keep parallelism: entities with no intra-level dependencies still process in parallel. Only entities with intra-level call dependencies serialize.
-4. Update the topological sort unit test to assert sub-level ordering for a cycle-free intra-level dependency case.
-
-**Affected files:** `lib/justification/topological-sort.ts`, `lib/temporal/workflows/justify-repo.ts`, `lib/justification/__tests__/topological-sort.test.ts`
-
-**Done when:** In a set of 5 helper functions at the same topological level where `A → B → C`, entity `B` is justified after `A` and its justification references `A`'s context; `C` is justified after `B`.
-
----
-
-#### TBI-C-03: Persist Workspace Manifests for Ontology Context
-
-**Priority: P2**
-
-`prepareRepoIntelligenceSpace` discovers the repo's language, package manager, and framework (via `package.json`, `go.mod`, `pyproject.toml`, `pom.xml`). This manifest data — `project_name`, `tech_stack`, `framework`, `entry_points` — is currently returned as part of the activity result but not persisted anywhere. The ontology discovery stage (`discoverOntologyWorkflow`) lacks access to it unless the workspace directory still exists (it may not after cleanup). Ontology terms are less accurate without knowing the framework.
-
-**Sub-tasks:**
-1. Define a `WorkspaceManifest` type in `lib/ports/types.ts`: `{ projectName: string; techStack: string[]; frameworks: string[]; entryPoints: string[]; packageManager: string; }`.
-2. In `prepareRepoIntelligenceSpace`, extract manifest data from discovered config files (already partially done for language detection). Populate a `WorkspaceManifest`.
-3. Persist the manifest to ArangoDB: a `workspace_manifests` document collection (or add to the existing `repos` collection in ArangoDB if one exists). Key: `{orgId}-{repoId}`.
-4. In `discoverOntologyWorkflow` / `extractOntology` activity, fetch the manifest from ArangoDB at the start. Include `projectName` and `frameworks` in the ontology extraction prompt: _"This is a NestJS API called 'payments-service'. Common terms from the codebase:"_.
-5. Add a `getWorkspaceManifest(orgId, repoId)` method to `IGraphStore` port.
-
-**Affected files:** `lib/temporal/activities/indexing-heavy.ts`, `lib/ports/types.ts`, `lib/ports/graph-store.ts`, `lib/adapters/arango-graph-store.ts`, `lib/temporal/activities/ontology.ts`, `lib/temporal/workflows/discover-ontology.ts`
-
-**Done when:** The ontology extraction prompt for a NestJS repo includes the framework name, and the resulting domain terms are more specific to the project than without the manifest.
-
----
-
-#### TBI-C-04: Function Signature Extraction in Tree-Sitter Fallback
+#### TBI-L-11: Quality Scoring with Positive Reinforcement
 
 **Priority: P3**
 
-SCIP extracts full function signatures (parameter names, types, return types). The tree-sitter fallback extracts function names but not signatures — the `signature` field on tree-sitter entities is either empty or a bare name. Justification prompts that include the signature give the LLM significantly more context (`processPayment(invoice: Invoice, gateway: PaymentGateway): Promise<Receipt>` vs just `processPayment`).
+Current `scoreJustification()` only penalizes: checks for boilerplate phrases, vague language, minimum description length. It never rewards high-quality outputs. This means the quality score is a penalty counter, not a quality measure.
 
 **Sub-tasks:**
-1. In each tree-sitter language parser (`typescript`, `python`, `go`), after detecting a `function_declaration` or `method_definition` node, traverse its `parameters` and `return_type` child nodes to reconstruct the signature string.
-2. For TypeScript: extract parameter types from `type_annotation` nodes. For Python: extract type hints from `type` nodes on `parameter` nodes. For Go: extract `parameter_list` and `return_type`.
-3. Store the extracted signature in `EntityDoc.signature`. Limit signature length to 500 chars.
-4. Add a unit test per language asserting the correct signature is extracted from a sample function.
+1. Add positive scoring signals: specific domain terminology used, concrete entity references, non-generic business_purpose, semantic_triples with specific subjects/objects.
+2. Normalize to 0.0-1.0 scale where 0.5 is neutral, <0.5 is penalized, >0.5 is rewarded.
+3. Use quality scores to inform model routing on re-index: entities that scored low should be routed to `premium` tier.
 
-**Affected files:** `lib/indexer/languages/typescript/tree-sitter.ts`, `lib/indexer/languages/python/tree-sitter.ts`, `lib/indexer/languages/go/tree-sitter.ts`
+**Affected files:** `lib/temporal/activities/justification.ts`
 
-**Done when:** A Python function `def process_payment(invoice: Invoice, gateway: PaymentGateway) -> Receipt:` produces `signature: "(invoice: Invoice, gateway: PaymentGateway) -> Receipt"` in the entity document.
+**Done when:** Quality scores differentiate between genuinely good justifications and merely "not bad" ones. Low-scoring entities are upgraded to premium model on re-index.
 
 ---
 
-### Category D — Bulletproof the Nervous System
+#### TBI-L-16: Parse Test Assertions as Intent Signal ✅ DONE (Alpha-3)
 
-These tasks harden the incremental indexing path and close feedback loops that are currently open.
+**Priority: P2** — **Status: Complete**
 
-#### TBI-D-01: Auto-Trigger Full Re-Index When Incremental Fallback Fires
+Test files contain the most intent-rich descriptions of what code is supposed to do. Assertions like `expect(invoice.total).toBe(100)` and test names like `"should reject expired payment methods"` are direct statements of business intent. Currently, test files are indexed but their assertions are not fed into the justification prompt for the entity under test.
+
+**Role in the intent framework:** Test assertions are one of four intent sources (see L-20). This task handles the parser-level extraction; L-20 handles feeding it into the signal-aware prompt structure.
+
+**Sub-tasks:**
+1. In tree-sitter parsers, extract test assertion patterns: `expect(X).toBe(Y)`, `assert X == Y`, `it("description", ...)`, `describe("context", ...)`.
+2. Link test entities to the entities they test (by import analysis: `import { processPayment } from './payment'` in a `.test.ts` file → link to `processPayment`). Create `tests` edges.
+3. Store extracted test descriptions on the tested entity's intent signal (feeds into L-20's `intent.from_tests[]`).
+4. In the signal-aware prompt (L-20), test assertions appear under INTENT SIGNAL: `"Tests: should reject expired cards, should handle partial refunds"`.
+
+**Affected files:** `lib/indexer/languages/typescript/tree-sitter.ts`, `lib/indexer/languages/python/tree-sitter.ts`, `lib/justification/intent-extractor.ts` (from L-20)
+
+**Done when:** Test names and key assertions are extracted during parsing, linked to tested entities, and appear as intent signals in justification prompts.
+
+---
+
+#### TBI-L-17: Dead Code Detection Exclusions for Plugin/Event/Config Patterns
 
 **Priority: P2**
 
-When a push changes more than 200 files (`INCREMENTAL_FALLBACK_THRESHOLD`), the incremental workflow logs a `force_push_reindex` event and aborts — but does not actually trigger a full re-index workflow. The repo is left stale until the next incremental push (if it's small) or until a user manually triggers re-index from the dashboard.
+`detectDeadCode()` flags entities with zero inbound references in the `calls` edge collection. It excludes exported functions, entry points, and test files. But it does NOT exclude:
+- Plugin registrations (`app.use(middleware)`)
+- Event handler registrations (`.on('event', handler)`)
+- Config/factory exports (`export const config = { ... }`)
+- Decorator-registered endpoints (`@Controller`, `@Injectable`)
+
+These are all called via framework indirection, not direct `calls` edges.
 
 **Sub-tasks:**
-1. In `lib/temporal/workflows/incremental-index.ts`, after the fallback guard detects > 200 changed files, call `startChild(indexRepoWorkflow, {...})` with a unique workflow ID (`reindex-fallback-{orgId}-{repoId}-{runId}`), passing the same `orgId`, `repoId`, `installationId`, `cloneUrl`, `defaultBranch` that are already available.
-2. Pass `parentClosePolicy: ParentClosePolicy.ABANDON` so the full re-index continues independently if the incremental workflow ends.
-3. Update the repo status to `"indexing"` via a light activity before starting the child workflow (so the dashboard shows progress).
-4. Update the `force_push_reindex` index event payload to include `childWorkflowId` for tracing.
-5. Add a unit test: mock `> 200 files changed`, assert that `startChild(indexRepoWorkflow, ...)` is called.
+1. Add exclusion patterns for common framework registration patterns.
+2. Cross-reference with L-18: once `emits`/`listens_to` edges exist, event handlers will have inbound references and no longer be falsely flagged.
+3. Add a `dead_code_reason` field to explain why an entity was flagged (helps users verify).
 
-**Affected files:** `lib/temporal/workflows/incremental-index.ts`, `lib/temporal/workflows/__tests__/incremental-index.test.ts`
+**Affected files:** `lib/temporal/activities/justification.ts`
 
-**Done when:** A force-push of 500 files results in a new `indexRepoWorkflow` being started automatically. The dashboard shows `status: "indexing"` within seconds of the webhook.
+**Done when:** Event handlers, plugin registrations, and config exports are not flagged as dead code.
 
 ---
 
-#### TBI-D-02: Fix Incremental Entity Count Recomputation
+#### TBI-L-23: Hierarchical AST Summarization with Semantic Anchor Extraction — ✅ DONE (Alpha-2)
 
-**Priority: P3** · **Status: ✅ DONE (full-index path)**
+**Priority: P1** — **Status: Complete**
 
-> **Implemented** (2026-02-28): The full-index workflow now computes correct per-kind counts. `writeEntitiesToGraph` in `graph-writer.ts` already returned `{ fileCount, functionCount, classCount }` — the fix was extending `RunSCIPLightResult` and `ParseRestLightResult` to include these fields and fixing the workflow formula from the wrong `scip.coveredFiles.length + parse.entityCount` to the correct `scip.fileCount + parse.fileCount` (and similarly for functions/classes).
->
-> **Files changed:** `lib/temporal/activities/indexing-heavy.ts` (extended result types, return per-kind counts), `lib/temporal/workflows/index-repo.ts` (fixed count formula), `lib/temporal/workflows/__tests__/index-repo-workflow.test.ts` (updated mocks and assertions).
->
-> **Remaining:** The incremental indexing path still passes hardcoded zeros — needs `recomputeRepoCounts` AQL query.
+Instead of capping at N characters (current naive `.slice(0, limit)` at 2000-3000 chars), **extract semantic anchors** — the lines that carry the most meaning — and replace everything else with structural tokens. A 500-line function compresses to ~512 tokens without losing its architectural soul.
 
-**Affected files:** `lib/temporal/activities/indexing-heavy.ts`, `lib/temporal/workflows/index-repo.ts`
+Implemented in `lib/justification/ast-summarizer.ts`. Six anchor categories detected via regex: `decision`, `external_call`, `mutation`, `error`, `return`, `assertion`. Non-anchor lines compressed into structural tokens: `[IMPORTS: N lines]`, `[SETUP: N variables]`, `[LOOP: for over items]`, `[TRY_CATCH]`, `[LOG]`, `[... N lines ...]`. Short bodies (<maxChars) returned verbatim with anchors still extracted for metadata.
 
----
+Wired into:
+- `prompt-builder.ts`: `truncateBody()` now delegates to `summarizeBody()` — drop-in replacement for all entity-specific section builders and batch prompts
+- `embedding.ts`: `buildEmbeddableDocuments()` uses `summarizeBody()` at 2000 chars instead of naive slice
 
-#### TBI-D-03: Close the Rewind → Rule Tracing Loop
+**Remaining:** Store extracted anchors as entity metadata (`semantic_anchors[]`) for downstream entity profiles (deferred to Alpha-5/L-22).
 
-**Priority: P3**
+**Affected files:** `lib/justification/ast-summarizer.ts` (new), `lib/temporal/activities/embedding.ts`, `lib/justification/prompt-builder.ts`
 
-When a user rewinds a ledger entry (Feature 4.3), `anti-pattern.ts` generates an LLM rule from what went wrong and stores it in the `rules` ArangoDB collection. The connection between the generated rule and the originating ledger entry is never written back — the `rule_generated` flag on the ledger entry stays `false`. Users cannot trace from a rule back to the rewind that inspired it.
-
-**Sub-tasks:**
-1. In `lib/temporal/activities/anti-pattern.ts`, after `bulkUpsertRules()` succeeds and returns the new rule ID, call `graphStore.markLedgerEntryRuleGenerated(ledgerEntryId, ruleId)`.
-2. Add `markLedgerEntryRuleGenerated(ledgerEntryId: string, ruleId: string): Promise<void>` to `IGraphStore` port.
-3. Implement in `arango-graph-store.ts`: AQL `UPDATE { rule_id: ruleId, rule_generated: true }` on the ledger entry document.
-4. Expose the `rule_id` link in the MCP `timeline` tool response so IDE agents can surface it.
-5. Add a unit test: run `anti-pattern` activity, assert the ledger entry's `rule_generated` is `true` and `rule_id` is set.
-
-**Affected files:** `lib/temporal/activities/anti-pattern.ts`, `lib/ports/graph-store.ts`, `lib/adapters/arango-graph-store.ts`, `lib/mcp/tools/timeline.ts`, `lib/temporal/activities/__tests__/anti-pattern.test.ts`
-
-**Done when:** After a rewind, the ledger entry has `rule_generated: true` and `rule_id` pointing to the generated rule. The MCP timeline tool includes the rule link.
+**Done when:** ~~A 500-line payment processing function retains its Stripe-specific error handling, external Stripe calls, and refund logic in the summary.~~ ✅ Achieved. ~~Semantic anchors are tagged by category.~~ ✅ Achieved. ~~Justification quality improves measurably.~~ Pending benchmark on next full re-index.
 
 ---
 
-#### TBI-D-04: Fix Edge Repair Dead-Code Path for Updated Entities
-
-**Priority: P3**
-
-In `lib/indexer/edge-repair.ts`, the logic for re-creating edges on updated (non-deleted) entities has a bug: `if key in deletedKeys` can never be `true` for an updated entity because updated entities are explicitly excluded from `deletedKeys`. The loop body for updating entity edges is unreachable. Edge repair for *updated* files currently relies entirely on re-indexing producing new edges — it does not attempt to repair edges referencing the old entity key.
-
-**Sub-tasks:**
-1. Audit the exact flow: trace what happens to edges when a file is updated (not deleted). Confirm that re-indexing the file produces new entities with the same deterministic keys (since the entity hash depends on file path + name, an unchanged function retains its key even if its body changes). If keys are stable, edge repair may not be needed at all for body changes.
-2. If the key does not change, the bug is effectively harmless and should be documented as such. Remove the dead code path and add a comment explaining why edge repair is not needed for body changes.
-3. If keys can change (e.g., when a function is renamed in a changed file), the edge repair must: (a) identify the old key from the entity diff, (b) delete edges referencing the old key, (c) let re-indexing create edges with the new key.
-4. Fix the activity return value — `repairEdgesActivity` currently returns `{ deleted: N, created: 0 }` where `created` is always 0. After the fix, return the correct creation count.
-5. Update the activity feed metric for edge repairs (`9.3 Activity Feed`) to use the correct count.
-
-**Affected files:** `lib/indexer/edge-repair.ts`, `lib/temporal/activities/incremental.ts`, `lib/indexer/__tests__/edge-repair.test.ts`
-
-**Done when:** Either (a) the dead code is removed with a clear explanation, or (b) edge repair correctly handles renamed entities and the `created` count is accurate.
-
----
-
-### Category E — Performance
-
-#### TBI-E-01: O(1) Graph Export — Batch Edge Fetching
+#### TBI-L-25: Semantic Ontology Extraction (Replace Keyword Frequency with Intent Mapping)
 
 **Priority: P2**
 
-`lib/use-cases/graph-serializer.ts` calls `graphStore.getCalleesOf(entityId)` for each entity individually when building the graph snapshot. For a repo with 5,000 entities, this is 5,000 ArangoDB queries serialized in a loop. The `getAllEdges(orgId, repoId, limit: 20000)` method already exists on `IGraphStore` and returns all edges in a single query.
+Current ontology: PascalCase split → frequency ranking → optional LLM refinement.
+
+**Verified:** `ontology-extractor.ts:38-78` splits identifiers, counts frequency, filters programming stopwords. Cannot differentiate "Invoice" (domain concept) from "Handler" (architectural pattern) from "Service" (framework noise).
 
 **Sub-tasks:**
-1. In `graph-serializer.ts`, before the entity loop, call `graphStore.getAllEdges(orgId, repoId, 20000)` once to fetch all edges into memory.
-2. Build an in-memory adjacency map: `calleesMap: Map<entityId, EntityId[]>` keyed on `_from` entity ID.
-3. Replace all `getCalleesOf(entityId)` calls inside the entity loop with a lookup into `calleesMap`. If the entity has no entry, it has no callees — return `[]`.
-4. Handle the case where a repo has more than 20,000 edges: add a pagination loop (`offset`, `limit`) to `getAllEdges` if the returned count equals the limit, and repeat until exhausted.
-5. Add a test: create 100 entities with 200 edges, serialize the graph, assert all edges appear and only 1 (or `ceil(edges/pageSize)`) ArangoDB query is made.
-6. Measure snapshot generation time before and after on a 1,000-entity test repo. Target: 10x reduction.
+1. ✅ Classify extracted terms into three tiers: `classifyTerms()` in `ontology-extractor.ts` with curated ARCHITECTURAL_TERMS and FRAMEWORK_TERMS sets, unknown terms default to domain. Stored as `term_tiers` on `DomainOntologyDoc`.
+2. Use embedding similarity to cluster terms semantically within each tier (e.g., "Invoice", "Payment", "Billing" → same domain cluster). *(Deferred to Alpha-5)*
+3. ✅ Build cross-tier relationships: `buildDomainToArchitectureMap()` scans entity names for co-occurrence of domain + architectural terms. Stored as `domain_to_architecture` on ontology doc.
+4. ✅ Feed three-tier ontology into justification prompts as structured `## Domain Signal` section in `prompt-builder.ts` (both single-entity and batch prompts). Falls back to flat term list for old ontologies without `term_tiers`.
+5. Weight domain concepts higher than architectural patterns in all downstream uses (embedding, search, feature tags).
 
-**Affected files:** `lib/use-cases/graph-serializer.ts`, `lib/ports/graph-store.ts`, `lib/adapters/arango-graph-store.ts`, `lib/use-cases/__tests__/graph-serializer.test.ts`
+**Affected files:** `lib/justification/ontology-extractor.ts`, `lib/temporal/activities/ontology.ts`
 
-**Done when:** Graph snapshot generation for a 5,000-entity repo completes in under 30 seconds (vs 10+ minutes currently). The `getAllEdges` call appears once in the serializer, not inside a loop.
+**Done when:** Ontology output distinguishes domain concepts from architectural patterns from framework terms. Cross-tier mapping links domain concepts to their implementing architectural patterns. "Invoice" ranks higher than "Handler" in domain importance.
 
 ---
 
-#### TBI-E-02: ArangoDB Bulk Import via `/_api/import` for Large Repos
+#### Sub-category 5: Entity Model Fidelity
 
-**Priority: P3**
+---
 
-The current `bulkUpsertEntities` and `bulkUpsertEdges` implementations batch at 1,000 documents via `arangojs collection.import()`. This goes through the standard ArangoDB HTTP API. For repos with 50,000+ entities, this is 50+ round-trips. ArangoDB's `/_api/import?type=auto&complete=true&onDuplicate=update` can accept larger JSONL batches in a single HTTP request and is significantly faster for bulk writes.
+#### TBI-L-03: Preserve Original Entity Kind Through KIND_TO_COLLECTION
+
+**Priority: P2**
+
+`KIND_TO_COLLECTION` in `arango-graph-store.ts` collapses `method` → `functions`, `type` → `variables`. The original entity `kind` is mapped to a collection name and the original value is lost in the ArangoDB document. Downstream stages cannot distinguish methods from standalone functions, or type aliases from variables.
 
 **Sub-tasks:**
-1. Benchmark current import performance on a 10,000-entity fixture. Record time per batch and total time.
-2. In `arango-graph-store.ts`, implement `bulkImportRaw(collection: string, documents: object[])` that calls `/_api/import` directly via `node-fetch` or `undici` with `Content-Type: application/x-ldjson` and JSONL body. Handle conflict resolution via `onDuplicate=update`.
-3. Raise the batch size to 5,000 documents (test memory impact — each entity is ~500 bytes so 5,000 = ~2.5MB per batch, well within safe limits).
-4. Fall back to the existing `collection.import()` for batches below 1,000 documents (not worth the overhead for small repos).
-5. Re-run the benchmark. Target: 3-5x throughput improvement for repos > 10,000 entities.
+1. Ensure the original `kind` value is preserved as a field on the ArangoDB entity document (it may already be stored — verify).
+2. If `kind` is overwritten during collection mapping, add an `original_kind` field that preserves the indexer's classification.
+3. Update downstream consumers (justification, embedding, MCP tools) to use `original_kind` when the distinction matters.
 
 **Affected files:** `lib/adapters/arango-graph-store.ts`
 
-**Done when:** A 50,000-entity repo writes to ArangoDB in under 60 seconds (vs 5+ minutes currently).
+**Done when:** A method entity stored in the `functions` collection retains `original_kind: "method"`. Downstream stages can distinguish methods from functions.
 
 ---
 
-#### TBI-C-05: Heuristic Bypass for Pure-Utility Entities
+#### TBI-L-04: Multi-Line Import Parsing + Go Struct/Interface Members
+
+**Priority: P2**
+
+TypeScript tree-sitter parser handles single-line imports but not multi-line imports:
+```typescript
+import {
+  foo,
+  bar,
+  baz
+} from './module'
+```
+Only the first line is matched. Go parser extracts struct and interface declarations but not their member fields/methods.
+
+**Sub-tasks:**
+1. In TypeScript parser: accumulate multi-line import statements before regex matching. Track open `{` and close `}` across lines.
+2. In Go parser: extract struct fields as entities with `member_of` edges to the parent struct. Extract interface method signatures.
+3. Add tests for multi-line import patterns and Go struct member extraction.
+
+**Affected files:** `lib/indexer/languages/typescript/tree-sitter.ts`, `lib/indexer/languages/go/tree-sitter.ts`
+
+**Done when:** Multi-line TypeScript imports are fully parsed. Go struct fields appear as entities with `member_of` edges.
+
+---
+
+#### TBI-L-06: AST-Aware Complexity Estimation
 
 **Priority: P3**
 
-`computeHeuristicHint()` in `lib/justification/prompt-builder.ts` detects pure-utility entities (getters/setters, no callers, trivial names like `getId`, `setName`) and computes a hint for the prompt. However, this hint is only injected into the LLM prompt — it never short-circuits the LLM call entirely. For a 5,000-entity repo, 20-40% of entities may be pure utilities that can be classified as `taxonomy: UTILITY, feature_tag: "infrastructure"` without an LLM call.
+Current cyclomatic complexity estimation in tree-sitter parsers is a rough heuristic (counting `if`, `for`, `while`, `switch` keywords). Doesn't account for nested conditions, ternary operators, logical operators (`&&`, `||`), or early returns.
 
 **Sub-tasks:**
-1. Define a heuristic threshold: an entity is a pure-utility bypass candidate if `computeHeuristicHint()` returns `confidence >= 0.9` AND the entity has 0 callers AND the entity name matches a pure-utility regex (`^(get|set|is|has|to|from)[A-Z]`).
-2. In `lib/temporal/activities/justification.ts`, before calling the LLM, check if the entity passes the bypass threshold. If yes, write a synthetic justification document: `taxonomy: "UTILITY"`, `feature_tag: "infrastructure"`, `business_purpose: "{name}: utility accessor"`, `confidence: 0.85` (higher than fallback stubs at 0.3), `model: "heuristic-bypass"`.
-3. Track bypass count in the activity return value for observability.
-4. Bypass savings should appear in the pipeline log: `"Bypassed 412 pure-utility entities, saved N LLM tokens."`.
-5. Add a test: 5 entities with bypass-eligible names and 0 callers → assert LLM is not called, synthetic justifications have `model: "heuristic-bypass"`.
+1. Implement a proper cyclomatic complexity counter that handles nesting depth, ternary chains, and logical operator branching.
+2. Add cognitive complexity (Sonar-style) as an additional metric — weights nested conditions higher.
+3. Use both metrics in model routing: high cognitive complexity → premium model.
 
-**Affected files:** `lib/temporal/activities/justification.ts`, `lib/justification/prompt-builder.ts`
+**Affected files:** `lib/indexer/languages/typescript/tree-sitter.ts`, `lib/indexer/languages/python/tree-sitter.ts`, `lib/indexer/languages/go/tree-sitter.ts`
 
-**Done when:** For a real repo, at least 15% of entities are bypassed. Bypassed justifications have `confidence: 0.85` (distinguishable from fallback stubs at `0.3`).
+**Done when:** Complexity estimation distinguishes between a function with 5 flat `if` statements and a function with 3 levels of nested conditions.
 
 ---
 
-### Category F — Observability & Tracing
-
-#### TBI-F-01: Per-Stage Pipeline Run Step Tracking
-
-**Priority: P3**
-
-`PipelineRun` tracking records start/end times for the whole workflow, but individual stage timings (how long did SCIP take? how long did justification take?) are not persisted. The pipeline log viewer shows them in Redis (transient), but after logs expire (24 hours), historical stage timing data is lost. Root cause analysis for slow indexing requires live monitoring rather than historical comparison.
-
-**Sub-tasks:**
-1. Add a `pipeline_run_steps` table (or JSONB column on `PipelineRun`) to store per-step timing: `{ stepName: string; startedAt: Date; completedAt?: Date; durationMs?: number; status: "running" | "completed" | "failed"; entityCount?: number }`.
-2. In `lib/temporal/activities/pipeline-run.ts`, extend `updatePipelineStep` to accept `startedAt`/`completedAt` and persist to the new structure.
-3. In `indexRepoWorkflow` and `incrementalIndexWorkflow`, record actual timestamps around each `updatePipelineStep` call.
-4. Expose per-step timings in the Pipeline Monitor UI (`components/repo/pipeline-stepper.tsx`).
-5. Add a Prisma migration for the new column/table.
-
-**Affected files:** `lib/temporal/activities/pipeline-run.ts`, `lib/temporal/workflows/index-repo.ts`, `components/repo/pipeline-stepper.tsx`, `supabase/migrations/` (new migration)
-
-**Done when:** The pipeline monitor shows each stage's duration in milliseconds, and historical runs retain this data beyond 24 hours.
+#### Sub-category 6: Temporal Context & Delivery Layer
 
 ---
 
-### Category G — Operational Resilience (Confirmed by Real-World Diagnostic)
-
-These tasks were identified by running the full pipeline against a real TypeScript repo (`kap10-server`, 697 files). They address gaps that cause the pipeline to report success while silently producing unusable data.
-
-#### TBI-G-01: Fix `last_indexed_at` Never Being Set
-
-**Priority: P3** · **Status: ✅ DONE**
-
-> **Implemented** (2026-02-28): `lastIndexedAt: new Date()` is now set in two terminal success paths:
-> 1. `setReadyStatus` in `lib/temporal/activities/embedding.ts` — when embedding completes and repo goes to `"ready"`
-> 2. `setJustifyDoneStatus` in `lib/temporal/activities/justification.ts` — when justification completes
->
-> The `IRelationalStore.updateRepoStatus()` port was extended with `lastIndexedAt?: Date | null` and `indexingStartedAt?: Date | null` parameters, and the Prisma adapter persists both fields.
->
-> **Files changed:** `lib/ports/relational-store.ts`, `lib/adapters/prisma-relational-store.ts`, `lib/temporal/activities/embedding.ts`, `lib/temporal/activities/justification.ts`
-
----
-
-#### TBI-G-02: LLM 405 Detection and User-Surfacing
-
-**Priority: P1** · **Status: ✅ DONE**
-
-> **Implemented** (2026-02-28): Added `isFatalLLMError()` helper that detects non-retryable HTTP status codes (405, 401, 403, 404) and configuration errors (invalid API key, model not found). A `consecutiveFatalErrors` counter tracks sequential fatal errors — after 5 consecutive fatal errors (configurable via `FATAL_ERROR_THRESHOLD`), the justification batch aborts with a thrown error instead of silently creating stubs. Fatal errors are logged to the pipeline log so they appear in the pipeline monitor UI.
->
-> The error detection works at both the single-entity and batch levels. When a batch call fails with a fatal error, it still creates fallback justifications for the batch (preserving partial progress) but increments the counter and aborts when the threshold is reached.
->
-> **Files changed:** `lib/temporal/activities/justification.ts` (added `isFatalLLMError()`, `consecutiveFatalErrors` counter, abort logic in both single-entity and batch error handlers)
-
----
-
-#### TBI-G-03: Graph Snapshot Failure Recovery
-
-**Priority: P2** · **Status: ✅ DONE (error handling)**
-
-> **Implemented** (2026-02-28): `syncLocalGraphWorkflow` now has proper error handling in the catch block. The error message is logged with structured format `[wf:sync-local-graph] [orgId/repoId] Snapshot export failed: {message}`. The `updateSnapshotStatus(status: "failed")` call is wrapped in its own try/catch to prevent masking the original error. The workflow already had `retry: { maximumAttempts: 3 }` on its activity proxy configs.
->
-> **Files changed:** `lib/temporal/workflows/sync-local-graph.ts` (improved error logging, wrapped status update in try/catch)
->
-> **Remaining:** Dashboard retry-snapshot button and `POST /api/repos/{repoId}/retry-snapshot` route are not yet implemented.
-
----
-
-#### TBI-G-04: Health Report Null Guard When Justifications Are All Fallback Stubs
-
-**Priority: P2** · **Status: ✅ DONE**
-
-> **Implemented** (2026-02-28): `buildHealthReport` in `lib/justification/health-report-builder.ts` now detects fallback-only justifications at the top of the function. Fallbacks are identified by `confidence <= 0.3 && feature_tag === "unclassified" && taxonomy === "UTILITY"`.
->
-> - **100% fallbacks:** Adds an `llm_failure` risk (severity: high) with a descriptive message, returns the report with `justified_entities: 0` and `average_confidence: 0` — skips all LLM analysis.
-> - **>80% fallbacks:** Adds an `llm_partial_failure` risk (severity: high) warning that most justifications are stubs, but continues with LLM analysis on the non-fallback entities.
->
-> **Files changed:** `lib/justification/health-report-builder.ts`
-
----
-
-
----
-
-### Category H — User Experience & Intelligence Transparency
-
-These tasks transform the indexing pipeline from a "black box background task" into a transparent, interactive, and trust-building feature. They are not correctness fixes — the pipeline produces valid data without them. They are the features that turn first-time users into advocates.
-
-#### TBI-H-01: Context Seeding — Pre-Indexing Context Injection
-
-**Priority: P1** · **Status: ✅ DONE**
-
-> **Implementation verified** (2026-02-28):
-> - `prisma/schema.prisma` — `contextDocuments String? @map("context_documents")` on Repo model
-> - `supabase/migrations/00004_context_documents.sql` — `ALTER TABLE unerr.repos ADD COLUMN IF NOT EXISTS context_documents TEXT`
-> - `lib/ports/relational-store.ts` — `contextDocuments?: string | null` on `RepoRecord`, `updateRepoContextDocuments()` on `IRelationalStore`
-> - `lib/adapters/prisma-relational-store.ts` — `updateRepoContextDocuments()` via raw SQL
-> - `app/api/repos/[repoId]/context/route.ts` — `PUT` (save context, max 10k chars) and `GET` (retrieve) endpoints
-> - `lib/temporal/activities/ontology.ts` — fetches `repo.contextDocuments`, appends to project description for LLM anchoring
-> - `lib/temporal/activities/justification.ts` — fetches `repo.contextDocuments`, passes to `buildJustificationPrompt()` via `options.contextDocuments`
-> - `lib/justification/prompt-builder.ts` — "Project Context (provided by the team)" section injected into prompt, truncated to 3,000 chars
-> - `components/repo/repo-onboarding-console.tsx` — collapsible "Context Seeding" section with textarea, save button, character counter (visible during pending/indexing/embedding states)
->
-> **Implementation approach:** Uses a simpler architecture than originally planned. Instead of a structured `ContextManifest` in ArangoDB, stores raw text directly on the repo record in PostgreSQL (`contextDocuments` field, max 10k chars). The raw text is injected into both ontology and justification LLM prompts, letting the LLM extract relevant vocabulary naturally. This avoids the complexity of a separate ingestion pipeline while achieving the same anchoring effect.
->
-> **Remaining sub-tasks (enhancements, not blocking):**
-> - Multiple context sources (currently single text field)
-> - File-path-based context (read `ARCHITECTURE.md` from cloned workspace)
-> - URL-based context ingestion
-> - Structured `ContextManifest` in ArangoDB for term frequency weighting
-
-~~Currently the pipeline infers business purpose and taxonomy entirely from code structure and entity names.~~ Users can now paste their `ARCHITECTURE.md`, PRD, or project description into the context seeding textarea before or during indexing. The text is stored as `contextDocuments` on the repo and injected into both the ontology extraction and justification prompts, anchoring `feature_tag` and `business_purpose` to the team's actual vocabulary.
-
-**Affected files:** ~~`lib/temporal/activities/context-ingestion.ts`~~ (simplified — no separate activity needed), ~~`lib/temporal/workflows/index-repo.ts`~~ (no workflow changes needed), `lib/temporal/activities/ontology.ts` ✅, `lib/temporal/activities/justification.ts` ✅, `lib/justification/prompt-builder.ts` ✅, ~~`lib/ports/graph-store.ts`~~ (uses relational store instead), `lib/ports/relational-store.ts` ✅, `lib/adapters/prisma-relational-store.ts` ✅, `components/repo/repo-onboarding-console.tsx` ✅, `app/api/repos/[repoId]/context/route.ts` ✅ (new)
-
-**Done when:** ~~A user pastes their `ARCHITECTURE.md` before indexing. The resulting `feature_tag` values in justifications match the terminology from their doc.~~ ✅ Core flow works. Full completion: multiple context sources, file-path-based ingestion, structured manifest.
-
----
-
-#### TBI-H-02: Confidence Heatmap and Human-in-the-Loop Corrections
-
-**Priority: P1** · **Status: ✅ DONE**
-
-> **Implementation verified** (2026-02-28):
-> - `components/code/annotated-code-viewer.tsx` — Confidence bars with gradient colors (emerald ≥80%, amber ≥50%, red <50%), taxonomy-colored left borders, semantic triple display. **Edit icon** on taxonomy badge (visible on hover). **Full inline correction editor**: taxonomy selector (VERTICAL/HORIZONTAL/UTILITY), feature tag input, business purpose textarea, "Apply Correction" button.
-> - `components/blueprint/blueprint-view.tsx` — Confidence color coding (emerald/amber/red), taxonomy bar chart, `confidenceGlow()` function for ring/shadow effects on feature cards.
-> - `app/api/repos/[repoId]/entities/[entityId]/override/route.ts` — `POST` endpoint accepting `{ taxonomy, featureTag?, businessPurpose? }`. Sets `confidence: 1.0`, `model_used: "human_override"`, `model_tier: "heuristic"`. Uses `bulkUpsertJustifications` to persist.
->
-> **Remaining sub-tasks (enhancements, not blocking):**
-> - Micro-reindexing on override (re-embed the updated justification)
-> - `justification_overrides` audit collection for tracking corrections
-> - Cascade propagation to callers ("Propagate to N callers?" flow)
-> - Right-click context menu (current implementation uses inline edit icon)
-
-Confidence is visualized in the annotated code viewer and blueprint view. Users can correct the AI's classifications inline via the edit icon on each entity's taxonomy badge. The correction editor allows overriding taxonomy, feature tag, and business purpose. Corrections are saved with `confidence: 1.0` and `model_used: "human_override"`.
-
-**The addition:** A visual confidence heatmap on the Blueprint dashboard and Entity Browser, plus the ability for users to correct the AI's classifications inline.
-
-**Sub-tasks:**
-
-1. ~~**Heatmap on Blueprint/Entity Browser:** Fetch `confidence` alongside entity data. Apply visual encoding: emerald ≥80%, amber 50-80%, red <50%.~~ ✅ Implemented in `annotated-code-viewer.tsx` and `blueprint-view.tsx`
-
-2. ~~**Inline correction editor:** Edit icon on taxonomy badge (hover-visible via `group-hover`). Clicking opens inline editor with taxonomy selector (VERTICAL/HORIZONTAL/UTILITY), feature tag input, business purpose textarea, Apply/Cancel buttons.~~ ✅ Implemented in `annotated-code-viewer.tsx`
-
-3. ~~**Save override via API:** `POST /api/repos/{repoId}/entities/{entityId}/override` with `{ taxonomy, featureTag?, businessPurpose? }`. Sets `confidence: 1.0`, `model_used: "human_override"`, `model_tier: "heuristic"`. Uses `bulkUpsertJustifications` to persist.~~ ✅ Implemented in `app/api/repos/[repoId]/entities/[entityId]/override/route.ts`
-
-4. **Micro-reindexing on override:** After saving, trigger a targeted re-embedding of the updated justification: call `embedJustification(entityId)` as a standalone Temporal activity (not the full re-index). Update the `justification_embeddings` pgvector row. This ensures search-by-purpose immediately reflects the correction.
-
-5. **Propagate corrections:** If the overridden entity has callers, offer: _"Propagate this context to 3 callers?"_ — runs cascade re-justification scoped to direct callers only (1 hop), using the human override as ground-truth context.
-
-6. **Override tracking collection:** ArangoDB `justification_overrides` collection tracks all human corrections for audit, analytics ("what % of justifications do users correct?"), and future fine-tuning.
-
-**Affected files:** ~~`components/entity/entity-browse-view.tsx`~~, `components/blueprint/blueprint-view.tsx` ✅, `components/code/annotated-code-viewer.tsx` ✅, `app/api/repos/[repoId]/entities/[entityId]/override/route.ts` ✅ (new), ~~`lib/temporal/activities/justification.ts`~~, ~~`lib/temporal/activities/embedding.ts`~~, ~~`lib/ports/graph-store.ts`~~
-
-**Done when:** ~~Low-confidence entities glow yellow in the Blueprint view. A user can right-click `PaymentProcessor`, change its `taxonomy` to VERTICAL, and within 10 seconds the justification embedding is updated and search-by-purpose returns it for relevant queries.~~ ✅ Core flow works — confidence glow, inline editor, override API. Full completion: micro-reindexing, cascade propagation, audit collection.
-
----
-
-#### TBI-H-03: LLM Chain of Thought Streaming to Pipeline Monitor
-
-**Priority: P2** · **Status: ✅ DONE**
-
-> **Implementation verified** (2026-02-28):
-> - `lib/temporal/activities/justification.ts:372-380` — per-entity reasoning log: `"Analyzed {name}. Tagged as {taxonomy} ({confidence}%) — {purpose}"` via `pipelineLog.log("info", "Justification", ...)`
-> - `lib/temporal/activities/pipeline-logs.ts` — `appendPipelineLog()` + `createPipelineLogger()` infrastructure writes to Redis with 24h TTL
-> - `components/repo/pipeline-log-viewer.tsx` — renders live pipeline logs during indexing
->
-> **Remaining sub-tasks (UI polish, not blocking):**
-> - Color-code taxonomy in log viewer (`VERTICAL` = purple, `HORIZONTAL` = blue, `UTILITY` = gray)
-> - Confidence badge next to each log entry
-> - "Live justification feed" expandable section in Pipeline Monitor
-
-The Pipeline Monitor currently shows step status: `Clone → Parse → Embed → Justify`. During the Justification phase — which takes 10-60 minutes for large repos — users see a spinner with no insight into what the AI is analyzing. This is the highest-trust moment in the product and currently the most opaque.
-
-**The addition:** Stream snippets of the LLM's reasoning into the pipeline log during Stage 7, making the justification phase a "wow" moment.
-
-**Example log output:**
-```
-[20:36:42] Analyzing PaymentProcessor.ts...
-  → Tagged as VERTICAL — handles external Stripe API calls, 14 callers, used in checkout flow
-  → Identified formatCurrency() as HORIZONTAL utility — pure transformation, no side effects
-[20:36:43] Analyzing UserAuthService.ts...
-  → Tagged as VERTICAL — manages session lifecycle, high centrality (22 callers)
-  → 3 callers already analyzed as VERTICAL checkout flow — confirming feature_tag: "Authentication"
-```
-
-**Sub-tasks:**
-
-1. ~~In `lib/temporal/activities/justification.ts`, after each successful batch justification, extract a human-readable summary from the LLM result: `"{entityName}: tagged as {taxonomy} — {business_purpose_first_sentence}"`. Cap at 120 chars.~~ ✅
-
-2. ~~Call `logActivities.appendPipelineLog()` with `level: "info"`, `step: "justification"`, and the extracted summary string after each batch. Use the existing pipeline log infrastructure (Redis TTL 24h) — no new infrastructure needed.~~ ✅
-
-3. In `components/repo/pipeline-log-viewer.tsx`, parse log messages from the `justification` step and render them with enhanced formatting:
-   - Bold the entity name
-   - Color-code the taxonomy (`VERTICAL` = purple, `HORIZONTAL` = blue, `UTILITY` = gray)
-   - Show confidence as a small bar or percentage badge next to each entry
-
-4. Add a "Live justification feed" expandable section to the Pipeline Monitor that shows these messages as they stream in (polling the existing `/api/repos/{repoId}/events` SSE endpoint at 2s interval during justification).
-
-5. Limit the number of streamed lines to **50 most recent** (don't flood the UI for large repos — the full log is available on completion).
-
-**Affected files:** `lib/temporal/activities/justification.ts`, `components/repo/pipeline-log-viewer.tsx`, `components/repo/pipeline-stepper.tsx`
-
-**Done when:** During a re-index, the Pipeline Monitor shows a live stream of "Analyzed X: tagged as VERTICAL because..." lines. Users can watch their codebase being understood in real time.
-
----
-
-#### TBI-H-04: Auto-Generated `UNERR_CONTEXT.md` Export
-
-**Priority: P2** · **Status: ✅ DONE**
-
-> **Implementation verified** (2026-02-28):
-> - `lib/justification/context-document-generator.ts:1-174` — `generateContextDocument()` compiles project stats, health report, features, ontology, ADRs, domain glossary, and ubiquitous language into markdown
-> - `app/api/repos/[repoId]/export/context/route.ts:1-35` — GET endpoint returns markdown with `Content-Disposition: attachment; filename="UNERR_CONTEXT.md"`
-> - `components/repo/repo-onboarding-console.tsx:168-177` — "Download Intelligence Report" button in celebration modal triggers download
->
-> **Remaining sub-tasks (enhancements, not blocking):**
-> - Auto-commit to repo via GitHub API (`.unerr/UNERR_CONTEXT.md`)
-> - Repo setting for auto-commit on/off
-> - Store in Supabase Storage with metadata tracking (currently generated on-demand)
-
-At the end of indexing, the pipeline has produced a rich, structured understanding of the codebase — `features_agg`, `health_reports`, `adrs`, `domain_ontologies`, `justifications`. None of this is accessible as a plain markdown file. Developers who prefer tangible artifacts (or need to share context with teammates who don't use Unerr) have no export path.
-
-**The addition:** Compile all pipeline outputs into a beautiful `UNERR_CONTEXT.md` and offer download or direct commit to the repo.
-
-**Sub-tasks:**
-
-1. ~~Create a context document generator. Assemble: header (project name, date, entity counts, health score), domain vocabulary, feature map, ADRs, health summary, code conventions, high-risk nodes.~~ ✅ `lib/justification/context-document-generator.ts`
-
-2. Store the generated markdown in Supabase Storage at `context-docs/{orgId}/{repoId}/UNERR_CONTEXT.md`. Upsert on every re-index.
-
-3. Record metadata in PostgreSQL `unerr.ContextDocMeta`: `{ repoId, generatedAt, sizeBytes, storagePath, checksum }`.
-
-4. ~~Add `GET /api/repos/{repoId}/export/context` route for download.~~ ✅
-
-5. ~~Add a "Download Intelligence Report" button to the celebration modal.~~ ✅ Add a secondary option: "Commit to repo" — uses the GitHub installation token to create/update `.unerr/UNERR_CONTEXT.md` via the GitHub Contents API.
-
-6. Add a repo setting (`UNERR_CONTEXT.md auto-commit: on/off`) that automatically commits the file on each re-index if enabled. Commit message: `chore(unerr): update context document [skip ci]`.
-
-**Affected files:** ~~`lib/justification/context-document-generator.ts`~~ ✅, ~~`app/api/repos/[repoId]/export/context/route.ts`~~ ✅, ~~`components/repo/repo-onboarding-console.tsx`~~ ✅, `components/blueprint/blueprint-view.tsx`
-
-**Done when:** ~~After indexing completes, a download button appears. The downloaded file contains domain vocabulary, feature map, ADRs, health summary, and conventions in readable markdown.~~ ✅ Core flow works. Full completion: auto-commit to repo and Supabase Storage persistence.
-
----
-
-#### TBI-H-05: Blast Radius Pre-computation (Semantic Impact Weights)
-
-**Priority: P2** · **Status: ✅ DONE**
-
-> **Implementation verified** (2026-02-28):
-> - `lib/temporal/activities/graph-analysis.ts:1-101` — `precomputeBlastRadius()` activity: AQL COLLECT on `calls` edges computes `fan_in`, `fan_out` per entity. Risk levels: `"high"` (≥10), `"medium"` (≥5), `"normal"`. Bulk-updates entity documents.
-> - `lib/temporal/workflows/index-repo.ts:172-178` — Step 4b calls `precomputeBlastRadius` after finalization, before child workflows.
-> - `lib/ports/types.ts:14-19` — `EntityDoc` includes `fan_in?: number`, `fan_out?: number`, `risk_level?: "high" | "medium" | "normal"`.
-> - `components/code/annotated-code-viewer.tsx:179-228` — High-risk entities get red border + glow, `AlertTriangle` icon badge showing fan_in/fan_out counts.
->
-> **Remaining sub-tasks (enhancements, not blocking):**
-> - `transitiveCallerCount` and `blastRadiusScore` (current impl uses simple fan_in/fan_out, not transitive 3-hop traversal)
-> - `isChokepoint` boolean flag (current impl uses `risk_level` enum)
-> - Entity Browser flame icons (current risk display is in annotated-code-viewer only)
-> - Blueprint node sizing by blast radius score
-> - MCP `impact` tool pre-computed fallback
-> - "High Risk Entities" section on repo overview page
-
-Impact analysis currently runs on-demand via N-hop graph traversal when an MCP tool or PR review requests it. For the Entity Browser and Blueprint view, there is no visual indication of which entities are fragile, high-risk, or architectural chokepoints — users must initiate an explicit impact query to find out.
-
-**The addition:** Pre-compute a "blast radius weight" for every entity at the end of Stage 2 (after edges are written), and persist it as a property on the entity document. Use it as a first-class visual signal throughout the product.
-
-**Sub-tasks:**
-
-1. ~~Create a blast radius activity. For each entity, compute `fanIn`, `fanOut`, risk level. Write back to entity documents.~~ ✅ `lib/temporal/activities/graph-analysis.ts`
-
-2. ~~Add `fan_in`, `fan_out`, `risk_level` to `EntityDoc` type.~~ ✅ `lib/ports/types.ts`
-
-3. ~~In `indexRepoWorkflow`, call as Step 4b after finalization.~~ ✅ `lib/temporal/workflows/index-repo.ts:172-178`
-
-4. ~~Show risk indicators in annotated code viewer: red border + glow for high-risk, AlertTriangle badge with fan_in/fan_out.~~ ✅ `components/code/annotated-code-viewer.tsx`
-
-5. Extend with `transitiveCallerCount`: AQL OUTBOUND traversal depth ≤ 3 hops on `calls` collection — count unique callers reachable. Compute `blastRadiusScore`: `log2(transitiveCallerCount + 1) * (1 + fanOut / 10)`. Add `isChokepoint`: `blastRadiusScore >= 7.0`.
-
-6. **Entity Browser** (`components/entity/entity-browse-view.tsx`): Show a flame icon next to entities where `isChokepoint: true`. Show `blastRadiusScore` as a small bar on hover.
-
-7. **Blueprint view** (`components/blueprint/blueprint-view.tsx`): Scale node size by `blastRadiusScore`. Choke-point nodes get a distinct red-amber border ring.
-
-8. **MCP `impact` tool** (`lib/mcp/tools/inspect.ts`): When blast radius is pre-computed, return instantly without N-hop traversal.
-
-9. Add a "High Risk Entities" section to repo overview page: top 10 entities by `blastRadiusScore`.
-
-**Affected files:** ~~`lib/temporal/activities/graph-analysis.ts`~~ ✅, ~~`lib/temporal/workflows/index-repo.ts`~~ ✅, ~~`lib/ports/types.ts`~~ ✅, ~~`components/code/annotated-code-viewer.tsx`~~ ✅, `lib/adapters/arango-graph-store.ts`, `components/entity/entity-browse-view.tsx`, `components/blueprint/blueprint-view.tsx`, `lib/mcp/tools/inspect.ts`, `app/(dashboard)/repos/[repoId]/page.tsx`
-
-**Done when:** ~~After indexing, risk levels are computed and displayed in the annotated code viewer.~~ ✅ Core flow works. Full completion: transitive blast radius scoring, Entity Browser flame icons, Blueprint node sizing, MCP instant lookup, repo overview high-risk section.
-
----
-
----
-
-### Category I — Living Documentation (Replace MEMORY.md, ARCHITECTURE.md, .cursorrules)
-
-These tasks transform the indexing pipeline into the ultimate source of truth for a codebase — eliminating the need for manually maintained documentation files. Each task addresses a specific category of information that developers currently capture in hand-written docs.
-
-#### TBI-I-01: Negative Knowledge Indexing (Mine the Prompt Ledger for Mistakes)
-
-**Priority: P1**
-
-Manual `MEMORY.md` files are largely lists of mistakes and hard-won lessons: *"Don't use `Promise.all` here because of the rate limit."* *"Never touch the billing module without running the full integration suite."* This negative knowledge is the most valuable and least-duplicable content in any engineering org. Currently, when a developer reverts an AI-assisted change or marks a ledger entry as "broken," that signal disappears — it is never written back into the graph as a warning for the next agent or developer.
-
-**The addition:** After any ledger entry is marked as reverted/broken, the pipeline mines it for negative knowledge and attaches anti-patterns and cautions directly to the affected graph nodes.
-
-**Sub-tasks:**
-
-1. In `lib/temporal/activities/anti-pattern.ts`, extend the post-rewind analysis. Currently it generates a rule. Additionally, build a `NegativeKnowledgeNote` object: `{ entityIds: string[]; warning: string; reason: string; revertedAt: Date; ledgerEntryId: string }`.
-
-2. Create a new ArangoDB collection `entity_warnings` (document collection). Each document: `{ entity_id, repo_id, org_id, warning, reason, ledger_entry_id, reverted_at, created_at }`. Multiple warnings can accumulate on a single entity.
-
-3. Add `bulkUpsertEntityWarnings(warnings: EntityWarning[])` to `IGraphStore` port and `arango-graph-store.ts`.
-
-4. In Stage 7 (Business Justification), when building context for an entity via `buildGraphContexts()`, fetch its `entity_warnings` from ArangoDB. Inject them into the justification prompt as a dedicated section: _"⚠️ Past failures on this entity: {warning} — {reason} (reverted {date})."_ The LLM will embed this caution into the `reasoning` field of the justification and raise the `compliance_tags` accordingly.
-
-5. In the MCP `inspect` tool (`lib/mcp/tools/inspect.ts`), when returning entity context to an IDE agent, include `warnings[]` in the response. The agent will see: _"Warning: a previous attempt to optimize `processPayment()` was reverted due to rate limit coupling. Proceed carefully."_
-
-6. In the Entity Browser (`components/entity/entity-browse-view.tsx`), show a ⚠️ badge on entities with active warnings. Clicking the badge shows the warning text, reason, and a link to the original ledger entry.
-
-7. Write a test: create a ledger entry, mark it as reverted, run the anti-pattern activity, assert `entity_warnings` collection has one document for the affected entity and the entity's justification includes the warning text.
-
-**Affected files:** `lib/temporal/activities/anti-pattern.ts`, `lib/ports/graph-store.ts`, `lib/adapters/arango-graph-store.ts`, `lib/temporal/activities/justification.ts`, `lib/justification/graph-context-builder.ts`, `lib/mcp/tools/inspect.ts`, `components/entity/entity-browse-view.tsx`
-
-**Done when:** After reverting an AI suggestion on `PaymentProcessor.ts`, the entity has a warning in `entity_warnings`. The next justification run includes the warning in the LLM prompt. The IDE agent, when asked about `PaymentProcessor`, sees the warning in the MCP response. The Entity Browser shows a ⚠️ badge.
-
----
-
-#### TBI-I-02: Temporal Context Ingestion (Git History + PR Descriptions as Justification Input)
-
-**Priority: P1**
-
-Stage 7 infers business purpose by reading code structure. It cannot know *why* a function was written that way — the incident that caused it, the trade-off that was made, the PR debate that settled the design. A well-written `ARCHITECTURE.md` captures this historical intent. The pipeline should ingest it directly from the git log.
-
-**The addition:** For every file being justified, fetch its git commit history (last N commits), PR descriptions, and resolved PR comments. Inject into the justification prompt as "Historical context" — the LLM's output then marries current structure with historical intent.
-
-**Sub-tasks:**
-
-1. Add a `getFileGitHistory(repoPath, filePath, maxCommits)` method to `IGitHost` port. Implementation: run `git log --follow --format="%H|%s|%b" -n 20 -- {filePath}` in the cloned workspace. Returns `{ sha, subject, body }[]`.
-
-2. Add a `getPRDescriptions(installationId, repoFullName, commitShas)` method to `IGitHost` port. Implementation: use GitHub's Commits API to find PRs associated with each SHA, then fetch PR body + resolved review comments (capped at 3 PRs, 500 chars per PR body, 3 comments per PR).
-
-3. Create a new Temporal activity `fetchHistoricalContext` in `lib/temporal/activities/historical-context.ts`. For a batch of entities (grouped by file, deduplicated), calls `getFileGitHistory` and `getPRDescriptions`. Returns `Map<filePath, HistoricalContext>` where `HistoricalContext = { commitMessages: string[]; prDescriptions: string[]; reviewNotes: string[] }`.
-
-4. Call `fetchHistoricalContext` as a pre-step in `justifyRepoWorkflow` (before the topological sort loop). Pass the result map into each topological level's context building.
-
-5. In `lib/justification/graph-context-builder.ts`, add `historicalContext?: HistoricalContext` to the entity context object. Cap historical context at **800 chars total** to avoid exceeding token budgets.
-
-6. In `lib/justification/prompt-builder.ts`, inject historical context as a dedicated prompt section: _"Historical context for this file:\n- Commit: 'Fix Stripe timeout handling after incident'\n- PR #402: 'Added exponential backoff to payment retry after production timeout spike'\n- Review: 'Consider using a circuit breaker pattern here instead'"_.
-
-7. Add `historicalContext` to the justification document in ArangoDB so future re-justifications can compare against what was previously captured.
-
-8. For cost control: only fetch historical context for entities with `tier: "premium"` or `tier: "standard"` (those with 3+ callers). Pure utility functions (`tier: "fast"`) skip this step.
-
-**Affected files:** `lib/ports/git-host.ts`, `lib/temporal/activities/historical-context.ts` (new), `lib/temporal/workflows/justify-repo.ts`, `lib/justification/graph-context-builder.ts`, `lib/justification/prompt-builder.ts`
-
-**Done when:** The justification for a function that was added in a PR titled "Fix Stripe timeout after incident" includes a sentence referencing the Stripe timeout incident. Entities justified with historical context have a `historical_anchors: ["PR #402: ..."]` field in their justification document.
-
----
-
-#### TBI-I-03: Tech-Stack & System Boundary Extraction
+#### TBI-L-13: LLM-Based Rule Synthesis + Semantic Pattern Mining
 
 **Priority: P2**
 
-Architecture documentation always includes a system boundary diagram: what external services does this system call? What databases? What message queues? This information is currently scattered across entity metadata (Stripe SDK imports appear as `imports` edges to `node_modules/stripe`) but never synthesized into a "System Boundary Map." When an agent asks for the Blueprint, it sees internal entities but has no structured view of the external world the system talks to.
+Current pattern detection is purely structural (Semgrep patterns). It can find "empty catch blocks" but not "all payment handlers must validate currency before processing." Semantic patterns require understanding intent, not just syntax structure.
 
-**The addition:** Enhance Stage 3 (tree-sitter parsing) to identify and classify third-party dependencies and external API calls, producing an explicit `system_boundaries` ArangoDB collection.
+**Two-phase approach: Code-first discovery + justification-enriched naming.**
+
+Conventions are discoverable from code structure alone — if every API route validates auth before processing, that's a structural pattern. Justifications then CONFIRM and NAME the convention ("authentication-first pattern"), but don't discover it.
 
 **Sub-tasks:**
+1. **Phase 1 (Code-first):** After community detection (L-21), analyze entities within each community for structural recurring patterns: similar call sequences, consistent parameter patterns, shared error handling approaches. Use Louvain communities to scope the analysis (conventions are often community-local).
+2. **Phase 2 (Justification-enriched):** After justification completes, use justification data to name and describe discovered patterns. Entities with similar `business_purpose` that follow different code structures → candidate for convention violation.
+3. Use LLM to synthesize human-readable rules from pattern clusters: "In this codebase, all API route handlers validate authentication before processing. 3 handlers violate this convention."
+4. Store synthesized rules in the `rules` collection with `source: "semantic_mining"` and link to the community where the convention was discovered.
+5. Expose in Convention Guide (Feature 2.10) with adherence percentage and violating entities.
 
-1. In `lib/indexer/languages/typescript/tree-sitter.ts` (and Python, Go equivalents), identify third-party imports by checking if the import path is a bare package name (no `./`, `@/`, `~/` prefix). Cross-reference against `package.json` `dependencies`/`devDependencies` to confirm it's an installed package vs a path alias.
+**Affected files:** `lib/temporal/activities/pattern-detection.ts`, `lib/temporal/activities/justification.ts`
 
-2. Classify third-party packages into boundary categories using a curated map (`lib/indexer/boundary-classifier.ts`):
-   - `payment`: `stripe`, `braintree`, `paypal-node-sdk`
-   - `database`: `pg`, `mongoose`, `@prisma/client`, `arangojs`
-   - `cache`: `ioredis`, `redis`, `memcached`
-   - `messaging`: `amqplib`, `kafkajs`, `@aws-sdk/client-sqs`
-   - `auth`: `passport`, `better-auth`, `jsonwebtoken`
-   - `cloud`: `@aws-sdk/*`, `@google-cloud/*`, `@azure/*`
-   - `monitoring`: `@sentry/node`, `pino`, `dd-trace`
-   - `http-client`: `axios`, `node-fetch`, `undici`
-   - For unknown packages: `third-party`
-
-3. Scan function bodies for HTTP call patterns: `fetch(`, `axios.get(`, `got.post(` with a non-relative URL string. Extract the hostname/domain as an external endpoint label.
-
-4. Write extracted boundaries to a new ArangoDB `system_boundaries` document collection: `{ name, category, package_name, version, files_using: string[], entity_count, first_seen_at }`. One document per unique external service.
-
-5. Create `calls_external` edge collection linking entities to system boundary nodes: `{ _from: "functions/entity_key", _to: "system_boundaries/boundary_key", call_type: "import" | "http" }`.
-
-6. Expose system boundaries in the Blueprint view as a new "External Systems" layer — distinct colored nodes outside the internal graph, with edges showing which internal entities depend on them.
-
-7. Add a `getSystemBoundaries(orgId, repoId)` method to `IGraphStore` port. Expose via `GET /api/repos/{repoId}/boundaries`.
-
-8. In the MCP Blueprint tool, include system boundaries in the response: _"External dependencies: Stripe (payment, 14 entities), Redis (cache, 8 entities), GitHub API (http-client, 3 entities)."_
-
-**Affected files:** `lib/indexer/languages/typescript/tree-sitter.ts`, `lib/indexer/boundary-classifier.ts` (new), `lib/temporal/activities/indexing-heavy.ts`, `lib/ports/graph-store.ts`, `lib/adapters/arango-graph-store.ts`, `components/blueprint/blueprint-view.tsx`, `lib/mcp/tools/graph.ts`, `app/api/repos/[repoId]/boundaries/route.ts` (new)
-
-**Done when:** After indexing `kap10-server`, the `system_boundaries` collection has entries for Stripe, Redis, ArangoDB, GitHub API, and Supabase. The Blueprint view shows these as distinct external nodes. The MCP Blueprint tool lists them in its response.
+**Done when:** The system discovers conventions from code structure first, then names them using justification data. Rules include community context and adherence metrics.
 
 ---
 
-#### TBI-I-04: Semantic Drift as Auto-Documentation Trigger
+#### TBI-L-24: Temporal Intent Vectors — Git Co-Change Mining with Association Rules
 
 **Priority: P2**
 
-The pipeline currently detects architectural drift — when a HORIZONTAL utility's semantic meaning shifts toward VERTICAL business logic — and writes it to `drift_scores`. This is flagged as a passive risk. But the real value of detecting drift is not just warning users; it is prompting them to update the system's understanding before the divergence becomes a legacy problem.
+Code that changes together belongs together. Mine the git commit matrix using FP-Growth or association rule learning. If `checkout.ts` and `stripe_adapter.ts` co-change 85% of the time, create a `LOGICALLY_COUPLED` edge. Captures hidden dependencies developers hold in their heads.
 
-**The addition:** When drift is detected above a threshold, the pipeline drafts an updated Business Justification and proposes an ADR revision. It presents this to the developer as an interactive question — "has this module changed its role?"
+**Verified:** Only `gitHost.blame()` exists. Zero commit matrix, co-change analysis, or temporal coupling detection.
+
+Extends TBI-I-02 (git history ingestion) with algorithmic depth.
 
 **Sub-tasks:**
+1. Mine commit history: build file × commit matrix from `git log --name-only --pretty=format:"%H" --since="1 year"` (bounded to recent history). **Temporal window bounds:** cap at 90 days / 500 commits for FP-Growth computation, with full year for basic frequency stats. This prevents unbounded computation on large repos while capturing meaningful co-change patterns.
+2. Apply FP-Growth or Apriori algorithm to find frequent file change sets (support threshold: 5+ co-commits, confidence threshold: 0.5). Cap itemset analysis at 1000 unique files — larger repos should scope to changed-file neighborhoods.
+3. Create `logically_coupled` edges between entities in frequently co-changed files. Add `logically_coupled` to `EdgeKind`.
+4. Weight coupling edges by `support × confidence` scores. Store scores as edge metadata.
+5. **Compute temporal context per entity** — not just edges, but a rich temporal signal for each entity:
+   ```typescript
+   temporal_context: {
+     change_frequency: number,         // changes per month
+     co_change_partners: string[],     // entities that change with this one (top 5)
+     recent_commit_intents: string[],  // classified: "bug fix", "feature", "refactor"
+     author_concentration: number,     // 1.0 = single author, 0.0 = many (bus factor proxy)
+     stability: number,               // days since last change / age (1.0 = never changes)
+   }
+   ```
+6. Feed temporal context into justification prompts as TEMPORAL SIGNAL section: "Changed 12 times in last 90 days, co-changes with stripe-adapter.ts (85%), primarily bug fixes, single author (bus factor risk)."
+7. Feed temporal context into entity profiles (L-14) for MCP delivery.
+8. Requires full git history (conflicts with TBI-K-02 shallow clone — need conditional depth).
 
-1. In `lib/temporal/activities/drift-alert.ts`, when `drift_score > 0.6` (current threshold for significant drift), mark the entity as `pending_redocumentation: true` in ArangoDB.
+**Affected files:** `lib/indexer/git-analyzer.ts` (new), `lib/indexer/types.ts`, `lib/temporal/activities/indexing-heavy.ts`
 
-2. Create a new Temporal activity `proposeDriftDocumentation` in `lib/temporal/activities/drift-documentation.ts`. For entities flagged with `pending_redocumentation`:
-   - Re-run the justification LLM with the entity's *current* code + the *previous* justification as explicit context: _"This entity was previously classified as: {old_business_purpose}. Based on its current implementation, has its role changed?"_
-   - If the LLM detects a role change, generate: (a) a revised `business_purpose` draft, (b) a `DriftADR` proposal: _"`SessionManager` now handles billing state in addition to auth. This represents a cross-boundary concern. Recommend: extract billing state into a dedicated `BillingSession` module."_
-
-3. Store the proposal in a new ArangoDB `documentation_proposals` collection: `{ entity_id, old_taxonomy, proposed_taxonomy, old_business_purpose, proposed_business_purpose, adr_draft, confidence, created_at, status: "pending" | "accepted" | "rejected" }`.
-
-4. Surface proposals in the dashboard as a "Documentation Review" notification panel (`components/intelligence/drift-timeline-view.tsx`): _"⚡ 3 modules appear to have changed their role. Review and confirm?"_ Each proposal shows old vs new classification with a diff view. One-click accept (triggers justification update + ADR write) or reject (marks entity as reviewed, suppresses for 30 days).
-
-5. Add `POST /api/repos/{repoId}/documentation-proposals/{proposalId}/accept` and `/reject` routes. Accepting triggers a targeted re-justification activity for that entity.
-
-6. Include `pending_redocumentation` count in the repo overview page as a badge: _"3 modules need documentation review."_
-
-**Affected files:** `lib/temporal/activities/drift-alert.ts`, `lib/temporal/activities/drift-documentation.ts` (new), `lib/ports/graph-store.ts`, `lib/adapters/arango-graph-store.ts`, `components/intelligence/drift-timeline-view.tsx`, `app/api/repos/[repoId]/documentation-proposals/` (new routes), `app/(dashboard)/repos/[repoId]/page.tsx`
-
-**Done when:** When `SessionManager.ts` starts importing from the billing module, the pipeline detects drift, creates a proposal with an ADR draft, and shows a notification in the dashboard. The developer clicks "Accept," the justification updates, and the ADR is written to the `adrs` collection.
+**Done when:** Structurally unrelated files that always change together show `logically_coupled` edges. Each entity has a `temporal_context` object. Justification prompts include temporal signals. Agents see change frequency and co-change partners in entity profiles.
 
 ---
 
-#### TBI-I-05: Idiomatic Standard Discovery (Auto-Generate .cursorrules / TEAM_CONVENTIONS.md)
+#### ~~TBI-L-26: Multi-Layer Knowledge Hypergraph Architecture~~ — REMOVED (Over-Engineered)
+
+The three "layers" (lexical/semantic/vector) already exist as separate data stores: ArangoDB entities (lexical), ArangoDB edges + justifications (semantic), pgvector embeddings (vector). Adding a `layer` field to documents changes no queries and no behavior. The actual capability emerges naturally from L-19 (PageRank) + L-22 (Graph-RAG) + L-07 (kind-aware embeddings).
+
+---
+
+#### TBI-L-27: Rich Context Assembly (`assembleContext()` Orchestrator)
 
 **Priority: P2**
 
-Developers maintain `.cursorrules` files to tell AI agents how their specific team structures code — which hooks to use, how they handle errors, how they organize components, what naming conventions they follow. These files are written and forgotten, become stale, and require manual expertise to write well. The pattern detection engine already detects structural patterns — it just doesn't synthesize them into a `TEAM_CONVENTIONS.md` equivalent.
-
-**The addition:** After pattern detection (Stage 10), synthesize detected idioms, rules, and conventions into a structured `TEAM_CONVENTIONS.md` document and expose it as a first-class graph artifact.
+When an agent asks "What is the impact of changing the payment gateway?", the current system returns flat entity matches. The response should chain: vector search → PageRank-weighted graph traversal → code snippet retrieval into a single `assembleContext()` function. A ~50-line orchestrator once L-19 (PageRank) and L-21 (community partitioning) exist.
 
 **Sub-tasks:**
+1. Implement `assembleContext(query)` that chains: (a) vector search to find entry node, (b) PageRank-weighted 1-hop graph traversal for bounded neighborhood, (c) code snippet fetch at specific line ranges.
+2. Return structured response: `{ entry_point, semantic_neighborhood, code_snippets, confidence, community_context }`.
+3. Include PageRank-weighted impact scores for each entity in the neighborhood.
+4. Add community membership context: "This entity belongs to the Payment Processing domain (Louvain community #7, 42 entities)."
 
-1. In `lib/temporal/activities/pattern-mining.ts`, after mining frequency-based conventions, add framework-specific idiom detection. Extend `mined_patterns` with an `idiom_type` field:
-   - `react-hook-pattern`: how the team structures custom hooks (`use*` functions, dependency arrays, cleanup patterns)
-   - `error-handling-pattern`: try/catch shape, error logging style, re-throw convention
-   - `di-pattern`: how DI is done (constructor injection vs factory vs container.get)
-   - `test-structure`: describe/it nesting depth, mock setup location, assertion style
-   - `naming-convention`: camelCase vs PascalCase usage patterns per entity type
-   - `import-order`: barrel exports vs direct imports, alias usage
+**Affected files:** `lib/mcp/context-assembly.ts` (new ~50-line orchestrator), `lib/mcp/tools/semantic.ts`
 
-2. After pattern mining completes, call a new `synthesizeTeamConventions` activity (`lib/temporal/activities/team-conventions.ts`). Fetches all `mined_patterns` with adherence > 60% and builds a structured `TeamConventions` object:
-   - Per-idiom-type: the dominant pattern, adherence %, exemplar entity keys, counter-examples
-   - Converts to both: (a) machine-readable format stored in ArangoDB `team_conventions` collection; (b) `TEAM_CONVENTIONS.md` markdown.
-
-3. The generated `TEAM_CONVENTIONS.md` structure:
-   ```
-   # Team Conventions — {repo_name}
-   *Auto-generated by Unerr on {date}. Last updated by {indexVersion}.*
-
-   ## React Hooks
-   - Custom hooks always declare cleanup in the return function (94% adherence, 47/50 hooks)
-   - useState before useEffect before custom hooks (88% adherence)
-
-   ## Error Handling
-   - catch blocks always call logger.error with context object (91% adherence)
-   - Never re-throw raw errors — always wrap in AppError (78% adherence)
-
-   ## Dependency Injection
-   - Container pattern via getContainer() — never instantiate adapters directly (96% adherence)
-   ```
-
-4. Store `TEAM_CONVENTIONS.md` in Supabase Storage at `context-docs/{orgId}/{repoId}/TEAM_CONVENTIONS.md`. Update on every full re-index.
-
-5. In the MCP `rules` tool (`lib/mcp/tools/rules.ts`), when returning active rules, prepend team convention idioms as high-priority implicit rules. An IDE agent asking "what are the coding standards?" receives the auto-generated conventions without any manual configuration.
-
-6. Add a "Download TEAM_CONVENTIONS.md" button to the repo Settings > Rules page. Add a "Commit to repo as `.cursor/rules`" option that converts the conventions to `.cursorrules` format and commits via the GitHub API.
-
-7. Drift detection for conventions: if adherence to a convention drops below 50% (from a previous 80%), flag it as a "Convention erosion" in the drift dashboard.
-
-**Affected files:** `lib/temporal/activities/pattern-mining.ts`, `lib/temporal/activities/team-conventions.ts` (new), `lib/ports/graph-store.ts`, `lib/adapters/arango-graph-store.ts`, `lib/mcp/tools/rules.ts`, `components/repo/repo-manage-panel.tsx`, `app/(dashboard)/repos/[repoId]/settings/review/page.tsx`
-
-**Done when:** After indexing, `TEAM_CONVENTIONS.md` is written to Supabase Storage with accurate adherence percentages for at least 3 idiom types. The MCP `rules` tool includes convention idioms in its response. The "Commit as `.cursor/rules`" button writes a valid `.cursorrules` file to the repo.
-
----
-
-### Category J — Autonomous Context Delivery (Zero-Config Agent Intelligence)
-
-These tasks complete the vision: the knowledge graph doesn't just exist — it actively delivers the right context to the right agent at the right time. No manual docs, no `.cursorrules`, no `MEMORY.md` — the graph IS the documentation, and it speaks MCP.
-
-#### TBI-J-01: Proactive File-Open Context Injection via MCP
-
-**Priority: P1** · **Status: ❌ NOT STARTED**
-
-When an IDE agent opens a file, the MCP server should proactively deliver a context bundle for that file — entity purposes, warnings, conventions, blast radius, related ADRs — without the agent having to ask. Currently the agent must explicitly call `inspect` or `search` tools to get context. This creates a cold-start problem: the agent doesn't know what it doesn't know.
-
-**The addition:** A new MCP tool and resource subscription that pushes relevant context when a file is opened or modified in the editor.
-
-**Sub-tasks:**
-
-1. Add a `getFileContext(orgId, repoId, filePath)` method to `IGraphStore` port. Returns a `FileContextBundle`: `{ entities: EntitySummary[], warnings: EntityWarning[], conventions: ConventionRule[], blastRadius: RiskSummary, relatedADRs: ADRSummary[], recentDrift: DriftEntry[] }`. Single AQL query joining across entities, entity_warnings, justifications, and adrs collections.
-
-2. In `lib/mcp/tools/inspect.ts`, add a new `file_context` tool that accepts a file path and returns the full `FileContextBundle` as structured JSON. This is the pull-based fallback.
-
-3. In `lib/mcp/transport.ts`, implement MCP resource subscriptions for file paths. When the IDE client subscribes to `file://{path}`, the server resolves entities in that file and returns the context bundle. On entity changes (re-index, override), push updated context.
-
-4. Format the context bundle as a concise markdown block suitable for system prompt injection:
-   ```
-   ## Context for src/payments/processor.ts
-   **Purpose:** Core payment processing — handles Stripe API calls, retry logic, idempotency.
-   **Risk:** HIGH (fan_in=14, fan_out=8) — changes here affect 14 callers.
-   **Warnings:** ⚠️ Previous optimization reverted (rate limit coupling).
-   **Conventions:** Always wrap errors in AppError (91% adherence). Use PaymentGateway adapter.
-   **Related ADR:** ADR-007: Chose idempotency keys over database locks.
-   ```
-
-5. Add a `contextBundleSize` metric to track token cost per file (target: < 500 tokens per file).
-
-**Affected files:** `lib/ports/graph-store.ts`, `lib/adapters/arango-graph-store.ts`, `lib/mcp/tools/inspect.ts`, `lib/mcp/transport.ts`
-
-**Done when:** An IDE agent opens `processor.ts` and receives a context bundle including entity purposes, risk level, warnings, and conventions — without calling any tools. The agent's first response about that file is informed by the full graph context.
-
----
-
-#### TBI-J-02: Unified Knowledge Document Generator (Replace ALL Manual Docs)
-
-**Priority: P2** · **Status: ❌ NOT STARTED**
-
-TBI-H-04 generates `UNERR_CONTEXT.md` (features, health, ADRs). TBI-I-05 generates `TEAM_CONVENTIONS.md` (coding patterns). TBI-I-01 produces `entity_warnings`. These are separate artifacts. The vision is ONE document that replaces MEMORY.md + ARCHITECTURE.md + .cursorrules entirely — a comprehensive, auto-generated knowledge base.
-
-**The addition:** A unified `UNERR_KNOWLEDGE.md` generator that combines all pipeline outputs into a single, versioned document with sections mapping 1:1 to what developers manually write.
-
-**Sub-tasks:**
-
-1. Create `lib/justification/knowledge-document-generator.ts`. Extend `context-document-generator.ts` to include:
-   - **Section: System Architecture** — system boundaries (TBI-I-03), external dependencies, data flow
-   - **Section: Domain Model** — ontology terms, ubiquitous language, entity taxonomy breakdown
-   - **Section: Lessons Learned** — entity warnings from `entity_warnings` (TBI-I-01)
-   - **Section: Coding Standards** — team conventions with adherence % (TBI-I-05)
-   - **Section: Risk Map** — top 20 high-risk entities with blast radius, drift status
-   - **Section: Feature Map** — from `features_agg`, entity lists per feature
-   - **Section: Architecture Decisions** — ADRs with evidence and status
-   - **Section: Health Report** — current issues, trends, recommended actions
-
-2. Add `GET /api/repos/{repoId}/export/knowledge` route with format options:
-   - `?format=markdown` (default) — full `UNERR_KNOWLEDGE.md`
-   - `?format=cursorrules` — conventions only, `.cursor/rules` compatible
-   - `?format=claude-md` — conventions + architecture, `CLAUDE.md` compatible
-
-3. Add "Export Knowledge Base" dropdown to repo settings: "Download UNERR_KNOWLEDGE.md", "Commit as CLAUDE.md", "Commit as .cursor/rules".
-
-4. Track document versions: `knowledge_doc_versions` with `{ version, generated_at, section_checksums, diff_from_previous }`.
-
-**Affected files:** `lib/justification/knowledge-document-generator.ts` (new), `app/api/repos/[repoId]/export/knowledge/route.ts` (new), `components/repo/repo-manage-panel.tsx`
-
-**Done when:** "Export Knowledge Base" produces a single document with architecture, domain model, lessons learned, coding standards, risk map, features, ADRs, and health — replacing MEMORY.md, ARCHITECTURE.md, and .cursorrules in one artifact.
-
----
-
-#### TBI-J-03: Incremental Context Refresh on Push
-
-**Priority: P2** · **Status: ❌ NOT STARTED**
-
-Context documents (UNERR_CONTEXT.md, knowledge base) are generated only during full re-index. Incremental indexing (Stage 14) updates entities and edges but does not refresh downstream context artifacts. After 50 incremental pushes, the exported knowledge document is 50 commits stale.
-
-**The addition:** After incremental indexing, selectively refresh affected sections of the knowledge document based on what changed.
-
-**Sub-tasks:**
-
-1. In `lib/temporal/workflows/incremental-index.ts`, after incremental parse + embed, determine which sections are invalidated:
-   - Changed entities → refresh "Feature Map" and "Risk Map"
-   - New/deleted entities → refresh "Domain Model"
-   - Changed blast radius → refresh "Risk Map"
-   - New entity warnings → refresh "Lessons Learned"
-   - Convention adherence change > 5% → refresh "Coding Standards"
-
-2. Create `refreshKnowledgeSections` light activity: regenerate only invalidated sections and patch the stored document.
-
-3. If auto-commit enabled, commit with: `chore(unerr): refresh context after {N} file changes [skip ci]`.
-
-4. Debounce: accumulate changes, refresh when 10+ files changed or 24 hours elapsed since last refresh.
-
-**Affected files:** `lib/temporal/workflows/incremental-index.ts`, `lib/justification/knowledge-document-generator.ts`, `lib/temporal/activities/context-refresh.ts` (new)
-
-**Done when:** After 10 incremental pushes modifying `PaymentProcessor.ts`, the knowledge document's "Risk Map" reflects updated blast radius without a full re-index.
-
----
-
-#### TBI-J-04: Agent Memory Sync — Write Graph Learnings to IDE Config Files
-
-**Priority: P3** · **Status: ❌ NOT STARTED**
-
-The graph learns continuously — new patterns, warnings, convention changes, drift. IDE agents have their own memory files (CLAUDE.md, .cursorrules, .github/copilot-instructions.md). Currently these must be manually updated. The graph should push its learnings into the agent's native format automatically.
-
-**The addition:** A scheduled sync that writes graph insights into IDE memory files via GitHub API commits.
-
-**Sub-tasks:**
-
-1. Create `lib/export/agent-memory-sync.ts` with format adapters:
-   - `toCLAUDEmd()`: Architecture patterns, key file paths, conventions, warnings
-   - `toCursorrules()`: Coding conventions, error handling patterns, naming rules
-   - `toCopilotInstructions()`: Project context in GitHub Copilot format
-
-2. Add repo setting: "Agent Memory Sync" with target format selection (CLAUDE.md / .cursorrules / copilot-instructions / all).
-
-3. Create scheduled Temporal workflow `syncAgentMemory` (weekly or on-demand after full re-index):
-   - Fetch current graph state (conventions, warnings, ADRs, high-risk entities)
-   - Generate target format, diff against current file in repo (GitHub Contents API)
-   - If diff > 5 lines, create PR: `chore(unerr): sync agent memory from knowledge graph`
-   - PR description includes changelog: "Added 3 warnings, updated 2 conventions, removed 1 stale pattern."
-
-**Affected files:** `lib/export/agent-memory-sync.ts` (new), `lib/temporal/workflows/agent-memory-sync.ts` (new), `app/api/repos/[repoId]/settings/agent-sync/route.ts` (new)
-
-**Done when:** After enabling agent memory sync, a PR is automatically created with an updated `CLAUDE.md` that includes new warnings, updated conventions, and fresh architecture insights from the knowledge graph.
+**Done when:** MCP context responses include semantic neighborhood, code snippets, PageRank scores, and community context — not just flat entity matches.
 
 ---
 
 ### Implementation Order
 
-Tasks are independent within categories but build on each other across categories. Recommended sequencing:
+All hardening waves (0-8) are complete — 48 tasks across 11 categories (A-K) shipped. Remaining work is algorithmic depth (Category L).
 
-| Wave | Tasks | Rationale |
-|------|-------|-----------|
-| ~~**Wave 0 (Hotfix)**~~ ✅ | ~~TBI-G-02, TBI-G-01~~ | **DONE** — fatal LLM error detection + `last_indexed_at` fix |
-| ~~**Wave 1 (partial)**~~ | ~~TBI-B-01~~ ✅, TBI-A-01, TBI-A-02, ~~TBI-G-04~~ ✅, ~~TBI-D-02~~ ✅, ~~TBI-G-03~~ ✅ | B-01/G-04/D-02/G-03 **DONE**; Python/Go SCIP still pending |
-| **Wave 2** | TBI-B-02, TBI-B-03, TBI-D-01 | Orphan cleanup (depends on B-01), Python/Go import edges, incremental fallback |
-| **Wave 3** | TBI-I-01, TBI-A-03, TBI-E-01 | Negative knowledge, Java, O(1) snapshot. ~~TBI-H-05, TBI-H-03~~ ✅ already done |
-| **Wave 4** | ~~TBI-H-01~~ ✅, ~~TBI-H-02~~ ✅, TBI-I-02, TBI-J-01, TBI-C-01, TBI-C-02 | ~~Context seeding~~ ✅, ~~correction UI~~ ✅, git history, proactive MCP context, decorator extraction, cross-level propagation |
-| **Wave 5** | TBI-I-03, TBI-I-05, TBI-J-02, TBI-A-04, TBI-C-03 | System boundaries, team conventions, unified knowledge doc, multi-language tree-sitter, manifests. ~~TBI-H-04~~ ✅ already done |
-| **Wave 6** | TBI-I-04, TBI-J-03, TBI-D-03, TBI-A-05, TBI-C-04, TBI-C-05 | Drift-as-doc-trigger, incremental context refresh, rewind tracing, polyglot monorepo, signatures, heuristic bypass |
-| **Wave 7** | TBI-J-04, TBI-D-04, TBI-E-02, TBI-F-01 | Agent memory sync, edge repair audit, bulk import, per-stage observability |
+**Task audit:** Original 27 L-tasks → 22 remain (19 core + 3 deferred). 5 removed/absorbed: L-05 (already done), L-10 (superseded by L-23), L-12 (superseded by L-19), L-26 (over-engineered), L-01 (absorbed into L-18).
 
-Wave 0 is complete. Wave 1 is partially complete (4 of 6 tasks done). Next priority: Python/Go SCIP (TBI-A-01, TBI-A-02).
+#### Design Principles
+
+These principles govern every task in the Alpha waves. They are non-negotiable.
+
+**1. Edges are the moat.** Every downstream capability — PageRank, impact analysis, topological justification, community detection, staleness cascading — depends on edge quality. Today, no parser creates `calls` edges. The topological sort degenerates to a flat batch. Alpha-1 isn't "the first wave" — it's the load-bearing wall.
+
+**2. Convergence, not pipeline.** The algorithm is not a linear pipeline (parse → embed → ontology → justify). It's multiple independent signals that converge into a unified entity understanding:
+
+```
+                    ┌── Structural signal (graph position, PageRank, communities)
+                    │
+[Parse] → [Graph] ──┼── Intent signal (tests, docs, commits, entry points)
+                    │
+                    ├── Temporal signal (co-change, blame, drift)
+                    │
+                    └── Domain signal (ontology, conventions, rules)
+                    ↓ converge
+              [Entity Profile]  ← the product
+                    ↓
+              [Synthesis Embedding]
+```
+
+**3. The Entity Profile is the product.** What makes us different is not the graph database or the embeddings. It's the comprehensive, pre-computed profile per entity that no other tool produces — combining structural position, business intent, temporal behavior, and calibrated confidence into a single artifact that agents reason about.
+
+**4. Confidence is calibrated, not self-reported.** An LLM saying "confidence: 0.95" is meaningless without calibration. Real confidence is computed from observable signals (has tests? has callers? descriptive name?), with per-dimension breakdown so agents know WHICH aspects they can trust.
+
+**5. Don't over-engineer what emerges naturally.** Node2Vec → 5D structural fingerprint (no ML training needed). Spectral partitioning → just Louvain (sufficient at 1k-50k entity scale). Three-layer hypergraph → already exists as separate stores. Focus on producing SIGNALS, not on delivery format.
+
+---
+
+#### Alpha Waves — Algorithmic Depth (Capturing the Substrate)
+
+> These waves transform the pipeline from a "syntax reader" into an "intent-aware intelligence engine." Each wave has a clear thesis: *what can the product do after this wave that it couldn't before?* Dependencies flow strictly forward. Every wave is 2-3 tasks.
+>
+> **Differentiator:** Other tools tell agents what code LOOKS LIKE. After these waves, Unerr tells agents what code MEANS, what it AFFECTS, and what CONVENTIONS it should follow — with calibrated confidence in each claim.
+
+**Wave Alpha-1: Call Graph Foundation** — *"What calls what — across files and through events?"*
+
+| Task | What | Why Together |
+|------|------|-------------|
+| **L-18** (phased) | **L-18a:** Wire SCIP `references` → `calls` edges + fix topological sort (the 80/20 fix — unblocks everything). **L-18b:** Add `emits`, `listens_to`, `implements`, `mutates_state` edge kinds (depth for event-driven codebases) | The foundational gap: **no parser creates `calls` edges today.** Topological sort degenerates. Impact analysis returns nothing. L-18a alone makes the pipeline work. |
+| **L-02** | Cross-file call edges in tree-sitter (import symbol table → function-level `calls` edges) | Same problem at the tree-sitter level: call graph is intra-file only |
+
+*Ships:* **L-18a ships first** (2-day task, unblocks every downstream wave). After L-18a: topological sort produces real levels, `get_callers`/`get_callees` return data, impact analysis traces call chains. After L-18b + L-02: complete call graph including events, DI, and cross-file tree-sitter calls. *Depends on:* Nothing.
+
+---
+
+**Wave Alpha-2: Relevance & Confidence** — *"What's actually important — how certain are we — and what does the LLM see?"*
+
+| Task | What | Why Together |
+|------|------|-------------|
+| **L-19** | Semantic PageRank with edge-type weighting + **calibrated confidence model** (computed from observable signals, not LLM self-reported) | Fixes `logger.info()` ranking. Gives agents per-dimension confidence breakdown they can actually trust. |
+| **L-23** | Hierarchical AST summarization with **semantic anchor extraction** (decision points, external calls, mutations, errors preserved verbatim; boilerplate → structural tokens) | Fixes the LLM reading 60 lines of setup code instead of business logic. Anchors become reusable entity metadata. |
+
+*Ships:* ~~Meaningful centrality scores.~~ ✅ Done. ~~Calibrated confidence with breakdown (`{ structural: 0.9, intent: 0.35, temporal: 0.0 }`).~~ ✅ Done (temporal dimension deferred). ~~LLM prompts that contain the soul of each function — semantic anchors, not boilerplate.~~ ✅ Done. *Depends on:* Alpha-1 (edge types for meaningful PageRank weights) — ✅ complete.
+
+---
+
+**Wave Alpha-3: Intent, Communities & Propagation** — *"What does each piece of code really mean — and what cluster does it belong to?"*
+
+| Task | What | Why Together |
+|------|------|-------------|
+| **L-20** | **Unified intent signal extraction** (4 sources: tests, entry points, commits, naming) + hermeneutic propagation with **signal-aware prompts** | The LLM sees structured signals, not a monolithic prompt. Utility functions understood by purpose, not frequency. |
+| **L-21** | Community detection **moved to pre-justification** (Louvain runs before LLM calls, community membership is a structural signal in the prompt) | "This function is in the same community as PaymentService and StripeAdapter" — the LLM knows the domain before reading the code |
+| **L-16** | Parse test assertions as intent signal (feeds into L-20's `intent.from_tests[]`) | Tests are the highest-confidence intent source — human-written descriptions of expected behavior |
+
+*Ships:* Justifications that understand WHY code exists from 4 independent signals. Community labels inform the LLM during justification, not after. Signal disagreements are explicitly resolved. *Depends on:* Alpha-1 (complete call graph for propagation), Alpha-2 (PageRank for entry point identification, semantic anchors for prompt quality).
+
+---
+
+**Wave Alpha-4: Embedding & Ontology Intelligence** — *"How should we represent entities for search — and what domain do they serve?"*
+
+| Task | What | Why Together |
+|------|------|-------------|
+| **L-07** | Kind-aware embedding strategies + **two-pass embedding** (Pass 1: structural, before justification; Pass 2: synthesis, after justification — fixes the ordering bug where first-time embeddings have no justification context) | Modules embedded. Different kinds get different strategies. First-time search works (Pass 1). Intent-aware search after justification (Pass 2). |
+| **L-25** | **Three-tier ontology** classification (domain concepts vs architectural patterns vs framework terms) with cross-tier mapping (`Payment` → `PaymentService, PaymentController, PaymentHandler`) | Ontology tells the LLM "PaymentHandler is domain, Controller is architecture" — turns generic classifications into specific ones |
+
+*Ships:* Entities embedded by their nature. Two-pass embedding solves the ordering problem. Ontology distinguishes "Invoice" (domain) from "Handler" (architecture) from "Prisma" (framework). Cross-tier mapping gives the LLM architectural context. *Depends on:* Alpha-2 (AST summaries feed into embedding documents), Alpha-3 (justification data for Pass 2 embeddings).
+
+---
+
+**Wave Alpha-5: Structural Search & Liveness** — *"How do we find code by structure — and what's actually alive?"*
+
+| Task | What | Why Together |
+|------|------|-------------|
+| **L-22** | Graph-RAG embeddings with **structural fingerprint** (5D: PageRank, community, depth, fan ratio, boundary — no Node2Vec/ML training needed) | Two functions with identical code but different graph positions produce different search rankings |
+| **L-17** | Dead code detection exclusions for plugin/event/config patterns + `dead_code_reason` field | Partially solved by Alpha-1's `listens_to` edges + Alpha-3's community context; this adds framework-specific exclusion patterns |
+
+*Ships:* Search that understands code topology via structural fingerprint. Dead code detection that doesn't flag event handlers, plugin registrations, or config exports. *Depends on:* Alpha-2 (PageRank for fingerprint), Alpha-3 (community labels for fingerprint), Alpha-4 (kind-aware embeddings as base).
+
+---
+
+**Wave Alpha-6: Temporal Patterns & Rules** — *"What patterns exist across time — and what rules should the team follow?"*
+
+| Task | What | Why Together |
+|------|------|-------------|
+| **L-24** | Git co-change mining + **temporal context per entity** (`change_frequency`, `co_change_partners`, `recent_commit_intents`, `author_concentration`, `stability`) fed into justification prompts and entity profiles | Captures hidden developer knowledge. Temporal signal enriches both justification and search. |
+| **L-13** | **Code-first** convention discovery (structural patterns found from code, then named by LLM using justifications) — scoped by Louvain community | Conventions discovered from actual code patterns, not just LLM guesses about justification data |
+
+*Ships:* Hidden coupling made visible. Per-entity temporal context in prompts and profiles. Intent-level rules discovered from code structure first, named by LLM second. *Depends on:* Alpha-3 (reliable justifications + community context for rule synthesis). L-24 needs full git history.
+
+---
+
+**Wave Alpha-7: Entity Profiles & Freshness** — *"How do we deliver intelligence to agents — and keep it fresh?"*
+
+| Task | What | Why Together |
+|------|------|-------------|
+| **L-14** | **Entity Profile cache** — pre-computed profiles in Redis (structural + intent + temporal + confidence signals in one object). All MCP tools return profile projections. Single cache read replaces 3-5 DB calls. **`refresh_context` MCP tool** lets agents update profiles mid-session for files they've modified. | The Entity Profile IS the product. This is how agents consume everything the pipeline produces — including during agentic loops where the agent's own changes should be immediately visible. |
+| **L-09** | **Semantic staleness** — change-type aware cascading (signature change → always cascade; comment edit → never; body refactor → cosine check) | Smarter than a single cosine threshold. Prevents false cascades AND missed cascades. |
+| **L-27** | Rich context assembly (`assembleContext()` chains vector → PageRank neighborhood → code snippets → entity profiles) | Agents get structured context bundles. ~50-line orchestrator once profiles and communities exist. |
+
+*Ships:* MCP responses deliver Entity Profiles with all signals. Re-justification understands WHAT changed, not just whether embeddings moved. Context assembly is a single function call. *Depends on:* Alpha-5 (structural fingerprint for profiles), Alpha-4 (embeddings for staleness checks).
+
+---
+
+**Wave Alpha-8: Parser Fidelity** — *"Are we capturing everything the parsers can give us?"*
+
+| Task | What | Why Together |
+|------|------|-------------|
+| **L-03** | Preserve original entity `kind` through KIND_TO_COLLECTION mapping — flows through justification prompts, embeddings, and MCP tools | Methods distinguished from functions, type aliases from variables, throughout the entire pipeline |
+| **L-04** | Multi-line import parsing (TS) + Go struct/interface member extraction | Parser completeness for the two most common edge cases |
+| **L-08** | Dual embedding variants (code-only + semantic) with weighted combination at query time | Search resilient to LLM hallucinations in justification text. Complements two-pass embedding (L-07): Pass 1 = structural, L-08 code variant = code-only fallback, Pass 2 = synthesis |
+
+*Ships:* Higher-fidelity entity model. Search that works even when justifications are wrong. *Depends on:* Nothing (can run in parallel with any wave after Alpha-4).
+
+---
+
+**Deferred Backlog (P3 — no dependencies, do anytime)**
+
+| Task | What | Effort |
+|------|------|--------|
+| **L-06** | AST-aware cyclomatic + cognitive complexity estimation | 2-4h |
+| **L-11** | Quality scoring with positive reinforcement | 2h |
+| **L-15** | Adaptive RRF k-parameter based on result set variance | 1h |
+
+---
+
+#### Dependency Flow (Strict Forward-Only)
+
+```
+Alpha-1 (Call Graph Foundation)
+  │
+  ├─► L-18a ships first (2 days) ── unblocks ALL downstream waves
+  │
+  └─► Alpha-2 (Relevance & Confidence) ── edges feed PageRank + semantic anchors
+        │
+        └─► Alpha-3 (Intent, Communities & Propagation) ── PageRank + anchors feed signal-aware prompts
+              │
+              └─► Alpha-4 (Embedding & Ontology) ── justifications + communities feed Pass 2 embeddings
+                    │
+                    ├─► Alpha-5 (Structural Search & Liveness) ── fingerprints + communities feed Graph-RAG
+                    │     │
+                    │     ├─► Alpha-6 (Temporal) ── communities scope convention discovery
+                    │     │
+                    │     └─► Alpha-7 (Entity Profiles & Freshness) ── all signals converge into profiles
+                    │
+                    └─► Alpha-8 (Parser Fidelity) ── independent, parallelizable
+```
+
+**Critical path:** Alpha-1 (L-18a) → Alpha-2 → Alpha-3 → Alpha-4 → Alpha-7
+This chain goes from "no call graph" to "agents receive entity profiles with calibrated confidence."
+
+#### Summary
+
+| Wave | Tasks | Count | Thesis | Key Enhancement |
+|------|-------|-------|--------|-----------------|
+| Alpha-1 | L-18 (phased), L-02 | 2 | Complete the call graph | ✅ L-18a + L-02 done. Remaining: L-18b (event edges) |
+| Alpha-2 | L-19, L-23 | 2 | Relevance + confidence + what LLM sees | Calibrated confidence model; semantic anchor extraction |
+| Alpha-3 | L-20, L-21, L-16 | 3 | Intent signals + communities + propagation | L-21 moved to pre-justification; signal-aware prompts |
+| Alpha-4 | L-07, L-25 | 2 | Smart embeddings + ontology | Two-pass embedding fixes ordering bug; three-tier ontology |
+| Alpha-5 | L-22, L-17 | 2 | Structural search + liveness | 5D structural fingerprint (no ML training); L-17 moved here |
+| Alpha-6 | L-24, L-13 | 2 | Temporal patterns + rules | Temporal context per entity; code-first convention discovery |
+| Alpha-7 | L-14, L-09, L-27 | 3 | Entity profiles + freshness | Entity Profile cache; semantic staleness (change-type aware) |
+| Alpha-8 | L-03, L-04, L-08 | 3 | Parser fidelity + search resilience | Kind flows through entire pipeline |
+| Backlog | L-06, L-11, L-15 | 3 | P3 polish (no dependencies) | — |
+
+**Original:** 27 tasks in 5 waves (one with 13 tasks). **Current:** 19 core tasks in 8 waves of 2-3 + 3 deferred + 5 removed/absorbed. **Key structural changes vs previous plan:** L-21 moved from Alpha-5 to Alpha-3 (communities inform justification); L-17 moved from Alpha-3 to Alpha-5 (benefits from community context); L-18 split into phased delivery (L-18a unblocks immediately).
 
 ---
 
@@ -2214,3 +1900,36 @@ Wave 0 is complete. Wave 1 is partially complete (4 of 6 tasks done). Next prior
 **Result:** Graph stage fully correct (697 files, 1,786 functions, 591 call edges, 1,267 import edges). All LLM-dependent stages failed silently — Lightning AI endpoint returned HTTP 405 for every justification call. Pipeline reported `status: "ready"` with no error.
 **Bugs found:** 6 — TBI-G-01, TBI-G-02, TBI-G-03, TBI-G-04, TBI-B-01, TBI-D-02.
 **Fixes shipped:** 2026-02-28. All 6 bugs resolved. LLM provider switched to `LLM_PROVIDER=openai`. Re-index button added to repo overview page. See TBI task descriptions for implementation details.
+
+### Wave 5 Implementation: 2026-03-01
+
+**Tasks completed:** 6 of 6 — TBI-K-04, TBI-K-12, TBI-C-01, TBI-C-02, TBI-I-02, TBI-J-01.
+**Summary:**
+- **TBI-K-04** (SCIP decoder robustness): Buffer bounds checking at 3 points in `scip-decoder.ts` + per-document try-catch isolation. Truncated `.scip` files produce partial results instead of crashes.
+- **TBI-K-12** (ONNX session lifecycle): Session rotation after 500 embed calls with `disposeSession()`, memory logging, configurable via `ONNX_SESSION_MAX_CALLS`.
+- **TBI-C-01** (Decorator extraction): `pendingDecorators` tracking in TS tree-sitter parser captures `@Decorator()` patterns. Injected into justification prompt Section 0.5.
+- **TBI-C-02** (Cross-level propagation): Accumulated `accumulatedChangedIds` across ALL prior topological levels (not just N-1). 5000-entry cap for bounded workflow state.
+- **TBI-I-02** (Git history): `getFileGitHistory()` on `IGitHost` port runs `git log --follow`. Fetched per unique file in `justifyBatch`, injected as prompt Section 0.75 "Historical Context."
+- **TBI-J-01** (MCP file_context): New `file_context` tool returns all entities with justifications, feature tags, domain concepts, caller/callee counts in one response.
+
+### Wave 6 Implementation: 2026-03-01
+
+**Tasks completed:** 5 of 5 — TBI-I-03, TBI-I-05, TBI-J-02, TBI-A-04, TBI-C-03.
+**Summary:**
+- **TBI-I-03** (System boundaries): `boundary-classifier.ts` with `BoundaryCategory` type and curated maps for npm (120+ packages), PyPI, Go, Maven. `classifyBoundary()` + `extractExternalPackageName()` exports. All 4 language parsers (TS, Python, Go, Java) updated to create `is_external` import edges with `package_name` and `boundary_category` metadata. External edges use `to_id: "external:${pkgName}"` format.
+- **TBI-I-05** (Team conventions): `conventions-generator.ts` generates `TEAM_CONVENTIONS.md` (markdown) or `.cursorrules` format from confirmed patterns + active rules + ontology. Export route at `GET /api/repos/{repoId}/export/conventions?format=markdown|cursorrules`. Rules categorized as MUST/SHOULD/MAY, patterns grouped by type with adherence %.
+- **TBI-J-02** (Unified knowledge doc): Extended `context-document-generator.ts` to fetch confirmed patterns + active rules and render a "Team Conventions" section with architecture rules and detected patterns. The unified `UNERR_CONTEXT.md` now includes 7 sections.
+- **TBI-A-04** (Multi-language parsers): 6 new language plugins: C (functions, structs, enums, typedefs, `#include` edges), C++ (classes/inheritance, structs, namespaces, methods, `#include` edges), C# (classes, interfaces, structs, records, enums, namespaces, methods, `using` edges), PHP (classes, interfaces, traits, enums, methods, `use` edges), Ruby (classes/modules, methods, `require_relative` edges), Rust (structs, enums, traits, impl→implements edges, type aliases, modules, `use crate::` edges). All registered in `registry.ts` (10 total plugins).
+- **TBI-C-03** (Workspace manifests): `RepoRecord.manifestData` field added to relational store. `updateRepoManifest()` method on `IRelationalStore` port. Ontology activity persists manifest JSON (project_name, tech_stack, project_domain, project_description) after storing ontology to ArangoDB.
+
+### Wave 7 Implementation: 2026-03-01
+
+**Tasks completed:** 7 of 7 — TBI-I-04, TBI-J-03, TBI-D-03, TBI-A-05, TBI-C-04, TBI-C-05, TBI-K-14.
+**Summary:**
+- **TBI-D-03** (Rewind → rule tracing): `markLedgerEntryRuleGenerated()` added to `IGraphStore` port, implemented in ArangoDB adapter (sets `rule_generated: true`, `rule_id`, `rule_generated_at`) and in-memory fake. Called in `synthesizeAntiPatternRule` after `upsertRule()`, before token usage logging. Rewind entries now link to the rules they generated.
+- **TBI-C-05** (Heuristic bypass): Entities with `heuristicHint.confidence >= 0.9` and 0 inbound callers now skip LLM entirely. Canned justification created with `model_tier: "heuristic"`, `model_used: "heuristic-bypass"`. Merged into results before storage. Quality scorer already skips heuristic-tier justifications. Pipeline log reports bypass count. Saves 20-40% of LLM calls for large repos.
+- **TBI-C-04** (Signature extraction): TS arrow functions now extract params via secondary regex + capture return type. Method signatures preserve `public`/`private`/`protected`/`static` modifiers. Python parser handles multi-line params by scanning forward up to 20 lines for closing paren. Go parser preserves pointer receiver `*` flag in method signature (e.g., `(*Receiver).Method()`). Prompt-builder labels updated to "Parameter count" and "Return type".
+- **TBI-A-05** (Polyglot monorepo): `detectLanguagePerRoot()` added to `monorepo.ts` — scans each workspace root's files to 3-directory depth using `readdirSync`, counts file extensions via `ROOT_EXTENSION_LANGUAGE` map, returns dominant language per root. `prepareRepoIntelligenceSpace` result extended with `languagePerRoot?: Record<string, string>` field, populated for multi-root repos.
+- **TBI-I-04** (Drift documentation trigger): New `drift-documentation.ts` activity with `proposeDriftDocumentation()` — when drift detected, LLM generates updated taxonomy, business purpose, and ADR draft. `DocumentationProposal` type with old/proposed classification + ADR + confidence + status. `documentation_proposals` ArangoDB collection via 3 new port methods: `upsertDocumentationProposal`, `getDocumentationProposals`, `updateDocumentationProposalStatus`. Port/adapter/fake implemented. Activity registered in light worker.
+- **TBI-J-03** (Incremental context refresh): New `context-refresh.ts` activity with `refreshKnowledgeSections()` — determines invalidated sections based on change types (changed→feature_map+risk_map, added/deleted→domain_model, cascade→risk_map). Debounce gate: skips if < 10 total changes or < 24h since last refresh with moderate changes. Regenerates full context document via existing `generateContextDocument()`. Wired into `incrementalIndexWorkflow` as Step 7.5 after cascade re-justify, with best-effort error handling.
+- **TBI-K-14** (Chunked msgpack): `serializeSnapshotChunked()` added to `graph-serializer.ts` — splices entities in batches of 1000 via `Array.splice(0, chunkSize)`, serializes each batch as a partial envelope, clears chunk after pack, concats buffers. Logs pre/post memory via `process.memoryUsage()`. `exportAndUploadGraph` uses chunked mode for repos with > 5000 entities, with per-chunk heartbeat progress callbacks. Standard `serializeSnapshot` used as fast path for smaller repos.

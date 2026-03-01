@@ -147,7 +147,7 @@ export function extractDocComment(
   if (language === "go") {
     return extractGoDocComment(lines, entityLineIdx)
   }
-  // Default: JSDoc/TSDoc style (works for TS, JS, and most C-family languages)
+  // Default: JSDoc/TSDoc/JavaDoc style (works for TS, JS, Java, and most C-family languages)
   return extractJSDocComment(lines, entityLineIdx)
 }
 

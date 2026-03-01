@@ -99,4 +99,8 @@ export interface IGitHost {
   createBranch(owner: string, repo: string, branchName: string, fromSha: string): Promise<void>
   /** Create or update a file in a branch */
   createOrUpdateFile(owner: string, repo: string, branch: string, path: string, content: string, opts: { message: string }): Promise<{ sha: string }>
+
+  // I-02: Historical context for justification
+  /** Get commit history for a file via 'git log --follow' in the local clone */
+  getFileGitHistory(workspacePath: string, filePath: string, maxCommits?: number): Promise<Array<{ sha: string; subject: string; body: string }>>
 }

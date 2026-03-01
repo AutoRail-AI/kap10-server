@@ -40,7 +40,7 @@ export function topologicalSortEntities(
   }
 
   for (const edge of edges) {
-    if (edge.kind !== "calls") continue
+    if (edge.kind !== "calls" && edge.kind !== "references") continue
     const fromId = edge._from.split("/").pop()
     const toId = edge._to.split("/").pop()
     if (!fromId || !toId) continue
@@ -118,7 +118,7 @@ export function topologicalSortEntityIds(
   }
 
   for (const edge of edges) {
-    if (edge.kind !== "calls") continue
+    if (edge.kind !== "calls" && edge.kind !== "references") continue
     const fromId = edge._from.split("/").pop()
     const toId = edge._to.split("/").pop()
     if (!fromId || !toId) continue

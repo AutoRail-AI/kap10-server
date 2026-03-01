@@ -11,6 +11,7 @@ const config: NextConfig = {
       fullUrl: true,
     },
   },
+  turbopack: {},
   webpack: (config, { isServer }) => {
     // arangojs uses a dynamic require in connection.js that triggers Webpack's
     // "Critical dependency: the request of a dependency is an expression" warning.

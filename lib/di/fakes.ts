@@ -170,6 +170,9 @@ export class InMemoryGraphStore implements IGraphStore {
   async bulkUpsertEdges(_orgId: string, edges: Array<{ _from: string; _to: string; kind: string; org_id: string; repo_id: string }>): Promise<void> {
     this.edges.push(...edges)
   }
+  async bulkImportRaw(_orgId: string, _collection: string, docs: Record<string, unknown>[]): Promise<{ created: number; errors: number; updated: number }> {
+    return { created: docs.length, errors: 0, updated: 0 }
+  }
   async getFilePaths(orgId: string, repoId: string): Promise<{ path: string }[]> {
     const paths = new Set<string>()
     Array.from(this.entities.values()).forEach((e) => {
@@ -642,6 +645,66 @@ export class InMemoryGraphStore implements IGraphStore {
     keysToDelete.forEach((key) => this.entities.delete(key))
     this.edges = this.edges.filter((e) => (e as EdgeDoc).index_version !== _indexVersion)
   }
+
+  async deleteStaleByIndexVersion(_orgId: string, _repoId: string, currentIndexVersion: string): Promise<void> {
+    const keysToDelete: string[] = []
+    this.entities.forEach((entity, key) => {
+      if (entity.index_version !== currentIndexVersion) keysToDelete.push(key)
+    })
+    keysToDelete.forEach((key) => this.entities.delete(key))
+    this.edges = this.edges.filter((e) => (e as EdgeDoc).index_version === currentIndexVersion)
+  }
+
+  async verifyEntityCounts(_orgId: string, _repoId: string): Promise<{
+    files: number; functions: number; classes: number; interfaces: number; variables: number
+  }> {
+    const counts = { files: 0, functions: 0, classes: 0, interfaces: 0, variables: 0 }
+    this.entities.forEach((entity) => {
+      const kind = entity.kind as keyof typeof counts
+      if (kind in counts) counts[kind]++
+    })
+    return counts
+  }
+
+  // I-01: Negative Knowledge — Entity Warnings
+  private entityWarnings: import("@/lib/ports/types").EntityWarningDoc[] = []
+  async bulkUpsertEntityWarnings(_orgId: string, warnings: import("@/lib/ports/types").EntityWarningDoc[]): Promise<void> {
+    for (const w of warnings) {
+      const idx = this.entityWarnings.findIndex((e) => e.id === w.id)
+      if (idx >= 0) this.entityWarnings[idx] = w
+      else this.entityWarnings.push(w)
+    }
+  }
+  async getEntityWarnings(_orgId: string, entityId: string): Promise<import("@/lib/ports/types").EntityWarningDoc[]> {
+    return this.entityWarnings.filter((w) => w.entity_id === entityId)
+  }
+  async getEntityWarningsByRepo(_orgId: string, repoId: string): Promise<import("@/lib/ports/types").EntityWarningDoc[]> {
+    return this.entityWarnings.filter((w) => w.repo_id === repoId)
+  }
+
+  // I-04: Drift-as-documentation-trigger
+  private documentationProposals: import("@/lib/temporal/activities/drift-documentation").DocumentationProposal[] = []
+  async upsertDocumentationProposal(_orgId: string, proposal: import("@/lib/temporal/activities/drift-documentation").DocumentationProposal): Promise<void> {
+    const idx = this.documentationProposals.findIndex((p) => p.id === proposal.id)
+    if (idx >= 0) this.documentationProposals[idx] = proposal
+    else this.documentationProposals.push(proposal)
+  }
+  async getDocumentationProposals(_orgId: string, repoId: string, status?: string): Promise<import("@/lib/temporal/activities/drift-documentation").DocumentationProposal[]> {
+    return this.documentationProposals.filter((p) => p.repo_id === repoId && (!status || p.status === status))
+  }
+  async updateDocumentationProposalStatus(_orgId: string, proposalId: string, status: "accepted" | "rejected"): Promise<void> {
+    const p = this.documentationProposals.find((p) => p.id === proposalId)
+    if (p) p.status = status
+  }
+
+  // D-03: Close rewind → rule tracing loop
+  async markLedgerEntryRuleGenerated(_orgId: string, ledgerEntryId: string, ruleId: string): Promise<void> {
+    const entry = this.ledgerEntries.find((e) => e.id === ledgerEntryId)
+    if (entry) {
+      ;(entry as unknown as Record<string, unknown>).rule_generated = true
+      ;(entry as unknown as Record<string, unknown>).rule_id = ruleId
+    }
+  }
 }
 
 export class InMemoryRelationalStore implements IRelationalStore {
@@ -1035,6 +1098,10 @@ export class InMemoryRelationalStore implements IRelationalStore {
   async getRepoReviewConfig(repoId: string): Promise<ReviewConfig> {
     return this.reviewConfigs.get(repoId) ?? { ...DEFAULT_REVIEW_CONFIG }
   }
+
+  async updateRepoManifest(_repoId: string, _manifestData: string | null): Promise<void> {
+    // no-op in fake
+  }
 }
 
 export class MockLLMProvider implements ILLMProvider {
@@ -1112,6 +1179,11 @@ export class FakeGitHost implements IGitHost {
   }
   async blame(): Promise<string | null> {
     return this.blameResult
+  }
+
+  // I-02: Historical context
+  async getFileGitHistory(): Promise<Array<{ sha: string; subject: string; body: string }>> {
+    return []
   }
 
   // Phase 7: PR Review
@@ -1369,6 +1441,17 @@ export class InMemoryCacheStore implements ICacheStore {
   }
   async invalidate(key: string): Promise<void> {
     cache.delete(key)
+  }
+  async invalidateByPrefix(prefix: string): Promise<number> {
+    let deleted = 0
+    const keys = Array.from(cache.keys())
+    for (const key of keys) {
+      if (key.startsWith(prefix)) {
+        cache.delete(key)
+        deleted++
+      }
+    }
+    return deleted
   }
   private rateCounts = new Map<string, { count: number; resetAt: number }>()
   async rateLimit(key: string, limit: number, windowSeconds: number): Promise<boolean> {

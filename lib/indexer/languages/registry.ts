@@ -58,15 +58,29 @@ export async function initializeRegistry(): Promise<void> {
   if (initialized) return
   initialized = true
 
-  const [ts, py, go] = await Promise.all([
+  const [ts, py, go, java, c, cpp, csharp, php, ruby, rust] = await Promise.all([
     import("./typescript/index"),
     import("./python/index"),
     import("./go/index"),
+    import("./java/index"),
+    import("./c/index"),
+    import("./cpp/index"),
+    import("./csharp/index"),
+    import("./php/index"),
+    import("./ruby/index"),
+    import("./rust/index"),
   ])
 
   registerPlugin(ts.typescriptPlugin)
   registerPlugin(py.pythonPlugin)
   registerPlugin(go.goPlugin)
+  registerPlugin(java.javaPlugin)
+  registerPlugin(c.cPlugin)
+  registerPlugin(cpp.cppPlugin)
+  registerPlugin(csharp.csharpPlugin)
+  registerPlugin(php.phpPlugin)
+  registerPlugin(ruby.rubyPlugin)
+  registerPlugin(rust.rustPlugin)
 }
 
 /** Reset registry state (for testing). */

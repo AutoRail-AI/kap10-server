@@ -1,31 +1,45 @@
 /**
  * Phase 4: justifyRepoWorkflow — orchestrates the full justification pipeline.
  *
- * Workflow ID: justify-{orgId}-{repoId}
+ * Workflow ID: justify-{orgId}-{repoId} (idempotent — stable ID prevents duplicates)
  * Queue: light-llm-queue
+ *
+ * Data Residency Pattern:
+ *   Heavy data (entity ID arrays, changed IDs) lives in Redis, never crosses
+ *   Temporal's 4MB gRPC boundary. The workflow only passes counts and references.
+ *   - Topological levels: stored in Redis by performTopologicalSort, read via fetchTopologicalLevel
+ *   - Changed entity IDs: stored per-level in Redis by storeChangedEntityIds, read via fetchPreviousLevelChangedIds
+ *   - Cleanup: cleanupJustificationCache removes all temp Redis keys after completion
  *
  * Steps:
  *   1. Set repo status to "justifying"
  *   2. Fetch entity/edge counts (data stays in ArangoDB)
  *   3. Load domain ontology
- *   4. Topological sort → returns entity ID arrays per level
- *   5. For each level: justifyBatch(input, entityIds) — fetches data, justifies, stores
+ *   4. Topological sort → stores levels in Redis, returns { levelCount }
+ *   5. For each level: fetch IDs from Redis, justifyBatch, store changed IDs in Redis
  *   6. Post-process: feature aggregations
  *   7. Embed justifications in pgvector
  *   8. Chain to health report generation
  *   9. Set repo status to "ready"
  *
- * Activities are self-sufficient — they fetch data from ArangoDB directly.
- * Only small references (IDs, counts) cross the Temporal serialization boundary,
- * keeping all payloads well under the 4MB gRPC limit.
+ * On failure: set repo status to "justify_failed"
  */
 
-import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild, workflowInfo } from "@temporalio/workflow"
+import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild } from "@temporalio/workflow"
 import { generateHealthReportWorkflow } from "./generate-health-report"
+import type * as embeddingActivities from "../activities/embedding"
 import type * as justificationActivities from "../activities/justification"
 import type * as pipelineLogs from "../activities/pipeline-logs"
+import type * as pipelineRun from "../activities/pipeline-run"
 
 const activities = proxyActivities<typeof justificationActivities>({
+  taskQueue: "light-llm-queue",
+  startToCloseTimeout: "60m",
+  heartbeatTimeout: "5m",
+  retry: { maximumAttempts: 3 },
+})
+
+const embedActivities = proxyActivities<typeof embeddingActivities>({
   taskQueue: "light-llm-queue",
   startToCloseTimeout: "60m",
   heartbeatTimeout: "5m",
@@ -36,6 +50,12 @@ const logActivities = proxyActivities<typeof pipelineLogs>({
   taskQueue: "light-llm-queue",
   startToCloseTimeout: "5s",
   retry: { maximumAttempts: 1 },
+})
+
+const runActivities = proxyActivities<typeof pipelineRun>({
+  taskQueue: "light-llm-queue",
+  startToCloseTimeout: "10s",
+  retry: { maximumAttempts: 2 },
 })
 
 export const getJustifyProgressQuery = defineQuery<number>("getJustifyProgress")
@@ -82,6 +102,9 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
   wfLog("INFO", "Justification workflow started", ctx, "Start")
 
   try {
+    // TBI-F-01: Mark justification step as running
+    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "justification", status: "running" })
+
     // Step 1: Set status
     wfLog("INFO", "Step 1/10: Setting status to justifying", ctx, "Step 1/10")
     await activities.setJustifyingStatus(input)
@@ -104,26 +127,41 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
     await activities.loadOntology(input)
     progress = 20
 
-    // Step 4: Topological sort → returns entity ID arrays per level (~50KB)
-    wfLog("INFO", "Step 4/10: Topological sort", ctx, "Step 4/10")
-    const levels = await activities.performTopologicalSort(input)
-    progress = 25
-    wfLog("INFO", "Step 4 complete", { ...ctx, levelCount: levels.length }, "Step 4/10")
+    // Step 4: Topological sort → data residency pattern: levels stored in Redis,
+    // only the count crosses Temporal's gRPC boundary (avoids 5MB+ payload for large repos)
+    wfLog("INFO", "Step 4/10: Topological sort (data stored in Redis)", ctx, "Step 4/10")
+    const { levelCount } = await activities.performTopologicalSort(input)
+    progress = 23
+    wfLog("INFO", "Step 4 complete", { ...ctx, levelCount }, "Step 4/10")
 
-    // Step 5: Process each level bottom-up with cascading staleness tracking
-    // Large levels (100+ entities) are split into parallel chunks for 2-3x speedup
-    wfLog("INFO", "Step 5/10: Justifying entities level-by-level", { ...ctx, levelCount: levels.length }, "Step 5/10")
+    // Step 4b: L-21 — Community detection via Louvain
+    // Writes community_id + community_label onto entities before justification
+    wfLog("INFO", "Step 4b/10: Detecting communities via Louvain", ctx, "Step 4b/10")
+    const { communityCount } = await activities.detectCommunitiesActivity(input)
+    progress = 27
+    wfLog("INFO", "Step 4b complete", { ...ctx, communityCount }, "Step 4b/10")
+
+    // Step 5: Process each level bottom-up with cascading staleness tracking.
+    // Entity IDs are fetched from Redis one level at a time — never held in workflow state.
+    // Changed entity IDs are also stored in Redis, not returned through Temporal.
+    const maxParallel = await activities.getJustificationConcurrency()
+    wfLog("INFO", "Step 5/10: Justifying entities level-by-level", { ...ctx, levelCount, maxParallel }, "Step 5/10")
     let totalJustified = 0
-    const levelProgressStep = 50 / Math.max(levels.length, 1)
-    // Use a bounded set to track changed IDs — avoids unbounded array growth
-    // through Temporal's workflow state. Only the most recent batch of changed
-    // IDs is passed to the next level (callee changes propagate one level up).
-    let previousLevelChangedIds: string[] = []
+    const levelProgressStep = 50 / Math.max(levelCount, 1)
     const PARALLEL_CHUNK_SIZE = 100
 
-    for (let i = 0; i < levels.length; i++) {
-      const levelEntityIds = levels[i]!
-      wfLog("INFO", `Processing level ${i + 1}/${levels.length}`, { ...ctx, levelEntityCount: levelEntityIds.length }, `Step 5/10 (L${i + 1})`)
+    // C-02: Accumulate changed entity IDs across ALL prior levels (not just N-1).
+    // This ensures entities at level N can detect staleness caused by changes at any
+    // earlier level, not just the immediately preceding one.
+    let accumulatedChangedIds: string[] = []
+
+    for (let i = 0; i < levelCount; i++) {
+      // Fetch this level's entity IDs from Redis (data residency)
+      const levelEntityIds = await activities.fetchTopologicalLevel(input, i)
+      // C-02: Use accumulated changed IDs from ALL prior levels
+      const previousLevelChangedIds = accumulatedChangedIds
+
+      wfLog("INFO", `Processing level ${i + 1}/${levelCount}`, { ...ctx, levelEntityCount: levelEntityIds.length }, `Step 5/10 (L${i + 1})`)
 
       const levelChangedIds: string[] = []
 
@@ -136,23 +174,38 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
         for (let j = 0; j < levelEntityIds.length; j += PARALLEL_CHUNK_SIZE) {
           chunks.push(levelEntityIds.slice(j, j + PARALLEL_CHUNK_SIZE))
         }
-        wfLog("INFO", `Splitting level ${i + 1} into ${chunks.length} parallel chunks`, { ...ctx, chunkCount: chunks.length }, `Step 5/10 (L${i + 1})`)
+        wfLog("INFO", `Splitting level ${i + 1} into ${chunks.length} chunks (max ${maxParallel} parallel)`, { ...ctx, chunkCount: chunks.length, maxParallel }, `Step 5/10 (L${i + 1})`)
 
-        const chunkResults = await Promise.all(
-          chunks.map((chunk) => activities.justifyBatch(input, chunk, previousLevelChangedIds))
-        )
-        for (const { justifiedCount, changedEntityIds } of chunkResults) {
-          totalJustified += justifiedCount
-          levelChangedIds.push(...changedEntityIds)
+        // Process chunks with provider-aware concurrency control
+        // (e.g., Ollama=1 sequential, OpenAI=2-5, Google/Anthropic=5-10)
+        for (let c = 0; c < chunks.length; c += maxParallel) {
+          const batch = chunks.slice(c, c + maxParallel)
+          const chunkResults = await Promise.all(
+            batch.map((chunk) => activities.justifyBatch(input, chunk, previousLevelChangedIds))
+          )
+          for (const { justifiedCount, changedEntityIds } of chunkResults) {
+            totalJustified += justifiedCount
+            levelChangedIds.push(...changedEntityIds)
+          }
         }
       }
 
-      // Only carry forward this level's changes (not cumulative across all levels)
-      previousLevelChangedIds = levelChangedIds
+      // Store this level's changed IDs in Redis (kept for external queries)
+      await activities.storeChangedEntityIds(input, i, levelChangedIds)
+
+      // C-02: Accumulate this level's changed IDs for all future levels.
+      // Cap at 5000 to prevent unbounded growth in workflow state for massive repos.
+      if (levelChangedIds.length > 0) {
+        accumulatedChangedIds = [...accumulatedChangedIds, ...levelChangedIds]
+        if (accumulatedChangedIds.length > 5000) {
+          accumulatedChangedIds = accumulatedChangedIds.slice(-5000)
+        }
+      }
+
       progress = Math.round(25 + (i + 1) * levelProgressStep)
 
       // Every 20 levels, refine ontology with newly discovered domain concepts
-      if ((i + 1) % 20 === 0 && i + 1 < levels.length) {
+      if ((i + 1) % 20 === 0 && i + 1 < levelCount) {
         wfLog("INFO", `Refining ontology with new concepts (after level ${i + 1})`, ctx, `Step 5/10 (L${i + 1})`)
         const { newTermsAdded } = await activities.refineOntologyWithNewConcepts(input)
         if (newTermsAdded > 0) {
@@ -160,6 +213,9 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
         }
       }
     }
+
+    // Cleanup Redis cache for topological data
+    await activities.cleanupJustificationCache(input, levelCount)
 
     // Step 6: Bi-directional context propagation
     wfLog("INFO", "Step 6/10: Propagating context across entity hierarchy", ctx, "Step 6/10")
@@ -176,19 +232,39 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
     const embeddingsStored = await activities.embedJustifications(input)
     progress = 90
 
-    // Step 9: Chain to health report
-    wfLog("INFO", "Step 9/10: Starting health report workflow", ctx, "Step 9/10")
-    await startChild(generateHealthReportWorkflow, {
-      workflowId: `health-${input.orgId}-${input.repoId}-${workflowInfo().runId.slice(0, 8)}`,
-      taskQueue: "light-llm-queue",
-      args: [{ orgId: input.orgId, repoId: input.repoId, runId: input.runId }],
-      parentClosePolicy: ParentClosePolicy.ABANDON,
+    // Step 8b: L-07 Pass 2 — Re-embed entities with justification context
+    wfLog("INFO", "Step 8b/10: Re-embedding entities with justification context (Pass 2)", ctx, "Step 8b/10")
+    const { embeddingsStored: pass2Stored } = await embedActivities.reEmbedWithJustifications({
+      orgId: input.orgId, repoId: input.repoId,
     })
+    progress = 92
+    wfLog("INFO", "Step 8b complete", { ...ctx, pass2Stored }, "Step 8b/10")
+
+    // Step 9: Chain to health report (stable ID prevents duplicates on retry)
+    wfLog("INFO", "Step 9/10: Starting health report workflow", ctx, "Step 9/10")
+    try {
+      await startChild(generateHealthReportWorkflow, {
+        workflowId: `health-${input.orgId}-${input.repoId}`,
+        taskQueue: "light-llm-queue",
+        args: [{ orgId: input.orgId, repoId: input.repoId, runId: input.runId }],
+        parentClosePolicy: ParentClosePolicy.ABANDON,
+      })
+    } catch (childErr: unknown) {
+      const msg = childErr instanceof Error ? childErr.message : String(childErr)
+      if (msg.includes("already started") || msg.includes("already exists")) {
+        wfLog("WARN", "Health report workflow already running, skipping duplicate", ctx, "Step 9/10")
+      } else {
+        throw childErr
+      }
+    }
 
     // Step 10: Set ready
     wfLog("INFO", "Step 10/10: Setting status to ready", ctx, "Step 10/10")
     await activities.setJustifyDoneStatus(input)
     progress = 100
+
+    // TBI-F-01: Mark justification step complete with metrics
+    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "justification", status: "completed", meta: { entitiesJustified: totalJustified, embeddingsStored } })
 
     await logActivities.appendPipelineLog({
       timestamp: new Date().toISOString(),
