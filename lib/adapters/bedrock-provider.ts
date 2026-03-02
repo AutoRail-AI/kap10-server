@@ -25,18 +25,16 @@ const RETRY_BASE_DELAY_MS = parseInt(process.env.LLM_RETRY_BASE_DELAY_MS ?? "100
 export class BedrockProvider implements ILLMProvider {
   private readonly rateLimiter = new RateLimiter()
 
-  /** Return a Bedrock provider instance configured with bearer token auth. */
+  /**
+   * Return a Bedrock provider instance.
+   * Auth: the SDK auto-reads AWS_BEARER_TOKEN_BEDROCK from the environment
+   * and sends it as `Authorization: Bearer <token>`. No explicit credential
+   * config needed — just set the env var.
+   */
   private getBedrock(): any {
     const mod = require("@ai-sdk/amazon-bedrock") as any
     return mod.createAmazonBedrock({
       region: AWS_REGION,
-      bedrockOptions: {
-        credentials: {
-          accessKeyId: process.env.AWS_ACCESS_KEY_ID ?? "",
-          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? "",
-          sessionToken: process.env.AWS_SESSION_TOKEN,
-        },
-      },
     })
   }
 

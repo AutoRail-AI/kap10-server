@@ -58,9 +58,7 @@ export const env = createEnv({
     SENTRY_DSN: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
 
     // ── AWS Bedrock (LLM & Embeddings) ────────────────────────────
-    AWS_ACCESS_KEY_ID: z.string().optional(),
-    AWS_SECRET_ACCESS_KEY: z.string().optional(),
-    AWS_SESSION_TOKEN: z.string().optional(),
+    AWS_BEARER_TOKEN_BEDROCK: z.string().optional(),
     AWS_REGION: z.string().optional(),
     // Per-tier model overrides (optional — defaults in lib/llm/config.ts)
     LLM_MODEL_FAST: z.string().optional(),
@@ -200,9 +198,7 @@ export const env = createEnv({
     // Sentry
     SENTRY_DSN: process.env.SENTRY_DSN,
     // AWS Bedrock
-    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
-    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
-    AWS_SESSION_TOKEN: process.env.AWS_SESSION_TOKEN,
+    AWS_BEARER_TOKEN_BEDROCK: process.env.AWS_BEARER_TOKEN_BEDROCK,
     AWS_REGION: process.env.AWS_REGION,
     LLM_MODEL_FAST: process.env.LLM_MODEL_FAST,
     LLM_MODEL_STANDARD: process.env.LLM_MODEL_STANDARD,

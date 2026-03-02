@@ -675,7 +675,7 @@ export async function justifyBatch(
             consecutiveFatalErrors++
             pipelineLog.log("error", "Justification", `Fatal LLM error (${consecutiveFatalErrors}/${FATAL_ERROR_THRESHOLD}): ${message.slice(0, 120)}`)
             if (consecutiveFatalErrors >= FATAL_ERROR_THRESHOLD) {
-              throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${FATAL_ERROR_THRESHOLD} consecutive fatal errors. Check AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, and LLM_MODEL_STANDARD env vars.`)
+              throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${FATAL_ERROR_THRESHOLD} consecutive fatal errors. Check AWS_BEARER_TOKEN_BEDROCK, AWS_REGION, and LLM_MODEL_STANDARD env vars.`)
             }
           } else {
             consecutiveFatalErrors = 0
@@ -769,7 +769,7 @@ export async function justifyBatch(
               consecutiveFatalErrors += 1
               pipelineLog.log("error", "Justification", `Fatal LLM error on batch of ${batch.entities.length}: ${message.slice(0, 120)}`)
               if (consecutiveFatalErrors >= FATAL_ERROR_THRESHOLD) {
-                throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${consecutiveFatalErrors} consecutive fatal errors. Check AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, and LLM_MODEL_STANDARD env vars.`)
+                throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${consecutiveFatalErrors} consecutive fatal errors. Check AWS_BEARER_TOKEN_BEDROCK, AWS_REGION, and LLM_MODEL_STANDARD env vars.`)
               }
               // Create fallbacks for this batch but continue (might hit threshold soon)
               pipelineLog.log("warn", "Justification", `Fallback created for ${batch.entities.length} entities in batch: ${message.slice(0, 100)}`)
