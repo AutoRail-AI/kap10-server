@@ -59,7 +59,10 @@ function classifyCommitIntent(subject: string): string | null {
 
 // ── Core Functions ─────────────────────────────────────────────────────────────
 
-const SEPARATOR = "SEP"
+/** ASCII Record Separator — safe record delimiter that never appears in commit messages or file paths. */
+const SEPARATOR = "\x1e"
+/** ASCII Unit Separator — safe field delimiter that never appears in commit messages or emails. */
+const FIELD_SEP = "\x1f"
 
 /**
  * Mine commit history from a git repository.
@@ -75,7 +78,7 @@ export async function mineCommitHistory(
     [
       "log",
       "--name-only",
-      `--format=${SEPARATOR}%H|%s|%ae|%at`,
+      `--format=${SEPARATOR}%H${FIELD_SEP}%s${FIELD_SEP}%ae${FIELD_SEP}%at`,
       "--no-merges",
       `--since=${maxDays} days ago`,
       `-n`,
@@ -100,7 +103,7 @@ export function parseGitLogOutput(stdout: string): CommitFileEntry[] {
     const headerLine = lines[0]
     if (!headerLine) continue
 
-    const parts = headerLine.split("|")
+    const parts = headerLine.split(FIELD_SEP)
     if (parts.length < 4) continue
 
     const sha = parts[0]!
@@ -185,13 +188,39 @@ export function computeCoChangeEdges(
 }
 
 /**
+ * Pre-build a file → commits index for efficient per-file temporal context lookup.
+ * Call once, then use with computeTemporalContext for O(1) lookup per file.
+ */
+export function buildFileCommitIndex(
+  commits: CommitFileEntry[],
+): Map<string, CommitFileEntry[]> {
+  const index = new Map<string, CommitFileEntry[]>()
+  for (const commit of commits) {
+    for (const file of commit.files) {
+      let list = index.get(file)
+      if (!list) {
+        list = []
+        index.set(file, list)
+      }
+      list.push(commit)
+    }
+  }
+  return index
+}
+
+/**
  * Compute temporal context for a specific file path.
+ * When processing many files, prefer passing a pre-built fileCommitIndex
+ * (from buildFileCommitIndex) to avoid O(N*M) scanning.
  */
 export function computeTemporalContext(
   commits: CommitFileEntry[],
   filePath: string,
+  fileCommitIndex?: Map<string, CommitFileEntry[]>,
 ): TemporalContext | null {
-  const fileCommits = commits.filter((c) => c.files.includes(filePath))
+  const fileCommits = fileCommitIndex
+    ? (fileCommitIndex.get(filePath) ?? [])
+    : commits.filter((c) => c.files.includes(filePath))
   if (fileCommits.length === 0) return null
 
   const now = Math.floor(Date.now() / 1000)

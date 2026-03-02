@@ -127,13 +127,13 @@ export function computePageRank(
     .sort((a, b) => a.score - b.score)
 
   const percentiles = new Map<string, number>()
-  for (let i = 0; i < sorted.length; i++) {
-    // Percentile: fraction of entities with score <= this entity's score
-    percentiles.set(sorted[i]!.id, (i / (N - 1)) * 100)
-  }
-  // Edge case: single entity gets percentile 100
   if (N === 1) {
     percentiles.set(entityIds[0]!, 100)
+  } else {
+    for (let i = 0; i < sorted.length; i++) {
+      // Percentile: fraction of entities with score <= this entity's score
+      percentiles.set(sorted[i]!.id, (i / (N - 1)) * 100)
+    }
   }
 
   return { scores, percentiles, iterations }

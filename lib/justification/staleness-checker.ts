@@ -79,9 +79,9 @@ export function extractSemanticKeywords(justification: JustificationDoc): Set<st
 export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
   if (a.size === 0 && b.size === 0) return 1.0
   let intersection = 0
-  for (const item of Array.from(a)) {
+  a.forEach((item) => {
     if (b.has(item)) intersection++
-  }
+  })
   const union = a.size + b.size - intersection
   return union === 0 ? 1.0 : intersection / union
 }
@@ -108,6 +108,16 @@ export interface StalenessResult {
   staleReasons: Map<string, string>
 }
 
+export interface StalenessCheckOptions {
+  entities: EntityDoc[]
+  existingJustifications: Map<string, JustificationDoc>
+  calleeChangedSet: Set<string>
+  edges?: Array<{ _from: string; _to: string; kind: string }>
+  previousJustifications?: Map<string, JustificationDoc>
+  currentEntityMap?: Map<string, EntityDoc>
+  previousEntityMap?: Map<string, EntityDoc>
+}
+
 /**
  * Check which entities need re-justification based on content hashes,
  * quality scores, and L-09 change-type aware cascading.
@@ -118,15 +128,9 @@ export interface StalenessResult {
  * 3. Quality score is below threshold (previous justification was poor)
  * 4. L-09: A callee's change type warrants cascade (signature/anchor/body changes)
  * 5. L-09: Justification age exceeds 30-day TTL (captures ontology drift)
- *
- * @param entities - Entities to check
- * @param existingJustifications - Map of entity_id → current JustificationDoc
- * @param calleeChangedSet - Set of entity IDs that were re-justified in this run
- * @param edges - All edges for the repo (used to check callee relationships)
- * @param previousJustifications - Map of entity_id → previous JustificationDoc (before this run's changes) for semantic comparison
- * @param currentEntityMap - L-09: Map of entity_id → current entity version (for change classification)
- * @param previousEntityMap - L-09: Map of entity_id → previous entity version (for change classification)
  */
+export function checkStaleness(opts: StalenessCheckOptions): StalenessResult
+/** @deprecated Use the options-object overload instead. */
 export function checkStaleness(
   entities: EntityDoc[],
   existingJustifications: Map<string, JustificationDoc>,
@@ -135,15 +139,29 @@ export function checkStaleness(
   previousJustifications?: Map<string, JustificationDoc>,
   currentEntityMap?: Map<string, EntityDoc>,
   previousEntityMap?: Map<string, EntityDoc>,
+): StalenessResult
+export function checkStaleness(
+  entitiesOrOpts: EntityDoc[] | StalenessCheckOptions,
+  existingJustifications?: Map<string, JustificationDoc>,
+  calleeChangedSet?: Set<string>,
+  edges?: Array<{ _from: string; _to: string; kind: string }>,
+  previousJustifications?: Map<string, JustificationDoc>,
+  currentEntityMap?: Map<string, EntityDoc>,
+  previousEntityMap?: Map<string, EntityDoc>,
 ): StalenessResult {
+  // Normalize: support both the options object and positional args
+  const opts = Array.isArray(entitiesOrOpts)
+    ? { entities: entitiesOrOpts, existingJustifications: existingJustifications!, calleeChangedSet: calleeChangedSet!, edges, previousJustifications, currentEntityMap, previousEntityMap }
+    : entitiesOrOpts
+  const { entities: ents, existingJustifications: justMap, calleeChangedSet: changedSet, edges: edgeList, previousJustifications: prevJust, currentEntityMap: curMap, previousEntityMap: prevMap } = opts
   const stale: EntityDoc[] = []
   const fresh: EntityDoc[] = []
   const staleReasons = new Map<string, string>()
 
   // Build a quick lookup of outbound call edges per entity
   const outboundCallees = new Map<string, Set<string>>()
-  if (edges) {
-    for (const edge of edges) {
+  if (edgeList) {
+    for (const edge of edgeList) {
       if (edge.kind !== "calls") continue
       const fromId = edge._from.split("/").pop()!
       const toId = edge._to.split("/").pop()!
@@ -159,8 +177,8 @@ export function checkStaleness(
   const now = Date.now()
   const maxAgeMs = MAX_JUSTIFICATION_AGE_DAYS * 24 * 60 * 60 * 1000
 
-  for (const entity of entities) {
-    const existing = existingJustifications.get(entity.id)
+  for (const entity of ents) {
+    const existing = justMap.get(entity.id)
 
     // No existing justification → stale
     if (!existing) {
@@ -187,7 +205,7 @@ export function checkStaleness(
       staleReasons.set(entity.id, `Low quality score: ${qualityScore.toFixed(2)}`)
       continue
     }
-    if (qualityFlags && qualityFlags.includes("fallback_justification")) {
+    if (qualityFlags && qualityFlags.includes("-fallback_justification")) {
       stale.push(entity)
       staleReasons.set(entity.id, "Fallback justification")
       continue
@@ -206,14 +224,14 @@ export function checkStaleness(
 
     // L-09: Change-type aware cascading
     const callees = outboundCallees.get(entity.id)
-    if (callees && calleeChangedSet.size > 0) {
+    if (callees && changedSet.size > 0) {
       let cascadeReason: string | null = null
       for (const calleeId of Array.from(callees)) {
-        if (!calleeChangedSet.has(calleeId)) continue
+        if (!changedSet.has(calleeId)) continue
 
         // L-09: Use change-type classification if entity maps are available
-        const oldCalleeEntity = previousEntityMap?.get(calleeId)
-        const newCalleeEntity = currentEntityMap?.get(calleeId)
+        const oldCalleeEntity = prevMap?.get(calleeId)
+        const newCalleeEntity = curMap?.get(calleeId)
 
         if (oldCalleeEntity && newCalleeEntity) {
           const classification = classifyChange(oldCalleeEntity, newCalleeEntity)
@@ -224,8 +242,8 @@ export function checkStaleness(
           }
         } else {
           // Fallback to Jaccard similarity when entity maps not available
-          const currentCallee = existingJustifications.get(calleeId)
-          const previousCallee = previousJustifications?.get(calleeId)
+          const currentCallee = justMap.get(calleeId)
+          const previousCallee = prevJust?.get(calleeId)
 
           if (currentCallee && previousCallee) {
             const currentKeywords = extractSemanticKeywords(currentCallee)

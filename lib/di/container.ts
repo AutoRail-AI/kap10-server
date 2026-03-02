@@ -78,14 +78,8 @@ function createLazyProductionContainer(): Container {
     },
     get llmProvider(): ILLMProvider {
       if (!cache.llmProvider) {
-        const { LLM_PROVIDER } = require("../llm/config") as typeof import("../llm/config")
-        if (LLM_PROVIDER === "ollama") {
-          const { OllamaProvider } = require("../adapters/ollama-provider") as typeof import("../adapters/ollama-provider")
-          cache.llmProvider = new OllamaProvider()
-        } else {
-          const { VercelAIProvider } = require("../adapters/vercel-ai-provider") as typeof import("../adapters/vercel-ai-provider")
-          cache.llmProvider = new VercelAIProvider()
-        }
+        const { BedrockProvider } = require("../adapters/bedrock-provider") as typeof import("../adapters/bedrock-provider")
+        cache.llmProvider = new BedrockProvider()
       }
       return cache.llmProvider
     },

@@ -6,15 +6,14 @@
 import { heartbeat } from "@temporalio/activity"
 import { randomUUID } from "node:crypto"
 import { readFileSync } from "node:fs"
-import { getContainer } from "@/lib/di/container"
 import {
   buildDomainToArchitectureMap,
   buildOntologyPrompt,
   classifyTerms,
   extractDomainTerms,
 } from "@/lib/justification/ontology-extractor"
-import { DomainOntologySchema } from "@/lib/justification/schemas"
 import type { DomainOntologyDoc, EntityDoc } from "@/lib/ports/types"
+import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
 export interface OntologyInput {
@@ -22,9 +21,15 @@ export interface OntologyInput {
   repoId: string
 }
 
+/** Lazy container accessor — avoids static import of DI container at module load. */
+function lazyContainer() {
+  const { getContainer } = require("@/lib/di/container") as typeof import("@/lib/di/container")
+  return getContainer()
+}
+
 /** @deprecated Use discoverAndStoreOntology instead. */
 export async function fetchEntitiesForOntology(input: OntologyInput): Promise<EntityDoc[]> {
-  const container = getContainer()
+  const container = lazyContainer()
   heartbeat("fetching entities for ontology")
   return container.graphStore.getAllEntities(input.orgId, input.repoId)
 }
@@ -37,19 +42,24 @@ export async function discoverAndStoreOntology(
   input: OntologyInput,
 ): Promise<{ termCount: number }> {
   const log = logger.child({ service: "ontology", organizationId: input.orgId, repoId: input.repoId })
-  const container = getContainer()
+  const plog = createPipelineLogger(input.repoId, "ontology")
+  const container = lazyContainer()
 
   heartbeat("fetching entities for ontology")
+  plog.log("info", "Step 3/7", "Discovering domain ontology...")
   const entities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
   log.info("Fetched entities for ontology", { entityCount: entities.length })
+  plog.log("info", "Step 3/7", `Analyzing ${entities.length} entities for domain terms...`)
 
   heartbeat("extracting and refining ontology")
   const ontology = await extractAndRefineOntologyInternal(input, entities)
   log.info("Ontology refined", { termCount: ontology.terms.length })
+  plog.log("info", "Step 3/7", `Ontology refined — ${ontology.terms.length} domain terms discovered`)
 
   heartbeat("storing ontology")
   await container.graphStore.upsertDomainOntology(input.orgId, ontology)
   log.info("Ontology stored")
+  plog.log("info", "Step 3/7", "Domain ontology stored")
 
   // TBI-C-03: Persist workspace manifest to relational store for fast access
   if (ontology.project_name || ontology.tech_stack || ontology.project_domain) {
@@ -84,7 +94,7 @@ async function extractAndRefineOntologyInternal(
   input: OntologyInput,
   entities: EntityDoc[]
 ): Promise<DomainOntologyDoc> {
-  const container = getContainer()
+  const container = lazyContainer()
   heartbeat("extracting domain terms")
 
   // Step 1: Extract raw terms
@@ -102,6 +112,7 @@ async function extractAndRefineOntologyInternal(
   // Step 3: Refine with LLM
   const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
   const defaultModel = LLM_MODELS.standard
+  const { DomainOntologySchema } = require("@/lib/justification/schemas") as typeof import("@/lib/justification/schemas")
   const schema = DomainOntologySchema.pick({ terms: true, ubiquitousLanguage: true })
 
   let terms = rawTerms.map((t) => ({ ...t, relatedTerms: [] as string[] }))
@@ -184,7 +195,7 @@ function extractProjectContext(
     const deps = { ...(pkg.dependencies as Record<string, string> | undefined), ...(pkg.devDependencies as Record<string, string> | undefined) }
     const techStack: string[] = []
     const knownFrameworks: Record<string, string> = {
-      next: "Next.js", react: "React", vue: "Vue", angular: "@angular/core",
+      next: "Next.js", react: "React", vue: "Vue", "@angular/core": "Angular",
       express: "Express", fastify: "Fastify", prisma: "Prisma",
       "@supabase/supabase-js": "Supabase", "better-auth": "Better Auth",
       tailwindcss: "Tailwind CSS", "@temporalio/client": "Temporal",
@@ -233,7 +244,7 @@ export async function storeOntology(
 ): Promise<void> {
   const log = logger.child({ service: "ontology", organizationId: input.orgId, repoId: input.repoId })
   log.info("Storing ontology", { termCount: ontology.terms.length })
-  const container = getContainer()
+  const container = lazyContainer()
   heartbeat("storing ontology")
   await container.graphStore.upsertDomainOntology(input.orgId, ontology)
 }

@@ -55,7 +55,12 @@ export async function assembleContext(
     }
   }
 
-  const entryEntityId = vectorResults[0]!.id
+  // Strip ::code variant suffix so we match graph entities by base ID
+  const CODE_VARIANT_SUFFIX = "::code"
+  const rawId = vectorResults[0]!.id
+  const entryEntityId = rawId.endsWith(CODE_VARIANT_SUFFIX)
+    ? rawId.slice(0, -CODE_VARIANT_SUFFIX.length)
+    : rawId
   const entryScore = vectorResults[0]!.score
 
   // Step 2: Get entry point profile

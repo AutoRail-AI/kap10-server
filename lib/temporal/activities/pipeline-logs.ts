@@ -22,6 +22,8 @@ export interface PipelineLogEntry {
     | "ontology"
     | "justifying"
     | "graph-sync"
+    | "graph-analysis"
+    | "temporal-analysis"
     | "pattern-detection"
   step: string
   message: string

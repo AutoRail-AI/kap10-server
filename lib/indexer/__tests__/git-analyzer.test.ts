@@ -9,14 +9,19 @@ import {
 
 // ── parseGitLogOutput ──────────────────────────────────────────────────────────
 
+/** ASCII Record Separator — matches the record delimiter used in git-analyzer.ts */
+const RS = "\x1e"
+/** ASCII Unit Separator — matches the field delimiter used in git-analyzer.ts */
+const F = "\x1f"
+
 describe("parseGitLogOutput", () => {
   it("parses standard git log output", () => {
     const raw = [
-      "SEPabc123|feat: add login|dev@ex.com|1700000000",
+      `${RS}abc123${F}feat: add login${F}dev@ex.com${F}1700000000`,
       "src/auth.ts",
       "src/login.ts",
       "",
-      "SEPdef456|fix: typo|dev@ex.com|1700001000",
+      `${RS}def456${F}fix: typo${F}dev@ex.com${F}1700001000`,
       "README.md",
     ].join("\n")
 
@@ -32,14 +37,21 @@ describe("parseGitLogOutput", () => {
     expect(result[1]!.files).toEqual(["README.md"])
   })
 
+  it("handles pipe characters in commit subjects", () => {
+    const raw = `${RS}abc123${F}fix: handle a | b case${F}dev@ex.com${F}1700000000\nsrc/parser.ts\n`
+    const result = parseGitLogOutput(raw)
+    expect(result).toHaveLength(1)
+    expect(result[0]!.subject).toBe("fix: handle a | b case")
+  })
+
   it("skips entries with no files", () => {
-    const raw = "SEPabc123|empty commit|dev@ex.com|1700000000\n\n"
+    const raw = `${RS}abc123${F}empty commit${F}dev@ex.com${F}1700000000\n\n`
     const result = parseGitLogOutput(raw)
     expect(result).toHaveLength(0)
   })
 
   it("handles malformed headers gracefully", () => {
-    const raw = "SEPbadline\nfile.ts\n"
+    const raw = `${RS}badline\nfile.ts\n`
     const result = parseGitLogOutput(raw)
     expect(result).toHaveLength(0)
   })

@@ -6,6 +6,7 @@
  */
 
 import { heartbeat } from "@temporalio/activity"
+import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
 export interface TemporalAnalysisInput {
@@ -28,6 +29,7 @@ export async function computeTemporalAnalysis(
     mineCommitHistory,
     computeCoChangeEdges,
     computeTemporalContext,
+    buildFileCommitIndex,
     mapFileEdgesToEntityEdges,
   } = require("@/lib/indexer/git-analyzer") as typeof import("@/lib/indexer/git-analyzer")
 
@@ -37,31 +39,51 @@ export async function computeTemporalAnalysis(
     organizationId: input.orgId,
     repoId: input.repoId,
   })
+  const plog = createPipelineLogger(input.repoId, "temporal-analysis")
 
   // Step 1: Mine commit history
   log.info("Mining commit history (last 365 days, max 5000 commits)")
+  plog.log("info", "Step 4c/7", "Mining git commit history (last 365 days)...")
   const commits = await mineCommitHistory(input.workspacePath, 365, 5000)
   heartbeat(`Mined ${commits.length} commits`)
   log.info(`Mined ${commits.length} commits`)
 
+  plog.log("info", "Step 4c/7", `Mined ${commits.length} commits`)
+
   if (commits.length === 0) {
     log.info("No commits found, skipping temporal analysis")
+    plog.log("info", "Step 4c/7", "No commits found — skipping temporal analysis")
     return { coChangeEdgesStored: 0, entitiesUpdated: 0, filesAnalyzed: 0 }
   }
 
   // Step 2: Compute file-level co-change edges
   log.info("Computing co-change edges")
+  plog.log("info", "Step 4c/7", "Computing co-change coupling edges...")
   const coChangeEdges = computeCoChangeEdges(commits, 3, 0.3)
   heartbeat(`Computed ${coChangeEdges.length} co-change edges`)
   log.info(`Found ${coChangeEdges.length} co-change edges`)
 
   // Step 3: Fetch all entities to build entityFileMap
   log.info("Fetching entities for file-to-entity mapping")
-  const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
+  const ENTITY_LIMIT = 200_000
+  const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId, ENTITY_LIMIT)
+  if (allEntities.length >= ENTITY_LIMIT) {
+    log.warn(`Entity count hit limit (${ENTITY_LIMIT}) — some entities may be excluded from temporal analysis`)
+  }
   heartbeat(`Fetched ${allEntities.length} entities`)
 
+  // Map kind → ArangoDB collection name for proper edge vertex handles
+  const KIND_TO_COLL: Record<string, string> = {
+    file: "files", function: "functions", method: "functions",
+    class: "classes", interface: "interfaces", variable: "variables",
+  }
+
   const entityFileMap = new Map<string, string[]>()
+  const entityKindMap = new Map<string, string>() // entityId → qualified handle (collection/key)
   for (const entity of allEntities) {
+    const coll = KIND_TO_COLL[entity.kind] ?? "functions"
+    const qualifiedId = `${coll}/${entity.id}`
+    entityKindMap.set(entity.id, qualifiedId)
     if (!entity.file_path) continue
     const existing = entityFileMap.get(entity.file_path)
     if (existing) {
@@ -79,11 +101,14 @@ export async function computeTemporalAnalysis(
 
     if (entityEdges.length > 0) {
       const edgeDocs = entityEdges.map((e) => ({
-        _from: e.fromId,
-        _to: e.toId,
+        _from: entityKindMap.get(e.fromId) ?? `functions/${e.fromId}`,
+        _to: entityKindMap.get(e.toId) ?? `functions/${e.toId}`,
         kind: "logically_coupled" as const,
         org_id: input.orgId,
         repo_id: input.repoId,
+        support: e.support,
+        confidence: e.confidence,
+        jaccard: e.jaccard,
       }))
 
       await container.graphStore.bulkUpsertEdges(input.orgId, edgeDocs as Parameters<typeof container.graphStore.bulkUpsertEdges>[1])
@@ -101,11 +126,16 @@ export async function computeTemporalAnalysis(
   }
 
   log.info(`Computing temporal context for ${uniqueFiles.size} files`)
+  plog.log("info", "Step 4c/7", `Computing temporal context for ${uniqueFiles.size} files...`)
+
+  // Pre-build file → commits index for O(1) lookup (avoids O(N*M) scanning)
+  const fileCommitIndex = buildFileCommitIndex(commits)
+
   let entitiesUpdated = 0
   const entityUpdates: Array<Record<string, unknown>> = []
 
   for (const filePath of Array.from(uniqueFiles)) {
-    const ctx = computeTemporalContext(commits, filePath)
+    const ctx = computeTemporalContext(commits, filePath, fileCommitIndex)
     if (!ctx) continue
 
     const entityIds = entityFileMap.get(filePath)
@@ -137,6 +167,8 @@ export async function computeTemporalAnalysis(
     entitiesUpdated = entityUpdates.length
   }
   heartbeat(`Updated ${entitiesUpdated} entities with temporal context`)
+
+  plog.log("info", "Step 4c/7", `Temporal analysis complete — ${coChangeEdgesStored} co-change edges, ${entitiesUpdated} entities enriched`)
 
   log.info("Temporal analysis complete", {
     coChangeEdgesStored,

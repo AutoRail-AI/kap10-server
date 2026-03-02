@@ -160,18 +160,24 @@ export function reciprocalRankFusion(
         if (item.lineStart !== undefined && existing.item.lineStart === undefined) {
           existing.item.lineStart = item.lineStart
         }
+        if (item.filePath && !existing.item.filePath) {
+          existing.item.filePath = item.filePath
+        }
+        if (item.entityType !== "unknown" && existing.item.entityType === "unknown") {
+          existing.item.entityType = item.entityType
+        }
       } else {
         scores.set(item.entityKey, { item: { ...item }, score: rrfScore })
       }
     }
   }
 
-  // Phase 2: Exact match boost
+  // Phase 2: Exact match boost — ensure exact matches rank at top
   const queryTokensLower = queryTokens.map((t) => t.toLowerCase())
   scores.forEach((entry) => {
     const nameLower = entry.item.entityName.toLowerCase()
     if (queryTokensLower.includes(nameLower)) {
-      entry.score = 1.0 // Guaranteed top rank
+      entry.score = Math.max(entry.score, 1.0)
     }
   })
 
@@ -390,7 +396,7 @@ async function runJustificationLeg(
   return results.map((r) => ({
     entityKey: r.entityId,
     entityName: r.entityName,
-    entityType: r.taxonomy.toLowerCase(),
+    entityType: "unknown", // Justification leg lacks entity kind — RRF merge inherits from keyword/semantic legs
     filePath: "", // Justification results don't carry file path — will be enriched by graph
     score: r.score,
   }))
@@ -410,7 +416,7 @@ async function runKeywordLeg(
   )
 
   return results.map((r) => ({
-    entityKey: r.name, // searchEntities returns name, not key — use name as key for matching
+    entityKey: r.id,
     entityName: r.name,
     entityType: r.kind,
     filePath: r.file_path,

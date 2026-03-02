@@ -897,6 +897,7 @@ export class ArangoGraphStore implements IGraphStore {
           FILTER CONTAINS(LOWER(doc.name), LOWER(@query)) OR CONTAINS(LOWER(doc.signature || ""), LOWER(@query))
           LIMIT @limit
           RETURN {
+            id: doc._key,
             name: doc.name,
             kind: doc.kind,
             file_path: doc.file_path,

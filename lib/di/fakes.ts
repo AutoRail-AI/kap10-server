@@ -199,6 +199,7 @@ export class InMemoryGraphStore implements IGraphStore {
         const sig = ((e.signature as string) ?? "").toLowerCase()
         if (name.includes(q) || sig.includes(q)) {
           results.push({
+            id: e.id,
             name: e.name,
             kind: e.kind,
             file_path: e.file_path,

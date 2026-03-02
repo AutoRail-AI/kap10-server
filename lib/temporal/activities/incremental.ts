@@ -353,16 +353,34 @@ export async function updateEmbeddings(input: UpdateEmbeddingsInput): Promise<{ 
 
   if (docs.length === 0) return { embeddingsUpdated: 0 }
 
-  const texts = docs.map((d) => d.text)
-  const embeddings = await container.vectorSearch.embed(texts)
+  // Sub-batch embedding + upsert with NaN guard (matches full pipeline in embedding.ts)
+  const BATCH_SIZE = 50
+  let totalUpserted = 0
+  for (let i = 0; i < docs.length; i += BATCH_SIZE) {
+    const batch = docs.slice(i, i + BATCH_SIZE)
+    const texts = batch.map((d) => d.text)
+    const embeddings = await container.vectorSearch.embed(texts)
 
-  await container.vectorSearch.upsert(
-    docs.map((d) => d.entityKey),
-    embeddings,
-    docs.map((d) => d.metadata),
-  )
+    // Filter out NaN/Infinity vectors that would corrupt pgvector
+    const validIndices: number[] = []
+    for (let j = 0; j < embeddings.length; j++) {
+      const vec = embeddings[j]
+      if (vec && vec.length > 0 && vec.every((v) => Number.isFinite(v))) {
+        validIndices.push(j)
+      }
+    }
 
-  return { embeddingsUpdated: docs.length }
+    if (validIndices.length > 0) {
+      await container.vectorSearch.upsert(
+        validIndices.map((j) => batch[j]!.entityKey),
+        validIndices.map((j) => embeddings[j]!),
+        validIndices.map((j) => batch[j]!.metadata),
+      )
+      totalUpserted += validIndices.length
+    }
+  }
+
+  return { embeddingsUpdated: totalUpserted }
 }
 
 export interface CascadeReJustifyInput {

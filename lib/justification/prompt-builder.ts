@@ -7,6 +7,7 @@
  */
 
 import type { DomainOntologyDoc, EntityDoc, JustificationDoc } from "@/lib/ports/types"
+import { summarizeBody } from "./ast-summarizer"
 import { extractCommentSignals, formatCommentSignalsForPrompt } from "./comment-signals"
 import type { IntentSignals } from "./intent-signals"
 import type { GraphContext } from "./schemas"
@@ -808,8 +809,6 @@ ${entity.doc ? `- **Documentation**: ${entity.doc as string}` : ""}
 
   return sections.join("\n\n")
 }
-
-import { summarizeBody } from "./ast-summarizer"
 
 /** L-23: Semantic body summarization — preserves anchors, compresses boilerplate. */
 function truncateBody(body: string, maxChars = 3000): string {

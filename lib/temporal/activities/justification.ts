@@ -337,15 +337,18 @@ export async function justifyBatch(
   calleeChangedIds: string[] = []
 ): Promise<{ justifiedCount: number; changedEntityIds: string[] }> {
   const container = getContainer()
+  const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
   const results: JustificationDoc[] = []
   const pipelineLog = createPipelineLogger(input.repoId, "justifying", input.runId)
 
-  // Fetch all data needed for this batch from ArangoDB
+  // Fetch all data needed for this batch from ArangoDB (parallelized)
   heartbeat(`fetching data for ${entityIds.length} entities`)
-  const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
-  const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
-  const ontology = await container.graphStore.getDomainOntology(input.orgId, input.repoId)
-  const previousJustifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
+  const [allEntities, edges, ontology, previousJustifications] = await Promise.all([
+    container.graphStore.getAllEntities(input.orgId, input.repoId),
+    container.graphStore.getAllEdges(input.orgId, input.repoId),
+    container.graphStore.getDomainOntology(input.orgId, input.repoId),
+    container.graphStore.getJustifications(input.orgId, input.repoId),
+  ])
 
   // Fetch user-provided context documents for prompt anchoring (context seeding)
   let contextDocuments: string | undefined
@@ -672,7 +675,7 @@ export async function justifyBatch(
             consecutiveFatalErrors++
             pipelineLog.log("error", "Justification", `Fatal LLM error (${consecutiveFatalErrors}/${FATAL_ERROR_THRESHOLD}): ${message.slice(0, 120)}`)
             if (consecutiveFatalErrors >= FATAL_ERROR_THRESHOLD) {
-              throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${FATAL_ERROR_THRESHOLD} consecutive fatal errors. Check LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL env vars.`)
+              throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${FATAL_ERROR_THRESHOLD} consecutive fatal errors. Check AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, and LLM_MODEL_STANDARD env vars.`)
             }
           } else {
             consecutiveFatalErrors = 0
@@ -763,10 +766,10 @@ export async function justifyBatch(
 
             // Fatal errors: abort immediately — don't retry or create fallbacks
             if (isFatalLLMError(message)) {
-              consecutiveFatalErrors += batch.entities.length
+              consecutiveFatalErrors += 1
               pipelineLog.log("error", "Justification", `Fatal LLM error on batch of ${batch.entities.length}: ${message.slice(0, 120)}`)
               if (consecutiveFatalErrors >= FATAL_ERROR_THRESHOLD) {
-                throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${consecutiveFatalErrors} consecutive fatal errors. Check LLM_PROVIDER, LLM_BASE_URL, LLM_API_KEY, and LLM_MODEL env vars.`)
+                throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${consecutiveFatalErrors} consecutive fatal errors. Check AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, and LLM_MODEL_STANDARD env vars.`)
               }
               // Create fallbacks for this batch but continue (might hit threshold soon)
               pipelineLog.log("warn", "Justification", `Fallback created for ${batch.entities.length} entities in batch: ${message.slice(0, 100)}`)

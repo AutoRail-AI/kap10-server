@@ -102,7 +102,7 @@ function buildKindAwareText(
   switch (entity.kind) {
     case "class":
     case "struct": {
-      parts.push(`Class: ${name}`)
+      parts.push(`${kindLabel}: ${name}`)
       if (filePath) parts.push(`File: ${filePath}`)
       const parent = (entity.parent as string) ?? ""
       if (parent) parts.push(`Extends: ${parent}`)

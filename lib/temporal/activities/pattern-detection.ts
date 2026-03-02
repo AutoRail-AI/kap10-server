@@ -7,6 +7,7 @@
  */
 
 import { heartbeat } from "@temporalio/activity"
+import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 
 /**
  * Combined activity: scan patterns, synthesize rules, and store — all in one step.
@@ -16,10 +17,16 @@ export async function scanSynthesizeAndStore(input: AstGrepScanInput): Promise<{
   patternsDetected: number
   rulesGenerated: number
 }> {
+  const plog = createPipelineLogger(input.repoId, "pattern-detection")
+  plog.log("info", "Step 7/7", "Scanning codebase for structural patterns...")
+
   const scanResult = await astGrepScan(input)
   if (scanResult.detectedPatterns.length === 0) {
+    plog.log("info", "Step 7/7", "No structural patterns detected")
     return { patternsDetected: 0, rulesGenerated: 0 }
   }
+
+  plog.log("info", "Step 7/7", `Found ${scanResult.detectedPatterns.length} patterns — synthesizing rules...`)
 
   const synthesizeResult = await llmSynthesizeRules({
     orgId: input.orgId,
@@ -33,6 +40,8 @@ export async function scanSynthesizeAndStore(input: AstGrepScanInput): Promise<{
     detectedPatterns: scanResult.detectedPatterns,
     synthesizedRules: synthesizeResult.synthesizedRules,
   })
+
+  plog.log("info", "Step 7/7", `Pattern detection complete — ${storeResult.patternsStored} patterns, ${storeResult.rulesStored} rules`)
 
   return { patternsDetected: storeResult.patternsStored, rulesGenerated: storeResult.rulesStored }
 }
@@ -95,8 +104,13 @@ export async function astGrepScan(input: AstGrepScanInput): Promise<AstGrepScanO
             totalFiles: new Set(results.map((r) => r.file)).size,
           })
         }
-      } catch {
-        // Skip failing patterns
+      } catch (error: unknown) {
+        const { logger: log } = require("@/lib/utils/logger") as typeof import("@/lib/utils/logger")
+        log.warn("ast-grep pattern scan failed", {
+          pattern: pattern.id,
+          language,
+          error: error instanceof Error ? error.message : String(error),
+        })
       }
     }
   }
@@ -159,16 +173,16 @@ export async function llmSynthesizeRules(input: LlmSynthesizeInput): Promise<Llm
       const batch = eligiblePatterns.slice(i, i + BATCH_SIZE)
       heartbeat(`LLM synthesizing rules batch ${Math.floor(i / BATCH_SIZE) + 1}`)
 
-      const patternDescriptions = batch.map((p) => {
+      const patternDescriptions = batch.map((p, idx) => {
         const evidenceSample = p.evidence.slice(0, 3).map((e) =>
           `  - ${e.file}:${e.line}${e.snippet ? ` → ${e.snippet.slice(0, 100)}` : ""}`
         ).join("\n")
-        return `Pattern "${p.title}" (${p.type}, ${p.matchCount} matches in ${p.totalFiles} files):\n${evidenceSample}`
+        return `Pattern [${idx}] "${p.title}" (${p.type}, ${p.matchCount} matches in ${p.totalFiles} files):\n${evidenceSample}`
       }).join("\n\n")
 
       const RuleSynthesisSchema = z.object({
         rules: z.array(z.object({
-          patternId: z.string(),
+          patternIndex: z.number(),
           title: z.string(),
           description: z.string(),
           enforcement: z.enum(["suggest", "warn"]),
@@ -186,7 +200,7 @@ ${businessContext ? `\n${businessContext}\n` : ""}
 ${patternDescriptions}
 
 For each pattern, generate a rule with:
-- patternId: use the pattern title as identifier
+- patternIndex: the numeric index [N] of the pattern above
 - title: concise rule name (e.g., "Require error boundary in async handlers")
 - description: explain what the rule enforces and why, referencing the evidence
 - enforcement: "warn" if the pattern is a strong convention (10+ matches), otherwise "suggest"
@@ -196,17 +210,17 @@ Return rules as JSON array. Only include patterns that represent meaningful conv
         })
 
         for (const rule of object.rules) {
-          const matchingPattern = batch.find((p) => p.title === rule.patternId) ?? batch[0]
-          if (matchingPattern) {
-            synthesizedRules.push({
-              patternId: matchingPattern.id,
-              title: rule.title,
-              description: rule.description,
-              type: matchingPattern.type,
-              enforcement: rule.enforcement,
-              confidence: Math.min(Math.max(rule.confidence, 0), 1),
-            })
-          }
+          const idx = Math.round(rule.patternIndex)
+          if (idx < 0 || idx >= batch.length) continue // Skip hallucinated indices
+          const matchingPattern = batch[idx]!
+          synthesizedRules.push({
+            patternId: matchingPattern.id,
+            title: rule.title,
+            description: rule.description,
+            type: matchingPattern.type,
+            enforcement: rule.enforcement,
+            confidence: Math.min(Math.max(rule.confidence, 0), 1),
+          })
         }
       } catch {
         // LLM failed for this batch — fall back to heuristic
@@ -278,9 +292,9 @@ export async function storePatterns(input: StorePatternsInput): Promise<{ patter
   }
 
   heartbeat("Storing synthesized rules")
+  const crypto = require("node:crypto") as typeof import("node:crypto")
   let rulesStored = 0
   for (const rule of input.synthesizedRules) {
-    const crypto = require("node:crypto") as typeof import("node:crypto")
     const ruleId = crypto.createHash("sha256").update(`${input.repoId}:rule:${rule.patternId}`).digest("hex").slice(0, 16)
 
     await container.graphStore.upsertRule(input.orgId, {
@@ -391,6 +405,10 @@ export async function semanticPatternMining(input: SemanticMiningInput): Promise
 
     const communityEntityIds = new Set(callableEntities.map((e: typeof allEntities[number]) => e.id))
 
+    // Build O(1) entity lookup by ID for this community
+    const entityById = new Map<string, typeof allEntities[number]>()
+    for (const e of callableEntities) entityById.set(e.id, e)
+
     // Extract call sequence motifs (paths of length 2-3 within community)
     const motifCounts = new Map<string, number>()
     const motifExamples = new Map<string, string[]>()
@@ -399,7 +417,7 @@ export async function semanticPatternMining(input: SemanticMiningInput): Promise
       const callees = (callAdj.get(entity.id) ?? []).filter((id) => communityEntityIds.has(id))
       for (const callee of callees) {
         // Length-2 motif: entity.kind → callee.kind
-        const calleeEntity = callableEntities.find((e: typeof allEntities[number]) => e.id === callee)
+        const calleeEntity = entityById.get(callee)
         if (!calleeEntity) continue
 
         const motif2 = `${entity.kind}→${calleeEntity.kind}`
@@ -416,7 +434,7 @@ export async function semanticPatternMining(input: SemanticMiningInput): Promise
         // Length-3 motif: entity.kind → callee.kind → grandchild.kind
         const grandCallees = (callAdj.get(callee) ?? []).filter((id) => communityEntityIds.has(id))
         for (const gc of grandCallees.slice(0, 5)) {
-          const gcEntity = callableEntities.find((e: typeof allEntities[number]) => e.id === gc)
+          const gcEntity = entityById.get(gc)
           if (!gcEntity) continue
           const motif3 = `${entity.kind}→${calleeEntity.kind}→${gcEntity.kind}`
           motifCounts.set(motif3, (motifCounts.get(motif3) ?? 0) + 1)
@@ -431,10 +449,10 @@ export async function semanticPatternMining(input: SemanticMiningInput): Promise
       }
     }
 
-    // Find repeated motifs with adherence >= 60%
+    // Find repeated motifs with adherence >= 60% (clamped to 1.0)
     const repeatedMotifs: Array<{ motif: string; count: number; adherence: number; examples: string[] }> = []
     for (const [motif, count] of Array.from(motifCounts.entries())) {
-      const adherence = count / callableEntities.length
+      const adherence = Math.min(count / callableEntities.length, 1.0)
       if (adherence >= 0.6 && count >= 3) {
         repeatedMotifs.push({
           motif,

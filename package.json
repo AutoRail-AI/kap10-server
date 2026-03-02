@@ -32,8 +32,7 @@
     "coupling-graph": "npx madge --extensions js,jsx,ts,tsx,css,md,mdx ./ --exclude '.next|tailwind.config.js|reset.d.ts|prettier.config.js|postcss.config.js|playwright.config.ts|next.config.js|next-env.d.ts|instrumentation.ts|e2e/|README.md|.storybook/|.eslintrc.js' --image graph.svg"
   },
   "dependencies": {
-    "@ai-sdk/google": "^3.0.30",
-    "@ai-sdk/openai": "^3.0.30",
+    "@ai-sdk/amazon-bedrock": "^4.0.69",
     "@ast-grep/napi": "^0.40.5",
     "@better-fetch/fetch": "^1.1.21",
     "@hookform/resolvers": "^5.2.2",

@@ -403,9 +403,11 @@ SCIP is precise but not universal. It fails for config files, files without a `t
 
 This stage computes four independent structural signals that feed into justification, embedding, and entity profiles.
 
+**Pipeline Logging:** User-visible log entries emitted at each sub-task (entity/edge load, blast radius, PageRank, structural fingerprint, completion summary) via `createPipelineLogger("graph-analysis")`.
+
 #### Sub-task 4b-1: Fan-In/Fan-Out & Risk Level
 
-Computes fan-in (callers) and fan-out (callees) for every entity using AQL `COLLECT` queries on edge collections. Assigns `risk_level`:
+Computes fan-in (callers) and fan-out (callees) for every entity using AQL `COLLECT` queries on edge collections. Edge `collection/key` references extracted via `extractEntityId()` helper (eliminates 8+ duplications of the split-parse pattern). Assigns `risk_level`:
 
 | Fan-in/Fan-out | Risk Level |
 |----------------|------------|
@@ -433,7 +435,7 @@ Convergence: ε=0.0001, max 100 iterations, damping=0.85. Both raw scores and pe
 
 #### Sub-task 4b-3: Community Detection
 
-Louvain community detection via `detectCommunities()` (`lib/justification/community-detection.ts`). Runs **before** justification so community membership informs LLM prompts. Each entity receives:
+Lightweight label-propagation community detection via `detectCommunitiesLightweight()` (inline in `graph-analysis.ts`). Runs **before** justification so community membership informs LLM prompts. Each entity receives:
 - `community_id` — numeric community identifier
 - `community_label` — human-readable label (derived from dominant entity names in the community)
 
@@ -486,9 +488,11 @@ Written to entity documents via `bulkUpsertEntities()`:
 
 Git history mining to produce temporal signals — the "hidden knowledge layer" that captures developer behavior patterns invisible in static code analysis.
 
+**Pipeline Logging:** User-visible log entries at each sub-task (mining, commit count, co-change, temporal context, completion) via `createPipelineLogger("temporal-analysis")`.
+
 #### Sub-task 4c-1: Mine Commit History
 
-`mineCommitHistory(workspacePath, 365, 5000)` — runs `git log --name-only --format="SEP%H|%s|%ae|%at" --no-merges --since="365 days ago" -n 5000`. Parses into `CommitFileEntry[]` (sha, subject, authorEmail, timestamp, files).
+`mineCommitHistory(workspacePath, 365, 5000)` — runs `git log --name-only` with ASCII Unit Separator (`\x1f`) field delimiter (safe for commit subjects containing `|`). Parses into `CommitFileEntry[]` (sha, subject, authorEmail, timestamp, files).
 
 #### Sub-task 4c-2: Compute Co-Change Edges
 
@@ -503,6 +507,10 @@ Git history mining to produce temporal signals — the "hidden knowledge layer" 
 `mapFileEdgesToEntityEdges(coChangeEdges, entityFileMap, maxEdgesPerPair=5)`:
 - Converts file-level co-change to entity-level `logically_coupled` edges
 - Creates edges between top entities (by PageRank) in each co-changing file pair
+- Entity IDs properly qualified with `KIND_TO_COLL` mapping (`functions/`, `classes/`, etc.) — not defaulted to `functions/`
+- Edge metadata (`support`, `confidence`, `jaccard`) preserved on stored edges
+
+**Entity limit:** `getAllEntities` called with 200k limit (default 10k was silently dropping entities on large repos). Logs a warning when limit is hit.
 
 #### Sub-task 4c-4: Compute Temporal Context
 
@@ -558,9 +566,9 @@ Two-pass embedding solves the ordering problem where first-time embeddings had n
 
    a. Fetch entities per file via `graphStore.getEntitiesByFile()`
 
-   b. **Kind-aware embedding text** via `buildKindAwareText()` — switches on entity kind:
+   b. **Kind-aware embedding text** via `buildKindAwareText()` — switches on entity kind using `formatKindLabel()` for accurate labels:
       - **Functions/methods:** name, signature, AST-summarized body (via `summarizeBody()` from `ast-summarizer.ts`)
-      - **Classes:** name, method inventory, extends/implements relationships
+      - **Classes/structs:** name, method inventory, extends/implements relationships (structs correctly labeled as "Struct", not "Class")
       - **Interfaces:** name, contract signature, implementors
       - **Modules/namespaces:** export surface (re-included — no longer excluded)
       - **Structural fingerprint tokens** appended: `"Centrality: high (P85) | Depth: 2 | Role: connector | Boundary: yes | Community: 7"`
@@ -599,7 +607,7 @@ Triggered by `reEmbedWithJustifications` activity as Step 8b in `justify-repo` w
 - **Embedding vector validation** — `Number.isFinite()` check on every vector. NaN/Infinity vectors logged and skipped.
 - **ONNX resilience** — `getEmbeddingPipeline()` retries 3× with exponential backoff (5s/15s/45s). On failure, clears model cache and retries.
 - **Session lifecycle** — ONNX session rotates after 500 embed calls (`ONNX_SESSION_MAX_CALLS`). `disposeSession()` releases memory, triggers GC.
-- **Search fusion** — in `hybrid-search.ts`, semantic search strips `::code` suffix before RRF. Both variants for same entity contribute to fused score.
+- **Search fusion** — in `hybrid-search.ts`, all three legs (semantic, keyword, justification) use entity ID as `entityKey` for consistent RRF merging. Semantic search strips `::code` suffix before RRF. Both variants for same entity contribute to fused score. `SearchResult` type carries `id` field (ArangoDB `_key`) alongside `name`.
 - **Adaptive RRF k-parameter** — `computeAdaptiveK()` dynamically adjusts k from inter-source Jaccard similarity of top-10 result sets. High overlap → lower k (amplify consensus). Low overlap → higher k (smooth noise). Range: `[0.5*baseK, 2.0*baseK]`.
 
 ### Verification
@@ -628,6 +636,8 @@ Triggered by `reEmbedWithJustifications` activity as Step 8b in `justify-repo` w
 - Optional user-provided context documents
 
 ### What Happens
+
+**Pipeline Logging:** User-visible entries at each sub-task via `createPipelineLogger("ontology")`.
 
 1. **Extract raw domain terms** from entity names:
    - Splits PascalCase and camelCase: `UserAuthService` → `["User", "Auth", "Service"]`
@@ -719,7 +729,7 @@ For each topological level, processing bottom-up:
 
 **a. Staleness Check (Change-Type Aware)**
 
-`checkStaleness()` classifies entity changes into 6 types:
+`checkStaleness(opts: StalenessCheckOptions)` (options-object API with backwards-compatible positional overload) classifies entity changes into 6 types:
 
 | Change Type | Cascade? | Rationale |
 |-------------|----------|-----------|
@@ -730,7 +740,7 @@ For each topological level, processing bottom-up:
 | `test_assertions` | Always | Test intent changed |
 | `no_change` | Never | Body hash unchanged |
 
-30-day TTL: re-justifies entities older than 30 days regardless of body hash (captures ontology drift). Returns `staleReasons: Map<string, string>` for observability.
+30-day TTL: re-justifies entities older than 30 days regardless of body hash (captures ontology drift). Fallback justifications detected via exact flag match (`-fallback_justification`) — always re-justified. Returns `staleReasons: Map<string, string>` for observability.
 
 **b. Graph Context Building**
 
@@ -1004,6 +1014,8 @@ Analyzes codebase for architectural patterns with high adherence rates. Features
 - All entities, edges, community assignments, justifications from ArangoDB
 
 ### What Happens
+
+**Pipeline Logging:** User-visible entries at each phase (scan start, pattern count, synthesis, completion) via `createPipelineLogger("pattern-detection")`.
 
 The pattern detection system has four components:
 
@@ -1385,7 +1397,15 @@ Topological sort ensures callees are justified before callers. Each entity's pro
 
 Heavy-compute activities (git clone, SCIP, Semgrep, temporal analysis) run on `heavy-compute-queue`. Network-bound activities (LLM calls, embedding, storage uploads) run on `light-llm-queue`.
 
-### 20.10 Graceful Degradation
+### 20.10 Pipeline Observability at Every Stage
+
+Every activity emits two levels of logging:
+- **System logs** — structured JSON via `logger.child()` for operational monitoring (entity counts, durations, error details)
+- **Pipeline logs** — user-visible entries via `createPipelineLogger()` (phase, step label, human message) written to Redis and displayed in the Pipeline Monitor UI via SSE
+
+All 12 stages emit pipeline logs. Phase types: `indexing`, `embedding`, `ontology`, `justifying`, `graph-sync`, `graph-analysis`, `temporal-analysis`, `pattern-detection`. Each heartbeat-aware activity sends progress updates that appear in real-time.
+
+### 20.11 Graceful Degradation
 
 Every stage has fallback behavior:
 - SCIP fails → tree-sitter fallback covers the files
@@ -1524,3 +1544,49 @@ All 8 Alpha waves + Backlog completed:
 - **Alpha-7:** Entity profiles & freshness (L-14 + L-09 + L-27) — profile cache, semantic staleness, context assembly
 - **Alpha-8:** Parser fidelity (L-03 + L-04 + L-08) — kind preservation, multi-line imports, dual embeddings
 - **Backlog:** Polish (L-06 + L-11 + L-15) — shared complexity, balanced quality scoring, adaptive RRF
+
+### Signal Chain Hardening: 2026-03-02
+
+Full audit of all 4 signal families (structural, intent, temporal, domain) across 20+ files. Three priority tiers addressed:
+
+**P0 — Critical bug fixes (6):**
+- Hybrid search RRF fusion broken — keyword leg used `r.name` as entityKey, semantic legs used entity IDs. Added `id` to `SearchResult`, all legs now merge by entity ID.
+- Git log pipe delimiter corruption — commit subjects with `|` silently truncated. Changed to ASCII Unit Separator (`\x1f`).
+- Temporal analysis bare entity keys — `qualifyVertexHandle` defaulted all entities to `functions/`. Built `KIND_TO_COLL` mapping for proper `collection/key` format.
+- Temporal analysis 10k entity limit — `getAllEntities` silently dropped entities on large repos. Raised to 200k with warning.
+- Co-change edge metadata discarded — support/confidence/jaccard now preserved on stored edges.
+- Staleness fallback flag mismatch — `Array.includes("fallback_justification")` never matched stored flag `"-fallback_justification"`. Fixed to exact match.
+
+**P1 — Pipeline logging (4 activities):**
+- Added `createPipelineLogger` to `graph-analysis.ts`, `temporal-analysis.ts`, `ontology.ts`, `pattern-detection.ts`
+- Added `"graph-analysis"` and `"temporal-analysis"` to pipeline log phase union type
+- All 12 stages now emit user-visible pipeline logs
+
+**P2 — Signal quality polish (5):**
+- AST summarizer `otherCount` double-count corrected
+- Embedding `buildKindAwareText` struct mislabel fixed (was hardcoded "Class")
+- `extractEntityId` helper eliminates 8 duplications in `graph-analysis.ts`
+- `checkStaleness` refactored from 7-parameter function to `StalenessCheckOptions` interface (backwards-compatible overload)
+- `jaccardSimilarity` unnecessary `Array.from()` eliminated
+
+**Test results:** 221 signal chain tests pass, 0 regressions, 0 new TypeScript errors.
+
+### Signal Chain Hardening Round 2: 2026-03-02
+
+Second comprehensive audit of all 4 signal families. Brought grades from B/B+ to A-tier.
+
+**HIGH — Graph analysis correctness (2):**
+- Early return in `graph-analysis.ts` skipped PageRank + structural fingerprint for repos with no callable entities (e.g., CSS-only, config-only repos). Restructured flow: blast radius is conditional on callable entities, but PageRank/fingerprint/community detection always runs for ALL entities.
+- No error handling around DB calls — `getAllEntities`/`getAllEdges`/`bulkUpsertEntities` failures crashed activity silently. Added try/catch with system + pipeline logging.
+
+**MEDIUM — Performance & correctness (4):**
+- `computeTemporalContext` O(N*M) scanning — iterating all commits per file. Added `buildFileCommitIndex()` for O(1) lookup per file.
+- RRF exact-match boost overwrote accumulated score with `1.0`, potentially lowering highly-ranked entities. Changed to `Math.max(score, 1.0)`.
+- Justification leg returned taxonomy as `entityType` — misleading for graph enrichment. Changed to `"unknown"` with RRF metadata merge preferring non-unknown types from keyword/semantic legs.
+- Fragile LLM `patternId` matching in rule synthesis — prompt asked LLM to return pattern title, but LLM variations caused mismatches. Changed to numeric `patternIndex` for deterministic matching.
+
+**MEDIUM — Dead code & structure (2):**
+- `computeStructuralFingerprints()` was dead code (duplicate of graph-analysis inline logic). Removed along with duplicate BFS function. Kept `buildFingerprintFromEntity` and `fingerprintToTokens` (used by embedding + prompt).
+- Merged dual adjacency-building loops in graph-analysis into a single pass.
+
+**Test results:** 219 signal chain tests pass (6 fewer from removed dead code tests), 0 regressions, 0 new TypeScript errors.

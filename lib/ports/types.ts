@@ -253,6 +253,7 @@ export interface ProjectStats {
 }
 
 export interface SearchResult {
+  id: string
   name: string
   kind: string
   file_path: string

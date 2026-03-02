@@ -6,10 +6,9 @@ vi.mock("@temporalio/activity", () => ({
 
 vi.mock("@/lib/llm/config", () => ({
   LLM_MODELS: { fast: "test-fast", standard: "test-standard", premium: "test-premium" },
-  LLM_PROVIDER: "google",
-  getLLMApiKey: () => "test-key",
   MODEL_COSTS: {},
   MODEL_COST_FALLBACK: { input: 0, output: 0 },
+  getMaxParallelChunks: () => 5,
 }))
 
 import { type Container, createTestContainer } from "@/lib/di/container"

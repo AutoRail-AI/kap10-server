@@ -117,7 +117,7 @@ function summarizeBlock(lines: TaggedLine[]): string {
   if (counts["try"] && counts["try"] > 0) blocks.push({ kind: "TRY_CATCH", count: counts["try"] })
   if (counts["log"] && counts["log"] > 0) blocks.push({ kind: "LOG", count: counts["log"] })
 
-  const otherCount = lines.length - Object.values(counts).reduce((a: number, b) => a + (b ?? 0), 0) + (counts["code"] ?? 0) + (counts["boilerplate"] ?? 0)
+  const otherCount = (counts["code"] ?? 0) + (counts["boilerplate"] ?? 0)
 
   if (blocks.length > 0) {
     const tokens = blocks.map((b) => {

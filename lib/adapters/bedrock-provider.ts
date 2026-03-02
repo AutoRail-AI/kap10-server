@@ -1,81 +1,60 @@
 /**
- * VercelAIProvider — ILLMProvider implementation using Vercel AI SDK.
- * Phase 4: generateObject with Zod schema, streamText, embed.
+ * BedrockProvider — ILLMProvider implementation using AWS Bedrock via Vercel AI SDK.
  *
- * Provider selection is driven by `lib/llm/config.ts`.
- * All SDK imports use require() so webpack never resolves them at build time.
+ * Uses @ai-sdk/amazon-bedrock for text generation and embeddings.
+ * Authentication via AWS_BEARER_TOKEN_BEDROCK env var.
  *
  * Includes:
  *  - Proactive sliding-window rate limiting (RPM/TPM)
- *  - Exponential backoff with jitter for 429 / rate-limit errors
+ *  - Exponential backoff with jitter for throttling errors
+ *  - Token budget pre-checks
  */
 
-import { getLLMApiKey, LLM_PROVIDER } from "@/lib/llm/config"
+import { AWS_REGION, EMBEDDING_MODEL } from "@/lib/llm/config"
 import { RateLimiter } from "@/lib/llm/rate-limiter"
 import type { ILLMProvider } from "@/lib/ports/llm-provider"
 import type { OrgContext, TokenUsage } from "@/lib/ports/types"
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-/** Dynamic require that hides the module path from webpack static analysis. */
-function dynamicRequire(mod: string): any {
-   
-  return eval("require")(mod)
-}
-
 // ── Retry configuration ──────────────────────────────────────────────────────
 
 const RETRY_MAX_ATTEMPTS = parseInt(process.env.LLM_RETRY_MAX_ATTEMPTS ?? "5", 10)
 const RETRY_BASE_DELAY_MS = parseInt(process.env.LLM_RETRY_BASE_DELAY_MS ?? "1000", 10)
 
-export class VercelAIProvider implements ILLMProvider {
+export class BedrockProvider implements ILLMProvider {
   private readonly rateLimiter = new RateLimiter()
 
-  /** Return a Vercel AI SDK provider instance for the configured LLM_PROVIDER. */
-  private getTextProvider(): any {
-    const apiKey = getLLMApiKey()
-    switch (LLM_PROVIDER) {
-      case "google": {
-        const mod = require("@ai-sdk/google") as any
-        return mod.createGoogleGenerativeAI({ apiKey })
-      }
-      case "openai": {
-        const mod = require("@ai-sdk/openai") as any
-        return mod.createOpenAI({ apiKey })
-      }
-      case "anthropic": {
-        // Dynamic require — @ai-sdk/anthropic is optional, only install if needed
-        const mod = dynamicRequire("@ai-sdk/anthropic") as any
-        return mod.createAnthropic({ apiKey })
-      }
-      case "ollama":
-        // Should not be reached — OllamaProvider handles this
-        throw new Error("VercelAIProvider should not be used with ollama. Use OllamaProvider instead.")
-    }
+  /** Return a Bedrock provider instance configured with bearer token auth. */
+  private getBedrock(): any {
+    const mod = require("@ai-sdk/amazon-bedrock") as any
+    return mod.createAmazonBedrock({
+      region: AWS_REGION,
+      bedrockOptions: {
+        credentials: {
+          accessKeyId: process.env.AWS_ACCESS_KEY_ID ?? "",
+          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? "",
+          sessionToken: process.env.AWS_SESSION_TOKEN,
+        },
+      },
+    })
   }
 
-  /** OpenAI provider for embeddings (separate from text-generation provider). */
-  private getOpenAI(): any {
-    const mod = require("@ai-sdk/openai") as any
-    return mod.createOpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  }
-
-  /** Detect if an error is a rate limit (429) error. */
+  /** Detect if an error is a rate limit / throttling error. */
   private isRateLimitError(error: unknown): boolean {
     const message = error instanceof Error ? error.message : String(error)
     const lower = message.toLowerCase()
     return (
       lower.includes("429") ||
-      lower.includes("resource exhausted") ||
+      lower.includes("throttl") ||
       lower.includes("rate limit") ||
-      lower.includes("quota exceeded") ||
-      lower.includes("too many requests")
+      lower.includes("too many requests") ||
+      lower.includes("resource exhausted")
     )
   }
 
   /** Try to extract retry-after seconds from error chain. */
   private extractRetryAfterMs(error: unknown): number | null {
-    // Vercel AI SDK wraps the HTTP response in error.cause or error.data
     const err = error as Record<string, any>
     const retryAfter =
       err?.headers?.["retry-after"] ??
@@ -94,14 +73,13 @@ export class VercelAIProvider implements ILLMProvider {
 
   /**
    * Wrap an async function with exponential backoff + jitter.
-   * Only retries on rate-limit errors (429). Other errors propagate immediately.
+   * Only retries on rate-limit / throttling errors. Other errors propagate immediately.
    */
   private async retryWithBackoff<T>(fn: () => Promise<T>, label: string): Promise<T> {
     let lastError: unknown
 
     for (let attempt = 0; attempt < RETRY_MAX_ATTEMPTS; attempt++) {
       try {
-        // Wait for rate limiter slot before each attempt
         await this.rateLimiter.waitForSlot()
         return await fn()
       } catch (error: unknown) {
@@ -111,14 +89,13 @@ export class VercelAIProvider implements ILLMProvider {
           throw error
         }
 
-        // Calculate delay: retry-after header > exponential backoff + jitter
         const retryAfterMs = this.extractRetryAfterMs(error)
         const exponentialMs = RETRY_BASE_DELAY_MS * Math.pow(2, attempt)
         const jitterMs = Math.random() * RETRY_BASE_DELAY_MS
         const delayMs = retryAfterMs ?? (exponentialMs + jitterMs)
 
         console.warn(
-          `[VercelAIProvider] ${label} rate-limited (attempt ${attempt + 1}/${RETRY_MAX_ATTEMPTS}), retrying in ${Math.round(delayMs)}ms`
+          `[BedrockProvider] ${label} throttled (attempt ${attempt + 1}/${RETRY_MAX_ATTEMPTS}), retrying in ${Math.round(delayMs)}ms`
         )
         await new Promise((r) => setTimeout(r, delayMs))
       }
@@ -146,10 +123,10 @@ export class VercelAIProvider implements ILLMProvider {
 
     return this.retryWithBackoff(async () => {
       const ai = require("ai") as any
-      const provider = this.getTextProvider()
+      const bedrock = this.getBedrock()
 
       const result = await ai.generateObject({
-        model: provider(params.model),
+        model: bedrock(params.model),
         schema: params.schema,
         prompt: params.prompt,
         ...(params.system ? { system: params.system } : {}),
@@ -178,11 +155,11 @@ export class VercelAIProvider implements ILLMProvider {
     await this.rateLimiter.waitForSlot()
 
     const ai = require("ai") as any
-    const provider = this.getTextProvider()
+    const bedrock = this.getBedrock()
 
-    // Wrap the initial call with retry (429 occurs on request, not during streaming)
+    // Wrap the initial call with retry (throttling occurs on request, not during streaming)
     const result = await this.retryWithBackoff(
-      () => ai.streamText({ model: provider(params.model), prompt: params.prompt }),
+      () => ai.streamText({ model: bedrock(params.model), prompt: params.prompt }),
       `streamText(${params.model})`
     ) as { textStream: AsyncIterable<string> }
 
@@ -194,10 +171,13 @@ export class VercelAIProvider implements ILLMProvider {
   async embed(params: { model: string; texts: string[] }): Promise<number[][]> {
     return this.retryWithBackoff(async () => {
       const ai = require("ai") as any
-      const openai = this.getOpenAI()
+      const bedrock = this.getBedrock()
+
+      // Use the configured embedding model, falling back to param.model
+      const embeddingModelId = params.model || EMBEDDING_MODEL
 
       const result = await ai.embedMany({
-        model: openai.embedding(params.model),
+        model: bedrock.embedding(embeddingModelId),
         values: params.texts,
       })
 
