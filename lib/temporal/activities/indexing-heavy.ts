@@ -189,6 +189,13 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
     typescript: "npx", // scip-typescript runs via npx
     python: "scip-python",
     go: "scip-go",
+    java: "scip-java",
+    c: "scip-clang",
+    cpp: "scip-clang",
+    csharp: "scip-dotnet",
+    rust: "scip-rust",
+    ruby: "scip-ruby",
+    php: "scip-php",
   }
   const missingBinaries: string[] = []
   for (const lang of input.languages) {

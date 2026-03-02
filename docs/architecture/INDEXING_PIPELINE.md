@@ -226,10 +226,20 @@ SCIP (Sourcegraph Code Intelligence Protocol) is a compiler-grade code analysis 
 1. **Pre-check SCIP binary availability** — `isSCIPBinaryAvailable()` verifies the CLI is installed. Missing binaries surfaced as pipeline log warnings.
 
 2. **Run the SCIP indexer** per language via the shared decoder (`lib/indexer/scip-decoder.ts`):
-   - **TypeScript:** `npx @sourcegraph/scip-typescript index --output index.scip` (10-minute timeout)
-   - **Python:** `scip-python` — parsed via `parseSCIPOutput()`
-   - **Go:** `scip-go`
-   - **Java:** `scip-java` — detects `pom.xml`/`build.gradle` project markers
+
+   | Language | SCIP Binary | Project Marker | Maturity |
+   |----------|-------------|----------------|----------|
+   | **TypeScript** | `npx @sourcegraph/scip-typescript` | `tsconfig.json` / `jsconfig.json` | Mature (Sourcegraph) |
+   | **Python** | `scip-python` | `pyproject.toml` / `setup.py` / `requirements.txt` | Mature (Sourcegraph) |
+   | **Go** | `scip-go` | `go.mod` | Mature (Sourcegraph) |
+   | **Java** | `scip-java` | `pom.xml` / `build.gradle` | Mature (Sourcegraph) |
+   | **C/C++** | `scip-clang` | `compile_commands.json` | Mature (Clang 16, Sourcegraph) |
+   | **C#** | `scip-dotnet` | `.sln` / `.csproj` | GA (Roslyn-based, Sourcegraph) |
+   | **Rust** | `scip-rust` | `Cargo.toml` | Available (rust-analyzer wrapper) |
+   | **Ruby** | `scip-ruby` | `Gemfile` | Partial (Sorbet-based, Sourcegraph) |
+   | **PHP** | `scip-php` | `composer.json` | Early (nikic/php-parser, community) |
+
+   All 10 language plugins now have SCIP wiring. If the binary is not installed on the worker, the pipeline falls back to tree-sitter transparently — the binary pre-check surfaces missing binaries as pipeline log warnings.
 
 3. **Parse the SCIP output** (protobuf binary) into `ParsedEntity[]` and `ParsedEdge[]`:
    - **Two-pass decoder** — Pass 1 builds per-file entity index (definitions). Pass 2 classifies edges as `calls` (function/method targets) or `references` (class/variable/module targets) using containment-based lookup with binary search on entity start lines. Deduplicates edges.
@@ -272,9 +282,9 @@ Each entity document contains: `_key` (SHA-256 hash), `org_id`, `repo_id`, `kind
 - Topological sort produces multiple levels (not a flat batch)
 - Complexity metrics populated — `FOR e IN functions FILTER e.cognitive_complexity != null LIMIT 5 RETURN { name: e.name, cc: e.cognitive_complexity }`
 
-**Completion: ~96%**
+**Completion: ~98%**
 
-**Remaining:** L-18b event/pub-sub edge detection (see [Section 22](#22-remaining-work))
+**Remaining:** L-18b event/pub-sub edge detection (see [Section 22](#22-remaining-work)). SCIP binaries for C/C++ (`scip-clang`), C# (`scip-dotnet`), Rust (`scip-rust`), Ruby (`scip-ruby`), and PHP (`scip-php`) need to be installed on the heavy-compute worker Docker image.
 
 ---
 
@@ -1437,7 +1447,7 @@ No single file or entity failure can prevent the pipeline from completing.
 | Stage | Name | Completion | Key Capabilities |
 |-------|------|-----------|------------------|
 | 1 | Prepare Repo Intelligence Space | **~97%** | Clone, scan, language detection, polyglot monorepo support |
-| 2 | SCIP Analysis | **~96%** | Two-pass decoder, calls+references edges, complexity metrics |
+| 2 | SCIP Analysis | **~98%** | Two-pass decoder, calls+references edges, complexity metrics, SCIP wiring for all 10 languages |
 | 3 | Tree-Sitter Fallback | **~97%** | 10 language plugins, cross-file call resolution, boundary classification |
 | 4 | Finalization & Shadow Swap | **~95%** | Shadow swap, entity count verification |
 | 4b | Blast Radius, PageRank & Communities | **~95%** | Semantic PageRank, Louvain communities, 5D structural fingerprint, calibrated confidence |
@@ -1659,3 +1669,21 @@ Four-pass comprehensive audit of all signals, workflows, activities, and logging
 - `indexing-heavy.ts`: Removed unused `readFileSync` import.
 
 **Files changed:** 13. **Zero linter errors introduced.** All changes verified across 4 audit passes with no remaining P0 or P1 issues.
+
+### SCIP Coverage Expansion: 2026-03-02
+
+Wired SCIP indexers for all 6 previously-stub languages (C, C++, C#, Rust, Ruby, PHP), bringing all 10 language plugins to Tier 1 SCIP support when the binary is available on the worker.
+
+**New SCIP integrations (6):**
+- **C/C++** via `scip-clang` (Clang 16, Sourcegraph) — shared `runSCIPClang()` in `lib/indexer/languages/c/scip.ts`, requires `compile_commands.json`
+- **C#** via `scip-dotnet` (Roslyn, Sourcegraph) — `runSCIPDotnet()` in `lib/indexer/languages/csharp/scip.ts`, requires `.sln` or `.csproj`
+- **Rust** via `scip-rust` (rust-analyzer wrapper) — `runSCIPRust()` in `lib/indexer/languages/rust/scip.ts`, requires `Cargo.toml`
+- **Ruby** via `scip-ruby` (Sorbet-based, Sourcegraph) — `runSCIPRuby()` in `lib/indexer/languages/ruby/scip.ts`, requires `Gemfile`
+- **PHP** via `scip-php` (nikic/php-parser, community) — `runSCIPPhp()` in `lib/indexer/languages/php/scip.ts`, requires `composer.json`
+
+**Updated files (7):**
+- 5 new `scip.ts` files (C shares with C++)
+- 6 updated `index.ts` plugin files (C, C++, C#, Rust, Ruby, PHP)
+- `indexing-heavy.ts`: SCIP binary pre-check map expanded from 3 to 10 entries (all languages)
+
+**Design:** Each integration follows the proven pattern: check project marker → run CLI with 10-minute timeout → parse via shared `parseSCIPOutput()` decoder → clean up output → fall back to tree-sitter on failure. No new dependencies — workers just need the SCIP binaries on their PATH.
