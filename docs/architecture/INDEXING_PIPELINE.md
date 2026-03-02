@@ -1590,3 +1590,34 @@ Second comprehensive audit of all 4 signal families. Brought grades from B/B+ to
 - Merged dual adjacency-building loops in graph-analysis into a single pass.
 
 **Test results:** 219 signal chain tests pass (6 fewer from removed dead code tests), 0 regressions, 0 new TypeScript errors.
+
+### Signal Chain Hardening Round 3: 2026-03-02
+
+Third comprehensive audit — 4 parallel deep-dive reviews across all signal families. Focused on production correctness, edge-case resilience, and enterprise-grade logging. Brought overall grade from B+ to A.
+
+**HIGH — Correctness bugs (7):**
+- `pagerank.ts`: N=1 entity caused `0/0 = NaN` percentile. Added single-entity guard before the percentile loop.
+- `justification.ts`: `justifyBatch()` referenced undeclared `log` variable. Added `const log = logger.child(...)` at function entry.
+- `justification.ts`: `consecutiveFatalErrors += batch.entities.length` inflated error count, causing premature circuit-break after a single batch failure. Changed to `+= 1`.
+- `context-assembly.ts`: Vector search returns `entityId::code` variant IDs that don't match graph store keys. Added `CODE_VARIANT_SUFFIX` stripping before graph lookup.
+- `incremental.ts`: `updateEmbeddings` had no NaN/Infinity guard — corrupt vectors could poison pgvector. Added validation + sub-batching (batch size 50) matching the full pipeline.
+- `ontology.ts`: Static `import { getContainer }` violated lazy-init rule (connects to DI at module load in Temporal worker sandbox). Changed to `lazyContainer()` helper with `require()` inside function body. Also lazified `DomainOntologySchema` require.
+- `git-analyzer.ts`: Record separator `"SEP"` could collide with commit subjects. Changed to `"\x1e"` (ASCII Record Separator) + `"\x1f"` (Field Separator) for robust parsing.
+
+**HIGH — Silent failures (2):**
+- `pattern-detection.ts`: `astGrepScan` catch block swallowed errors silently. Added `logger.warn` with pattern ID, language, and error message.
+- `pattern-detection.ts`: LLM-hallucinated `patternIndex` fell back to `batch[0]` (wrong pattern). Changed to `continue` to skip unmatched indices.
+
+**MEDIUM — Performance (2):**
+- `justification.ts`: 4 sequential ArangoDB fetches (entities, edges, ontology, previous justifications). Parallelized with `Promise.all` — ~4x faster setup phase.
+- `pattern-detection.ts`: O(N) `.find()` in semantic mining entity lookup. Added `entityById` Map for O(1) access.
+
+**MEDIUM — Correctness & consistency (6):**
+- `structural-fingerprint.ts`: Exported `DISCONNECTED_DEPTH = 99` constant; `graph-analysis.ts` now imports it instead of using magic number.
+- `prompt-builder.ts`: `import { summarizeBody }` was at file bottom (line 812) — moved to top with other imports for readability.
+- `ontology.ts`: Angular framework detection mapped `angular` → `"Angular"` but package name is `@angular/core`. Fixed key in `knownFrameworks` map.
+- `pattern-detection.ts`: `require("node:crypto")` called inside `storePatterns` loop body. Hoisted to single call before loop.
+- `pattern-detection.ts`: Adherence ratio could exceed 1.0 when entity counted in multiple motifs. Clamped with `Math.min(count / total, 1.0)`.
+- `git-analyzer.ts`: All test data updated from `SEP` prefix to `\x1e` record separator.
+
+**Test results:** 369 signal chain tests pass, 0 regressions, 0 new TypeScript errors.
