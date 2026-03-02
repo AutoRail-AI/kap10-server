@@ -10,6 +10,7 @@
  * - SCIP-based cross-file references (which use symbol identity, not imports)
  */
 import type { ParsedEdge, ParsedEntity } from "./types"
+import { logger } from "@/lib/utils/logger"
 
 /**
  * Resolve cross-file call edges using import metadata.
@@ -25,8 +26,9 @@ import type { ParsedEdge, ParsedEntity } from "./types"
 export function resolveCrossFileCalls(
   entities: ParsedEntity[],
   edges: ParsedEdge[],
-  _repoId: string,
+  repoId: string,
 ): ParsedEdge[] {
+  const log = logger.child({ service: "cross-file-calls", repoId })
   const newEdges: ParsedEdge[] = []
 
   // Step 1: Build file→entities map (name→entity for callable entities)
@@ -109,6 +111,12 @@ export function resolveCrossFileCalls(
     }
   }
 
+  log.info("Import resolution complete", {
+    internalImports: importEdges.length,
+    resolvedImports: resolvedImports.length,
+    unresolvedImports: importEdges.length - resolvedImports.length,
+  })
+
   if (resolvedImports.length === 0) return newEdges
 
   // Step 3: Group resolved imports by importer file for efficient body scanning
@@ -161,6 +169,8 @@ export function resolveCrossFileCalls(
       }
     }
   }
+
+  log.info("Cross-file call edges resolved", { callEdgesCreated: newEdges.length })
 
   return newEdges
 }

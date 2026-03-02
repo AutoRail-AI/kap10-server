@@ -18,7 +18,7 @@
  * On failure: set repo status to "embed_failed"
  */
 
-import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild, workflowInfo } from "@temporalio/workflow"
+import { defineQuery, ParentClosePolicy, proxyActivities, setHandler, startChild } from "@temporalio/workflow"
 import { discoverOntologyWorkflow } from "./discover-ontology"
 import type * as embeddingActivities from "../activities/embedding"
 import type * as pipelineLogs from "../activities/pipeline-logs"
@@ -202,6 +202,11 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     wfLog("ERROR", "Embedding workflow failed", { ...ctx, errorMessage: message }, "Error")
+
+    if (input.runId) {
+      runActivities.updatePipelineStep({ runId: input.runId, stepName: "embed", status: "failed" }).catch(() => {})
+    }
+
     // Best-effort archive on failure — don't block the error throw
     logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId, runId: input.runId }).catch(() => {})
     await activities.setEmbedFailedStatus(input.repoId, message)

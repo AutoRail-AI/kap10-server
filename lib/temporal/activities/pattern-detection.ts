@@ -8,6 +8,7 @@
 
 import { heartbeat } from "@temporalio/activity"
 import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
+import { logger } from "@/lib/utils/logger"
 
 /**
  * Combined activity: scan patterns, synthesize rules, and store — all in one step.
@@ -20,30 +21,36 @@ export async function scanSynthesizeAndStore(input: AstGrepScanInput): Promise<{
   const plog = createPipelineLogger(input.repoId, "pattern-detection")
   plog.log("info", "Step 7/7", "Scanning codebase for structural patterns...")
 
-  const scanResult = await astGrepScan(input)
-  if (scanResult.detectedPatterns.length === 0) {
-    plog.log("info", "Step 7/7", "No structural patterns detected")
-    return { patternsDetected: 0, rulesGenerated: 0 }
+  try {
+    const scanResult = await astGrepScan(input)
+    if (scanResult.detectedPatterns.length === 0) {
+      plog.log("info", "Step 7/7", "No structural patterns detected")
+      return { patternsDetected: 0, rulesGenerated: 0 }
+    }
+
+    plog.log("info", "Step 7/7", `Found ${scanResult.detectedPatterns.length} patterns — synthesizing rules...`)
+
+    const synthesizeResult = await llmSynthesizeRules({
+      orgId: input.orgId,
+      repoId: input.repoId,
+      detectedPatterns: scanResult.detectedPatterns,
+    })
+
+    const storeResult = await storePatterns({
+      orgId: input.orgId,
+      repoId: input.repoId,
+      detectedPatterns: scanResult.detectedPatterns,
+      synthesizedRules: synthesizeResult.synthesizedRules,
+    })
+
+    plog.log("info", "Step 7/7", `Pattern detection complete — ${storeResult.patternsStored} patterns, ${storeResult.rulesStored} rules`)
+
+    return { patternsDetected: storeResult.patternsStored, rulesGenerated: storeResult.rulesStored }
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error)
+    plog.log("error", "Step 7/7", `Pattern detection failed: ${msg}`)
+    throw error
   }
-
-  plog.log("info", "Step 7/7", `Found ${scanResult.detectedPatterns.length} patterns — synthesizing rules...`)
-
-  const synthesizeResult = await llmSynthesizeRules({
-    orgId: input.orgId,
-    repoId: input.repoId,
-    detectedPatterns: scanResult.detectedPatterns,
-  })
-
-  const storeResult = await storePatterns({
-    orgId: input.orgId,
-    repoId: input.repoId,
-    detectedPatterns: scanResult.detectedPatterns,
-    synthesizedRules: synthesizeResult.synthesizedRules,
-  })
-
-  plog.log("info", "Step 7/7", `Pattern detection complete — ${storeResult.patternsStored} patterns, ${storeResult.rulesStored} rules`)
-
-  return { patternsDetected: storeResult.patternsStored, rulesGenerated: storeResult.rulesStored }
 }
 
 export interface AstGrepScanInput {
@@ -222,8 +229,9 @@ Return rules as JSON array. Only include patterns that represent meaningful conv
             confidence: Math.min(Math.max(rule.confidence, 0), 1),
           })
         }
-      } catch {
-        // LLM failed for this batch — fall back to heuristic
+      } catch (batchErr: unknown) {
+        const batchMsg = batchErr instanceof Error ? batchErr.message : String(batchErr)
+        logger.child({ service: "pattern-detection" }).warn("LLM synthesis failed for batch, using heuristic fallback", { errorMessage: batchMsg, batchSize: batch.length })
         for (const pattern of batch) {
           synthesizedRules.push(heuristicRule(pattern))
         }
@@ -232,8 +240,9 @@ Return rules as JSON array. Only include patterns that represent meaningful conv
 
     heartbeat(`Synthesized ${synthesizedRules.length} rules (LLM-enhanced)`)
     return { synthesizedRules }
-  } catch {
-    // Complete LLM failure — fall back to pure heuristic for all patterns
+  } catch (llmErr: unknown) {
+    const llmMsg = llmErr instanceof Error ? llmErr.message : String(llmErr)
+    logger.child({ service: "pattern-detection" }).warn("Complete LLM failure, using heuristic fallback for all patterns", { errorMessage: llmMsg, patternCount: eligiblePatterns.length })
     const synthesizedRules = eligiblePatterns.map(heuristicRule)
     heartbeat(`Synthesized ${synthesizedRules.length} rules (heuristic fallback)`)
     return { synthesizedRules }

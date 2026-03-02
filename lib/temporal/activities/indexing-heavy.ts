@@ -1,6 +1,6 @@
 import { heartbeat } from "@temporalio/activity"
 import { execFile } from "node:child_process"
-import { readFileSync, statSync } from "node:fs"
+import { statSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
 

@@ -93,7 +93,7 @@ indexRepoWorkflow (heavy-compute-queue)
 | `heavy-compute-queue` | CPU-bound work | Git clone, SCIP parsing, tree-sitter, Semgrep, temporal analysis |
 | `light-llm-queue` | Network-bound work | LLM calls, embedding, storage uploads, cache ops |
 
-**Orchestration:** Temporal workflows. Each stage is a Temporal activity with heartbeats, timeouts, and retry policies. Pipeline progress is tracked in PostgreSQL (`PipelineRun` table with 11 discrete steps plus metadata) and streamed to the dashboard via SSE. Each step records start/complete/fail timestamps, enabling per-stage latency analysis and bottleneck identification.
+**Orchestration:** Temporal workflows. Each stage is a Temporal activity with heartbeats, timeouts, and retry policies. Pipeline progress is tracked in PostgreSQL (`PipelineRun` table with 11 discrete steps plus metadata) and streamed to the dashboard via SSE. Each step records start/complete/fail timestamps, enabling per-stage latency analysis and bottleneck identification. The main `indexRepoWorkflow` tracks per-step wall-clock durations (`stepDurations` record) and computes a **signal quality score** — the ratio of files covered by high-fidelity SCIP vs tree-sitter fallback — emitted in the completion summary alongside total duration and enriched metrics.
 
 **Signal Convergence Model:**
 
@@ -245,6 +245,7 @@ SCIP (Sourcegraph Code Intelligence Protocol) is a compiler-grade code analysis 
    - **Cognitive complexity** — Sonar-style metric weighting nested conditions (`1 + nestingDepth` per nesting level)
    - Language-aware keyword sets for 11 languages (e.g., Go `select`, Python `elif`/`and`/`or`, Rust `match`/`loop`)
    - Both metrics stored on entities: `complexity` and `cognitive_complexity`
+   - Complexity is computed in both SCIP (via `fillBodiesFromSource`) and tree-sitter (via `fillEndLinesAndBodies`) paths. The tree-sitter path receives `filePath` as an explicit parameter for language detection.
    - Source: `lib/indexer/complexity.ts`
 
 6. **Write to ArangoDB** via `writeEntitiesToGraph()`:
@@ -1070,7 +1071,7 @@ Runs structural pattern matching via the Semgrep adapter. 23 built-in detectors:
 **Workflow:** `incrementalIndexWorkflow` | **Queue:** heavy-compute (workflow), mixed queues for activities
 **Source:** `lib/temporal/workflows/incremental-index.ts`
 
-Triggered by GitHub push webhooks. Uses Temporal's signal-with-start pattern with a fixed workflow ID per repo (`incremental-{orgId}-{repoId}`).
+Triggered by GitHub push webhooks. Uses Temporal's signal-with-start pattern with a fixed workflow ID per repo (`incremental-{orgId}-{repoId}`). The incremental workflow has full pipeline logging parity with `indexRepoWorkflow` — a `wfLog` helper emits structured logs to both the Temporal worker console and Redis pipeline logs for every step, including a completion summary with duration and entity counts.
 
 ### Signal Debouncing
 
@@ -1405,6 +1406,17 @@ Every activity emits two levels of logging:
 
 All 12 stages emit pipeline logs. Phase types: `indexing`, `embedding`, `ontology`, `justifying`, `graph-sync`, `graph-analysis`, `temporal-analysis`, `pattern-detection`. Each heartbeat-aware activity sends progress updates that appear in real-time.
 
+**Workflow-level observability:**
+- **Duration tracking** — both `indexRepoWorkflow` and `incrementalIndexWorkflow` track per-step wall-clock durations in a `stepDurations` record, formatted as human-readable strings (`12.4s`, `2m 34s`) in completion logs.
+- **Signal quality score** — the full index workflow computes and emits the SCIP vs tree-sitter coverage percentage, giving immediate visibility into index fidelity.
+- **Error path telemetry** — both workflows log elapsed time on failure (`Indexing workflow failed after 1m 12s`), enabling SLA tracking.
+- **Consistent log format** — all workflows use the `[timestamp] [LEVEL] [wf:name] [orgId/repoId] message {extra}` format, with structured metadata available in the Redis pipeline log entries.
+
+**Error handling discipline:**
+- Every activity has a top-level try/catch that logs to both system logger and pipeline logger before rethrowing — ensuring failures are visible in both operational monitoring and the user-facing Pipeline Monitor.
+- Non-fatal catch blocks (e.g., context refresh, workspace cleanup, LLM synthesis fallback) log the error message instead of swallowing silently.
+- Child workflow launches handle "already started" / "already exists" errors gracefully with WARN-level logging.
+
 ### 20.11 Graceful Degradation
 
 Every stage has fallback behavior:
@@ -1621,3 +1633,29 @@ Third comprehensive audit — 4 parallel deep-dive reviews across all signal fam
 - `git-analyzer.ts`: All test data updated from `SEP` prefix to `\x1e` record separator.
 
 **Test results:** 369 signal chain tests pass, 0 regressions, 0 new TypeScript errors.
+
+### Pipeline Observability & Hardening: 2026-03-02
+
+Four-pass comprehensive audit of all signals, workflows, activities, and logging infrastructure. Elevated the pipeline from "functional" to "measurable and transparent" — enterprise-grade observability.
+
+**P0 — Bug fix (1):**
+- `typescript/tree-sitter.ts`: `fillEndLinesAndBodies` referenced `opts.filePath` from outer function scope (module-level function, not a closure). `ReferenceError` at runtime meant all TypeScript entities were missing complexity scores. Fixed by passing `filePath` as explicit parameter.
+
+**P1 — Error handling (3):**
+- `temporal-analysis.ts`: Wrapped entire `computeTemporalAnalysis` body in try/catch with structured logging to both system logger and pipeline logger before rethrow.
+- `pattern-detection.ts`: Added top-level try/catch in `scanSynthesizeAndStore` with pipeline log on error. Added logging to `llmSynthesizeRules` bare catch blocks (previously silently fell back to heuristics).
+- `detect-patterns.ts` workflow: Replaced two silent `catch {}` blocks with structured `console.log` messages for semantic mining and workspace cleanup failures.
+
+**P1 — Logging & bugs (5):**
+- `incremental-index.ts`: Added `wfLog` helper and `logActivities` proxy (pipeline logging parity with `index-repo.ts`). Added step-level logging for all 10 steps. Fixed `workflow_id: ""` bug (now uses captured `wfId`). Fixed silent `catch {}` on context refresh. Removed dead `_driftActivities` proxy. Passed `runId` to fallback `indexRepoWorkflow` child. Wrapped fallback `startChild` with "already started" handling.
+- `cross-file-calls.ts`: Added structured logging (import resolution stats, call edges created). Renamed unused `_repoId` to `repoId` for logger context.
+- `sync-local-graph.ts`: Replaced raw `console.error` with structured `[timestamp] [LEVEL] [wf:name] [orgId/repoId]` format.
+- `embed-repo.ts`: Added `updatePipelineStep(embed, "failed")` on error when `runId` present. Removed unused `workflowInfo` import.
+- `index-repo.ts`: Added per-step duration tracking (`stepDurations` record with `formatMs` helper). Added signal quality score (SCIP vs tree-sitter coverage %). Enriched completion summary with all metrics. Added elapsed time on error path. Simplified redundant `Math.max` in quality score computation.
+
+**P2 — Code quality (3):**
+- `workspace-cleanup.ts`: Replaced `console.error`/`console.log` with structured `logger.child()`.
+- `logger.ts`: Tightened `[key: string]: any` to `[key: string]: unknown` in `LogContext`.
+- `indexing-heavy.ts`: Removed unused `readFileSync` import.
+
+**Files changed:** 13. **Zero linter errors introduced.** All changes verified across 4 audit passes with no remaining P0 or P1 issues.

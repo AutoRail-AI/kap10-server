@@ -57,8 +57,9 @@ export async function detectPatternsWorkflow(input: DetectPatternsInput): Promis
       orgId: input.orgId,
       repoId: input.repoId,
     })
-  } catch {
-    // Non-fatal — semantic mining is best-effort
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.log(`[${new Date().toISOString()}] [WARN ] [wf:detect-patterns] [${input.orgId}/${input.repoId}] Semantic mining failed (non-fatal): ${msg}`)
   }
 
   // K-01: Clean up workspace filesystem after pattern detection completes.
@@ -68,8 +69,9 @@ export async function detectPatternsWorkflow(input: DetectPatternsInput): Promis
       orgId: input.orgId,
       repoId: input.repoId,
     })
-  } catch {
-    // Non-fatal — workspace will be cleaned up by scheduled cleanup
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.log(`[${new Date().toISOString()}] [WARN ] [wf:detect-patterns] [${input.orgId}/${input.repoId}] Workspace cleanup failed (non-fatal): ${msg}`)
   }
 
   return {

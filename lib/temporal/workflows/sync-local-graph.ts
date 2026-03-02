@@ -69,7 +69,7 @@ export async function syncLocalGraphWorkflow(input: SyncLocalGraphInput): Promis
     return { storagePath, sizeBytes, entityCount, edgeCount, checksum }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
-    console.error(`[wf:sync-local-graph] [${input.orgId}/${input.repoId}] Snapshot export failed: ${message}`)
+    console.log(`[${new Date().toISOString()}] [ERROR] [wf:sync-local-graph] [${input.orgId}/${input.repoId}] Snapshot export failed: ${message}`)
 
     // Set failed status — best-effort (don't mask the original error)
     try {
@@ -78,8 +78,9 @@ export async function syncLocalGraphWorkflow(input: SyncLocalGraphInput): Promis
         repoId: input.repoId,
         status: "failed",
       })
-    } catch {
-      console.error(`[wf:sync-local-graph] [${input.orgId}/${input.repoId}] Failed to update snapshot status to "failed"`)
+    } catch (statusErr: unknown) {
+      const statusMsg = statusErr instanceof Error ? statusErr.message : String(statusErr)
+      console.log(`[${new Date().toISOString()}] [ERROR] [wf:sync-local-graph] [${input.orgId}/${input.repoId}] Failed to update snapshot status to "failed": ${statusMsg}`)
     }
     throw err
   }

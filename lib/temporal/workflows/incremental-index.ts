@@ -16,9 +16,9 @@ import {
 } from "@temporalio/workflow"
 import { indexRepoWorkflow } from "./index-repo"
 import type * as contextRefresh from "../activities/context-refresh"
-import type * as driftAlert from "../activities/drift-alert"
 import type * as incremental from "../activities/incremental"
 import type * as light from "../activities/indexing-light"
+import type * as pipelineLogs from "../activities/pipeline-logs"
 
 const heavyActivities = proxyActivities<typeof incremental>({
   taskQueue: "heavy-compute-queue",
@@ -50,12 +50,36 @@ const contextRefreshActivities = proxyActivities<typeof contextRefresh>({
   retry: { maximumAttempts: 2 },
 })
 
-const _driftActivities = proxyActivities<typeof driftAlert>({
+const logActivities = proxyActivities<typeof pipelineLogs>({
   taskQueue: "light-llm-queue",
-  startToCloseTimeout: "5m",
-  heartbeatTimeout: "1m",
-  retry: { maximumAttempts: 2 },
+  startToCloseTimeout: "5s",
+  retry: { maximumAttempts: 1 },
 })
+
+/** Workflow-safe log helper (Temporal sandbox — no require/import of Node modules) */
+function wfLog(level: string, msg: string, ctx: Record<string, unknown>, step?: string) {
+  const ts = new Date().toISOString()
+  const orgId = ctx.organizationId ?? "-"
+  const repoId = ctx.repoId ?? "-"
+  const runId = ctx.runId as string | undefined
+  const extra = { ...ctx }
+  delete extra.organizationId
+  delete extra.repoId
+  delete extra.runId
+  const extraStr = Object.keys(extra).length > 0 ? ` ${JSON.stringify(extra)}` : ""
+  console.log(`[${ts}] [${level.padEnd(5)}] [wf:incremental-index] [${orgId}/${repoId}] ${msg}${extraStr}`)
+
+  logActivities
+    .appendPipelineLog({
+      timestamp: ts,
+      level: level.toLowerCase() as "info" | "warn" | "error",
+      phase: "indexing",
+      step: step ?? "",
+      message: msg,
+      meta: { ...extra, repoId: String(repoId), ...(runId && { runId }) },
+    })
+    .catch(() => {})
+}
 
 // Signals and queries
 export const pushSignal = defineSignal<[{ afterSha: string; beforeSha: string; ref: string; commitMessage?: string }]>("push")
@@ -115,10 +139,14 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
 
   const startTime = Date.now()
   const wfId = workflowInfo().workflowId
+  const ctx = { organizationId: input.orgId, repoId: input.repoId, runId: input.runId }
+
+  wfLog("INFO", "Incremental index started", { ...ctx, afterSha: latestPush.afterSha, commitMessage: latestPush.commitMessage }, "Start")
 
   try {
     // Step 1: Pull and diff
     progress = 10
+    wfLog("INFO", "Step 1/10: Pulling and computing diff", ctx, "Step 1/10")
     const pullResult = await heavyActivities.pullAndDiff({
       orgId: input.orgId,
       repoId: input.repoId,
@@ -129,9 +157,12 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
       installationId: input.installationId,
     })
 
+    wfLog("INFO", `Step 1 complete: ${pullResult.changedFiles.length} files changed`, { ...ctx, changedFiles: pullResult.changedFiles.length }, "Step 1/10")
+
     // Step 2: Fallback guard — if too many files changed, trigger full re-index
     const fallbackThreshold = 200
     if (pullResult.changedFiles.length > fallbackThreshold) {
+      wfLog("WARN", `Fallback to full re-index: ${pullResult.changedFiles.length} files exceed threshold (${fallbackThreshold})`, { ...ctx, changedFiles: pullResult.changedFiles.length, threshold: fallbackThreshold }, "Fallback")
       // D-01: Too many changes — auto-trigger full re-index as a child workflow
       const event = {
         org_id: input.orgId,
@@ -154,24 +185,35 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
       await lightActivities.writeIndexEvent({ orgId: input.orgId, repoId: input.repoId, event })
 
       // Fire-and-forget full re-index — ABANDON so the child survives if this workflow completes
-      await startChild(indexRepoWorkflow, {
-        workflowId: `index-${input.orgId}-${input.repoId}-fallback-${workflowInfo().runId.slice(0, 8)}`,
-        taskQueue: "heavy-compute-queue",
-        args: [{
-          orgId: input.orgId,
-          repoId: input.repoId,
-          installationId: input.installationId,
-          cloneUrl: input.cloneUrl,
-          defaultBranch: input.defaultBranch,
-        }],
-        parentClosePolicy: ParentClosePolicy.ABANDON,
-      })
+      try {
+        await startChild(indexRepoWorkflow, {
+          workflowId: `index-${input.orgId}-${input.repoId}-fallback-${workflowInfo().runId.slice(0, 8)}`,
+          taskQueue: "heavy-compute-queue",
+          args: [{
+            orgId: input.orgId,
+            repoId: input.repoId,
+            installationId: input.installationId,
+            cloneUrl: input.cloneUrl,
+            defaultBranch: input.defaultBranch,
+            runId: input.runId,
+          }],
+          parentClosePolicy: ParentClosePolicy.ABANDON,
+        })
+      } catch (childErr: unknown) {
+        const msg = childErr instanceof Error ? childErr.message : String(childErr)
+        if (msg.includes("already started") || msg.includes("already exists")) {
+          wfLog("WARN", "Fallback re-index workflow already running, skipping duplicate", ctx, "Fallback")
+        } else {
+          throw childErr
+        }
+      }
 
       progress = 100
       return { entitiesAdded: 0, entitiesUpdated: 0, entitiesDeleted: 0, edgesRepaired: 0, embeddingsUpdated: 0, cascadeEntities: 0 }
     }
 
     // Step 3: Fan-out re-index batches (entities written directly to ArangoDB)
+    wfLog("INFO", "Step 3/10: Re-indexing changed files in batches", { ...ctx, addedOrModified: pullResult.changedFiles.filter((f: { changeType: string }) => f.changeType !== "removed").length, removed: pullResult.changedFiles.filter((f: { changeType: string }) => f.changeType === "removed").length }, "Step 3/10")
     progress = 30
     const addedOrModified = pullResult.changedFiles
       .filter((f) => f.changeType !== "removed")
@@ -197,7 +239,10 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
     const allEntityIds = reindexResults.flatMap((r) => r.entityIds)
     const allQuarantined = reindexResults.flatMap((r) => r.quarantined)
 
+    wfLog("INFO", `Step 3 complete: ${allEntityIds.length} entities re-indexed, ${allQuarantined.length} quarantined`, { ...ctx, entityCount: allEntityIds.length, quarantined: allQuarantined.length }, "Step 3/10")
+
     // Step 4: Delete entities for removed files
+    wfLog("INFO", "Step 4/10: Applying entity diffs", ctx, "Step 4/10")
     progress = 50
     const diffResult = await lightActivities.applyEntityDiffs({
       orgId: input.orgId,
@@ -206,7 +251,10 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
       removedFilePaths: removed,
     })
 
+    wfLog("INFO", `Step 4 complete: +${diffResult.entitiesAdded} -${diffResult.entitiesDeleted} ~${diffResult.entitiesUpdated} entities`, { ...ctx, added: diffResult.entitiesAdded, deleted: diffResult.entitiesDeleted, updated: diffResult.entitiesUpdated }, "Step 4/10")
+
     // Step 5: Repair edges (passes only IDs, fetches full data internally)
+    wfLog("INFO", "Step 5/10: Repairing edges", ctx, "Step 5/10")
     progress = 60
     const edgeResult = await lightActivities.repairEdgesActivity({
       orgId: input.orgId,
@@ -216,6 +264,7 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
     })
 
     // Step 6: Update embeddings
+    wfLog("INFO", "Step 6/10: Updating embeddings", ctx, "Step 6/10")
     progress = 70
     const changedKeys = allEntityIds
     const embedResult = await lightActivities.updateEmbeddings({
@@ -225,6 +274,7 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
     })
 
     // Step 7: Cascade re-justification
+    wfLog("INFO", "Step 7/10: Cascading re-justification", ctx, "Step 7/10")
     progress = 80
     const cascadeResult = await lightActivities.cascadeReJustify({
       orgId: input.orgId,
@@ -242,11 +292,13 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
         deletedEntityCount: diffResult.entitiesDeleted,
         cascadeEntityCount: cascadeResult.cascadeEntities,
       })
-    } catch {
-      // Best-effort — context refresh failure should not block the pipeline
+    } catch (refreshErr: unknown) {
+      const refreshMsg = refreshErr instanceof Error ? refreshErr.message : String(refreshErr)
+      wfLog("WARN", `Context refresh failed (non-fatal): ${refreshMsg}`, ctx, "Step 7.5")
     }
 
     // Step 8: Invalidate caches
+    wfLog("INFO", "Step 8/10: Invalidating caches", ctx, "Step 8/10")
     progress = 90
     await lightActivities.invalidateCaches({
       orgId: input.orgId,
@@ -254,6 +306,7 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
     })
 
     // Step 9: Write index event
+    wfLog("INFO", "Step 9/10: Writing index event", ctx, "Step 9/10")
     const event = {
       org_id: input.orgId,
       repo_id: input.repoId,
@@ -269,7 +322,7 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
       cascade_status: cascadeResult.cascadeStatus,
       cascade_entities: cascadeResult.cascadeEntities,
       duration_ms: Date.now() - startTime,
-      workflow_id: "",
+      workflow_id: wfId,
       extraction_errors: allQuarantined.length > 0
         ? allQuarantined.map((q) => ({ filePath: q.filePath, reason: q.reason, quarantined: true }))
         : undefined,
@@ -287,6 +340,18 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
     })
 
     progress = 100
+    const durationMs = Date.now() - startTime
+
+    wfLog("INFO", `Incremental index complete — +${diffResult.entitiesAdded} -${diffResult.entitiesDeleted} ~${diffResult.entitiesUpdated} entities, ${edgeResult.edgesDeleted} edges repaired, ${embedResult.embeddingsUpdated} embeddings updated (${durationMs}ms)`, {
+      ...ctx,
+      entitiesAdded: diffResult.entitiesAdded,
+      entitiesUpdated: diffResult.entitiesUpdated,
+      entitiesDeleted: diffResult.entitiesDeleted,
+      edgesRepaired: edgeResult.edgesDeleted,
+      embeddingsUpdated: embedResult.embeddingsUpdated,
+      cascadeEntities: cascadeResult.cascadeEntities,
+      durationMs,
+    }, "Complete")
 
     return {
       entitiesAdded: diffResult.entitiesAdded,
@@ -298,6 +363,8 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
+    const elapsedMs = Date.now() - startTime
+    wfLog("ERROR", `Incremental index failed after ${elapsedMs}ms`, { ...ctx, errorMessage: message, elapsedMs }, "Error")
     await lightWriteActivities.updateRepoError(input.repoId, `Incremental index failed: ${message}`)
     throw err
   }

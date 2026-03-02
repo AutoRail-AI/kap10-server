@@ -29,6 +29,7 @@ const WORKSPACE_BASE = "/data/workspaces"
  * Returns the number of workspaces cleaned up.
  */
 export async function cleanupExpiredWorkspacesActivity(): Promise<number> {
+  const log = logger.child({ service: "workspace-cleanup" })
   const container = resolveContainer()
 
   // Get and delete expired workspaces from Supabase
@@ -46,11 +47,11 @@ export async function cleanupExpiredWorkspacesActivity(): Promise<number> {
       cleaned++
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error)
-      console.error(`[WorkspaceCleanup] Failed to clean workspace ${workspace.id}:`, message)
+      log.warn("Failed to clean expired workspace", { workspaceId: workspace.id, errorMessage: message })
     }
   }
 
-  console.log(`[WorkspaceCleanup] Cleaned ${cleaned}/${expired.length} expired workspaces`)
+  log.info(`Cleaned ${cleaned}/${expired.length} expired workspaces`)
   return cleaned
 }
 

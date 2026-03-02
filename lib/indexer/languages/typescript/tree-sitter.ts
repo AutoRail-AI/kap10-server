@@ -397,7 +397,7 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
   }
 
   // Post-process: compute end_line and extract body for each entity
-  fillEndLinesAndBodies(entities, lines)
+  fillEndLinesAndBodies(entities, lines, opts.filePath)
 
   // L-02: Detect same-file call edges (parity with Python/Go/Java)
   detectTypeScriptCallEdges(entities, edges)
@@ -412,7 +412,7 @@ export function parseTypeScriptFile(opts: TreeSitterOptions): TreeSitterParseRes
  * Strategy: sort entities by start_line, then for each entity find the
  * matching closing brace (or use next entity's start_line - 1 as fallback).
  */
-function fillEndLinesAndBodies(entities: ParsedEntity[], lines: string[]): void {
+function fillEndLinesAndBodies(entities: ParsedEntity[], lines: string[], filePath: string): void {
   if (entities.length === 0) return
 
   // Sort by start_line so we can use next-entity as a boundary
@@ -440,7 +440,7 @@ function fillEndLinesAndBodies(entities: ParsedEntity[], lines: string[]): void 
       entity.body = bodyLines.join("\n")
       // L-06: Compute both cyclomatic and cognitive complexity
       if (entity.kind === "function" || entity.kind === "method") {
-        const lang = detectLanguageFromPath(opts.filePath)
+        const lang = detectLanguageFromPath(filePath)
         const cx = computeComplexity(entity.body, lang)
         entity.complexity = cx.cyclomatic
         entity.cognitive_complexity = cx.cognitive
