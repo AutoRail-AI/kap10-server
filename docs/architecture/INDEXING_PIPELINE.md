@@ -71,7 +71,7 @@ indexRepoWorkflow (heavy-compute-queue)
   |-- (fire-and-forget children) -------+
   |                                     |
   |   [5] embedRepoWorkflow            |  Pass 1: structural embedding (light-llm-queue)
-  |     |-- Kind-aware embedding        |  ONNX nomic-embed-text, pgvector
+  |     |-- Kind-aware embedding        |  TEI nomic-embed-text (HTTP), pgvector
   |     |                               |
   |     +-> [6] discoverOntology        |  Three-tier ontology extraction
   |           |                         |
@@ -165,11 +165,11 @@ Generates a `runId` (UUID) and `indexVersion` (UUID for shadow re-indexing). If 
 
 ### What Happens
 
-1. **Shallow-clone the repository** to `/data/workspaces/{orgId}/{repoId}` using `container.gitHost.cloneRepo()` with `--depth 1 --single-branch` — fetches only the latest commit. For CLI uploads, downloads the zip from Supabase Storage and extracts it.
+1. **Shallow-clone the repository** to `/data/repo-indices/{orgId}/{repoId}` using `container.gitHost.cloneRepo()` with `--depth 1 --single-branch` — fetches only the latest commit. For CLI uploads, downloads the zip from Supabase Storage and extracts it.
 
 2. **Get the commit SHA** via `git rev-parse HEAD`. This SHA becomes the repo's `lastIndexedSha` — used for incremental indexing SHA gap detection.
 
-3. **Scan the intelligence space** via `scanWorkspace()`:
+3. **Scan the intelligence space** via `scanIndexDir()`:
    - Runs `git ls-files --cached --others --exclude-standard` (respects `.gitignore`)
    - Falls back to `find` if git is unavailable
    - Skips known noise: `node_modules`, `.git`, `.next`, `dist`, `vendor`, `__pycache__`, lockfiles, binary files
@@ -180,7 +180,7 @@ Generates a `runId` (UUID) and `indexVersion` (UUID for shadow re-indexing). If 
    - Sorts by file count (dominant language first)
    - For monorepos, `detectLanguagePerRoot()` scans each workspace root to determine its dominant language independently
 
-5. **Detect monorepo roots** via `detectWorkspaceRoots()`:
+5. **Detect monorepo roots** via `detectPackageRoots()`:
    - Finds directories with their own `package.json`, `go.mod`, `pyproject.toml`, `pom.xml`, `build.gradle`
    - Maven multi-module and Gradle multi-project detection for Java monorepos
 
@@ -198,7 +198,7 @@ Only this small payload crosses the Temporal boundary. The actual intelligence s
 
 ### Verification
 
-- `ls /data/workspaces/{orgId}/{repoId}` contains cloned repo files
+- `ls /data/repo-indices/{orgId}/{repoId}` contains cloned repo files
 - `ScannedFile[]` count matches `git ls-files` count
 - Languages detected correctly (check `detectLanguages()` output against actual file extensions)
 - Pipeline step `prepare_intel_space` shows `completed` in `PipelineRun`
@@ -493,7 +493,7 @@ Written to entity documents via `bulkUpsertEntities()`:
 
 ### Input
 
-- `orgId`, `repoId`, `workspacePath` (needs filesystem access for `git log`)
+- `orgId`, `repoId`, `indexDir` (needs filesystem access for `git log`)
 
 ### What Happens
 
@@ -503,7 +503,7 @@ Git history mining to produce temporal signals — the "hidden knowledge layer" 
 
 #### Sub-task 4c-1: Mine Commit History
 
-`mineCommitHistory(workspacePath, 365, 5000)` — runs `git log --name-only` with ASCII Unit Separator (`\x1f`) field delimiter (safe for commit subjects containing `|`). Parses into `CommitFileEntry[]` (sha, subject, authorEmail, timestamp, files).
+`mineCommitHistory(indexDir, 365, 5000)` — runs `git log --name-only` with ASCII Unit Separator (`\x1f`) field delimiter (safe for commit subjects containing `|`). Parses into `CommitFileEntry[]` (sha, subject, authorEmail, timestamp, files).
 
 #### Sub-task 4c-2: Compute Co-Change Edges
 
@@ -591,7 +591,7 @@ Two-pass embedding solves the ordering problem where first-time embeddings had n
 
    d. **Body truncation** via AST summarization — `summarizeBody()` (`lib/justification/ast-summarizer.ts`) replaces naive `.slice()`. Extracts 6 anchor categories (decision points, external calls, mutations, errors, returns, assertions) verbatim; compresses non-anchor lines into structural tokens: `[IMPORTS: N lines]`, `[SETUP: N variables]`, `[LOOP: for over items]`, `[TRY_CATCH]`, `[LOG]`, `[... N lines ...]`. Body capped at 2,000 characters (~500 tokens).
 
-   e. **Run ONNX inference** — `nomic-embed-text-v1.5` model (768 dimensions, CPU-only). One document at a time (prevents OOM).
+   e. **Embed via TEI** — `nomic-embed-text-v1.5` model (768 dimensions) served by HuggingFace TEI container. Texts batched into `TEI_BATCH_SIZE` chunks (default 32) and sent via HTTP POST to `TEI_URL/embed`.
 
    f. **Upsert to pgvector** in sub-batches of 10 with conflict-based deduplication.
 
@@ -616,10 +616,11 @@ Triggered by `reEmbedWithJustifications` activity as Step 8b in `justify-repo` w
 ### Implementation Details
 
 - **Embedding vector validation** — `Number.isFinite()` check on every vector. NaN/Infinity vectors logged and skipped.
-- **ONNX resilience** — `getEmbeddingPipeline()` retries 3× with exponential backoff (5s/15s/45s). On failure, clears model cache and retries.
-- **Session lifecycle** — ONNX session rotates after 500 embed calls (`ONNX_SESSION_MAX_CALLS`). `disposeSession()` releases memory, triggers GC.
+- **TEI resilience** — HTTP calls to TEI retry 3× with exponential backoff (1s/3s/9s) on 5xx/network errors. TEI container has healthcheck with 60s start period.
+- **TEI batching** — Texts batched into `TEI_BATCH_SIZE` chunks (default 32). TEI handles tokenization, truncation, and concurrent inference in Rust.
 - **Search fusion** — in `hybrid-search.ts`, all three legs (semantic, keyword, justification) use entity ID as `entityKey` for consistent RRF merging. Semantic search strips `::code` suffix before RRF. Both variants for same entity contribute to fused score. `SearchResult` type carries `id` field (ArangoDB `_key`) alongside `name`.
 - **Adaptive RRF k-parameter** — `computeAdaptiveK()` dynamically adjusts k from inter-source Jaccard similarity of top-10 result sets. High overlap → lower k (amplify consensus). Low overlap → higher k (smooth noise). Range: `[0.5*baseK, 2.0*baseK]`.
+- **Optional cross-encoder reranking** — when `RERANKER_ENABLED=true`, a second TEI container running `BAAI/bge-reranker-v2-m3` re-scores RRF candidates with (query, entity summary) pairs. Exact matches (score=1.0) are pinned and excluded from reranking. Retrieval window widens to `RERANKER_TOP_K` (default 30) per leg. Falls back to RRF results on reranker failure.
 
 ### Verification
 
@@ -1131,7 +1132,7 @@ The workflow waits **60 seconds** for additional `pushSignal` signals before pro
 | Max body lines per entity (extraction) | **3,000 lines** | `lib/indexer/types.ts` → `MAX_BODY_LINES` |
 | Max body lines per entity (graph snapshot) | **50 lines** | `lib/use-cases/graph-compactor.ts` |
 | Max body chars per entity (embedding) | **2,000 chars** (~500 tokens) | `lib/temporal/activities/embedding.ts` → `MAX_BODY_CHARS` |
-| Embedding tokenizer limit | **512 tokens** | `EMBEDDING_MAX_TOKENS` |
+| Embedding tokenizer limit | **512 tokens** | TEI `truncate: true` (model default) |
 | MCP response body truncation | **2,000 bytes** | `lib/mcp/formatter.ts` |
 
 ### Justification Prompt Limits

@@ -39,7 +39,7 @@
 | **Entity Diff** | — | `EntityDiff` | The comparison result for a single file: `{ added: EntityRecord[], updated: EntityRecord[], deleted: EntityRecord[] }`. Computed by comparing old vs new entity hashes. | ~~entity delta~~, ~~hash diff~~ |
 | **Cascade Re-Justification** | — | `cascadeReJustify` | The process of re-justifying callers when a callee's code or justification changes significantly. Triggers Phase 4's `justifyEntityWorkflow`. | ~~propagate~~, ~~ripple~~, ~~chain re-classify~~ |
 | **Significant Change** | — | `isSignificantChange` | A justification is "significantly changed" when the cosine distance between old and new justification embeddings exceeds 0.3. Threshold for triggering cascade. | ~~meaningful change~~, ~~material change~~ |
-| **Persistent Workspace** | `workspace_path` | `workspacePath` | The on-disk clone at `/data/workspaces/{orgId}/{repoId}/`. Created in Phase 1, reused for `git pull` in Phase 5. | ~~clone dir~~, ~~repo dir~~ |
+| **Persistent Repo Index Dir** | `repo_index_path` | `indexDir` | The on-disk clone at `/data/repo-indices/{orgId}/{repoId}/`. Created in Phase 1, reused for `git pull` in Phase 5. | ~~clone dir~~, ~~repo dir~~, ~~workspace~~ |
 | **Incremental Window** | — | `incrementalWindow` | The set of files changed between `lastIndexedSha` and the push event's `after` SHA. Defines the re-indexing scope. | ~~change set~~, ~~diff window~~ |
 | **Activity Feed** | `index_events` (collection) | `IndexEvent` | Append-only log of indexing events shown on the dashboard. Each push produces one event with entity counts. | ~~activity log~~, ~~event stream~~ |
 | **AST Comparator** | — | `AstComparator` | A pre-cascade activity that uses `ast-grep` to compare old and new ASTs of a modified entity. If the diff contains only whitespace, comment, or formatting changes (non-semantic), the entity is excluded from cascade re-justification. | ~~diff filter~~, ~~noise filter~~, ~~format checker~~ |
@@ -91,7 +91,7 @@ Step  Actor Action                     System Action                            
                                        Queue: heavy-compute-queue (workspace ops)
 
 5                                      Activity: pullAndDiff (heavy-compute-queue)               —
-                                       a) cd /data/workspaces/{orgId}/{repoId}
+                                       a) cd /data/repo-indices/{orgId}/{repoId}
                                        b) git fetch origin {defaultBranch}
                                        c) git diff --name-status {before}..{after} → changed files
                                        d) git checkout {after} (advance working tree)
@@ -975,7 +975,7 @@ The existing `last_indexed_sha` column (already in Prisma schema but never updat
 | 1 | **GitHub webhook delivery failure** — GitHub can't reach our endpoint | Medium | Push goes unnoticed. Index stale. | GitHub shows delivery failure in App settings. No corresponding index_event. | GitHub retries webhooks 3× with exponential backoff (10s, 60s, 300s). If all fail: user can manually trigger re-index from dashboard. Also: periodic reconciliation job (every 15 min) compares `lastIndexedSha` with GitHub's latest SHA — if diverged, triggers incremental workflow. |
 | 2 | **Webhook signature validation failure** — invalid or missing signature | Low | Legitimate push rejected. | 401 response logged. | Return HTTP 401 and log the event. Do NOT process. If recurring: check GITHUB_WEBHOOK_SECRET rotation. Dashboard shows "webhook auth error" alert. |
 | 3 | **Webhook replay/duplication** — GitHub delivers same webhook twice | Medium | Same push processed twice. | Redis dedup key (delivery ID, TTL 24h). | Second delivery silently ignored (Redis set check). Temporal's workflow ID dedup provides a second layer — same SHA produces same workflow ID. |
-| 4 | **Persistent workspace corrupted** — disk full, git state broken | Low | `git pull` fails. Workflow fails. | `git pull` returns non-zero exit code. | Retry: `git fetch --prune && git reset --hard origin/{branch}`. If still fails: delete workspace directory and fall back to full re-index (Phase 1 `prepareWorkspace` recreates it). |
+| 4 | **Persistent workspace corrupted** — disk full, git state broken | Low | `git pull` fails. Workflow fails. | `git pull` returns non-zero exit code. | Retry: `git fetch --prune && git reset --hard origin/{branch}`. If still fails: delete repo index directory and fall back to full re-index (Phase 1 prepareRepoIntelligenceSpace recreates it). |
 | 5 | **SCIP/Tree-sitter extraction fails** for a single file | Medium | That file's entities not updated. Others proceed. | Activity throws `ExtractionError`. | Skip the failed file. Log to index_event as `extraction_errors: [filePath]`. Other files in the push continue processing. Dashboard shows "1 file failed extraction" warning. |
 | 6 | **ArangoDB write conflict** during applyEntityDiffs | Low | Some entities not updated. | ArangoDB returns conflict error (409). | Retry the batch write 3× with 1s backoff. If conflict persists: fall back to individual document writes (1 at a time) to isolate the problematic document. |
 | 7 | **Embedding generation fails** (nomic model unavailable) | Low | Entities indexed but not searchable via semantic search. | `IVectorSearch.embed()` throws error. | Skip embedding. Entities are still in ArangoDB (keyword search works). Log to index_event with `embedding_errors`. Next incremental push will retry embedding for those entities. |
@@ -1077,7 +1077,7 @@ Option A (Temporal-native, preferred):
   → BUT: per-repo serialization via a semaphore signal
 
 Option B (file lock):
-  pullAndDiff acquires /data/workspaces/{orgId}/{repoId}/.unerr.lock
+  pullAndDiff acquires /data/repo-indices/{orgId}/{repoId}/.unerr.lock
   If lock held: wait up to 30s, then fail (Temporal retries)
 
 Chosen: Option A with Temporal signals.
@@ -1222,7 +1222,7 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
 ### IGitHost — Phase 5 Additions
 
 - [x] **P5-ADAPT-03: Add `pullLatest` and `diffFiles` methods to GitHub adapter** — M
-  - New methods on `IGitHost`: `pullLatest(workspacePath, branch)` → runs `git fetch && git checkout`, `diffFiles(workspacePath, fromSha, toSha)` → returns `ChangedFile[]` with `{ path, changeType: 'added' | 'modified' | 'removed' }`, `getLatestSha(owner, repo, branch, installationId)` → returns latest commit SHA from GitHub API
+  - New methods on `IGitHost`: `pullLatest(indexDir, branch)` → runs `git fetch && git checkout`, `diffFiles(indexDir, fromSha, toSha)` → returns `ChangedFile[]` with `{ path, changeType: 'added' | 'modified' | 'removed' }`, `getLatestSha(owner, repo, branch, installationId)` → returns latest commit SHA from GitHub API
   - `diffFiles` uses `git diff --name-status {from}..{to}` under the hood
   - `getLatestSha` used by reconciliation job
   - **Test:** Pull on a test workspace → working tree advanced. Diff between two SHAs → correct file list. Added/modified/removed correctly classified.
@@ -1448,8 +1448,8 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
 
 - [x] **P5-API-06: Create Temporal activities for incremental pipeline** — L
   - Activities in `lib/temporal/activities/incremental.ts`:
-    - `pullAndDiff(orgId, repoId, beforeSha, afterSha)` → `{ changedFiles: ChangedFile[], workspacePath }`. Runs on `heavy-compute-queue`. Acquires workspace lock.
-    - `reIndexBatch(orgId, repoId, files: ChangedFile[], workspacePath)` → `{ entityDiffs: EntityDiff[] }`. Runs on `heavy-compute-queue`. Extracts entities via SCIP/Tree-sitter, computes entity diff per file.
+    - `pullAndDiff(orgId, repoId, beforeSha, afterSha)` → `{ changedFiles: ChangedFile[], indexDir }`. Runs on `heavy-compute-queue`. Acquires repo index lock.
+    - `reIndexBatch(orgId, repoId, files: ChangedFile[], indexDir)` → `{ entityDiffs: EntityDiff[] }`. Runs on `heavy-compute-queue`. Extracts entities via SCIP/Tree-sitter, computes entity diff per file.
     - `applyEntityDiffs(orgId, repoId, entityDiffs: EntityDiff[])` → `{ entitiesAdded, entitiesUpdated, entitiesDeleted }`. Runs on `light-llm-queue`. Batch writes to ArangoDB.
     - `repairEdges(orgId, repoId, entityDiffs: EntityDiff[])` → `{ edgesCreated, edgesDeleted }`. Runs on `light-llm-queue`.
     - `updateEmbeddings(orgId, repoId, entityDiffs: EntityDiff[])` → `{ embeddingsUpdated, embeddingsDeleted }`. Runs on `light-llm-queue`. Reuses Phase 3 embedding logic.

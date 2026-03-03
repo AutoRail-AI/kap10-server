@@ -4,14 +4,14 @@
  * Uses the modular language plugin system in `lib/indexer/` to run SCIP indexers
  * per language, parse the SCIP protobuf output, and extract entities + edges.
  *
- * The `indexWorkspace()` method is the primary entry point used by Temporal
+ * The `indexRepo()` method is the primary entry point used by Temporal
  * activities. IDE-style methods (getDefinitions, getReferences) are planned
  * for Phase 2 (Shadow Workspace overlay).
  */
 
 import { getPluginsForExtensions, initializeRegistry } from "@/lib/indexer/languages/registry"
-import { detectWorkspaceRoots } from "@/lib/indexer/monorepo"
-import { detectLanguages, scanWorkspace } from "@/lib/indexer/scanner"
+import { detectPackageRoots } from "@/lib/indexer/monorepo"
+import { detectLanguages, scanIndexDir } from "@/lib/indexer/scanner"
 import type { ParsedEdge, ParsedEntity } from "@/lib/indexer/types"
 import type { Definition, ICodeIntelligence, Reference } from "@/lib/ports/code-intelligence"
 
@@ -30,8 +30,8 @@ export class SCIPCodeIntelligence implements ICodeIntelligence {
    * Returns the number of files processed. The full entity/edge data is
    * available via `indexWorkspaceFull()` for callers that need it.
    */
-  async indexWorkspace(workspacePath: string): Promise<{ filesProcessed: number }> {
-    const result = await this.indexWorkspaceFull(workspacePath, "unknown-org", "unknown-repo")
+  async indexWorkspace(indexDir: string): Promise<{ filesProcessed: number }> {
+    const result = await this.indexWorkspaceFull(indexDir, "unknown-org", "unknown-repo")
     return { filesProcessed: result.filesProcessed }
   }
 
@@ -40,19 +40,19 @@ export class SCIPCodeIntelligence implements ICodeIntelligence {
    * Used by Temporal activities that need the complete parsed output.
    */
   async indexWorkspaceFull(
-    workspacePath: string,
+    indexDir: string,
     orgId: string,
     repoId: string,
   ): Promise<IndexWorkspaceResult> {
     await initializeRegistry()
 
     // Scan files and detect languages
-    const files = await scanWorkspace(workspacePath)
+    const files = await scanIndexDir(indexDir)
     const languages = detectLanguages(files).map((l) => l.language)
 
-    // Detect monorepo workspace roots
-    const workspaceInfo = detectWorkspaceRoots(workspacePath)
-    const workspaceRoots = workspaceInfo.roots
+    // Detect monorepo package roots
+    const indexInfo = detectPackageRoots(indexDir)
+    const packageRoots = indexInfo.roots
 
     // Get plugins for detected extensions
     const extensions = Array.from(new Set(files.map((f) => f.extension)))
@@ -66,8 +66,8 @@ export class SCIPCodeIntelligence implements ICodeIntelligence {
     for (const plugin of plugins) {
       try {
         const result = await plugin.runSCIP({
-          workspacePath,
-          workspaceRoots,
+          indexDir,
+          packageRoots,
           orgId,
           repoId,
         })

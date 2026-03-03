@@ -66,14 +66,14 @@ Not all activities are equal. SCIP indexing a large monorepo is CPU/memory-heavy
 
 | Queue | Activities | Worker Profile | Scaling |
 |-------|-----------|----------------|---------|
-| `heavy-compute-queue` | `prepareWorkspace`, `runSCIP`, `parseRest`, `scanSynthesizeAndStore`, `reIndexBatch` | 4 vCPU / 8 GB RAM, max 2 concurrent | Scale to 0 when idle (Temporal's `sticky-queue` keeps context) |
+| `heavy-compute-queue` | `prepareRepoIntelligenceSpace`, `runSCIP`, `parseRest`, `scanSynthesizeAndStore`, `reIndexBatch` | 4 vCPU / 8 GB RAM, max 2 concurrent | Scale to 0 when idle (Temporal's `sticky-queue` keeps context) |
 | `light-llm-queue` | `justifyBatch`, `processAndEmbedBatch`, `aggregateAndStoreFeatures`, `postReviewSelfSufficient` | 0.5 vCPU / 512 MB, max 20 concurrent (network-bound, low CPU) | Always-on pool (cheap, handles bursts) |
 
 ```typescript
 // lib/temporal/workers/heavy-compute.ts
 const worker = await Worker.create({
   taskQueue: 'heavy-compute-queue',
-  activities: { prepareWorkspace, runSCIP, runSemgrep, astGrepScan },
+  activities: { prepareRepoIntelligenceSpace, runSCIP, runSemgrep, astGrepScan },
   maxConcurrentActivityTaskExecutions: 2, // prevent OOM
 });
 
@@ -1223,12 +1223,12 @@ code-synapse uses custom Tree-sitter traversals to find "which function calls wh
 
 **Problem:** SCIP indexers (especially `scip-typescript`) resolve cross-file references via the project's type system. `scip-typescript` internally runs `tsc` to build the project graph. If `node_modules` is missing, every `import` resolves to `<unknown>` — you get files and top-level symbols, but **zero cross-file edges** (calls, imports, extends). The entire knowledge graph becomes a disconnected island soup.
 
-**Solution:** `prepareWorkspace` does a **full clone + dependency install** before SCIP runs.
+**Solution:** `prepareRepoIntelligenceSpace` does a **full clone + dependency install** before SCIP runs.
 
 **Pipeline detail:**
-1. **`prepareWorkspace`** (replaces `cloneRepo`) — Full clone (not shallow!) via **`simple-git`** to a **persistent workspace directory** (`/data/workspaces/{orgId}/{repoId}/`), detect language from `package.json`/`go.mod`/etc., then run language-appropriate dependency install (`npm ci`, `go mod download`, `pip install -r requirements.txt`). **Monorepo detection** (see below). This ensures SCIP indexers can resolve the full type graph. Runs on `heavy-compute-queue`.
+1. **`prepareRepoIntelligenceSpace`** (replaces `cloneRepo`) — Full clone (not shallow!) via **`simple-git`** to a **persistent workspace directory** (`/data/repo-indices/{orgId}/{repoId}/`), detect language from `package.json`/`go.mod`/etc., then run language-appropriate dependency install (`npm ci`, `go mod download`, `pip install -r requirements.txt`). **Monorepo detection** (see below). This ensures SCIP indexers can resolve the full type graph. Runs on `heavy-compute-queue`.
 
-> **Phase 5.5 forward-compatibility:** `prepareWorkspace` will gain a conditional branch: if `provider === "local_cli"`, download zip from Supabase Storage via `IStorageProvider.downloadFile()` and extract to the persistent workspace directory instead of `git clone`. The rest of the pipeline (SCIP, entity hashing, writeToArango) remains unchanged.
+> **Phase 5.5 forward-compatibility:** `prepareRepoIntelligenceSpace` will gain a conditional branch: if `provider === "local_cli"`, download zip from Supabase Storage via `IStorageProvider.downloadFile()` and extract to the persistent workspace directory instead of `git clone`. The rest of the pipeline (SCIP, entity hashing, writeToArango) remains unchanged.
 
 > **Why `simple-git` (not `execAsync('git clone ...')`):** Running raw shell Git commands in Temporal workers is brittle across OS environments and fails silently with massive diffs. `simple-git` provides a promise-based API with proper auth handling, command queuing, and concurrent operation safety.
 
@@ -1251,7 +1251,7 @@ interface WorkspaceRoot {
   packageName: string;    // e.g., "@myapp/auth"
 }
 
-async function detectWorkspaceRoots(repoPath: string): Promise<WorkspaceRoot[]> {
+async function detectPackageRoots(repoPath: string): Promise<WorkspaceRoot[]> {
   // 1. Check for workspace definitions
   const pkg = await readJson(join(repoPath, 'package.json')).catch(() => null);
   const pnpmWorkspace = await readYaml(join(repoPath, 'pnpm-workspace.yaml')).catch(() => null);
@@ -1297,7 +1297,7 @@ async function detectWorkspaceRoots(repoPath: string): Promise<WorkspaceRoot[]> 
 ```typescript
 // lib/indexer/scip-runner.ts
 async function runSCIPForWorkspace(repoPath: string): Promise<SCIPIndex> {
-  const roots = await detectWorkspaceRoots(repoPath);
+  const roots = await detectPackageRoots(repoPath);
 
   if (roots.length === 1) {
     // Simple repo — single SCIP run
@@ -1381,19 +1381,19 @@ model Repo {
 
 | Workflow | Activities | Queue | Retry policy |
 |----------|-----------|-------|--------------|
-| `indexRepoWorkflow` | `prepareWorkspace` → `runSCIP` → `parseRest` → `finalizeIndexing` | Heavy (first 3, write directly to ArangoDB), Light (finalize) | Each activity retries 3×. Heavy activities write entities/edges directly to ArangoDB — no large payloads cross Temporal's data converter. |
+| `indexRepoWorkflow` | `prepareRepoIntelligenceSpace` → `runSCIP` → `parseRest` → `finalizeIndexing` | Heavy (first 3, write directly to ArangoDB), Light (finalize) | Each activity retries 3×. Heavy activities write entities/edges directly to ArangoDB — no large payloads cross Temporal's data converter. |
 
 ```typescript
 // lib/temporal/workflows/index-repo.ts — lightweight payloads only
 export async function indexRepoWorkflow(input: IndexRepoInput): Promise<IndexResult> {
-  const workspace = await heavy.prepareWorkspace(input);
+  const workspace = await heavy.prepareRepoIntelligenceSpace(input);
 
   // runSCIP writes entities/edges directly to ArangoDB, returns only counts
-  const scip = await heavy.runSCIP({ workspacePath: workspace.path, ... });
+  const scip = await heavy.runSCIP({ indexDir: workspace.indexDir, ... });
   // => { entityCount: number, edgeCount: number, coveredFiles: string[] }
 
   // parseRest writes directly too, returns only counts
-  const parse = await heavy.parseRest({ workspacePath: workspace.path, coveredFiles: scip.coveredFiles });
+  const parse = await heavy.parseRest({ indexDir: workspace.indexDir, coveredFiles: scip.coveredFiles });
   // => { entityCount: number, edgeCount: number }
 
   // Finalize: shadow cleanup + status update (no entity data)
@@ -1420,7 +1420,7 @@ lib/
     workflows/
       index-repo.ts        ← indexRepoWorkflow definition
     activities/
-      indexing-heavy.ts    ← prepareWorkspace, runSCIP, parseRest (heavy-compute-queue, writes directly to ArangoDB)
+      indexing-heavy.ts    ← prepareRepoIntelligenceSpace, runSCIP, parseRest (heavy-compute-queue, writes directly to ArangoDB)
       indexing-light.ts    ← finalizeIndexing (light-llm-queue, status update only)
       graph-writer.ts      ← shared writeEntitiesToGraph helper (hashing, dedup, file entities)
 app/
@@ -1502,7 +1502,7 @@ Each language is isolated in its own folder. New languages are added by creating
 - Remove local LLM dependency (justification comes in Phase 4)
 
 ### Test
-- `pnpm test` — `prepareWorkspace` clones and installs deps; SCIP runner produces valid protobuf with cross-file edges; transformer creates correct ArangoDB documents; entity hashes are stable across re-runs
+- `pnpm test` — `prepareRepoIntelligenceSpace` clones and installs deps; SCIP runner produces valid protobuf with cross-file edges; transformer creates correct ArangoDB documents; entity hashes are stable across re-runs
 - `pnpm test` — Monorepo detection correctly identifies pnpm/yarn/npm/Nx workspace roots; SCIP runs per sub-package and merges indices; cross-package type references resolve correctly in merged index
 - `e2e` — Connect GitHub → select repo → see indexing progress (via Temporal query) → browse file tree → see function list with signatures
 - **Temporal UI** — Visit `localhost:8080`, see `indexRepoWorkflow` with step-by-step execution history, activities running on `heavy-compute-queue`
@@ -2479,7 +2479,7 @@ const HealthReportSchema = z.object({
 
 **Feature:** _"When I push to GitHub, unerr automatically re-indexes only the changed files. My MCP connection always has up-to-date knowledge."_
 
-> **Performance Note:** Incremental indexing reuses the **persistent workspace** from Phase 1 (`/data/workspaces/{orgId}/{repoId}/`). On push webhook: `git pull` into the existing directory → `npm install` (instant if `package.json` unchanged) → SCIP on changed files only. This keeps incremental re-index latency under 30 seconds for typical pushes, even on large monorepos.
+> **Performance Note:** Incremental indexing reuses the **persistent workspace** from Phase 1 (`/data/repo-indices/{orgId}/{repoId}/`). On push webhook: `git pull` into the existing directory → `npm install` (instant if `package.json` unchanged) → SCIP on changed files only. This keeps incremental re-index latency under 30 seconds for typical pushes, even on large monorepos.
 
 ### What ships
 - GitHub `push` webhook handler (validates `x-hub-signature-256`) → detect changed files → re-index only those
@@ -3133,7 +3133,7 @@ export interface IStorageProvider {
 
   /**
    * Download a file from storage.
-   * Used by `prepareWorkspace` to fetch the uploaded zip for local_cli repos.
+   * Used by `prepareRepoIntelligenceSpace` to fetch the uploaded zip for local_cli repos.
    */
   downloadFile(bucket: string, path: string): Promise<Buffer>;
 
@@ -5068,7 +5068,7 @@ The `heavy-compute-queue` Temporal worker runs CPU-bound operations in Node.js:
 
 | Operation | Current impl | Problem |
 |-----------|-------------|---------|
-| `prepareWorkspace` | `simple-git` (Node.js) → `npm install` → `scip-typescript` | Node.js GC pauses during large clones; `simple-git` spawns `git` subprocesses; peak memory ~2 GB for large monorepos |
+| `prepareRepoIntelligenceSpace` | `simple-git` (Node.js) → `npm install` → `scip-typescript` | Node.js GC pauses during large clones; `simple-git` spawns `git` subprocesses; peak memory ~2 GB for large monorepos |
 | Bulk entity insert | `arangojs` HTTP client, sequential batches | Node.js event loop blocked during JSON serialization of 50,000+ entities; GC pressure from large object graphs |
 | SCIP index parsing | `protobufjs` in Node.js | 100 MB SCIP index files cause V8 heap exhaustion (OOM) on repos with 10,000+ files |
 
@@ -5092,7 +5092,7 @@ The `heavy-compute-queue` Temporal worker runs CPU-bound operations in Node.js:
 
 | Component | Current (TypeScript) | Rewritten (Rust) | Speedup |
 |-----------|---------------------|-------------------|---------|
-| `prepareWorkspace` | `simple-git` → subprocess → `npm install` | `libgit2` (in-process) → direct clone | ~3.75x (no subprocess spawn, zero-copy) |
+| `prepareRepoIntelligenceSpace` | `simple-git` → subprocess → `npm install` | `libgit2` (in-process) → direct clone | ~3.75x (no subprocess spawn, zero-copy) |
 | Bulk entity insert | `arangojs` sequential HTTP/1.1 batches | `reqwest` HTTP/2 multiplexed, parallel streams | ~5x (no GC, HTTP/2 mux) |
 | SCIP index parsing | `protobufjs` (V8 heap) | `prost` (zero-copy mmap) | ~8x (no GC, mmap) |
 
@@ -5114,7 +5114,7 @@ The Rust binaries are invoked from Temporal activities via `execFileAsync`:
 // lib/temporal/activities/prepare-workspace.ts
 import { execFileAsync } from 'node:child_process';
 
-export async function prepareWorkspace(input: PrepareWorkspaceInput): Promise<PrepareWorkspaceOutput> {
+export async function prepareRepoIntelligenceSpace(input: PrepareRepoIntelligenceSpaceInput): Promise<PrepareRepoIntelligenceSpaceOutput> {
   const { stdout } = await execFileAsync(
     '/usr/local/bin/unerr-prepare-workspace',
     [
@@ -5180,7 +5180,7 @@ Phase 0: Foundation Wiring
     │
     ▼
 Phase 1: GitHub Connect & Repo Indexing
-(SCIP + prepareWorkspace + entity hashing + monorepo support)
+(SCIP + prepareRepoIntelligenceSpace + entity hashing + monorepo support)
     │
     ├──────────────────┐
     ▼                  ▼
@@ -5441,7 +5441,7 @@ expect(result.fileCount).toBeGreaterThan(0);
 | Before | After (v3 — this doc) | Impact |
 |--------|----------------------|--------|
 | BullMQ + Redis workers | **Temporal** (dual task queues: heavy-compute + light-llm) | Durable execution, resume-from-failure, visual debugging, no custom retry/timeout logic, right-sized workers per activity type |
-| Shallow clone → SCIP | **Full clone + npm install → SCIP** (`prepareWorkspace`) | SCIP gets full type graph, cross-file edges actually resolve, not just disconnected islands |
+| Shallow clone → SCIP | **Full clone + npm install → SCIP** (`prepareRepoIntelligenceSpace`) | SCIP gets full type graph, cross-file edges actually resolve, not just disconnected islands |
 | Custom Tree-sitter AST traversal per language | **SCIP indexers** | Drop-in language support (TS, Go, Python, Java, Rust), standardized graph output, no per-language AST code |
 | Custom AST visitors for pattern detection | **ast-grep** | 3-line YAML patterns instead of 50-line visitors; 80% dev time reduction in Phase 6 |
 | Raw pattern checking | **Semgrep** | Deterministic YAML rule execution; LLM generates rules once, Semgrep enforces forever; blazing fast PR reviews |

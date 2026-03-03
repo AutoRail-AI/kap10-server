@@ -13,8 +13,8 @@ import { readFileWithEncoding } from "@/lib/indexer/file-reader"
 import { resolveCrossFileCalls } from "@/lib/indexer/cross-file-calls"
 import { createFileEntity } from "@/lib/indexer/languages/generic"
 import { getPluginForExtension, getPluginsForExtensions, initializeRegistry } from "@/lib/indexer/languages/registry"
-import { detectLanguagePerRoot, detectWorkspaceRoots } from "@/lib/indexer/monorepo"
-import { detectLanguages, scanWorkspace } from "@/lib/indexer/scanner"
+import { detectLanguagePerRoot, detectPackageRoots } from "@/lib/indexer/monorepo"
+import { detectLanguages, scanIndexDir } from "@/lib/indexer/scanner"
 import type { ParsedEdge, ParsedEntity } from "@/lib/indexer/types"
 import { MAX_BODY_LINES } from "@/lib/indexer/types"
 import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
@@ -33,10 +33,10 @@ export interface PrepareRepoIntelligenceSpaceInput {
 }
 
 export interface PrepareRepoIntelligenceSpaceResult {
-  workspacePath: string
+  indexDir: string
   languages: string[]
-  workspaceRoots: string[]
-  /** A-05: Dominant language per workspace root for polyglot SCIP indexing */
+  packageRoots: string[]
+  /** A-05: Dominant language per package root for polyglot SCIP indexing */
   languagePerRoot?: Record<string, string>
   lastSha?: string
 }
@@ -44,62 +44,62 @@ export interface PrepareRepoIntelligenceSpaceResult {
 export async function prepareRepoIntelligenceSpace(input: PrepareRepoIntelligenceSpaceInput): Promise<PrepareRepoIntelligenceSpaceResult> {
   const log = logger.child({ service: "indexing-heavy", organizationId: input.orgId, repoId: input.repoId })
   const plog = createPipelineLogger(input.repoId, "indexing")
-  log.info("Preparing workspace", { cloneUrl: input.cloneUrl, defaultBranch: input.defaultBranch, provider: input.provider ?? "github" })
-  plog.log("info", "Step 1/7", "Cloning repository and scanning workspace...")
+  log.info("Preparing repo index directory", { cloneUrl: input.cloneUrl, defaultBranch: input.defaultBranch, provider: input.provider ?? "github" })
+  plog.log("info", "Step 1/7", "Cloning repository and scanning index directory...")
   const container = getContainer()
-  const workspacePath = `/data/workspaces/${input.orgId}/${input.repoId}`
+  const indexDir = `/data/repo-indices/${input.orgId}/${input.repoId}`
 
   if (input.provider === "local_cli") {
     // Local CLI upload: download zip from storage and extract
-    await prepareLocalCliWorkspace(container, workspacePath, input.uploadPath!)
+    await prepareLocalCliIndexDir(container, indexDir, input.uploadPath!)
   } else {
     // Default: GitHub clone
-    await container.gitHost.cloneRepo(input.cloneUrl, workspacePath, {
+    await container.gitHost.cloneRepo(input.cloneUrl, indexDir, {
       ref: input.defaultBranch,
       installationId: input.installationId,
     })
   }
 
-  heartbeat("workspace ready, reading HEAD SHA")
+  heartbeat("index dir ready, reading HEAD SHA")
 
-  // Read the latest commit SHA from the workspace (only for git repos)
+  // Read the latest commit SHA from the index dir (only for git repos)
   let lastSha: string | undefined
   if (input.provider !== "local_cli") {
     try {
       const { execFileSync } = require("node:child_process") as typeof import("node:child_process")
-      lastSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: workspacePath, encoding: "utf-8" }).trim()
+      lastSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: indexDir, encoding: "utf-8" }).trim()
     } catch (error: unknown) {
       log.warn("Failed to read HEAD SHA", { errorMessage: error instanceof Error ? error.message : String(error) })
     }
   }
 
-  heartbeat("scanning workspace")
+  heartbeat("scanning index dir")
 
   // Scan files and detect languages
-  const files = await scanWorkspace(workspacePath)
+  const files = await scanIndexDir(indexDir)
   const languages = detectLanguages(files).map((l) => l.language)
 
-  // Detect monorepo roots
-  const workspaceInfo = detectWorkspaceRoots(workspacePath)
-  const workspaceRoots = workspaceInfo.roots
+  // Detect monorepo package roots
+  const indexInfo = detectPackageRoots(indexDir)
+  const packageRoots = indexInfo.roots
 
-  // A-05: Detect dominant language per workspace root for polyglot SCIP indexing
-  const languagePerRoot = workspaceRoots.length > 1
-    ? detectLanguagePerRoot(workspacePath, workspaceRoots)
+  // A-05: Detect dominant language per package root for polyglot SCIP indexing
+  const languagePerRoot = packageRoots.length > 1
+    ? detectLanguagePerRoot(indexDir, packageRoots)
     : undefined
 
-  log.info("Workspace prepared", { workspacePath, languages, rootCount: workspaceRoots.length, languagePerRoot, lastSha })
-  plog.log("info", "Step 1/7", `Workspace ready — detected languages: ${languages.join(", ") || "none"}`, { fileCount: files.length })
-  return { workspacePath, languages, workspaceRoots, languagePerRoot, lastSha }
+  log.info("Repo index dir prepared", { indexDir, languages, rootCount: packageRoots.length, languagePerRoot, lastSha })
+  plog.log("info", "Step 1/7", `Index dir ready — detected languages: ${languages.join(", ") || "none"}`, { fileCount: files.length })
+  return { indexDir, languages, packageRoots, languagePerRoot, lastSha }
 }
 
 /**
- * Download a zip from Supabase Storage and extract it to the workspace path.
+ * Download a zip from Supabase Storage and extract it to the index directory.
  * Used for local_cli repos uploaded via `unerr push`.
  */
-async function prepareLocalCliWorkspace(
+async function prepareLocalCliIndexDir(
   container: { storageProvider: import("@/lib/ports/storage-provider").IStorageProvider },
-  workspacePath: string,
+  indexDir: string,
   uploadPath: string
 ): Promise<void> {
   const { writeFileSync, mkdirSync } = require("node:fs") as typeof import("node:fs")
@@ -118,10 +118,10 @@ async function prepareLocalCliWorkspace(
   heartbeat("extracting local_cli upload")
 
   try {
-    mkdirSync(workspacePath, { recursive: true })
-    const zipPath = `${workspacePath}/../upload.zip`
+    mkdirSync(indexDir, { recursive: true })
+    const zipPath = `${indexDir}/../upload.zip`
     writeFileSync(zipPath, zipBuffer)
-    execSync(`unzip -o "${zipPath}" -d "${workspacePath}"`, { stdio: "pipe" })
+    execSync(`unzip -o "${zipPath}" -d "${indexDir}"`, { stdio: "pipe" })
 
     // Clean up the temporary zip file
     const { unlinkSync } = require("node:fs") as typeof import("node:fs")
@@ -137,11 +137,11 @@ async function prepareLocalCliWorkspace(
 }
 
 export interface RunSCIPInput {
-  workspacePath: string
+  indexDir: string
   orgId: string
   repoId: string
   languages: string[]
-  workspaceRoots: string[]
+  packageRoots: string[]
   indexVersion?: string
 }
 
@@ -219,7 +219,7 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
   const allEdges: ParsedEdge[] = []
   const allCoveredFiles: string[] = []
 
-  const files = await scanWorkspace(input.workspacePath)
+  const files = await scanIndexDir(input.indexDir)
   const extensions = Array.from(new Set(files.map((f) => f.extension)))
   const plugins = getPluginsForExtensions(extensions)
 
@@ -229,8 +229,8 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
     try {
       heartbeat(`running SCIP for ${plugin.id}`)
       const result = await plugin.runSCIP({
-        workspacePath: input.workspacePath,
-        workspaceRoots: input.workspaceRoots,
+        indexDir: input.indexDir,
+        packageRoots: input.packageRoots,
         orgId: input.orgId,
         repoId: input.repoId,
       })
@@ -246,7 +246,7 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
   }
 
   heartbeat("filling source bodies for SCIP entities")
-  fillBodiesFromSource(allEntities, input.workspacePath)
+  fillBodiesFromSource(allEntities, input.indexDir)
 
   // Write directly to ArangoDB — no large payloads cross Temporal
   heartbeat("writing SCIP results to graph store")
@@ -273,7 +273,7 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
 }
 
 export interface ParseRestInput {
-  workspacePath: string
+  indexDir: string
   orgId: string
   repoId: string
   coveredFiles: string[]
@@ -305,7 +305,7 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestLightRe
   plog.log("info", "Step 3/7", "Parsing remaining files with tree-sitter fallback...")
   await initializeRegistry()
 
-  const files = await scanWorkspace(input.workspacePath)
+  const files = await scanIndexDir(input.indexDir)
   const coveredSet = new Set(input.coveredFiles)
   const allEntities: ParsedEntity[] = []
   const allEdges: ParsedEdge[] = []
@@ -405,7 +405,7 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestLightRe
  * Reads source files from disk and extracts the relevant lines.
  * Used as a post-pass for SCIP-extracted entities.
  */
-function fillBodiesFromSource(entities: ParsedEntity[], workspacePath: string): void {
+function fillBodiesFromSource(entities: ParsedEntity[], indexDir: string): void {
   // Group entities by file_path to avoid reading the same file multiple times
   const byFile = new Map<string, ParsedEntity[]>()
   for (const entity of entities) {
@@ -421,7 +421,7 @@ function fillBodiesFromSource(entities: ParsedEntity[], workspacePath: string): 
   byFile.forEach((fileEntities, filePath) => {
     try {
       // K-07: Encoding-aware file reading
-      const fileResult = readFileWithEncoding(join(workspacePath, filePath))
+      const fileResult = readFileWithEncoding(join(indexDir, filePath))
       if (!fileResult) return // Binary file — skip
       const lines = fileResult.content.split("\n")
 

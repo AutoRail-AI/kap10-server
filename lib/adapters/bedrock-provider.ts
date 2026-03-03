@@ -1,7 +1,7 @@
 /**
  * BedrockProvider — ILLMProvider implementation using AWS Bedrock via Vercel AI SDK.
  *
- * Uses @ai-sdk/amazon-bedrock for text generation and embeddings.
+ * Uses @ai-sdk/amazon-bedrock for text generation.
  * Authentication via AWS_BEARER_TOKEN_BEDROCK env var.
  *
  * Includes:
@@ -10,7 +10,7 @@
  *  - Token budget pre-checks
  */
 
-import { AWS_REGION, EMBEDDING_MODEL } from "@/lib/llm/config"
+import { AWS_REGION } from "@/lib/llm/config"
 import { RateLimiter } from "@/lib/llm/rate-limiter"
 import type { ILLMProvider } from "@/lib/ports/llm-provider"
 import type { OrgContext, TokenUsage } from "@/lib/ports/types"
@@ -166,20 +166,9 @@ export class BedrockProvider implements ILLMProvider {
     }
   }
 
-  async embed(params: { model: string; texts: string[] }): Promise<number[][]> {
-    return this.retryWithBackoff(async () => {
-      const ai = require("ai") as any
-      const bedrock = this.getBedrock()
-
-      // Use the configured embedding model, falling back to param.model
-      const embeddingModelId = params.model || EMBEDDING_MODEL
-
-      const result = await ai.embedMany({
-        model: bedrock.embedding(embeddingModelId),
-        values: params.texts,
-      })
-
-      return result.embeddings
-    }, `embed(${params.model})`)
+  async embed(_params: { model: string; texts: string[] }): Promise<number[][]> {
+    throw new Error(
+      "BedrockProvider.embed() is not used. Embeddings are handled by LlamaIndexVectorSearch (local CPU model)."
+    )
   }
 }

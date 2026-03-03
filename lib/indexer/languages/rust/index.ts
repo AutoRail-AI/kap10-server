@@ -14,7 +14,7 @@ export const rustPlugin: LanguagePlugin = {
     const allEdges: import("../../types").ParsedEdge[] = []
     const allCoveredFiles: string[] = []
 
-    for (const root of opts.workspaceRoots) {
+    for (const root of opts.packageRoots) {
       const result = await runSCIPRust(opts, root)
       allEntities.push(...result.entities)
       allEdges.push(...result.edges)

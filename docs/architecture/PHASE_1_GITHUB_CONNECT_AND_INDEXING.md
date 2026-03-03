@@ -43,7 +43,7 @@ Phase 1 has five actor journeys. Each is described with a Mermaid sequence diagr
 | **Unerr organization** (or "org") | Account-level tenant in Better Auth. Created at signup from the **user's name** (`"{name}'s organization"`). Holds repos, GitHub installations, and settings. Switched via `AccountProvider`. Has no relationship to any GitHub account name. |
 | **GitHub organization** | A GitHub-specific concept — a multi-user account on github.com (e.g., `facebook`, `vercel`). Also includes personal GitHub accounts (type: `"User"`). Unerr stores this as `accountLogin` on the `github_installations` table — never as the unerr org name. |
 | **GitHub installation** | A GitHub App installation that links a GitHub account/org to a unerr organization. Stored in `unerr.github_installations` with `organizationId` (FK to unerr org) and `accountLogin` (GitHub account name). One unerr org can have **multiple** GitHub installations. |
-| **Workspace** | **Repo-level working context only** — Shadow Workspace overlay (Phase 2), cloned repo directory for SCIP indexing (`prepareWorkspace`), monorepo sub-package root. **Never used to mean organization.** |
+| **Repo Index Dir** | **Temporary clone for indexing only** — transient directory at `/data/repo-indices/{orgId}/{repoId}` on the heavy worker host, created by `prepareRepoIntelligenceSpace`, used by `runSCIP`/`parseRest`/`computeTemporalAnalysis`, deleted by `cleanupWorkspaceFilesystem` post-index. **Not a developer workspace.** Shadow Workspace (developer editing context, Phase 2) is a separate concept. |
 
 **Key rules:**
 - A **unerr organization** is created from the user's name at signup. It is never created from, renamed to, or derived from a GitHub account name.
@@ -67,7 +67,7 @@ Data model (identity separation):
        │ (no GitHub involvement)          │ (links to existing org)
 ```
 
-> **Forward-compatibility note (Phase 5.5):** Phase 1 is GitHub-focused, but the data model supports extension. The `RepoProvider` enum will gain a `local_cli` value in Phase 5.5 for repos ingested via `unerr push`. The Prisma schema already has `githubRepoId` (`BigInt?`) and `githubFullName` (`String?`) as nullable fields, allowing `Repo` rows to exist without a GitHub connection. All pipeline logic (SCIP indexing, entity hashing, writeToArango) is provider-agnostic — only `prepareWorkspace` has a provider-specific branch.
+> **Forward-compatibility note (Phase 5.5):** Phase 1 is GitHub-focused, but the data model supports extension. The `RepoProvider` enum will gain a `local_cli` value in Phase 5.5 for repos ingested via `unerr push`. The Prisma schema already has `githubRepoId` (`BigInt?`) and `githubFullName` (`String?`) as nullable fields, allowing `Repo` rows to exist without a GitHub connection. All pipeline logic (SCIP indexing, entity hashing, ArangoDB writes) is provider-agnostic — only `prepareRepoIntelligenceSpace` has a provider-specific branch.
 
 ### Post-signup & organization provisioning
 
@@ -203,82 +203,118 @@ sequenceDiagram
     participant Temporal as Temporal Server
     participant Heavy as Heavy Worker (heavy-compute-queue)
     participant Light as Light Worker (light-llm-queue)
-    participant GitHub
     participant ArangoDB
     participant Supabase as Supabase (unerr)
+    participant ChildWF as Child Workflows
 
-    Temporal->>Heavy: Activity: prepareWorkspace
-    Heavy->>GitHub: Clone repo (simple-git, full clone)
-    Heavy->>Heavy: Detect language (package.json, go.mod, etc.)
-    Heavy->>Heavy: Install deps (npm ci / go mod download / pip install)
-    Heavy->>Heavy: Detect monorepo roots (pnpm-workspace.yaml, etc.)
-    Heavy-->>Temporal: { workspacePath, languages[], workspaceRoots[] }
+    Note over Temporal: Optional: initPipelineRun (if runId present)
 
-    Note over Temporal: Update progress → 25%
+    Temporal->>Heavy: Step 1: prepareRepoIntelligenceSpace
+    Heavy->>Heavy: git clone (or extract CLI zip if provider=local_cli)
+    Heavy->>Heavy: Detect languages, install deps, detect monorepo roots
+    Heavy-->>Temporal: { indexDir, languages[], packageRoots[], lastSha? }
+    Note over Temporal: progress = 25%
 
-    Temporal->>Heavy: Activity: runSCIP
-    Heavy->>Heavy: Run SCIP indexer per workspace root
-    Heavy->>Heavy: Merge indices for monorepos (scip combine)
-    Heavy-->>Temporal: { scipIndex: SCIPIndex, coveredFiles[] }
+    Temporal->>Light: Step 1b: wipeRepoGraphData
+    Light->>ArangoDB: DELETE all existing entities+edges for this repo
+    Light-->>Temporal: done
 
-    Note over Temporal: Update progress → 50%
+    Temporal->>Heavy: Step 2: runSCIP
+    Heavy->>Heavy: Run scip-typescript/scip-go/scip-python per workspace root
+    Heavy->>Heavy: Parse .scip protobuf → EntityDoc[] + EdgeDoc[]
+    Heavy->>ArangoDB: writeEntitiesToGraph (entity hash, dedup, bulk upsert)
+    Heavy-->>Temporal: { entityCount, edgeCount, coveredFiles[], fileCount, functionCount, classCount }
+    Note over Temporal: progress = 50%
 
-    Temporal->>Heavy: Activity: parseRest
-    Heavy->>Heavy: Tree-sitter WASM for non-SCIP languages
-    Heavy->>Heavy: Extract supplementary metadata (JSDoc, decorators)
-    Heavy-->>Temporal: { extraEntities[], extraEdges[] }
+    Temporal->>Heavy: Step 3: parseRest
+    Heavy->>Heavy: Regex-based parsers for uncovered files (TS/Py/Go + generic)
+    Heavy->>Heavy: Extract doc comments, is_async, param_count, complexity, import edges
+    Heavy->>ArangoDB: writeEntitiesToGraph (same helper)
+    Heavy-->>Temporal: { entityCount, edgeCount, fileCount, functionCount, classCount }
+    Note over Temporal: progress = 75%
 
-    Note over Temporal: Update progress → 75%
+    Temporal->>Light: Step 4: finalizeIndexing
+    Light->>Light: bootstrapGraphSchema (idempotent)
+    Light->>Supabase: UPDATE unerr.repos SET status=ready, file_count, function_count, class_count
+    Light-->>Temporal: done
 
-    Temporal->>Light: Activity: writeToArango
-    Light->>Light: Transform SCIP output → EntityDoc[] + EdgeDoc[]
-    Light->>Light: Generate stable entity hashes (SHA-256)
-    Light->>ArangoDB: Batch upsert entities (bulkUpsertEntities)
-    Light->>ArangoDB: Batch upsert edges (bulkUpsertEdges)
-    Light->>Supabase: UPDATE unerr.repos SET status=ready, file_count=?, function_count=?, class_count=?
-    Light-->>Temporal: { entitiesWritten, edgesWritten, fileCount, ... }
+    Temporal->>Light: Step 4b: precomputeBlastRadius (graphAnalysis)
+    Light->>ArangoDB: Compute fan_in, fan_out, risk_level, PageRank, community_id
+    Light-->>Temporal: { updatedCount, highRiskCount }
 
-    Note over Temporal: Update progress → 100%
+    Temporal->>Heavy: Step 4c: computeTemporalAnalysis
+    Heavy->>Heavy: git log → mine co-change edges (last 365 days, max 5000 commits)
+    Heavy->>ArangoDB: bulkUpsertEdges (logically_coupled edges)
+    Heavy->>ArangoDB: bulkUpsertEntities (change_frequency, author_count, stability_score...)
+    Heavy-->>Temporal: { coChangeEdgesStored, entitiesUpdated, filesAnalyzed }
+
+    Note over Temporal: progress = 95%
+
+    Temporal->>ChildWF: Step 5: startChild embedRepoWorkflow (ABANDON — fire-and-forget)
+    Temporal->>ChildWF: Step 6: startChild syncLocalGraphWorkflow (ABANDON — fire-and-forget)
+    Temporal->>ChildWF: Step 7: startChild detectPatternsWorkflow (ABANDON — fire-and-forget)
+
+    Note over Temporal: progress = 100%, completePipelineRun
+    Temporal->>Heavy: cleanupWorkspaceFilesystem (best-effort, fire-and-forget)
 ```
 
 **Activity details:**
 
 | Activity | Queue | Timeout | Heartbeat | Retry | What it does |
 |----------|-------|---------|-----------|-------|-------------|
-| `prepareWorkspace` | `heavy-compute-queue` | 30 min | 2 min | 3× with backoff | Full git clone via `simple-git`, detect language, `npm ci` / `go mod download`, detect monorepo roots |
-| `runSCIP` | `heavy-compute-queue` | 30 min | 2 min | 3× with backoff | Run `scip-typescript` / `scip-go` / `scip-python` per workspace root, merge for monorepos |
-| `parseRest` | `heavy-compute-queue` | 10 min | 1 min | 3× with backoff | Tree-sitter WASM for files SCIP didn't cover (e.g., `.yaml`, `.json`, decorators) |
-| `finalizeIndexing` | `light-llm-queue` | 5 min | 1 min | 3× with backoff | Shadow reindex cleanup + update repo status in Supabase (no entity data — just counts) |
+| `prepareRepoIntelligenceSpace` | `heavy-compute-queue` | 30 min | 2 min | 3× | Full git clone (or CLI zip extract), language detect, `npm ci`/`go mod download`/`pip install`, monorepo root detect |
+| `wipeRepoGraphData` | `light-llm-queue` | 5 min | 1 min | 3× | DELETE all existing entities + edges for the repo from ArangoDB (clean-replace semantics) |
+| `runSCIP` | `heavy-compute-queue` | 30 min | 2 min | 3× | Run SCIP indexers per workspace root; write entities/edges directly to ArangoDB via `writeEntitiesToGraph`; return lightweight counts only |
+| `parseRest` | `heavy-compute-queue` | 30 min | 2 min | 3× | Regex parsers for uncovered files (doc comments, async, param count, complexity, import edges); write directly to ArangoDB |
+| `finalizeIndexing` | `light-llm-queue` | 5 min | 1 min | 3× | `bootstrapGraphSchema()` (idempotent), handle shadow reindex cleanup, update Supabase repo status to `ready` with counts |
+| `precomputeBlastRadius` | `light-llm-queue` | 10 min | 2 min | 2× | AQL COLLECT fan-in/fan-out for all function/method entities; compute PageRank (L-19), structural fingerprint (depth, is_entry_point, is_boundary), community detection via label propagation |
+| `computeTemporalAnalysis` | `heavy-compute-queue` | 15 min | 2 min | 2× | Mine git commit history (last 365 days, max 5000 commits); compute co-change coupling edges (`logically_coupled`); update entities with `change_frequency`, `author_count`, `stability_score`, `commit_intents` |
 
-> **Payload optimization (Feb 2026):** `runSCIP` and `parseRest` now write entities/edges directly to ArangoDB via the shared `writeEntitiesToGraph` helper. The workflow only passes lightweight counts (not full entity/edge arrays) through Temporal's data converter. `writeToArango` was replaced by `finalizeIndexing` which handles only status updates and shadow reindex cleanup.
+**Child workflows (fire-and-forget, `ParentClosePolicy.ABANDON`):**
 
-> **Phase 5.5 CLI provider branch:** When `provider === "local_cli"`, `prepareWorkspace` skips `git clone` and instead downloads the uploaded zip from Supabase Storage via `IStorageProvider.downloadFile()`, extracts it to the workspace directory, then proceeds with dependency install and language detection as normal. The rest of the pipeline (`runSCIP`, `parseRest`, `finalizeIndexing`) is identical regardless of provider.
+| Workflow | Queue | Stable ID | Purpose |
+|----------|-------|-----------|--------|
+| `embedRepoWorkflow` | `light-llm-queue` | `embed-{orgId}-{repoId}` | Generate embeddings for all entities (Phase 3) |
+| `syncLocalGraphWorkflow` | `light-llm-queue` | `sync-{orgId}-{repoId}` | Export ArangoDB snapshot to local graph format (Phase 10a) |
+| `detectPatternsWorkflow` | `heavy-compute-queue` | `detect-patterns-{orgId}-{repoId}` | Run pattern detection + cleanup workspace filesystem (Phase 6) |
+
+> **Payload optimization (implemented Feb 2026):** `runSCIP` and `parseRest` write entities/edges directly to ArangoDB inside the activity via the shared `writeEntitiesToGraph` helper (`lib/temporal/activities/graph-writer.ts`). No entity/edge arrays cross Temporal's data converter — only lightweight count structs. The original `writeToArango` activity is kept as legacy but no longer called by `indexRepoWorkflow`. Use `RunSCIPLightResult` / `ParseRestLightResult` types — the original `RunSCIPResult` / `ParseRestResult` types are deprecated.
+
+> **Phase 5.5 CLI provider branch:** When `provider === "local_cli"`, `prepareRepoIntelligenceSpace` skips `git clone` and instead downloads the uploaded zip from Supabase Storage via `IStorageProvider.downloadFile()`, extracts it to the workspace directory, then proceeds with dependency install and language detection as normal. The rest of the pipeline is identical regardless of provider.
+
+> **Pipeline run tracking:** Every pipeline execution (initial, retry, reindex, webhook) gets a unique `runId` (UUID). The API route creates a `PipelineRun` record before starting the workflow. `initPipelineRun` links the `workflowId` + `temporalRunId`. `updatePipelineStep` tracks each step's status. `completePipelineRun` finalizes with status, duration, and metrics. All run-tracking steps guard on `if (input.runId)` — backward compatible with in-flight workflows.
 
 **Progress tracking via Temporal workflow state:**
 
 ```typescript
-// Inside indexRepoWorkflow
+// Inside indexRepoWorkflow (simplified — see lib/temporal/workflows/index-repo.ts)
 let progress = 0;
-
-// Temporal queries allow external reads of workflow state
 export const getProgressQuery = defineQuery<number>('getProgress');
 
-export async function indexRepoWorkflow(input: IndexRepoInput): Promise<IndexResult> {
+export async function indexRepoWorkflow(input: IndexRepoInput) {
   setHandler(getProgressQuery, () => progress);
 
-  const workspace = await heavy.prepareWorkspace(input);
+  const workspace = await heavy.prepareRepoIntelligenceSpace(input); // Step 1
   progress = 25;
+  await light.wipeRepoGraphData({ orgId, repoId });                   // Step 1b
 
-  const scipIndex = await heavy.runSCIP({ ... });
+  const scip = await heavy.runSCIP({ ...workspace });                 // Step 2 (writes to ArangoDB)
   progress = 50;
 
-  const extraEntities = await heavy.parseRest({ ... });
+  const parse = await heavy.parseRest({ coveredFiles: scip.coveredFiles }); // Step 3 (writes to ArangoDB)
   progress = 75;
 
-  const result = await light.writeToArango({ ... });
-  progress = 100;
+  await light.finalizeIndexing({ fileCount, functionCount, classCount }); // Step 4
+  await graphAnalysis.precomputeBlastRadius({ orgId, repoId });        // Step 4b
+  await heavy.computeTemporalAnalysis({ orgId, repoId, indexDir }); // Step 4c
+  progress = 95;
 
-  return result;
+  // Steps 5-7: fire-and-forget child workflows (embed, graphSync, detectPatterns)
+  await startChild(embedRepoWorkflow, { parentClosePolicy: ABANDON });
+  await startChild(syncLocalGraphWorkflow, { parentClosePolicy: ABANDON });
+  await startChild(detectPatternsWorkflow, { parentClosePolicy: ABANDON });
+
+  progress = 100;
 }
 ```
 
@@ -538,9 +574,9 @@ Example:
 | From | To | Trigger | Validation |
 |------|----|---------|------------|
 | `pending` | `indexing` | `startWorkflow` succeeds | Repo exists, org has GitHub installation |
-| `indexing` | `ready` | `writeToArango` activity completes | Entity/edge counts > 0 |
+| `indexing` | `ready` | `finalizeIndexing` activity completes (after SCIP + parseRest have written entities/edges) | Entity/edge counts > 0 |
 | `indexing` | `error` | Workflow fails after 3 retries | Error message stored in `error_message` column |
-| `ready` | `indexing` | Re-index trigger (manual or webhook) | Previous workflow terminated |
+| `ready` | `indexing` | Re-index trigger (manual or webhook) | Previous workflow terminated; `wipeRepoGraphData` clears stale data before re-indexing |
 | `error` | `indexing` | Retry button clicked | Max 3 manual retries per hour |
 | `*` | `deleting` | DELETE /api/repos/[id] | Only org owner/admin |
 
@@ -581,12 +617,12 @@ Single database `unerr_db`. Every document and edge carries `org_id` + `repo_id`
 | # | Failure Scenario | Probability | Impact | Detection | Recovery Strategy | Acceptable Downtime |
 |---|-----------------|-------------|--------|-----------|-------------------|---------------------|
 | 1 | **GitHub API rate limit** (5000 req/hr per installation) | Medium — large orgs with many repos | Indexing delayed, repo listing fails temporarily | HTTP 403 + `X-RateLimit-Remaining: 0` header | Exponential backoff with jitter. Temporal activity retries respect `Retry-After` header. Cache repo lists for 5 min. | Minutes (backoff) |
-| 2 | **Git clone timeout** (large repo, slow network) | Medium | `prepareWorkspace` activity fails | Temporal heartbeat timeout (2 min without heartbeat → fail) | Retry with longer timeout. For repos > 1 GB: shallow clone first, then unshallow on retry. Max 3 attempts. | 5–15 min (retries) |
+| 2 | **Git clone timeout** (large repo, slow network) | Medium | `prepareRepoIntelligenceSpace` activity fails | Temporal heartbeat timeout (2 min without heartbeat → fail) | Retry with longer timeout. For repos > 1 GB: shallow clone first, then unshallow on retry. Max 3 attempts. | 5–15 min (retries) |
 | 3 | **SCIP indexer crash** (OOM on large monorepo) | Medium — monorepos with 50k+ files | `runSCIP` activity fails, workflow paused | Temporal detects activity failure (non-zero exit code or OOM kill) | Retry on fresh worker. If 3× OOM: mark repo as `error` with message "Repository too large for indexing". Future: split into sub-package indexing. | 5–30 min |
 | 4 | **ArangoDB write failure** (disk full, connection timeout) | Low | `writeToArango` fails, entities not persisted | Activity throws, Temporal retries | Retry 3×. If persistent: mark repo `error`, alert. ArangoDB disk monitoring via Docker health check. | Minutes (retries) |
 | 5 | **Temporal worker OOM** | Low–Medium | Worker process killed, activities rescheduled to other workers | Kubernetes/Docker OOM kill signal | Temporal automatically reschedules pending activities to healthy workers. Heavy worker memory limit: 8 GB (Phase 1). | Seconds (auto-reschedule) |
 | 6 | **Webhook delivery failure** (GitHub → unerr) | Low | Push events missed, no auto-re-index | GitHub retries webhooks 3× over 24h. `/api/health` monitors webhook endpoint. | GitHub's built-in retry. Manual re-index button as fallback. Webhook event log in GitHub App settings for debugging. | Minutes (GitHub retry) |
-| 7 | **Installation token expiry mid-workflow** | Low — tokens last 1 hr, clone takes < 30 min | `prepareWorkspace` fails mid-clone if token expires | HTTP 401 from GitHub API | `@octokit/auth-app` auto-renews tokens transparently. If the installation is revoked (not just expired): activity fails, repo marked `error` with "GitHub access revoked". | None (auto-renew) |
+| 7 | **Installation token expiry mid-workflow** | Low — tokens last 1 hr, clone takes < 30 min | `prepareRepoIntelligenceSpace` fails mid-clone if token expires | HTTP 401 from GitHub API | `@octokit/auth-app` auto-renews tokens transparently. If the installation is revoked (not just expired): activity fails, repo marked `error` with "GitHub access revoked". | None (auto-renew) |
 | 8 | **Partial indexing** (some files fail SCIP, others succeed) | Medium | Incomplete graph — some entities/edges missing | Compare SCIP output file count vs. repo file count | Accept partial results. Store `coveredFiles[]` and `failedFiles[]` in workflow result. Show warning badge on repo card: "Partially indexed (85% of files)". | None (graceful degradation) |
 | 9 | **Concurrent re-index of same repo** | Medium — webhook + manual trigger race | Duplicate workflows, conflicting ArangoDB writes | Temporal workflow ID uniqueness: `index-{orgId}-{repoId}` | Temporal rejects duplicate workflow IDs by default (`WorkflowExecutionAlreadyStarted`). API checks for existing running workflow before starting new one. If user forces re-index: terminate existing + start new. | None (prevented) |
 
@@ -779,14 +815,14 @@ Seam 5: Repo status → readiness for Q&A
 
 - [x] **P1-INFRA-04: Increase heavy worker memory limit to 8 GB** — S
   - Update `docker-compose.yml`: `temporal-worker-heavy` → `mem_limit: 8g`
-  - Add volume mount for persistent workspaces: `/data/workspaces` (shared volume)
+  - Add volume mount for persistent repo index dirs: `/data/repo-indices` (shared volume)
   - **Test:** `docker compose up temporal-worker-heavy` starts with 8 GB limit visible in `docker stats`.
   - **Depends on:** Nothing
   - **Files:** `docker-compose.yml`
   - Notes: Done. `mem_limit: 8G`, volume `workspaces` added.
 
 - [x] **P1-INFRA-05: Add persistent workspace volume to Docker Compose** — S
-  - Named volume `workspaces` mounted at `/data/workspaces` on heavy worker
+  - Named volume `repo-indices` mounted at `/data/repo-indices` on heavy worker
   - Purpose: Reuse cloned repos on retry (avoid re-clone on SCIP failure)
   - **Test:** Clone a repo, kill worker, restart → cloned repo still on disk.
   - **Depends on:** P1-INFRA-04
@@ -794,7 +830,7 @@ Seam 5: Repo status → readiness for Q&A
   - Notes: Done. Volume `workspaces` in compose.
 
 - [x] **P1-INFRA-06: Create `Dockerfile.heavy-worker` for heavy-compute worker** — M
-  - **The problem:** A standard Node.js Alpine image does not include the runtimes or SCIP CLI binaries needed by `prepareWorkspace` and `runSCIP`. Without this, P1-API-12 and P1-API-13 will fail with `command not found` inside Docker.
+  - **The problem:** A standard Node.js Alpine image does not include the runtimes or SCIP CLI binaries needed by `prepareRepoIntelligenceSpace` and `runSCIP`. Without this, P1-API-12 and P1-API-13 will fail with `command not found` inside Docker.
   - Base image: Ubuntu 22.04 (or Debian Bookworm) — needed for native binary compatibility with SCIP indexers
   - Install runtimes: Node.js 20+ (via `nvm` or `nodesource`), `pnpm`, `yarn`, Go 1.22+, Python 3.11+, `pip`
   - Install SCIP CLI binaries: `scip-typescript`, `scip-go`, `scip-python`, `scip` (CLI for `scip combine`)
@@ -853,7 +889,7 @@ Seam 5: Repo status → readiness for Q&A
   - Replace `NotImplementedError` stub in `lib/adapters/github-host.ts`
   - Use `simple-git` (not raw `exec`) for promise-based API with auth handling
   - Auth: installation token injected via URL (`https://x-access-token:{token}@github.com/owner/repo.git`)
-  - Destination: `/data/workspaces/{orgId}/{repoId}/`
+  - Destination: `/data/repo-indices/{orgId}/{repoId}/`
   - Full clone (not shallow) — SCIP needs complete history for type resolution
   - If workspace exists: `git pull` instead of fresh clone (incremental prep for Phase 5)
   - **Test:** Clone a small public repo. Verify `.git` dir exists. Clone again → pulls instead of re-cloning.
@@ -1148,7 +1184,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Acceptance:** Full pipeline: clone → SCIP → parse → write → repo ready. Progress queryable at each stage.
   - Notes: Done.
 
-- [x] **P1-API-12: Implement `prepareWorkspace` activity** — L
+- [x] **P1-API-12: Implement `prepareRepoIntelligenceSpace` activity** — L
   - Full clone via `simple-git` (not shallow) to persistent workspace directory
   - Language detection: `package.json` → TypeScript/JavaScript, `go.mod` → Go, `requirements.txt`/`pyproject.toml` → Python
   - Dependency install: `npm ci` (JS), `go mod download` (Go), `pip install -r requirements.txt` (Python)
@@ -1157,7 +1193,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Test:** Prepare workspace for TS project → `node_modules` exists. For Go project → modules cached.
   - **Depends on:** P1-ADAPT-01, P1-ADAPT-05
   - **Files:** `lib/temporal/activities/indexing-heavy.ts`, `lib/indexer/prepare-workspace.ts`, `lib/indexer/monorepo.ts`
-  - **Acceptance:** Workspace ready for SCIP. Dependencies installed. Monorepo roots detected.
+  - **Acceptance:** Repo index dir ready for SCIP. Dependencies installed. Monorepo package roots detected.
   - Notes: Done.
 
 - [x] **P1-API-13: Implement `runSCIP` activity** — L
@@ -1204,7 +1240,7 @@ Seam 5: Repo status → readiness for Q&A
   - Notes: Done. Fully implemented with SHA-256 stable entity hashing (`lib/indexer/entity-hash.ts`). `writeToArango` now: (1) applies deterministic entity hashing to all IDs, (2) applies edge key hashing, (3) generates `file` entities for every unique `file_path`, (4) creates `contains` edges from files to entities, (5) deduplicates entities and edges before writing. Entity IDs are 16-char hex strings, stable across re-indexing runs.
 
 - [x] **P1-API-16: Register activities in worker entry points** — S
-  - Update `scripts/temporal-worker-heavy.ts`: register `prepareWorkspace`, `runSCIP`, `parseRest`
+  - Update `scripts/temporal-worker-heavy.ts`: register `prepareRepoIntelligenceSpace`, `runSCIP`, `parseRest`
   - Update `scripts/temporal-worker-light.ts`: register `writeToArango`
   - **Test:** Start workers → Temporal UI shows activities registered on correct queues.
   - **Depends on:** P1-API-12, P1-API-13, P1-API-14, P1-API-15
@@ -1409,7 +1445,7 @@ Seam 5: Repo status → readiness for Q&A
   - **Depends on:** P1-API-11
   - **Files:** `lib/temporal/workflows/__tests__/index-repo-workflow.test.ts`, `lib/temporal/activities/__tests__/indexing-activities.test.ts`, `lib/temporal/activities/__tests__/indexing-light.test.ts`
   - **Acceptance:** Workflow replay matches expected activity sequence. Progress values correct.
-  - Notes: Complete. Workflow replay test (11 tests) mocks `@temporalio/workflow` module to test activity call order, argument passing, progress tracking, error handling, and entity merging. Activity unit tests (9 tests) cover prepareWorkspace, runSCIP, parseRest, writeToArango, updateRepoError, deleteRepoData. writeToArango unit tests (13 tests) cover entity hashing, file entity generation, contains edges, kind-to-collection mapping, deduplication. Additional tests: scanner (14), entity-hash (13), monorepo (8), TypeScript parser (13), Python parser (13), Go parser (12). Total: 106 tests.
+  - Notes: Complete. Workflow replay test (11 tests) mocks `@temporalio/workflow` module to test activity call order, argument passing, progress tracking, error handling, and entity merging. Activity unit tests (9 tests) cover prepareRepoIntelligenceSpace, runSCIP, parseRest, writeToArango, updateRepoError, deleteRepoData. writeToArango unit tests (13 tests) cover entity hashing, file entity generation, contains edges, kind-to-collection mapping, deduplication. Additional tests: scanner (14), entity-hash (13), monorepo (8), TypeScript parser (13), Python parser (13), Go parser (12). Total: 106 tests.
 
 ### E2E Tests (Playwright)
 
@@ -1501,25 +1537,56 @@ P1-ADAPT-13 (setIfNotExists) ── P1-API-07 (webhook handler)
 ```
 lib/
   github/
-    client.ts                              ← GitHub App client (@octokit/auth-app)
-  indexer/                                 ← NOT YET EXTRACTED — logic lives inline in temporal activities
-    (planned) prepare-workspace.ts         ← Full clone + dependency install
-    (planned) monorepo.ts                  ← Workspace root detection
-    (planned) scip-runner.ts               ← SCIP indexer execution + protobuf parsing
-    (planned) scip-to-arango.ts            ← Transform SCIP → ArangoDB documents
-    (planned) entity-hash.ts               ← Stable entity identity hashing
-    (planned) parser.ts                    ← Tree-sitter WASM (supplementary)
-    (planned) scanner.ts                   ← File discovery + gitignore
-    (planned) writer.ts                    ← ArangoDB batch writer
-    (planned) grammars/                    ← Tree-sitter .wasm grammar files
+    client.ts                              ← GitHub App client (@octokit/auth-app), lazy-loaded via require()
+  indexer/
+    entity-hash.ts                         ← Stable entity identity hashing (SHA-256, 16-char hex)
+    scanner.ts                             ← File discovery + gitignore (detectLanguages, scanIndexDir)
+    monorepo.ts                            ← Package root detection (pnpm/npm/yarn/nx/lerna)
+    doc-extractor.ts                       ← Shared doc-comment extraction utility (JSDoc, docstrings, Go //)
+    git-analyzer.ts                        ← Git co-change mining (mineCommitHistory, computeCoChangeEdges, computeTemporalContext)
+    types.ts                               ← ParsedEntity, ParsedEdge (with enrichment fields: doc, is_async, complexity, etc.)
+    languages/
+      registry.ts                          ← Language plugin registry (TypeScript, Python, Go)
+      typescript/
+        scip.ts                            ← SCIP indexer runner + .scip protobuf parser (custom varint decoder)
+        tree-sitter.ts                     ← Regex-based TS/JS fallback parser (functions, classes, interfaces, enums, imports)
+        __tests__/tree-sitter.test.ts
+      python/
+        scip.ts                            ← scip-python runner
+        tree-sitter.ts                     ← Regex-based Python parser (def, class, async, docstrings)
+      go/
+        scip.ts                            ← scip-go runner
+        tree-sitter.ts                     ← Regex-based Go parser (func, struct, interface, multi-return)
+      generic/
+        index.ts                           ← File-level entity fallback for unsupported languages
+    __tests__/
+      entity-hash.test.ts
+      monorepo.test.ts
+      scanner.test.ts (14 tests)
+    grammars/                              ← .wasm grammar files (copied by scripts/copy-grammars.ts)
   temporal/
     workflows/
-      index-repo.ts                        ← indexRepoWorkflow definition
-      delete-repo.ts                       ← deleteRepoWorkflow definition
+      index-repo.ts                        ← indexRepoWorkflow (7-step pipeline + 3 child workflows)
+      delete-repo.ts                       ← deleteRepoWorkflow
+      embed-repo.ts                        ← embedRepoWorkflow (Phase 3 — embeddings)
+      detect-patterns.ts                   ← detectPatternsWorkflow (Phase 6 — pattern detection)
+      incremental-index.ts                 ← incrementalIndexWorkflow (Phase 5 — delta indexing)
+      sync-local-graph.ts                  ← syncLocalGraphWorkflow (Phase 10a — graph export)
     activities/
-      indexing-heavy.ts                    ← prepareWorkspace, runSCIP, parseRest
-      indexing-light.ts                    ← finalizeIndexing, writeToArango (legacy), deleteRepoData
-      graph-writer.ts                      ← shared writeEntitiesToGraph helper (hashing, dedup, file entities)
+      indexing-heavy.ts                    ← prepareRepoIntelligenceSpace, runSCIP, parseRest, fillBodiesFromSource, toEntityDocs, toEdgeDocs
+      indexing-light.ts                    ← finalizeIndexing, wipeRepoGraphData, deleteRepoData, writeToArango (legacy), updateRepoError
+      graph-writer.ts                      ← writeEntitiesToGraph helper (hashing, dedup, file entity generation, contains edges)
+      graph-analysis.ts                    ← precomputeBlastRadius (fan-in/fan-out, PageRank, structural fingerprint, community detection)
+      temporal-analysis.ts                 ← computeTemporalAnalysis (co-change mining, L-24)
+      pipeline-logs.ts                     ← appendPipelineLog, archivePipelineLogs (Redis log streaming)
+      pipeline-run.ts                      ← initPipelineRun, updatePipelineStep, completePipelineRun (PipelineRun table)
+      workspace-cleanup.ts                 ← cleanupWorkspaceFilesystem (best-effort post-index cleanup)
+      embedding.ts                         ← Embedding generation activities
+      graph-export.ts                      ← Graph export/snapshot activities
+      graph-upload.ts                      ← Graph upload activities
+      graph-writer.ts                      ← Shared write helper
+      incremental.ts                       ← Incremental indexing activities (Phase 5)
+      (+ 10 more activity files for Phases 2–8)
   utils/
     file-tree-builder.ts                   ← Flat paths → nested tree structure
 app/
@@ -1550,19 +1617,18 @@ components/
   dashboard/
     repo-picker-modal.tsx                  ← Repo selection Sheet drawer (right side, 480px)
     repo-card.tsx                          ← Repo card with status + progress
-    repository-switcher.tsx                ← Sidebar repo/scope switcher (Popover + Command)
   repo/
     repo-detail-client.tsx                 ← Combined: file tree + entity list + entity detail
-    pipeline-stepper.tsx                   ← Horizontal 5-stage pipeline stepper (new)
-    whats-happening-panel.tsx              ← Live analytics panel parsing pipeline logs (new)
-    repo-onboarding-console.tsx            ← Pipeline onboarding experience wrapper (new)
+    pipeline-stepper.tsx                   ← Horizontal 5-stage pipeline stepper
+    whats-happening-panel.tsx              ← Live analytics panel parsing pipeline logs
+    repo-onboarding-console.tsx            ← Pipeline onboarding experience wrapper
     pipeline-log-viewer.tsx                ← Real-time console log viewer
 hooks/
   use-repo-status.ts                       ← Polling hook for indexing progress
   use-pipeline-logs.ts                     ← Polling hook for pipeline logs
 scripts/
   copy-grammars.ts                         ← Postinstall: copy .wasm grammars to lib/indexer/grammars/
-Dockerfile.heavy-worker                    ← Multi-stage build for heavy worker (Node, Go, Python, SCIP)
+Dockerfile.heavy-worker                    ← Multi-stage build for heavy worker (Node 22, Git, build-essential, Python 3)
 ```
 
 ### Modified Files
@@ -1580,12 +1646,12 @@ lib/adapters/redis-cache-store.ts          ← Implement setIfNotExists (SET NX)
 lib/di/container.ts                        ← No structural changes (adapters updated in-place)
 lib/di/fakes.ts                            ← Extend fakes with Phase 1 methods
 prisma/schema.prisma                       ← GitHubInstallation model + Repo extensions
-scripts/temporal-worker-heavy.ts           ← Register indexing activities
-scripts/temporal-worker-light.ts           ← Register writeToArango activity
-env.mjs                                    ← Add GITHUB_APP_ID, etc.
+scripts/temporal-worker-heavy.ts           ← Register prepareRepoIntelligenceSpace, runSCIP, parseRest, computeTemporalAnalysis, cleanupWorkspaceFilesystem
+scripts/temporal-worker-light.ts           ← Register finalizeIndexing, wipeRepoGraphData, deleteRepoData, precomputeBlastRadius, appendPipelineLog, archivePipelineLogs, initPipelineRun, updatePipelineStep, completePipelineRun
+env.mjs                                    ← Add GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_WEBHOOK_SECRET
 .env.example                               ← Document Phase 1 variables
-docker-compose.yml                         ← Heavy worker memory + workspace volume
-components/dashboard/empty-state-repos.tsx ← Active "Connect GitHub" button
+docker-compose.yml                         ← Heavy worker 8 GB + workspace volume + network_mode: host for workers
+components/dashboard/empty-state-repos.tsx ← Active "Connect GitHub" button with orgId param
 app/(dashboard)/repos/page.tsx             ← Populated repo list
 app/(dashboard)/page.tsx                   ← Repo cards on dashboard home
 app/api/repos/route.ts                     ← Add POST handler
@@ -1643,7 +1709,7 @@ Steps are stored as a JSON array in `PipelineRun.steps` — each step has: `name
 |------|--------|--------|
 | 2026-02-17 | — | Initial document created. Part 1: 5 user flows with Mermaid diagrams, state management (two-token model, entity hashing, repo FSM, ArangoDB multi-tenancy), 9 failure scenarios, 8 performance budgets, Phase 2 bridge with 5 seam points. Part 2: 44 tracker items across 6 layers. |
 | 2026-02-17 | — | **Review pass — 3 fixes applied.** (1) Added **P1-INFRA-06: Create `Dockerfile.heavy-worker`** — multi-stage Docker build with Node.js, pnpm, yarn, Go, Python, SCIP CLI binaries, and build tools. Without this, P1-API-12 (`prepareWorkspace`) and P1-API-13 (`runSCIP`) would fail with `command not found` inside Docker. (2) Added **P1-ADAPT-13: `setIfNotExists()` on `ICacheStore`** — atomic `SET NX` for webhook deduplication in P1-API-07, preventing race conditions on concurrent duplicate deliveries. Updated P1-API-07 to depend on P1-ADAPT-13. (3) Added **Tree-sitter WASM asset loading caveat** to P1-API-14 — `.wasm` grammar files must be copied to a known directory and loaded via `fs.readFileSync`, not bundler imports. Added `scripts/copy-grammars.ts` postinstall helper and `lib/indexer/grammars/` to new files list. P1-API-14 now depends on P1-INFRA-06. Updated dependency graph, new/modified files summary. **Final count: 47 tracker items** (Infrastructure: 6, Database: 3, Adapters: 13, API: 17, UI: 7, Testing: 12). |
-| 2026-02-17 | — | **Phase 1 implementation completed.** Infrastructure: env vars (env.mjs, .env.example), Docker (8 GB heavy worker, workspaces volume), Dockerfile.heavy-worker (Node 22, git, build-essential, python3). Database: GitHubInstallation model + Repo extensions (Prisma + SQL migration), ArangoDB idx on [org_id, repo_id, file_path]. Ports: IGitHost (getInstallationRepos, getInstallationToken), IRelationalStore (getInstallation, createInstallation, deleteInstallation, updateRepoStatus, getRepoByGithubId, getReposByStatus, getRepo, deleteRepo), ICacheStore (setIfNotExists), IGraphStore (getEntitiesByFile with repoId, getFilePaths, deleteRepoData), WorkflowStatus (progress). Adapters: lib/github/client.ts, GitHubHost (cloneRepo, listFiles, getInstallationRepos, getInstallationToken), Prisma + Arango (bulk upsert, getEntitiesByFile, getEntity, getCallersOf, getCalleesOf), Temporal (startWorkflow, getWorkflowStatus, cancelWorkflow), Redis (setIfNotExists). API: github/install, github/callback, repos (GET/POST), repos/[id] (GET/DELETE), repos/[id]/status, repos/[id]/retry, repos/[id]/tree, repos/[id]/entities, repos/[id]/entities/[entityId], webhooks/github. Workflows: indexRepoWorkflow (prepareWorkspace, runSCIP stub, parseRest stub, writeToArango), deleteRepoWorkflow; activities registered in workers. UI: Connect GitHub, repo picker modal, repo cards (status/progress/retry), repos list (ReposList), repo detail (file tree + entities + entity detail). Fakes extended (Phase 1 methods). **In progress:** P1-ADAPT-09 (SCIP), P1-API-13 (runSCIP), P1-API-14 (parseRest) — stubbed so pipeline runs; full SCIP/parseRest implementation deferred. **Not done:** P1-TEST-* (unit/integration/E2E tests). Tracker: 42 items [x], 3 items [~]. |
+| 2026-02-17 | — | **Phase 1 implementation completed.** Infrastructure: env vars (env.mjs, .env.example), Docker (8 GB heavy worker, repo-indices volume), Dockerfile.heavy-worker (Node 22, git, build-essential, python3). Database: GitHubInstallation model + Repo extensions (Prisma + SQL migration), ArangoDB idx on [org_id, repo_id, file_path]. Ports: IGitHost (getInstallationRepos, getInstallationToken), IRelationalStore (getInstallation, createInstallation, deleteInstallation, updateRepoStatus, getRepoByGithubId, getReposByStatus, getRepo, deleteRepo), ICacheStore (setIfNotExists), IGraphStore (getEntitiesByFile with repoId, getFilePaths, deleteRepoData), WorkflowStatus (progress). Adapters: lib/github/client.ts, GitHubHost (cloneRepo, listFiles, getInstallationRepos, getInstallationToken), Prisma + Arango (bulk upsert, getEntitiesByFile, getEntity, getCallersOf, getCalleesOf), Temporal (startWorkflow, getWorkflowStatus, cancelWorkflow), Redis (setIfNotExists). API: github/install, github/callback, repos (GET/POST), repos/[id] (GET/DELETE), repos/[id]/status, repos/[id]/retry, repos/[id]/tree, repos/[id]/entities, repos/[id]/entities/[entityId], webhooks/github. Workflows: indexRepoWorkflow (prepareRepoIntelligenceSpace, runSCIP stub, parseRest stub, writeToArango), deleteRepoWorkflow; activities registered in workers. UI: Connect GitHub, repo picker modal, repo cards (status/progress/retry), repos list (ReposList), repo detail (file tree + entities + entity detail). Fakes extended (Phase 1 methods). **In progress:** P1-ADAPT-09 (SCIP), P1-API-13 (runSCIP), P1-API-14 (parseRest) — stubbed so pipeline runs; full SCIP/parseRest implementation deferred. **Not done:** P1-TEST-* (unit/integration/E2E tests). Tracker: 42 items [x], 3 items [~]. |
 | 2026-02-17 | — | **Phase 1 verification.** Codebase checked against tracker: P1-INFRA-01..06 ✓ (env.mjs, .env.example, docker-compose 8G/512M, workspaces volume, Dockerfile.heavy-worker). P1-DB-01..03 ✓ (Prisma GitHubInstallation, Repo Phase 1 fields, migration `20260217120000_phase1_github_installation_and_repo_indexing.sql`, ArangoDB `idx_*_org_repo_file` in bootstrapGraphSchema). P1-ADAPT-01..08, 10..13 ✓ (github-host, arango-graph-store bulk/getEntitiesByFile/getFilePaths/deleteRepoData, temporal-workflow-engine startWorkflow/getWorkflowStatus, prisma-relational-store Phase 1 methods, redis setIfNotExists; fakes extended). P1-ADAPT-09 [~] SCIP stub. P1-API-01..12, 15..17 ✓ (all routes present; get-active-org used; runSCIP/parseRest stubs). P1-API-13, 14 [~]. P1-UI-01..07 ✓ (empty-state-repos, repo-picker-modal, repo-card, repos-list, use-repo-status, repos/[repoId] page + repo-detail-client with file tree and entity detail/callers/callees, file-tree-builder, retry route). P1-TEST-01..12 remain [ ]. Conclusion: Phase 1 implemented as specified; stub-only items and tests documented. |
 | 2026-02-17 | — | **Post-cleanup verification.** Removed 41 boilerplate files (old AppealGen/10XR template code) + 30 empty directories. Fixed `scripts/seed.ts` (referenced deleted `lib/templates/manager`). Fixed all ESLint errors: added `no-require-imports` override for lazy-init files, `caughtErrorsIgnorePattern` for catch blocks, import ordering, unused vars. Fixed Prisma 7 bug (prisma/prisma#28611) — `@prisma/adapter-pg` ignores `@@schema()` directives; workaround: set `search_path=unerr,public` on connection string. Regenerated Prisma client. Verified: `pnpm build` ✓ (21 routes), `pnpm test` ✓ (5 files, 29 tests including `file-tree-builder.test.ts`), `pnpm lint` ✓ (0 errors, 0 warnings). All tracker notes fields filled in. **Final tally: 42 [x], 3 [~] (SCIP/parseRest stubs), 12 [ ] (tests).** |
 | 2026-02-17 | — | **Post-signup flow: add repo first, optional org.** Removed requirement to create an org before connecting repos. New users see a **welcome screen** with two paths: (1) **Connect GitHub** — callback auto-creates organization (e.g. `{accountLogin}'s organization`) when user has no org, bootstraps ArangoDB, creates installation + repos, redirects to `/`; (2) **Start without GitHub** — server action creates empty organization, redirects to `/`. `/settings` and `/repos` redirect to `/` when user has no org. Added § Post-signup & organization provisioning, updated Flow 1 (precondition, diagram note, redirect to `/?connected=true`), P1-API-02 (auto-org in callback), P1-UI-01 (welcome screen, empty-state-no-org, create-org action). Phase 0 doc updated to match (Flow 2 = welcome screen, two scenarios). |
@@ -1652,3 +1718,5 @@ Steps are stored as a JSON array in `PipelineRun.steps` — each step has: `name
 | 2026-02-20 | — | **Remove "personal" context + user-driven repo selection.** (1) Removed `contextType` from `AccountProvider`; `activeOrgId` is `string` (never null), self-heals by auto-activating first org. Removed "Personal Account" from `UserProfileMenu`. (2) **Repos no longer auto-added on GitHub installation callback.** Callback only creates the `github_installations` record. Repos are added exclusively via user selection in the repo picker modal (`POST /api/repos`). Updated Flow 1 diagram and state changes. (3) Webhook `installation_repositories` event handler removed — repos only added when user explicitly requests. Updated P1-API-02, P1-API-07 tracker items. (4) `getActiveOrgId()` returns `string` (throws if missing). (5) `databaseHooks.user.create.after` retries with randomized slug on conflict. (6) Updated performance budget for callback (no repo inserts). |
 | 2026-02-20 | — | **Remove RepositorySwitcher + Docker DNS fix.** (1) `RepositorySwitcher` removed from sidebar layout — repos managed from dashboard page. Will be replaced by workspace selector in future phase. Updated P1-UI-01 tracker item. (2) Added `dns: [8.8.8.8, 8.8.4.4]` to `temporal-worker-heavy` and `temporal-worker-light` in `docker-compose.yml` — fixes "Can't reach database server" when light worker activities (`writeToArango`, `updateRepoError`) connect to cloud Supabase from Docker. |
 | 2026-02-23 | Claude | **Indexing pipeline enrichment — 6 improvements.** (1) **Doc comment extraction** (`lib/indexer/doc-extractor.ts` — new): Shared utility with `extractJSDocComment` (TS/JS `/** */` and `//` blocks), `extractPythonDocstring` (triple-quoted docstrings), `extractGoDocComment` (consecutive `//` lines). Integrated into all 3 parsers' post-pass functions and into `fillBodiesFromSource` (SCIP post-pass). Filters noise (<10 chars). The `doc` field on `ParsedEntity` was already defined but never populated. (2) **Function-level metadata**: Added `is_async`, `parameter_count`, `return_type`, `complexity` to `ParsedEntity` (`lib/indexer/types.ts`). TypeScript parser extracts from regex capture groups; Python parser excludes `self`/`cls` from param count, detects `async def`, parses `->` annotations; Go parser extracts params and multi-return types. Cyclomatic complexity estimated by counting branching constructs (baseline=1). Complexity calculated in each parser's body-extraction post-pass. (3) **Import edge enrichment**: TypeScript parser now extracts `import` statements as edges with `imported_symbols[]`, `import_type`, `is_type_only` metadata. `ParsedEdge` extended with index signature for metadata. `toEdgeDocs` preserves metadata via spread. Only internal imports create edges. (4) All new fields mapped through `toEntityDocs` and `toEdgeDocs` in `indexing-heavy.ts`. (5) **No schema changes required** — `EntityDoc` and `EdgeDoc` in `lib/ports/types.ts` use index signatures, so new fields flow through to ArangoDB without collection modifications. (6) Updated P1-API-14 notes. Files: `lib/indexer/doc-extractor.ts` (new), `lib/indexer/types.ts`, `lib/indexer/languages/typescript/tree-sitter.ts`, `lib/indexer/languages/python/tree-sitter.ts`, `lib/indexer/languages/go/tree-sitter.ts`, `lib/temporal/activities/indexing-heavy.ts`. Verified: `pnpm build` ✓, `pnpm test` ✓ (235 tests, 234 pass, 1 pre-existing drift-alert failure fixed separately). |
+| 2026-03-03 | Claude | **Phase 1 architecture audit pass — pipeline diagram + file inventory corrected.** (1) **Flow 3 pipeline diagram** corrected from 4 steps to 7+ steps: renamed `prepareWorkspace` → `prepareRepoIntelligenceSpace`, added `wipeRepoGraphData` (Step 1b, ArangoDB clean-replace before re-index), updated `runSCIP`/`parseRest` to show direct ArangoDB writes (not returning entity arrays to Temporal), replaced `writeToArango` with `finalizeIndexing`, added `precomputeBlastRadius` (Step 4b) and `computeTemporalAnalysis` (Step 4c — git co-change mining), added 3 fire-and-forget child workflows (`embedRepoWorkflow`, `syncLocalGraphWorkflow`, `detectPatternsWorkflow`). (2) **Activity table** updated: added `wipeRepoGraphData` (light-llm, 5 min), `precomputeBlastRadius` (light-llm, 10 min), `computeTemporalAnalysis` (heavy, 15 min); accurate timeouts and queues for all activities; added child workflow table with stable IDs and purposes. (3) **Progress tracking pseudocode** updated to match actual `indexRepoWorkflow` code: 7 steps, child workflow fire-and-forget, `progress = 95%` before child launch, `progress = 100%` after. (4) **Repo FSM transition table** corrected: `indexing → ready` trigger is `finalizeIndexing` (not `writeToArango`); `ready → indexing` mentions `wipeRepoGraphData` clean-replace. (5) **Terminology**: `Workspace` table entry updated from `prepareWorkspace` → `prepareRepoIntelligenceSpace`. (6) **Payload optimization callout** updated: clarified `writeToArango` is kept as legacy, `RunSCIPLightResult`/`ParseRestLightResult` are the current types, `RunSCIPResult`/`ParseRestResult` deprecated. (7) **Pipeline run tracking callout** added to Flow 3. (8) **New Files summary** corrected: removed all `(planned)` stubs — all listed files now exist on disk; added `lib/indexer/languages/` tree (TypeScript/Python/Go/generic parsers with SCIP runners + regex tree-sitter parsers + tests), `lib/indexer/git-analyzer.ts`, `lib/indexer/doc-extractor.ts`, `lib/indexer/monorepo.ts`, `lib/indexer/types.ts`; corrected activity files (`indexing-heavy.ts`, `indexing-light.ts`, `graph-analysis.ts`, `temporal-analysis.ts`, `pipeline-logs.ts`, `pipeline-run.ts`, `workspace-cleanup.ts`); added all workflow files (`embed-repo.ts`, `detect-patterns.ts`, `incremental-index.ts`, `sync-local-graph.ts`); removed `repository-switcher.tsx` (removed from sidebar). (9) **Modified Files** list updated: corrected registered activities for both workers. |
+

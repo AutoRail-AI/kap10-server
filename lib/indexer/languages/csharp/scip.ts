@@ -31,7 +31,7 @@ export async function runSCIPDotnet(
   opts: SCIPOptions,
   workspaceRoot: string,
 ): Promise<SCIPDotnetResult> {
-  const absRoot = join(opts.workspacePath, workspaceRoot === "." ? "" : workspaceRoot)
+  const absRoot = join(opts.indexDir, workspaceRoot === "." ? "" : workspaceRoot)
   const outputFile = join(absRoot, "index.scip")
 
   try {

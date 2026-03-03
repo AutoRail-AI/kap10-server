@@ -14,7 +14,7 @@ export const javaPlugin: LanguagePlugin = {
     const allEdges: import("../../types").ParsedEdge[] = []
     const allCoveredFiles: string[] = []
 
-    for (const root of opts.workspaceRoots) {
+    for (const root of opts.packageRoots) {
       const result = await runSCIPJava(opts, root)
       allEntities.push(...result.entities)
       allEdges.push(...result.edges)

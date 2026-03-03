@@ -9,8 +9,8 @@
 import type { ParsedEdge, ParsedEntity } from "../types"
 
 export interface SCIPOptions {
-  workspacePath: string
-  workspaceRoots: string[]
+  indexDir: string
+  packageRoots: string[]
   orgId: string
   repoId: string
 }

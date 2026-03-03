@@ -9,7 +9,6 @@
  *   LLM_MODEL_FAST          — Model for simple/cheap tasks
  *   LLM_MODEL_STANDARD      — Default model for most entities
  *   LLM_MODEL_PREMIUM       — Model for high-centrality / complex entities
- *   EMBEDDING_MODEL         — Bedrock embedding model
  */
 
 // ── Models ────────────────────────────────────────────────────────────────────
@@ -26,17 +25,12 @@ export const LLM_MODELS = {
   premium: process.env.LLM_MODEL_PREMIUM ?? "anthropic.claude-sonnet-4-20250514-v1:0",
 } as const
 
-/** Bedrock embedding model. */
-export const EMBEDDING_MODEL: string =
-  process.env.EMBEDDING_MODEL ?? "amazon.titan-embed-text-v2:0"
-
 // ── Costs ─────────────────────────────────────────────────────────────────────
 
 /** Per-token costs (USD) for billing estimation. Fallback: $1/$3 per 1M. */
 export const MODEL_COSTS: Record<string, { input: number; output: number }> = {
   "anthropic.claude-haiku-4-5-20251001-v1:0": { input: 0.80 / 1_000_000, output: 4.0 / 1_000_000 },
   "anthropic.claude-sonnet-4-20250514-v1:0": { input: 3.0 / 1_000_000, output: 15.0 / 1_000_000 },
-  "amazon.titan-embed-text-v2:0": { input: 0.02 / 1_000_000, output: 0 },
 }
 
 export const MODEL_COST_FALLBACK = { input: 1 / 1_000_000, output: 3 / 1_000_000 }
@@ -47,7 +41,6 @@ export const MODEL_COST_FALLBACK = { input: 1 / 1_000_000, output: 3 / 1_000_000
 export const MODEL_LIMITS: Record<string, { contextWindow: number; maxOutput: number }> = {
   "anthropic.claude-haiku-4-5-20251001-v1:0": { contextWindow: 200_000, maxOutput: 8192 },
   "anthropic.claude-sonnet-4-20250514-v1:0": { contextWindow: 200_000, maxOutput: 8192 },
-  "amazon.titan-embed-text-v2:0": { contextWindow: 8192, maxOutput: 0 },
 }
 
 export const MODEL_LIMITS_FALLBACK = { contextWindow: 200_000, maxOutput: 4096 }

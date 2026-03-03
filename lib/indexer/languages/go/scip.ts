@@ -32,7 +32,7 @@ export async function runSCIPGo(
   opts: SCIPOptions,
   workspaceRoot: string,
 ): Promise<SCIPGoResult> {
-  const absRoot = join(opts.workspacePath, workspaceRoot === "." ? "" : workspaceRoot)
+  const absRoot = join(opts.indexDir, workspaceRoot === "." ? "" : workspaceRoot)
   const outputFile = join(absRoot, "index.scip")
 
   try {

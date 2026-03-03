@@ -1,6 +1,6 @@
-# Phase 3: Light-compute Temporal worker (embedding, LLM, email, webhooks).
+# Phase 3: Light-compute Temporal worker (LLM, email, webhooks).
 # Needs: Node, pnpm, python3 (for sharp native addon build fallback).
-# Embedding model (nomic-embed-text-v1.5, ~500MB ONNX) is baked into the image layer.
+# Embeddings are handled by the TEI container via HTTP — no model in this image.
 FROM node:22-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,21 +25,5 @@ COPY . .
 
 # Generate Prisma client for the container's platform
 RUN pnpm prisma generate
-
-# Pre-download the embedding model so cold start is instant (~500MB ONNX model)
-# The model is cached at ~/.cache/huggingface/ inside the image layer
-RUN node -e " \
-  async function main() { \
-    const { pipeline, env } = await import('@xenova/transformers'); \
-    env.backends.onnx.wasm.numThreads = 1; \
-    const p = await pipeline('feature-extraction', 'nomic-ai/nomic-embed-text-v1.5'); \
-    const result = await p('warm-up test', { pooling: 'mean', normalize: true, truncation: true, max_length: 512 }); \
-    console.log('Model pre-downloaded. Output dims:', result.dims); \
-  } \
-  main().catch(e => { console.warn('Model pre-download skipped:', e.message); process.exit(0); }); \
-" || true
-
-# ONNX WASM config: single thread reduces memory pressure
-ENV ONNX_WASM_NUM_THREADS=1
 
 CMD ["pnpm", "temporal:worker:light"]

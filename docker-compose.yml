@@ -28,7 +28,7 @@ services:
     command: redis-server --appendonly yes
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -45,7 +45,7 @@ services:
       - arangodb_data:/var/lib/arangodb3
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "arangosh", "--server.password", "${ARANGO_ROOT_PASSWORD:-firstPassword12345}", "--javascript.execute-string", "db._version()"]
+      test: [ "CMD", "arangosh", "--server.password", "${ARANGO_ROOT_PASSWORD:-firstPassword12345}", "--javascript.execute-string", "db._version()" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -64,7 +64,7 @@ services:
       - postgresql_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -86,11 +86,59 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "nc", "-z", "temporal", "7233"]
+      test: [ "CMD", "nc", "-z", "temporal", "7233" ]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # TEI Embedding Server (nomic-embed-text-v1.5)
+  # Runs the embedding model in a dedicated container — the light worker calls it via HTTP.
+  # For GPU production, swap image tag from cpu-latest to latest (CUDA) or add --dtype float16.
+  tei:
+    profiles: [ "app", "worker" ]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    container_name: unerr-tei
+    ports:
+      - "8090:80"
+    volumes:
+      - tei_models:/data
+    command: --model-id nomic-ai/nomic-embed-text-v1.5 --port 80
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:80/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # TEI Reranker (BAAI/bge-reranker-v2-m3 — cross-encoder for search reranking)
+  # Optional: improves hybrid search precision by re-scoring RRF candidates.
+  # For GPU production, swap image tag from cpu-latest to latest (CUDA).
+  tei-reranker:
+    profiles: [ "app", "worker" ]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    container_name: unerr-tei-reranker
+    ports:
+      - "8091:80"
+    volumes:
+      - tei_reranker_models:/data
+    command: --model-id BAAI/bge-reranker-v2-m3 --port 80
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:80/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
   # Temporal UI (web dashboard for workflow visibility)
   temporal-ui:
@@ -108,7 +156,7 @@ services:
 
   # Next.js Application
   app:
-    profiles: ["app"]
+    profiles: [ "app" ]
     build: .
     container_name: unerr-app
     ports:
@@ -142,7 +190,7 @@ services:
   # network_mode: host — shares host network so workers can reach cloud Supabase/ArangoDB directly.
   # TEMPORAL_ADDRESS uses localhost since Docker DNS (service names) is unavailable in host mode.
   temporal-worker-heavy:
-    profiles: ["app", "worker"]
+    profiles: [ "app", "worker" ]
     build:
       context: .
       dockerfile: Dockerfile.heavy-worker
@@ -160,18 +208,18 @@ services:
       - path: .env.local
         required: false
     volumes:
-      - workspaces:/data/workspaces
+      - repo-indices:/data/repo-indices
     restart: unless-stopped
     extra_hosts:
-        - "host.docker.internal:host-gateway"
+      - "host.docker.internal:host-gateway"
     deploy:
       resources:
         limits:
           memory: 8G
 
-  # Temporal light-llm worker (embedding ONNX model, LLM calls, DB writes)
+  # Temporal light-llm worker (TEI embedding via HTTP, LLM calls, DB writes)
   temporal-worker-light:
-    profiles: ["app", "worker"]
+    profiles: [ "app", "worker" ]
     build:
       context: .
       dockerfile: Dockerfile.light-worker
@@ -182,8 +230,8 @@ services:
       - NODE_ENV=development
       - TEMPORAL_ADDRESS=localhost:7233
       - TASK_QUEUE=light-llm-queue
-      - NODE_OPTIONS=--max-old-space-size=4096 --expose-gc
-      - EMBEDDING_MAX_TOKENS=512
+      - NODE_OPTIONS=--max-old-space-size=4096
+      - TEI_URL=http://localhost:8090
     env_file:
       - path: .env
         required: false
@@ -191,15 +239,15 @@ services:
         required: false
     restart: unless-stopped
     extra_hosts:
-        - "host.docker.internal:host-gateway"
+      - "host.docker.internal:host-gateway"
     deploy:
       resources:
         limits:
-          memory: 6G
+          memory: 4G
 
   # MCP Server (Phase 2: standalone HTTP server for AI agents)
   mcp-server:
-    profiles: ["app", "mcp"]
+    profiles: [ "app", "mcp" ]
     build:
       context: .
       dockerfile: Dockerfile.mcp-server
@@ -228,12 +276,11 @@ services:
         limits:
           memory: 512M
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:8787/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      test: [ "CMD", "node", "-e", "fetch('http://localhost:8787/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))" ]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 10s
-
   # ── Optional debugging tools ───────────────────────────────────────
 
   # Redis Commander — uncomment to enable web UI at http://localhost:8081
@@ -252,4 +299,6 @@ volumes:
   redis_data:
   arangodb_data:
   postgresql_data:
-  workspaces:
+  repo-indices:
+  tei_models:
+  tei_reranker_models:

@@ -64,4 +64,13 @@ export interface IVectorSearch {
 
   /** Delete all justification embeddings for a repo (cleanup on re-justification). */
   deleteJustificationEmbeddings?(repoId: string): Promise<number>
+
+  // ── Cross-Encoder Reranking (Optional) ──────────────────────────────────────
+
+  /**
+   * Re-score (query, document) pairs using a cross-encoder model.
+   * Returns indices and scores sorted by relevance descending, sliced to topK.
+   * Optional — only available when TEI reranker container is running.
+   */
+  rerank?(query: string, documents: string[], topK: number): Promise<{ index: number; score: number }[]>
 }

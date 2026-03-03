@@ -18,7 +18,7 @@ export const typescriptPlugin: LanguagePlugin = {
     const allCoveredFiles: string[] = []
 
     // Run SCIP for each workspace root (monorepo support)
-    for (const root of opts.workspaceRoots) {
+    for (const root of opts.packageRoots) {
       const result = await runSCIPTypeScript(opts, root)
       allEntities.push(...result.entities)
       allEdges.push(...result.edges)

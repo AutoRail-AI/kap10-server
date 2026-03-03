@@ -114,7 +114,7 @@ Step  Actor Action                     System Action                            
         limit: 10
       })
 2                                      Hybrid search pipeline:                                  —
-                                       a) Embed query via nomic-embed-text (local, <50ms)
+                                       a) Embed query via nomic-embed-text (TEI HTTP, <50ms)
                                        b) pgvector: cosine similarity search (top 20)
                                        c) ArangoDB: fulltext search on entity names+bodies
                                           (top 20, includes workspace overlay if active)
@@ -228,8 +228,8 @@ The API route accepts `mode=hybrid|semantic|keyword` as a query parameter. The M
 │  │ fetchEntities│───▶│ buildDocuments   │───▶│ generateEmbeds             │  │
 │  │              │    │                  │    │                            │  │
 │  │ ArangoDB     │    │ Entity → text    │    │ nomic-embed-text-v1.5      │  │
-│  │ query        │    │ formatting       │    │ via @xenova/transformers   │  │
-│  │              │    │                  │    │ LOCAL CPU, $0, no limits   │  │
+│  │ query        │    │ formatting       │    │ via HuggingFace TEI (HTTP) │  │
+│  │              │    │                  │    │ Self-hosted, $0, no limits │  │
 │  └─────────────┘    └──────────────────┘    └────────────┬───────────────┘  │
 │                                                           │                  │
 │                                                           ▼                  │
@@ -318,22 +318,22 @@ LlamaIndex Document:
 | Criteria | nomic-embed-text-v1.5 | text-embedding-3-small (OpenAI) | text-embedding-3-large (OpenAI) |
 |----------|----------------------|--------------------------------|--------------------------------|
 | **Dimensions** | 768 | 1536 | 3072 |
-| **Cost per 1K tokens** | $0 (local CPU) | $0.00002 | $0.00013 |
+| **Cost per 1K tokens** | $0 (self-hosted TEI) | $0.00002 | $0.00013 |
 | **Quality (MTEB avg)** | 0.627 | 0.620 | 0.644 |
-| **Rate limits** | None (local) | 3000 RPM | 3000 RPM |
-| **Latency (single embed)** | ~15ms (CPU) | ~100ms (API) | ~120ms (API) |
-| **Batch throughput** | ~200 entities/sec (CPU) | ~30 entities/sec (rate limited) | ~25 entities/sec (rate limited) |
-| **Parallelism** | Unlimited (spawn workers) | Rate limited | Rate limited |
+| **Rate limits** | None (self-hosted) | 3000 RPM | 3000 RPM |
+| **Latency (single embed)** | ~10ms (TEI) | ~100ms (API) | ~120ms (API) |
+| **Batch throughput** | ~500+ entities/sec (TEI batching) | ~30 entities/sec (rate limited) | ~25 entities/sec (rate limited) |
+| **Parallelism** | Unlimited (TEI handles concurrency) | Rate limited | Rate limited |
 | **Privacy** | Code never leaves infra | Code sent to OpenAI API | Code sent to OpenAI API |
 
-**Decision: nomic-embed-text-v1.5 via `@xenova/transformers`.** Rationale:
+**Decision: nomic-embed-text-v1.5 via HuggingFace TEI (Text Embeddings Inference).** Rationale:
 1. **$0 cost** — embedding 50,000 entities costs nothing. OpenAI would cost ~$5-15 per repo depending on code density.
 2. **No rate limits** — can embed an entire repo in one batch without throttling. Critical for large monorepos.
 3. **Quality parity** — MTEB scores show nomic is competitive with OpenAI's small model and only slightly behind the large model. For code search (not general NLP), the difference is negligible.
 4. **Privacy** — source code never leaves the infrastructure. Enterprise customers care deeply about this.
-5. **Runs on CPU** — the Temporal `light-llm-queue` worker doesn't need a GPU. The model runs via ONNX runtime in `@xenova/transformers`.
+5. **TEI container** — the model runs in a dedicated HuggingFace TEI container (Rust-based, production-optimized). The light worker calls it via HTTP. TEI handles batching, GPU acceleration (swap `cpu-latest` to `latest` for CUDA), and concurrency natively. No ONNX/WASM memory management in the worker.
 
-**Forward-compatibility:** If a future phase requires higher-quality embeddings (e.g., for cross-language code search), the `IVectorSearch` port abstracts the embedding model. Swapping nomic for a different model requires changing one adapter — the pipeline, storage, and search logic remain identical.
+**Forward-compatibility:** If a future phase requires higher-quality embeddings (e.g., for cross-language code search), the `IVectorSearch` port abstracts the embedding model. Swapping nomic for a different model requires changing the TEI `--model-id` flag — the pipeline, storage, and search logic remain identical.
 
 ### Reciprocal Rank Fusion (RRF)
 
@@ -368,6 +368,46 @@ Return top `limit` entities
 **Exact match boost rationale:** In code search, an exact name match is almost always the correct answer. If a developer searches for `validatePayment` and ArangoDB finds a function literally named `validatePayment`, it should not have to compete with a semantically similar but differently-named function for the #1 spot. The boost score of `1.0` is intentionally much higher than any possible RRF score (the theoretical max for a dual-source rank-1 result is `2 * 1/(60+1) ≈ 0.033`). Multiple exact matches are all boosted and sorted alphabetically among themselves.
 
 **De-duplication:** An entity may appear in both keyword and semantic results. RRF naturally handles this — duplicates get a higher combined score (as intended). The merge step uses `entity_key` as the de-duplication key.
+
+### Cross-Encoder Reranking (Optional)
+
+After RRF merge, an optional cross-encoder reranking step re-scores the top candidates with higher-quality relevance estimates. While RRF is rank-based (it doesn't look at actual content relevance), a cross-encoder sees (query, document) pairs together, catching nuances that bi-encoders and keyword search miss: negation, argument order, fine-grained code semantics.
+
+**Model:** `BAAI/bge-reranker-v2-m3` served via a second TEI container on port 8091.
+
+**Pipeline insertion point:** After RRF merge, before graph enrichment. This re-scores candidates, then enriches only the best results (reducing graph lookups).
+
+```
+Algorithm: Cross-Encoder Reranking
+
+Input:
+  - candidates: RRF-merged results (top RERANKER_TOP_K, default 30)
+  - query: original search query
+
+Step 1 — Pin exact matches:
+  Entities with RRF score >= 1.0 (exact name match) are pinned at top.
+  These are excluded from reranking to prevent accidental downranking.
+
+Step 2 — Build compact descriptions:
+  For each non-pinned candidate, build: "{entityType}: {entityName} | {filePath}\n{signature}"
+  This fits within the cross-encoder's 512-token limit.
+
+Step 3 — Rerank:
+  POST to TEI reranker with (query, descriptions).
+  Replace RRF scores with cross-encoder scores.
+
+Step 4 — Merge:
+  Final results = pinned entries + reranked entries, sliced to limit.
+```
+
+**Graceful degradation:** If the reranker container is unavailable or errors, the pipeline falls back to RRF results with a `degraded.reranker` flag.
+
+**Reranker env vars:**
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `RERANKER_ENABLED` | `false` | Enable/disable cross-encoder reranking |
+| `TEI_RERANKER_URL` | `http://localhost:8091` | TEI reranker endpoint URL |
+| `RERANKER_TOP_K` | `30` | Candidates to retrieve per leg and rerank (higher = better quality, slower) |
 
 ### ArangoDB Fulltext Search
 
@@ -442,8 +482,8 @@ ON unerr.entity_embeddings (repo_id, entity_key);
 
 | # | Failure | Detection | Recovery | Impact |
 |---|---------|-----------|----------|--------|
-| 1 | **Model load failure** — `@xenova/transformers` fails to download or load `nomic-embed-text-v1.5` ONNX model on first run | Activity throws `ModelLoadError` | Temporal retries activity (3 retries, 30s backoff). Model is cached after first successful load in `~/.cache/huggingface`. Worker restart re-downloads if cache is corrupted. | First embed is ~30s slower (model download). Subsequent embeds use cached model. |
-| 2 | **OOM during embedding** — ONNX WASM attention matrices scale O(n²) with sequence length | Exit code 137 (OOM kill) → Temporal activity timeout | Prevented by design: single-doc inference with 512-token truncation caps WASM peak at ~200MB. `output.dispose()` frees tensors. `MAX_BODY_CHARS=2000` pre-truncates text. If OOM still occurs, reduce `EMBEDDING_MAX_TOKENS`. | Should not occur with current design. If it does, worker auto-restarts and Temporal retries. |
+| 1 | **TEI container unreachable** — TEI service not started or network failure | Activity throws connection error | Temporal retries activity (3 retries, 30s backoff). TEI has a healthcheck with 60s start period for model download on first run. Worker retries with exponential backoff (1s/3s/9s). | Embedding delayed until TEI is healthy. Docker Compose restart policy handles TEI crashes. |
+| 2 | **TEI returns 5xx** — TEI overloaded or internal error | HTTP 5xx from TEI `/embed` endpoint | Worker retries 3× with exponential backoff (1s/3s/9s). TEI handles batching natively — reduce `TEI_BATCH_SIZE` if TEI is memory-constrained. | Transient failures retried automatically. Sustained failures cause activity timeout → Temporal retry. |
 | 3 | **pgvector insert failure** — Supabase connection pool exhausted or transaction timeout | `PGVectorStore.add()` throws `ConnectionError` or `TimeoutError` | Temporal retries activity. Exponential backoff (1s, 2s, 4s). Connection pool has max 10 connections. If sustained, circuit breaker opens (fail-fast for 60s). | Embeddings delayed but not lost — entities are re-fetched and re-embedded on retry. |
 | 4 | **ArangoDB fulltext query timeout** — Complex fulltext query exceeds 5s timeout | Query timeout error from `arangojs` | Hybrid search degrades gracefully: return semantic-only results with a `_meta.degraded: true` flag. Log warning for monitoring. | User gets semantic results only. Keyword results omitted. UX is degraded but functional. |
 | 5 | **Stale embeddings after re-index** — Entities deleted in ArangoDB but embeddings remain in pgvector | Orphaned rows detected by `deleteOrphanedEmbeddings` step | The `embedRepoWorkflow` always runs `deleteOrphanedEmbeddings` as its final activity. This compares current ArangoDB entity keys against pgvector entity keys and deletes orphans. | Search may briefly return stale results during the re-embed window. Acceptable — eventual consistency. |
@@ -480,21 +520,21 @@ Degraded mode 3 — Both search backends unavailable:
 Degraded mode 4 — Graph enrichment unavailable:
   semantic + keyword → RRF merge → truncation → response (without callers/callees)
   → _meta.degraded: { graphEnrichment: false, reason: "ArangoDB graph timeout" }
+
+Degraded mode 5 — Reranker unavailable (RERANKER_ENABLED=true):
+  semantic + keyword → RRF merge → [reranker fails] → use RRF results → graph enrichment
+  → _meta.degraded: { reranker: "Cross-encoder reranking failed: ..." }
 ```
 
 **Implementation:** Each leg of the pipeline runs with an independent timeout (semantic: 3s, keyword: 3s, graph enrichment: 2s). If a leg times out, the pipeline continues with available results. The `_meta.degraded` field in the MCP response tells the agent which data sources were unavailable.
 
-### Embedding Model Caching
+### Embedding Model Lifecycle (TEI Container)
 
-The `nomic-embed-text-v1.5` ONNX model (~500 MB) is downloaded on first use and cached in the worker's filesystem at `~/.cache/huggingface/`. In Docker:
+The `nomic-embed-text-v1.5` model runs in a dedicated **HuggingFace TEI** (Text Embeddings Inference) container. TEI downloads the model on first start and caches it in a Docker volume (`tei_models`).
 
-- **Development:** Cache is ephemeral (container restart re-downloads). Acceptable for dev.
-- **Production:** The model is baked into the Docker image during build (`Dockerfile.light-worker` runs a warm-up step that pre-downloads the model). This eliminates cold-start latency.
-
-```
-# In Dockerfile.light-worker (Phase 3 addition)
-RUN node -e "const { pipeline } = require('@xenova/transformers'); pipeline('feature-extraction', 'nomic-ai/nomic-embed-text-v1.5')"
-```
+- **Development:** `docker compose --profile worker up -d` starts TEI alongside the light worker. Model persists across restarts via the `tei_models` volume.
+- **Production:** TEI manages its own model lifecycle. For GPU acceleration, swap the image tag from `cpu-latest` to `latest` (CUDA) or add `--dtype float16`.
+- **Light worker:** No model baked into the worker image. The worker calls TEI via HTTP (`TEI_URL`, default `http://localhost:8090`). Worker memory reduced from 6G to 4G.
 
 ---
 
@@ -504,44 +544,45 @@ RUN node -e "const { pipeline } = require('@xenova/transformers'); pipeline('fea
 
 | Operation | Target | Bottleneck | Mitigation |
 |-----------|--------|------------|------------|
-| **Single entity embedding** | <50ms | ONNX inference on CPU | Single-doc inference with 512-token truncation. nomic-embed-text-v1.5 optimized for CPU via ONNX. |
-| **Batch embedding (10 entities)** | <500ms | Sequential single-doc inference in `@xenova/transformers` | Each entity embedded individually to prevent ONNX WASM OOM. |
+| **Single entity embedding** | <50ms | TEI HTTP call | Single request to TEI `/embed` endpoint. TEI handles tokenization and inference. |
+| **Batch embedding (10 entities)** | <100ms | TEI native batching | Batch of 10 sent in single HTTP request. TEI processes concurrently in Rust. |
 | **Full repo embedding (5K entities)** | <5 min | Total inference time + pgvector insert | ~500 entities per activity × 10 activities. Each activity processes 5 files. |
 | **Full repo embedding (50K entities — large monorepo)** | <30 min | Total inference + insert at scale | Fan-out across Temporal activities with 5 files per batch. |
 | **Semantic search (pgvector)** | <100ms | pgvector ANN search + SQL overhead | HNSW index. For repos <100K entities, exact search is <50ms. |
 | **Keyword search (ArangoDB)** | <50ms | Fulltext index query | ArangoDB fulltext index already optimized in Phase 2. |
 | **Hybrid search (full pipeline)** | <300ms | Serial: embed query + pgvector + ArangoDB + RRF + graph enrichment | Parallelize pgvector and ArangoDB queries (Promise.all). Graph enrichment batches N-hop lookups. |
-| **Query embedding** | <50ms | Single-vector inference with 512-token truncation | Trivial — one forward pass of the embedding model. |
+| **Hybrid search (with reranker)** | <500ms | Full pipeline + cross-encoder rerank (30 candidates) | Reranker adds ~100-200ms. CPU-only TEI. GPU drops to ~20ms. |
+| **Query embedding** | <50ms | Single TEI HTTP request with truncation | Trivial — one HTTP call to TEI `/embed`. |
 | **Dashboard search (E2E)** | <500ms | API route + hybrid search + JSON serialization | Client-side debounce (300ms) prevents excessive queries during typing. Server cache (Redis) for repeated queries. |
 
-### Memory Budget (OOM-safe design)
+### Memory Budget (TEI-based design)
 
-ONNX attention matrices scale **O(n²)** with sequence length. At 8192 tokens, a single inference allocates ~1.7GB per attention layer. To prevent OOM (exit code 137), the embedding pipeline enforces strict memory bounds:
+With the migration to TEI, embedding inference is offloaded to a dedicated container. The light worker no longer loads the ~500MB ONNX model in-process or manages WASM memory.
 
 | Component | Memory | Notes |
 |-----------|--------|-------|
-| nomic-embed-text-v1.5 ONNX model (loaded) | ~500 MB | Loaded once per worker process, shared across all embedding operations |
-| Single-doc ONNX inference (512 tokens) | ~200 MB peak | Attention: `12 × 512² × 4B = 12MB/layer`. Freed after each doc via `output.dispose()`. |
-| Entity document text | ~2 KB | `MAX_BODY_CHARS=2000` (~500 tokens). Tokenizer truncates to `EMBEDDING_MAX_TOKENS=512`. |
+| TEI container (separate) | ~2 GB limit | Runs nomic-embed-text-v1.5 in Rust. Handles batching, tokenization, inference. Model cached in `tei_models` Docker volume. |
+| HTTP request/response payload | ~1 MB peak | Batch of 32 texts (~2KB each) + response vectors |
 | pgvector connection pool | ~10 MB | 5 connections × ~1 MB each |
-| Worker base overhead | ~300 MB | Node.js + Temporal SDK + WASM runtime |
+| Worker base overhead | ~200 MB | Node.js + Temporal SDK (no WASM runtime) |
 
-**Total light-llm-queue worker memory (Phase 3):** ~1 GB baseline + ~200 MB peak during inference. Container limit: 6 GB (generous headroom).
+**Total light-llm-queue worker memory (Phase 3):** ~300 MB baseline. Container limit: 4 GB (down from 6 GB — no ONNX overhead).
 
-**Key memory safety rules:**
-1. **Single-doc inference** — never batch multiple docs through ONNX (quadratic attention memory)
-2. **512-token truncation** — `truncation: true, max_length: 512` on every `pipe()` call
-3. **Tensor disposal** — `output.dispose()` after every `tolist()` extraction
-4. **WASM single-thread** — `env.backends.onnx.wasm.numThreads = 1`
-5. **Explicit GC** — `global.gc()` every 5 docs and between activity batches
-6. **File fallback** — files with no code entities get a file-level embedding (path + name)
+**Key design principles:**
+1. **TEI handles batching** — texts sent in batches of `TEI_BATCH_SIZE` (default 32) via HTTP. TEI processes them concurrently in Rust.
+2. **TEI handles truncation** — `truncate: true` in the request body. No tokenizer management in the worker.
+3. **No model in worker** — no ONNX download, no WASM threads, no session rotation, no manual GC.
+4. **File fallback** — files with no code entities get a file-level embedding (path + name)
 
 **Embedding env vars:**
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `EMBEDDING_MAX_TOKENS` | `512` | Max tokens per ONNX inference call |
+| `TEI_URL` | `http://localhost:8090` | TEI endpoint URL |
+| `TEI_BATCH_SIZE` | `32` | Max texts per HTTP batch to TEI |
 | `EMBEDDING_DIMENSIONS` | `768` | Target dimensions (Matryoshka truncation) |
-| `EMBEDDING_MODEL_NAME` | `nomic-ai/nomic-embed-text-v1.5` | ONNX model |
+| `TEI_RERANKER_URL` | `http://localhost:8091` | TEI reranker endpoint URL (optional) |
+| `RERANKER_ENABLED` | `false` | Enable cross-encoder reranking after RRF merge |
+| `RERANKER_TOP_K` | `30` | Candidates per leg / rerank pool size |
 
 **Supabase storage:** Each embedding row is ~3.1 KB (768 float32 values = 3072 bytes + metadata ~100 bytes). A 10K-entity repo requires ~31 MB of pgvector storage. A 50K-entity repo requires ~155 MB. Supabase Pro plans include 8 GB of database storage — this comfortably supports hundreds of repos.
 
@@ -552,7 +593,7 @@ ONNX attention matrices scale **O(n²)** with sequence length. At 8192 tokens, a
 | **Query embeddings** | Redis | 1 hour | Same query text → same vector. Cache key: `embed:query:{sha256(query)}` |
 | **Search results** | Redis | 5 minutes | Cache key: `search:{orgId}:{repoId}:{sha256(query)}:{mode}`. Invalidated on repo re-index (embed workflow completion publishes cache-bust event). |
 | **Graph enrichment data** | Redis | 10 minutes | Cache key: `graph:enrichment:{orgId}:{entityKey}`. Invalidated on entity change. |
-| **ONNX model** | Filesystem | Permanent | Baked into Docker image. Only changes on worker image rebuild. |
+| **TEI model** | Docker volume (`tei_models`) | Permanent | Downloaded by TEI on first start. Persists across container restarts. |
 
 **Cache-busting on re-embed:** When `embedRepoWorkflow` completes, it publishes a cache invalidation event: `cacheStore.deletePattern("search:{orgId}:{repoId}:*")`. This ensures stale search results are never served after re-indexing.
 
@@ -580,7 +621,7 @@ Phase 3 establishes the semantic search foundation that Phase 4 (Business Justif
 | **Entity embeddings (pgvector)** | Phase 4's `justifyRepoWorkflow` uses entity embeddings to find semantically related entities when building context for LLM justification. The `buildEmbeddableDocuments()` function also enriches entity embedding text with justification context (purpose, domain concepts, feature tag) when justifications are available from a previous run. |
 | **Hybrid search pipeline** | Phase 3's hybrid search (`semantic_search` MCP tool) queries `entity_embeddings` only. Phase 4 adds a separate `search_by_purpose` MCP tool that queries the dedicated `justification_embeddings` table via `searchJustificationEmbeddings()`. These are independent search paths — no shared filtering logic. |
 | **IVectorSearch port** | Phase 4 extends the port with 3 optional methods: `upsertJustificationEmbeddings()`, `searchJustificationEmbeddings()`, `deleteJustificationEmbeddings()`. These target the dedicated `unerr.justification_embeddings` table. The Phase 3 methods (`upsert`, `search`, `getEmbedding`, `deleteOrphaned`) remain unchanged and continue to target `unerr.entity_embeddings`. |
-| **nomic-embed-text model** | Phase 4 reuses the same local ONNX embedding model for justification text. Same `embed()` method, same memory-safe single-doc processing. The model is shared — only the storage destination differs. |
+| **nomic-embed-text model** | Phase 4 reuses the same TEI embedding service for justification text. Same `embed()` method, same HTTP-based batching. The model is shared — only the storage destination differs. |
 
 ### Phase 3 / Phase 4 Table Separation
 
@@ -621,25 +662,28 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ### Environment & Configuration
 
-- [x] **P3-INFRA-01: Add embedding model env vars to `env.mjs`** — S
-  - New variables: `EMBEDDING_MODEL_NAME` (default: `"nomic-ai/nomic-embed-text-v1.5"`), `EMBEDDING_DIMENSIONS` (default: `768`), `EMBEDDING_MAX_TOKENS` (default: `512`)
+- [x] **P3-INFRA-01: Add TEI embedding env vars to `env.mjs`** — S
+  - Variables: `TEI_URL` (default: `http://localhost:8090`), `TEI_BATCH_SIZE` (default: `32`), `EMBEDDING_DIMENSIONS` (default: `768`)
   - All optional with defaults — no breaking change to existing deployments
+  - **Migrated:** Replaced `EMBEDDING_MODEL_NAME`, `EMBEDDING_BATCH_SIZE`, `EMBEDDING_MAX_TOKENS` with TEI-based config. Model is now configured on the TEI container, not in the app.
   - **Test:** `pnpm build` succeeds. Embedding pipeline uses defaults when vars are absent.
   - **Depends on:** Nothing
   - **Files:** `env.mjs`, `.env.example`
   - Notes: _____
 
-- [x] **P3-INFRA-02: Pre-download embedding model in `Dockerfile.light-worker`** — S
-  - Add warm-up step to `Dockerfile.light-worker` that downloads `nomic-embed-text-v1.5` ONNX model into the image layer
-  - Eliminates cold-start latency (model download is ~500 MB, takes 30-60s on first run without this)
-  - **Test:** `docker compose build temporal-worker-light` succeeds. Inside container: model files exist at `~/.cache/huggingface/`. Embedding a test string returns a 768-dim vector without network calls.
+- [x] **P3-INFRA-02: Add TEI container to `docker-compose.yml`** — S
+  - TEI container (`ghcr.io/huggingface/text-embeddings-inference:cpu-latest`) runs `nomic-embed-text-v1.5` on port 8090
+  - Model cached in `tei_models` Docker volume — persists across restarts
+  - Light worker Dockerfile simplified: removed ONNX model pre-download, removed `ONNX_WASM_NUM_THREADS` env, removed `@xenova/transformers` dependency
+  - Light worker memory limit reduced from 6G to 4G
+  - **Test:** `docker compose --profile worker up -d` starts TEI. `curl http://localhost:8090/health` returns OK. Embedding a test string returns a 768-dim vector.
   - **Depends on:** Nothing
-  - **Files:** `Dockerfile.light-worker` (or equivalent light worker Dockerfile)
+  - **Files:** `docker-compose.yml`, `Dockerfile.light-worker`
   - Notes: _____
 
-- [x] **P3-INFRA-03: Update `.env.example` with Phase 3 variables** — S
-  - Add: `EMBEDDING_MODEL_NAME`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_BATCH_SIZE`
-  - Document: comment block explaining local embedding model (no API key needed)
+- [x] **P3-INFRA-03: Update `.env.example` with TEI variables** — S
+  - Add: `TEI_URL`, `TEI_BATCH_SIZE`, `EMBEDDING_DIMENSIONS`
+  - Document: comment block explaining TEI container (no API key needed, model managed by TEI)
   - **Test:** `cp .env.example .env.local` + fill → app starts with embedding pipeline functional.
   - **Depends on:** P3-INFRA-01
   - **Files:** `.env.example`
@@ -691,18 +735,18 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
 
 ## 2.3 Ports & Adapters Layer
 
-- [x] **P3-ADAPT-01: Implement `IVectorSearch.embed()` with nomic-embed-text** — M
-  - Implement the `embed(texts: string[]): Promise<number[][]>` method using `@xenova/transformers` HuggingFaceEmbedding
-  - Model: `nomic-ai/nomic-embed-text-v1.5` (768 dimensions native, ONNX runtime, CPU)
+- [x] **P3-ADAPT-01: Implement `IVectorSearch.embed()` with TEI HTTP** — M
+  - Implement the `embed(texts: string[]): Promise<number[][]>` method using HTTP calls to TEI `/embed` endpoint
+  - Model: `nomic-ai/nomic-embed-text-v1.5` (768 dimensions native, served by TEI container)
   - **Critical: Nomic task prefixes** — `embed()` prepends `search_document: ` to all texts; `embedQuery()` prepends `search_query: `. These asymmetric bi-encoder prefixes are **required** for correct cosine similarity. Without them, retrieval quality is severely degraded.
   - **Matryoshka truncation** — Supports dynamic dimension reduction via `EMBEDDING_DIMENSIONS` env var. Vectors are sliced to target dims and re-normalized. Default 768; set to 256 for ~66% storage savings with negligible quality loss.
-  - Batch processing: handle arrays up to 100 texts
-  - Error handling: wrap `@xenova/transformers` errors in domain-specific `EmbeddingError`
+  - Batch processing: texts batched into `TEI_BATCH_SIZE` chunks (default 32) via HTTP
+  - Error handling: retry with backoff on 5xx/network errors (3 attempts, 1s/3s/9s delays)
   - **Test:** `embed(["hello world"])` returns a `number[]` of length `EMBEDDING_DIMENSIONS`. `embed(["a", "b"])` returns 2 vectors. Cosine similarity between "authentication" and "auth middleware" > 0.7.
-  - **Depends on:** P3-INFRA-01
+  - **Depends on:** P3-INFRA-01, P3-INFRA-02
   - **Files:** `lib/adapters/llamaindex-vector-search.ts`
-  - **Acceptance:** Local CPU embedding produces consistent vectors with task prefixes. No API calls made. Model cached after first load. Matryoshka truncation works at 256/384/512/768 dims.
-  - Notes: Nomic prefixes applied exclusively in adapter layer — activities pass raw text.
+  - **Acceptance:** TEI-based embedding produces consistent vectors with task prefixes. No in-process model. Matryoshka truncation works at 256/384/512/768 dims.
+  - Notes: Nomic prefixes applied exclusively in adapter layer — activities pass raw text. `@xenova/transformers` dependency removed.
 
 - [x] **P3-ADAPT-02: Implement `IVectorSearch.upsert()` with pgvector direct SQL** — M
   - Implement the `upsert(ids: string[], embeddings: number[][], metadata: Record<string, unknown>[]): Promise<void>` method using direct `pg` Pool SQL (not LlamaIndex PGVectorStore — avoids abstraction overhead)
@@ -792,7 +836,7 @@ The `entity_embeddings` Prisma model is designed for Phase 5's incremental re-em
   - For each file: fetch entities → build docs (MAX_BODY_CHARS=2000) → embed one-at-a-time (512-token truncation) → store in pgvector
   - Files with no code entities get a file-level fallback embedding (path + name) — ensures every file is searchable
   - Report progress via Temporal heartbeat with RSS memory info
-  - `output.dispose()` after each ONNX inference, `global.gc()` every 5 docs
+  - Texts batched to TEI via HTTP in chunks of `TEI_BATCH_SIZE` (default 32)
   - **Test:** 10 files with 5 entities → 5 embeddings stored. Files with only `file` kind → 1 fallback embedding. OOM impossible with 512-token truncation.
   - **Depends on:** P3-ADAPT-01, P3-API-03
   - **Files:** `lib/temporal/activities/embedding.ts`, `lib/adapters/llamaindex-vector-search.ts`
@@ -1182,9 +1226,10 @@ supabase/
 lib/di/fakes.ts                       ← Update InMemoryVectorSearch with working embed/search/upsert
 lib/ports/vector-search.ts            ← Verify interface matches implementation needs (no changes expected)
 prisma/schema.prisma                  ← EntityEmbedding model, RepoStatus enum extension
-env.mjs                               ← EMBEDDING_MODEL_NAME, EMBEDDING_DIMENSIONS, EMBEDDING_BATCH_SIZE
-.env.example                          ← Document Phase 3 variables
-Dockerfile.light-worker               ← Model pre-download warm-up step
+env.mjs                               ← TEI_URL, TEI_BATCH_SIZE, EMBEDDING_DIMENSIONS
+.env.example                          ← Document TEI embedding variables
+docker-compose.yml                    ← TEI container service (nomic-embed-text-v1.5)
+Dockerfile.light-worker               ← Simplified (no model pre-download, no ONNX env)
 components/dashboard/repos-list.tsx   ← Embedding status on repo card
 components/dashboard/repo-card.tsx    ← Embedding progress indicator
 app/(dashboard)/layout.tsx            ← Global search bar integration

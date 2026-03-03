@@ -18,13 +18,7 @@
   - [1.3 Reliability & Resilience](#13-reliability--resilience)
   - [1.4 Performance Considerations](#14-performance-considerations)
   - [1.5 Phase Bridge → Phase 1](#15-phase-bridge--phase-1)
-- [Part 2: Implementation & Tracing Tracker](#part-2-implementation--tracing-tracker)
-  - [2.1 Infrastructure Layer](#21-infrastructure-layer)
-  - [2.2 Database & Schema Layer](#22-database--schema-layer)
-  - [2.3 Ports & Adapters Layer](#23-ports--adapters-layer)
-  - [2.4 Backend / API Layer](#24-backend--api-layer)
-  - [2.5 Frontend / UI Layer](#25-frontend--ui-layer)
-  - [2.6 Testing & Verification](#26-testing--verification)
+- [Part 2: Remaining Tasks](#part-2-remaining-tasks)
 
 ---
 
@@ -57,16 +51,9 @@ Step  Actor Action                System Action                                 
                                   render dashboard (repos list or empty-state-repos)
 ```
 
-**Critical decision — What happens between step 3 and step 4?**
+**Email verification enforcement — Strategy A (implemented):** `proxy.ts` calls `auth.api.getSession()` which returns `session.user.emailVerified`. If `false` and the path is not in `publicPaths`, the request is redirected to `/verify-email`. The `cookieCache` (5 minutes in `auth.ts`) prevents this session lookup from becoming a per-request DB query. OAuth exemption: if `listUserAccounts()` finds a Google or GitHub provider account, the redirect does not apply — OAuth providers already verify email. The exemption is implemented in `proxy.ts` with a `hasOAuthAccount` check after the `emailVerified === false` condition.
 
-The user has a session cookie but `emailVerified = false`. Phase 0 must decide on one of two strategies:
-
-| Strategy | Behavior | Trade-off |
-|----------|----------|-----------|
-| **A: Block at proxy** | `proxy.ts` checks `emailVerified` via a lightweight session lookup. Unverified users are redirected to `/verify-email` on every protected route. | Extra DB call per request (mitigated by `cookieCache: 5min`). Clean enforcement. |
-| **B: Soft block in UI** | Let the user through to the dashboard but show a banner: "Verify your email to continue." Disable interactive elements. | No extra proxy logic. But if we forget to guard an API route, an unverified user can act. |
-
-**Recommendation: Strategy A.** It is the safer default — enforcement at the perimeter, not scattered across UI components. The `cookieCache` (already configured at 5 minutes in `auth.ts`) prevents the session lookup from becoming a per-request DB query. Implementation detail: `proxy.ts` calls `auth.api.getSession()` which returns `session.user.emailVerified`. If false and path is not `/verify-email` or `/api/auth/*`, redirect to `/verify-email`.
+**Public paths (no auth required):** `/login`, `/register`, `/verify-email`, `/api/auth`, `/api/webhooks`, `/api/health`, `/api/cli`.
 
 ### Flow 2: Verified User → Dashboard (Auto-Provisioned Organization)
 
@@ -92,18 +79,18 @@ Step  Actor Action                System Action                                 
 
 **Important — unerr organization ≠ GitHub organization:** "Organization" in unerr is the account-level tenant, created at signup from the **user's name** (`"{name}'s organization"`). It has no relationship to any GitHub account or organization name. GitHub accounts/orgs connect to a unerr org as **installations** (stored in `unerr.github_installations` with `accountLogin` for the GitHub name). One unerr org can have multiple GitHub connections. See [PHASE_1 § Terminology](./PHASE_1_GITHUB_CONNECT_AND_INDEXING.md#terminology-organization-workspace-and-github-disambiguation) for the full disambiguation.
 
-A personal organization is **auto-provisioned on signup** via Better Auth `databaseHooks.user.create.after` — direct INSERT into `organization` + `member` tables using Better Auth's `generateId()`. No welcome screen or manual org creation step is needed.
+A personal organization is **auto-provisioned on signup** via Better Auth `databaseHooks.user.create.after` — direct INSERT into `organization` + `member` tables using Better Auth's `generateId()`. The hook retries with a randomized slug on slug conflict. No welcome screen or manual org creation step is needed.
 
 **Two user scenarios:**
 
 | Scenario | Path | Outcome |
-|----------|------|---------|
+|----------|------|---------||
 | **User has GitHub repos** | Dashboard → Connect GitHub → install App → callback → "Add Repository" → select repos → choose branch per repo → Connect & Index | GitHub installation attached to auto-provisioned organization. Repos are **not** auto-imported — user selects which repos to add via the repo picker modal. |
 | **Local-only / code not on GitHub yet** | Dashboard | User sees empty-state-repos with "Connect GitHub" CTA for later. |
 
 **Key nuance — ArangoDB org bootstrap:**
 
-ArangoDB bootstrap (`createOrgUseCase()`) is triggered on first repo connect or via `/api/org/bootstrap`. The signup hook only creates the Better Auth org + member records (no ArangoDB dependency). This ensures signup never fails due to ArangoDB downtime.
+ArangoDB bootstrap (`createOrgUseCase()`) is triggered on first repo connect or via `/api/org/bootstrap`. The signup hook only creates the Better Auth org + member records (no ArangoDB dependency). This ensures signup never fails due to ArangoDB downtime. The bootstrap is global (not per-org): `bootstrapGraphSchema()` creates the shared collections and indexes once for the database; it does not create per-org collections. Tenant isolation is provided by the `org_id` field on every document, backed by a persistent compound index `[org_id, repo_id]`.
 
 ### Flow 3: Returning User → Dashboard (With Organization)
 
@@ -128,11 +115,7 @@ Step  Actor Action                System Action                                 
 6     Click "Connect GitHub"      GET /api/github/install → redirect to GitHub             Redis: state token
 ```
 
-**UserProfileMenu replaces the old static user info.** It provides:
-- Organization switching — persisted via Better Auth `setActive`. No "personal" context; users always have an active organization.
-- Dark/light mode toggle (via `next-themes`)
-- Navigation to Settings, sign out
-- Placeholder items: Help & Support, Upgrade Plan
+**UserProfileMenu:** Provides organization switching (persisted via Better Auth `setActive`), dark/light mode toggle (via `next-themes`), navigation to Settings, sign out, and placeholder items for Help & Support and Upgrade Plan. No "personal" context exists; users always have an active organization. `AccountProvider` self-heals by auto-activating the first org if none is active. `activeOrgId` is always `string` (never null); server pages throw errors instead of silently redirecting when no org is found.
 
 ---
 
@@ -163,31 +146,28 @@ Phase 0 introduces a **four-store architecture**. Understanding what lives where
                     └──────────────────────────────────────────────────┘
 ```
 
-### Phase 0 Schema Changes
+### Phase 0 Schema — Prisma-Managed Tables
 
-**Supabase (via Prisma):**
-
-Phase 0 introduces Prisma as the ORM layer *on top of* the existing Supabase database. The Prisma schema must **coexist** with Better Auth's table management. Better Auth creates its own tables (`user`, `session`, `account`, `verification`, `organization`, `member`, `invitation`). Prisma should NOT try to manage those tables — it references them via `@@map` and `@@ignore` as needed.
-
-New Prisma-managed tables for Phase 0:
+All unerr-managed Supabase tables live in PostgreSQL schema **`unerr`** (multi-app same project). Better Auth tables (`user`, `session`, `account`, `verification`, `organization`, `member`, `invitation`) remain in `public` and are NOT managed by Prisma. The schema for the two Phase 0 tables:
 
 ```
-Table: repos
+Table: repos (@@schema("unerr"), @@map("repos"))
   ├── id              UUID (PK, default uuid)
   ├── organization_id VARCHAR (FK → organization.id)
   ├── name            VARCHAR
   ├── full_name       VARCHAR (e.g., "org/repo-name")
-  ├── provider        ENUM ("github")      -- future: gitlab, bitbucket
+  ├── provider        ENUM ("github", "local_cli")
   ├── provider_id     VARCHAR              -- GitHub repo ID
-  ├── status          ENUM ("pending", "indexing", "ready", "error", "deleting")
+  ├── status          ENUM ("pending", "indexing", "ready", "error", "deleting",
+  │                         "justifying", "justify_failed")
   ├── default_branch  VARCHAR (default "main")
   ├── last_indexed_at TIMESTAMPTZ (nullable)
   ├── created_at      TIMESTAMPTZ (default now)
   └── updated_at      TIMESTAMPTZ (auto-update)
-  INDEX: (organization_id)
   UNIQUE: (organization_id, provider, provider_id)
+  INDEX: (organization_id)
 
-Table: deletion_logs
+Table: deletion_logs (@@schema("unerr"), @@map("deletion_logs"))
   ├── id                UUID (PK, default uuid)
   ├── organization_id   VARCHAR
   ├── repo_id           VARCHAR (nullable — null for org-level deletion)
@@ -198,62 +178,62 @@ Table: deletion_logs
   ├── status            ENUM ("pending", "in_progress", "completed", "failed")
   └── error_message     TEXT (nullable)
   INDEX: (organization_id)
-  INDEX: (status) WHERE status != 'completed'  -- partial index for audit queries
+  INDEX: (status)
 ```
 
-**ArangoDB:**
+**Note:** The `repos` table has accumulated several additional fields beyond Phase 0 scope as later phases were implemented: `webhookSecret`, `incrementalEnabled` (Phase 5), `localCliUploadPath`, `ephemeral`, `ephemeralExpiresAt` (Phase 5.5/5.6), reindexing state fields, and relations to `Workspace` and `GraphSnapshotMeta`. The Prisma schema is the authoritative source for the current full table structure.
 
-Phase 0 creates the empty schema — all document and edge collections with tenant isolation indexes. No data is written yet (that's Phase 1). The schema is defined above in Flow 2, step 4.
+**Prisma + Better Auth coexistence strategy:**
 
-**Critical: The Prisma + Better Auth coexistence strategy:**
+1. Better Auth tables: NOT included in Prisma schema for migration purposes.
+2. App tables (repos, deletion_logs, etc.): Fully managed by Prisma / `supabase/migrations/`.
+3. `prisma.config.ts` loads `.env.local` first, then `.env`, and appends `search_path=unerr,public` to the DB URL (required Prisma 7 workaround — Prisma ignores the `schemas` config during queries without an explicit `search_path`).
+4. Prisma is used solely as an ORM (`prisma generate`); there is no `prisma/migrations/` directory. All DDL lives in `supabase/migrations/`.
 
-Better Auth manages its tables via its own migration system. Prisma manages app-specific tables. They share the same Supabase PostgreSQL database. The strategy:
+### DI Container Initialization
 
-1. Better Auth tables: DO NOT include in Prisma schema for migration purposes. If Prisma needs to read from them (e.g., join repos to organizations), define them with `@@ignore` or use raw SQL through Prisma's `$queryRaw`.
-2. App tables (repos, deletion_logs, etc.): Fully managed by Prisma migrations.
-3. Migration order: Better Auth migrations run first (on app startup via `betterAuth()` initialization), then Prisma migrations (`pnpm migrate`).
-
-### DI Container Initialization Flow
-
-The DI container is the single source of truth for all adapters. It must be initialized once per process lifecycle (not per request).
+The DI container is the single source of truth for all adapters. It is initialized lazily once per process lifecycle via `getContainer()`.
 
 ```
 Process Start (Next.js server / Temporal worker)
     │
-    ├── instrumentation.ts runs
-    │     └── Initializes OpenTelemetry + Langfuse span processor
+    ├── instrumentation.ts runs (registerOTel("next-app") — Vercel OTel only)
     │
-    ├── Container initialization (lazy, on first use)
-    │     └── createProductionContainer()
-    │           ├── ArangoGraphStore: connect to ArangoDB, verify unerr_db exists
-    │           ├── PrismaRelationalStore: Prisma client (auto-connects on first query)
-    │           ├── VercelAIProvider: no initialization needed (stateless)
-    │           ├── TemporalWorkflowEngine: Temporal client connection
-    │           ├── GitHubHost: Octokit with app credentials
-    │           ├── LlamaIndexVectorSearch: pgvector connection via Prisma
-    │           ├── StripePayments: Stripe client (lazy proxy)
-    │           ├── LangfuseObservability: Langfuse client
-    │           ├── RedisCacheStore: ioredis connection
-    │           ├── SCIPCodeIntelligence: no initialization (CLI binary)
-    │           └── SemgrepPatternEngine: no initialization (CLI binary)
-    │
-    └── Container is available via getContainer() singleton
+    └── Container initialization (lazy, on first use via getContainer())
+          └── createLazyProductionContainer()
+                Adapters are loaded via require() on first property access:
+                ├── ArangoGraphStore        → IGraphStore
+                ├── PrismaRelationalStore   → IRelationalStore
+                ├── BedrockProvider         → ILLMProvider  (AWS Bedrock via Vercel AI SDK)
+                ├── TemporalWorkflowEngine  → IWorkflowEngine
+                ├── GitHubHost              → IGitHost       (Octokit + simple-git)
+                ├── LlamaIndexVectorSearch  → IVectorSearch
+                ├── StripePayments          → IBillingProvider
+                ├── LangfuseObservability   → IObservability
+                ├── RedisCacheStore         → ICacheStore
+                ├── SCIPCodeIntelligence    → ICodeIntelligence
+                ├── SemgrepPatternEngine    → IPatternEngine
+                └── SupabaseStorageAdapter  → IStorageProvider  (12th port)
 ```
 
-**How use cases access the container:**
+**12 ports, all implemented.** The container grew to 12 ports during Phase 0 implementation with the early addition of `IStorageProvider` (backing the CLI-based local repo upload path via Supabase Storage pre-signed URLs).
 
-Use cases are NOT classes with injected constructors. They are plain functions that receive the container (or the specific ports they need) as arguments. This keeps them testable without class instantiation ceremony.
-
-```
-// Pseudo-code — use case function signature pattern
-FUNCTION indexRepo(graphStore: IGraphStore, gitHost: IGitHost, repoUrl: string):
-    // ...business logic using only port interfaces
-```
-
-In API routes, the container is accessed via a lazy singleton:
+**Use cases are plain functions** that receive the container (or specific ports) as arguments — no class instantiation ceremony, maximally testable:
 
 ```
-// Pseudo-code — API route
+FUNCTION createOrgUseCase(container, { organizationId, name }):
+    TRY:
+        container.graphStore.bootstrapGraphSchema()  -- global, idempotent
+        RETURN { organizationId, name, arangoBootstrapped: true }
+    CATCH error:
+        LOG "[createOrgUseCase] ArangoDB bootstrap failed:" error.message
+        -- Org already created in Supabase; Phase 1 re-bootstraps on first repo connect
+        RETURN { organizationId, name, arangoBootstrapped: false }
+```
+
+**How API routes access the container:**
+
+```
 HANDLER GET /api/repos:
     container = getContainer()
     repos = await container.relationalStore.getRepos(orgId)
@@ -264,7 +244,7 @@ HANDLER GET /api/repos:
 
 ## 1.3 Reliability & Resilience
 
-Phase 0 establishes foundational connections to four external systems: Supabase, ArangoDB, Temporal, and Redis. Each can fail independently. The resilience strategy per system:
+Phase 0 establishes foundational connections to four external systems: Supabase, ArangoDB, Temporal, and Redis. Each can fail independently.
 
 ### Connection Failure Matrix
 
@@ -275,9 +255,9 @@ Phase 0 establishes foundational connections to four external systems: Supabase,
 | **Temporal** | Server unreachable, namespace not found | Workflow execution fails, but in Phase 0 no workflows are triggered | Same as ArangoDB. Health check returns `degraded`. Workers log warning and retry connection every 30s. | Phase 0: tolerable. Phase 1+: 0 |
 | **Redis** | Connection refused, timeout | Session cache fails (falls back to DB), rate limiting disabled | ioredis `lazyConnect: true` + `enableOfflineQueue: false`. If Redis is down, the app continues but sessions hit Supabase on every request (performance degradation, not failure). | Degraded (perf hit only) |
 
-### Health Check Endpoint Design
+### Health Check Endpoint — Implemented Design
 
-The existing `/api/health` must be expanded to check all four systems. The response should report each system independently:
+`GET /api/health` checks all five systems in parallel using `Promise.allSettled()`. Each check has a 2-second timeout; the total health budget is 5 seconds. if the total check exceeds 5 seconds, a warning is logged (no failure).
 
 ```
 GET /api/health
@@ -297,28 +277,24 @@ Response shape:
 
 Logic:
   IF supabase.down → status = "unhealthy" (HTTP 503)
-  ELSE IF any other system down → status = "degraded" (HTTP 200)
+  ELSE IF arangodb.down OR temporal.down OR redis.down → status = "degraded" (HTTP 200)
   ELSE → status = "healthy" (HTTP 200)
-  Note: langfuse.status = "unconfigured" (env vars missing) is treated as "up" for
-  overall status — it's optional infrastructure, not a failure.
+  Note: langfuse.status = "unconfigured" is treated as healthy for overall status.
+  Note: langfuse.status = "down" does NOT count as "any other down" — it is optional.
 ```
 
-**Why Supabase is the only "unhealthy" trigger:** In Phase 0, the user cannot sign up, log in, or do anything without Supabase. ArangoDB and Temporal have no user-facing functionality yet. Redis degradation is a performance issue, not a functional one.
-
-**Health check latency budget:** Each check must timeout at 2 seconds. The total health check must respond within 5 seconds (container orchestrators like ECS/Kubernetes use this for liveness probes). Use `Promise.allSettled()` to run checks in parallel.
+Implementation uses `withTimeout()` helper that races a check against a 2-second rejection and falls back to `{ status: "down" }` on timeout or error.
 
 ### Graceful Degradation Rules
 
 | Scenario | User-Visible Behavior | System Behavior |
-|----------|----------------------|-----------------|
-| ArangoDB down during org creation | Org created in Supabase successfully. ArangoDB bootstrap fails silently. | Log error. Queue a retry. Phase 1 will re-bootstrap on first repo connect. |
+|----------|----------------------|-----------------||
+| ArangoDB down during org creation | Org created in Supabase successfully. ArangoDB bootstrap fails silently. | Log error. Return success from use case. Phase 1 will re-bootstrap on first repo connect. |
 | Redis down | App works normally but slower. Session checks hit Supabase directly. | Log warning. Disable rate limiting (fail-open). |
 | Temporal down | No user impact in Phase 0. | Log warning. Workers will reconnect automatically when Temporal comes back. |
 | Supabase down | 503 on all protected routes. Login/register fail. | Health check returns "unhealthy". Alert fires. No fallback possible. |
 
 ### Adapter Error Handling Contract
-
-Every adapter method must follow this error contract (enforced by convention, verified in code review):
 
 ```
 RULE: Adapter methods MUST:
@@ -347,12 +323,12 @@ Phase 0's critical paths are auth and page loads. Target latencies:
 | `POST /api/auth/sign-in/email` | < 400ms | Supabase lookup (~30ms) + password verify (~200ms) + session create (~50ms) | Password verification (bcrypt/argon2 by design). Cannot be faster without weakening security. |
 | `GET /` (dashboard, authenticated) | < 300ms | proxy.ts session check (~5ms cached, ~50ms uncached) + server component render (~50ms) + org/repos query (~30ms) | First load after cache expires. The 5-minute `cookieCache` in Better Auth config is the mitigation. |
 | `POST /api/auth/organization/create` | < 500ms | Supabase org insert (~50ms) + ArangoDB bootstrap (~100ms) + membership create (~50ms) | ArangoDB collection/index verification. This is idempotent and fast after first run. |
-| `GET /api/health` | < 2000ms | 4 parallel checks (max 2s each) | ArangoDB cold connection. First health check after deploy may be slow. |
+| `GET /api/health` | < 2000ms | 5 parallel checks (max 2s each) | ArangoDB cold connection. First health check after deploy may be slow. |
 
 ### Connection Pool Sizing
 
 | System | Pool Size | Rationale |
-|--------|----------|-----------|
+|--------|----------|-----------||
 | Supabase (pg Pool) | 10 connections | Next.js in dev runs a single process. In production (serverless), each Lambda gets its own pool — keep small to avoid exhausting Supabase's connection limit (default: 60 for free tier, 200 for pro). |
 | ArangoDB | 5 connections | Phase 0 has no graph queries. Phase 1+ will need more. Start conservative. |
 | Redis (ioredis) | 1 connection (multiplexed) | ioredis uses a single TCP connection with command pipelining. No pool needed. |
@@ -360,36 +336,29 @@ Phase 0's critical paths are auth and page loads. Target latencies:
 
 ### Cold Start Mitigation
 
-In serverless deployments (Vercel), every Lambda invocation may cold-start. The DI container must not add significant cold-start latency.
+In serverless deployments (Vercel), every Lambda invocation may cold-start. The DI container uses lazy proxies — no eager connections. First request pays connection cost (~200ms for Supabase, ~100ms for ArangoDB). Subsequent requests reuse connections (Lambda is warm for ~5 minutes). Health check is NOT a good warm-up target (it eagerly connects all systems).
 
-```
-Mitigation strategy:
-  1. Container uses lazy proxies — no eager connections
-  2. First request pays connection cost (~200ms for Supabase, ~100ms for ArangoDB)
-  3. Subsequent requests reuse connections (Lambda is warm for ~5 minutes)
-  4. Health check is NOT a good warm-up target (it eagerly connects all systems)
-
-For Temporal workers (long-running processes, not serverless):
-  - Workers connect eagerly on startup
-  - Retry connection with exponential backoff (Temporal SDK handles this)
-  - No cold-start concern
-```
+For Temporal workers (long-running processes, not serverless): workers connect eagerly on startup, retry with exponential backoff (Temporal SDK handles this), no cold-start concern.
 
 ### Memory Considerations for Docker Compose
 
 > **Observed (2026-02-17):** Temporal server uses ~227 MB, Temporal UI uses ~30 MB, PostgreSQL (local persistence) is also running.
 
-| Service | Memory Limit | Actual (observed) | Rationale |
-|---------|-------------|-------------------|-----------|
-| `app` | 512 MB | — (runs outside Docker in dev) | Next.js dev server with Turbopack |
-| `temporal` | 512 MB | ~227 MB | Temporal server (`auto-setup:1.24.2`, backed by local PostgreSQL) |
-| `temporal-ui` | 128 MB | ~30 MB | Static web UI (`ui:2.31.2`) |
-| `postgresql` | 512 MB | — | Local PostgreSQL 13 for Temporal persistence |
-| `temporal-worker-heavy` | 256 MB (Phase 0 — no heavy work yet) | — (not yet running) | Will need 8 GB in Phase 1+ for SCIP |
-| `temporal-worker-light` | 128 MB (Phase 0 — no LLM calls yet) | — (not yet running) | Will need 512 MB in Phase 4+ |
-| `arangodb` | 1 GB | — (not yet running) | ArangoDB's RocksDB engine needs memory for write buffers |
-| `redis` | 128 MB | — | Minimal data in Phase 0 |
-| **Total** | ~3.2 GB | — | Fits on an 8 GB dev machine with headroom |
+| Service | Memory Limit | Notes |
+|---------|-------------|-------|
+| `app` | — (runs outside Docker in dev) | Next.js dev server with Turbopack; Docker `app` profile available |
+| `temporal` | — (no explicit limit) | `temporalio/auto-setup:1.24.2`, ~227 MB observed; backed by local PostgreSQL |
+| `temporal-ui` | — (no explicit limit) | `temporalio/ui:2.31.2`, ~30 MB observed |
+| `postgresql` | — (no explicit limit) | `pgvector/pgvector:pg13` — local PostgreSQL for Temporal persistence only |
+| `temporal-worker-heavy` | 8 GB | Separate `Dockerfile.heavy-worker`; needs headroom for SCIP indexing |
+| `temporal-worker-light` | 4 GB | Separate `Dockerfile.light-worker`; needs headroom for embedding batches |
+| `tei` | 2 GB | `ghcr.io/huggingface/text-embeddings-inference:cpu-latest`; nomic-embed-text-v1.5 |
+| `tei-reranker` | 2 GB | Same TEI image; BAAI/bge-reranker-v2-m3 cross-encoder for search reranking |
+| `arangodb` | — (no explicit limit) | `arangodb/arangodb:3.12`; RocksDB engine needs memory for write buffers |
+| `redis` | — (no explicit limit) | `redis:7-alpine`; minimal data in Phase 0 |
+| `mcp-server` | 512 MB | Phase 2 MCP HTTP server on port 8787 |
+
+**Worker networking:** Both temporal workers use `network_mode: host` so they can reach cloud Supabase and ArangoDB directly without Docker DNS resolution failures. `TEMPORAL_ADDRESS=localhost:7233` (not `temporal:7233`) is used as a result.
 
 ---
 
@@ -402,11 +371,12 @@ Everything Phase 0 builds must support Phase 1 without refactoring. Here's the e
 ### What Phase 1 Inherits
 
 | Phase 0 Artifact | Phase 1 Usage |
-|------------------|--------------|
+|------------------|--------------||
 | `IGraphStore` port + `ArangoGraphStore` adapter | Phase 1 calls `bulkUpsertEntities()` and `bulkUpsertEdges()` to write SCIP output |
 | `IWorkflowEngine` port + `TemporalWorkflowEngine` adapter | Phase 1 starts `indexRepoWorkflow` via `workflowEngine.startWorkflow()` |
 | `IGitHost` port + `GitHubHost` adapter | Phase 1 calls `cloneRepo()` and `listFiles()` |
-| `heavy-compute-queue` Temporal worker | Phase 1 runs `prepareWorkspace` and `runSCIP` activities on this queue |
+| `ICodeIntelligence` port + `SCIPCodeIntelligence` adapter | Phase 1 Temporal activities call `indexWorkspaceFull()` |
+| `heavy-compute-queue` Temporal worker | Phase 1 runs `prepareRepoIntelligenceSpace` and `runSCIP` activities on this queue |
 | `light-llm-queue` Temporal worker | Phase 1 runs `writeToArango` activity on this queue |
 | `repos` Prisma table | Phase 1 writes repo records with `status: "indexing"` → `"ready"` |
 | Dashboard shell with empty state | Phase 1 replaces empty state with repo cards showing indexing progress |
@@ -415,381 +385,197 @@ Everything Phase 0 builds must support Phase 1 without refactoring. Here's the e
 
 ### What Phase 0 Must NOT Do
 
-To avoid Phase 1 refactoring, Phase 0 must respect these constraints:
-
-1. **Do NOT hard-code any adapter.** Every external call goes through the container. If Phase 0 writes a health check that directly imports `arangojs`, Phase 1 can't test the health check without a running ArangoDB.
-2. **Do NOT create ArangoDB collections dynamically per-org.** The multi-tenancy model is pool-based (single `unerr_db`, `org_id` on every document). Creating the collections is a one-time operation (in `bootstrapOrgInGraphStore`), not a per-org operation.
-3. **Do NOT put org creation logic in the API route handler.** Extract it into a use case (`createOrgUseCase`) that takes the container as a dependency. Phase 1 will extend this use case to also trigger GitHub App installation.
-4. **Migrations live in `supabase/migrations/` only.** The custom runner (`scripts/migrate.ts`) applies SQL files in order. Prisma is used solely as an ORM (`prisma generate`); there is no `prisma/migrations/` directory. Schema changes go in new SQL files under `supabase/migrations/`.
-5. **Do NOT couple the dashboard layout to "zero repos" state.** The layout must work identically with 0, 1, or 100 repos. The empty state is a conditional render, not a separate page.
-
-### Seam Points for Phase 1
-
-These are the exact integration points where Phase 1 plugs in:
-
-```
-Seam 1: Dashboard "Connect Repository" button
-  Phase 0: Disabled button with tooltip
-  Phase 1: Opens GitHub OAuth flow → repo selection modal
-
-Seam 2: Repos list (dashboard home + /repos)
-  Phase 0: Empty state component with CTA
-  Phase 1: Fetches repos from Prisma, renders cards with status badges
-
-Seam 3: Org settings
-  Phase 0: Shows org name, members (from Better Auth plugin)
-  Phase 1: Adds "Connected Repos" section with disconnect buttons
-
-Seam 4: Temporal workers
-  Phase 0: Workers start, connect, register queues, idle (no workflows to process)
-  Phase 1: Workers receive indexRepoWorkflow tasks
-
-Seam 5: ArangoDB
-  Phase 0: Collections created, indexes verified, zero documents
-  Phase 1: writeToArango activity populates collections with SCIP-extracted entities + edges
-```
+1. **Do NOT hard-code any adapter.** Every external call goes through the container.
+2. **Do NOT create ArangoDB collections dynamically per-org.** The multi-tenancy model is pool-based (single `unerr_db`, `org_id` on every document). Creating the collections is a one-time global operation.
+3. **Do NOT put org creation logic in the API route handler.** Extract it into a use case (`createOrgUseCase`) that takes the container as a dependency.
+4. **Migrations live in `supabase/migrations/` only.** Prisma is used solely as an ORM (`prisma generate`); there is no `prisma/migrations/` directory.
+5. **Do NOT couple the dashboard layout to "zero repos" state.** The layout must work identically with 0, 1, or 100 repos.
 
 ---
 
-# Part 2: Implementation & Tracing Tracker
-
-> **Status Key:** `[ ]` = Not started | `[~]` = In progress | `[x]` = Complete | `[!]` = Blocked
->
-> **Each item includes:** Testing criteria, estimated complexity (S/M/L), and a notes field for tracing blockers.
-
----
+# Part 2: Architecture — Implementation
 
 ## 2.1 Infrastructure Layer
 
-### Docker Compose Expansion
+### Docker Compose
 
-> **Status Note (2026-02-17):** Temporal server, Temporal UI, Redis, and a local PostgreSQL instance are already running in Docker. Config values added to `.env.local`. The running containers are:
->
-> | Container | Image | Port | Memory | Status |
-> |-----------|-------|------|--------|--------|
-> | `temporal` | `temporalio/auto-setup:1.24.2` | 7233 | ~227 MB | Running |
-> | `ui` (Temporal UI) | `temporalio/ui:2.31.2` | 8080 | ~30 MB | Running |
-> | `postgresql` | `postgres:13` | 5432 | — | Running |
-> | `redis` | `redis:7-alpine` | 6379 | — | Running (already in docker-compose.yml) |
+The `docker-compose.yml` defines the following services:
 
-- [x] **Add ArangoDB service to `docker-compose.yml`** — S
-  - Image: `arangodb/arangodb:3.12`
-  - Port: 8529 (web UI + API)
-  - Volume: `arangodb_data:/var/lib/arangodb3`
-  - Environment: `ARANGO_ROOT_PASSWORD` from `.env.local`
-  - Health check: `arangosh --server.password $password --javascript.execute-string "db._version()"`
-  - **Test:** `docker compose up arangodb` starts cleanly. Web UI accessible at `localhost:8529`.
-  - Notes: Implemented 2026-02-17. Service added with healthcheck.
+**Always-started infrastructure (no profile required):**
 
-- [x] **Add Temporal server service** — M
-  - Image: `temporalio/auto-setup:1.24.2` (pinned, not `:latest`)
-  - Port: 7233 (gRPC)
-  - Uses local PostgreSQL (`postgres:13` on port 5432) as persistence store
-  - Health check: `temporal operator cluster health`
-  - **Test:** ~~`docker compose up temporal` starts. `temporal operator namespace describe default` returns.~~
-  - Notes: Running. ~227 MB memory, 1.38% CPU. Connected to local PostgreSQL for persistence.
+| Service | Image | Port | Volume | Health Check |
+|---------|-------|------|--------|-------------|
+| `redis` | `redis:7-alpine` | 6379 | `redis_data:/data` | `redis-cli ping` |
+| `arangodb` | `arangodb/arangodb:3.12` | 8529 | `arangodb_data` | `arangosh db._version()` |
+| `postgresql` | `pgvector/pgvector:pg13` | 5432 | `postgresql_data` | `pg_isready -U postgres` |
+| `temporal` | `temporalio/auto-setup:1.24.2` | 7233 | — | `nc -z temporal 7233` |
+| `temporal-ui` | `temporalio/ui:2.31.2` | 8080 | — | — |
 
-- [x] **Add Temporal UI service** — S
-  - Image: `temporalio/ui:2.31.2` (pinned)
-  - Port: 8080
-  - Environment: `TEMPORAL_ADDRESS=temporal:7233`
-  - Depends on: `temporal`
-  - **Test:** ~~Web UI loads at `localhost:8080`. Default namespace visible.~~
-  - Notes: Running. ~30 MB memory. Accessible at `localhost:8080`.
+**Profile `app` or `worker` (explicit start required):**
 
-- [x] **Add Temporal heavy-compute worker service** — M
-  - Build from project root, custom entrypoint: `pnpm temporal:worker:heavy`
-  - No exposed ports
-  - Environment: `TEMPORAL_ADDRESS=temporal:7233` in Docker, `TASK_QUEUE=heavy-compute-queue`
-  - Depends on: `temporal`
-  - Memory limit: 256 MB (Phase 0 — no actual work)
-  - **Test:** Worker connects, registers on `heavy-compute-queue`. Temporal UI shows worker in queue.
-  - Notes: Implemented 2026-02-17. `scripts/temporal-worker-heavy.ts` with retry; service in docker-compose.
+| Service | Image / Dockerfile | Port | Memory | Notes |
+|---------|-------------------|------|--------|-------|
+| `tei` | `ghcr.io/huggingface/text-embeddings-inference:cpu-latest` | 8090 | 2 GB | nomic-embed-text-v1.5 |
+| `tei-reranker` | Same TEI image | 8091 | 2 GB | BAAI/bge-reranker-v2-m3 |
+| `temporal-worker-heavy` | `Dockerfile.heavy-worker` | — | 8 GB | `network_mode: host`; `NODE_OPTIONS=--max-old-space-size=6144` |
+| `temporal-worker-light` | `Dockerfile.light-worker` | — | 4 GB | `network_mode: host`; `NODE_OPTIONS=--max-old-space-size=4096`; `TEI_URL=http://localhost:8090` |
 
-- [x] **Add Temporal light-llm worker service** — M
-  - Same as heavy worker but `TASK_QUEUE=light-llm-queue`
-  - Memory limit: 128 MB
-  - **Test:** Worker registers on `light-llm-queue`. Temporal UI confirms.
-  - Notes: Implemented 2026-02-17. `scripts/temporal-worker-light.ts` with retry.
+**Profile `app` only:**
 
-- [x] **Update `.env.example` with new variables** — S (partially done)
-  - Already configured in `.env.local`: `TEMPORAL_ADDRESS`, `REDIS_URL`
-  - Still needed in `.env.example`: `ARANGODB_URL`, `ARANGODB_DATABASE`, `ARANGODB_ROOT_PASSWORD`, `TEMPORAL_ADDRESS`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_BASEURL`
-  - **Test:** `cp .env.example .env.local` + fill values → `docker compose up` succeeds.
-  - Notes: Implemented 2026-02-17.
+| Service | Dockerfile | Port | Memory | Notes |
+|---------|-----------|------|--------|-------|
+| `app` | `Dockerfile` | 3000 | — | Hot reload via `WATCHPACK_POLLING=true` |
 
-- [x] **Add `pnpm temporal:worker:heavy` and `pnpm temporal:worker:light` scripts to `package.json`** — S
-  - Both use `tsx` to run TypeScript worker entry points
-  - **Test:** `pnpm temporal:worker:heavy` starts without error (may fail to connect if Temporal isn't running — that's expected).
-  - Notes: Implemented 2026-02-17.
+**Profile `app` or `mcp`:**
 
-- [x] **Redis service in `docker-compose.yml`** — S
-  - Already present in `docker-compose.yml` (`redis:7-alpine`, port 6379, AOF persistence)
-  - Health check configured (`redis-cli ping`)
-  - Notes: Pre-existing. No changes needed.
+| Service | Dockerfile | Port | Memory | Health Check |
+|---------|-----------|------|--------|-------------|
+| `mcp-server` | `Dockerfile.mcp-server` | 8787 | 512 MB | `fetch http://localhost:8787/health` |
 
-### E2E Test Framework Setup
+Redis persistence: AOF enabled (`redis-server --appendonly yes`). ArangoDB health check uses `arangosh` with the `ARANGO_ROOT_PASSWORD` env var. Temporal depends on `postgresql` (condition: `service_healthy`) before starting.
 
-- [x] **Verify Playwright is installed and scaffolded with browser binaries** — S
-  - Playwright is already a devDependency (`@playwright/test`). Ensure browser binaries are installed: `pnpm exec playwright install --with-deps chromium`.
-  - Confirm `playwright.config.ts` has a `baseURL` pointing to `localhost:3000` and a `webServer` block that starts the dev server before E2E runs.
-  - Add `pnpm exec playwright install` to the Docker Compose `app` entrypoint or CI pipeline so browser binaries are available in every environment where E2E tests run.
-  - **Test:** `pnpm e2e:headless` runs the existing example spec without "browser not found" errors.
-  - Notes: Implemented. `playwright.config.ts` has `baseURL: "http://127.0.0.1:3000"` and `webServer: { command: "pnpm dev", url: "http://127.0.0.1:3000", reuseExistingServer: !process.env.CI }`. Example spec at `e2e/example.spec.ts`. Run `pnpm exec playwright install` (or `--with-deps chromium`) once per environment; CI/Docker can add this to entrypoint when E2E runs in pipeline.
+### Package Scripts
+
+`package.json` scripts for Temporal workers:
+- `pnpm temporal:worker:heavy` — starts `scripts/temporal-worker-heavy.ts` via `tsx` with exponential backoff (1s→60s)
+- `pnpm temporal:worker:light` — starts `scripts/temporal-worker-light.ts` with the same retry behavior
+
+### E2E Test Framework
+
+Playwright is installed as a devDependency. `playwright.config.ts` has `baseURL: "http://127.0.0.1:3000"` and `webServer: { command: "pnpm dev", url: "http://127.0.0.1:3000", reuseExistingServer: !process.env.CI }`. Run `pnpm exec playwright install` (or `--with-deps chromium`) once per environment.
 
 ---
 
 ## 2.2 Database & Schema Layer
 
-**Rule: Supabase schema for unerr.** All unerr-managed Supabase tables live in PostgreSQL schema **`unerr`** (multi-app same project). Use `schemas = ["public", "unerr"]` and `@@schema("unerr")` on every unerr model/enum; table names stay unprefixed (e.g. `repos`, `deletion_logs`). See VERTICAL_SLICING_PLAN.md § Storage & Infrastructure Split.
-
 ### Prisma Setup
 
-- [x] **Initialize Prisma with Supabase PostgreSQL** — M
-  - `pnpm add -D prisma && pnpm add @prisma/client`
-  - `prisma/schema.prisma` with `provider = "postgresql"`; URL in `prisma.config.ts` via `SUPABASE_DB_URL`
-  - **Test:** `pnpm prisma generate` succeeds.
-  - Notes: Implemented 2026-02-17. Prisma 7 uses prisma.config.ts for datasource URL. Updated 2026-02-20: `prisma.config.ts` loads `.env.local` first (Next.js convention), then `.env`; appends `search_path=unerr,public` to DB URL (Prisma 7 bug workaround — Prisma ignores `schemas` config during queries without explicit search_path).
+Prisma 7 is initialized with `prisma/schema.prisma` (`provider = "postgresql"`). The datasource URL is configured in `prisma.config.ts` via the `SUPABASE_DB_URL` environment variable. `prisma.config.ts` loads `.env.local` first then `.env`; it appends `search_path=unerr,public` to the DB URL to work around a Prisma 7 bug where the `schemas` config setting is ignored during queries.
 
-- [x] **Define `repos` table in Prisma schema** — S
-  - Fields as specified in §1.2 (id, organization_id, name, full_name, provider, provider_id, status, default_branch, last_indexed_at, timestamps)
-  - Status enum: `pending`, `indexing`, `ready`, `error`, `deleting`; **schema:** `@@schema("unerr")`, **table:** `@@map("repos")`
-  - **Test:** `pnpm prisma generate` succeeds. Table in Supabase as `unerr.repos`.
-  - Notes: Implemented 2026-02-17. Consolidated into `supabase/migrations/00002_unerr_schema.sql`.
+All unerr models use `@@schema("unerr")`. Prisma manages app-specific tables only; Better Auth tables remain in `public`. Both use the same Supabase PostgreSQL database.
 
-- [x] **Define `deletion_logs` table in Prisma schema** — S
-  - Fields as specified in §1.2; **schema:** `@@schema("unerr")`, **table:** `@@map("deletion_logs")`
-  - Index on `status` for audit queries
-  - **Test:** Migration runs. Insert a test row and query it.
-  - Notes: Implemented 2026-02-17. Same migration as repos; both live in schema `unerr`.
-
-- [x] **Verify Better Auth table coexistence** — M
-  - After Prisma migration, confirm Better Auth tables (`user`, `session`, `account`, `verification`, `organization`, `member`, `invitation`) remain in `public`
-  - Confirm Prisma can read from Better Auth tables via `$queryRaw` if needed
-  - **Test:** Sign up a user via the existing auth flow → verify it still works after Prisma migration.
-  - Notes: Unerr app tables live in schema `unerr` (`unerr.repos`, `unerr.deletion_logs`); Better Auth tables stay in `public`.
+Running `pnpm prisma generate` produces the Prisma Client. Schema changes are applied via SQL files under `supabase/migrations/` (via `scripts/migrate.ts`), not via Prisma's own migration system.
 
 ### ArangoDB Schema Bootstrap
 
-- [x] **Implement `bootstrapGraphSchema()` function** — M
-  - Creates all document collections: `repos`, `files`, `functions`, `classes`, `interfaces`, `variables`, `patterns`, `rules`, `snippets`, `ledger`
-  - Creates all edge collections: `contains`, `calls`, `imports`, `extends`, `implements`
-  - Creates persistent index `[org_id, repo_id]` on every collection
-  - Idempotent — safe to run multiple times
-  - **Test:** Call twice in sequence. Second call is a no-op. All collections and indexes exist in ArangoDB web UI.
-  - Notes: Implemented 2026-02-17 in `lib/adapters/arango-graph-store.ts`. Creates DB if missing, then collections/indexes.
+`ArangoGraphStore.bootstrapGraphSchema()` in `lib/adapters/arango-graph-store.ts` does the following — idempotently, safe to call multiple times:
 
-- [x] **Wire `bootstrapGraphSchema()` into app startup** — S
-  - Runs on first org creation via `createOrgUseCase` → `container.graphStore.bootstrapGraphSchema()` (not at app startup; on demand so ArangoDB down does not block startup).
-  - **Test:** Create org → ArangoDB collections visible. Stop ArangoDB → app still starts (degraded).
-  - Notes: Bootstrap runs when user creates org (POST /api/org/bootstrap after Better Auth create).
+```
+FUNCTION bootstrapGraphSchema():
+    db = await getDbAsync()  -- creates DB "unerr_db" if missing
+    FOR each collection in documentCollections:
+        ["repos", "files", "functions", "classes", "interfaces",
+         "variables", "patterns", "rules", "snippets", "ledger"]
+        IF collection does not exist: db.createCollection(name)
+    FOR each collection in edgeCollections (type 3):
+        ["contains", "calls", "imports", "extends", "implements"]
+        IF collection does not exist: db.createEdgeCollection(name)
+    FOR each collection (doc + edge):
+        ensure persistent index on [org_id, repo_id]
+```
+
+This runs on first org creation via `createOrgUseCase` → `/api/org/bootstrap`, not at app startup. ArangoDB downtime during org creation is tolerated — the use case logs the error and returns success (Phase 1 re-bootstraps on first repo connect).
 
 ---
 
 ## 2.3 Ports & Adapters Layer
 
-### Port Interfaces (11 ports)
+### Port Interfaces (12 ports)
 
-- [x] **`lib/ports/types.ts`** — Domain types shared across all ports — M
-  - `EntityDoc`, `EdgeDoc`, `RuleDoc`, `PatternDoc`, `SnippetDoc`, `FeatureDoc`, `BlueprintData`
-  - `OrgContext` (orgId, repoId, userId, sessionId)
-  - `TokenUsage`, `WorkflowHandle`, `WorkflowStatus`
-  - `ImpactResult`, `RuleFilter`, `PatternFilter`, `SnippetFilter`
-  - **Test:** Types compile. No runtime behavior to test.
-  - Notes: Implemented 2026-02-17. All types used by port interfaces.
+All 12 port interfaces are implemented in `lib/ports/`:
 
-- [x] **`lib/ports/graph-store.ts`** — `IGraphStore` interface — S
-  - All methods as defined in VERTICAL_SLICING_PLAN.md §5; includes `bootstrapGraphSchema()` and `healthCheck()`
-  - **Test:** Type-check only. Implementation tested via adapter.
-  - Notes: Implemented 2026-02-17.
+| Port file | Interface | Phase 0 role |
+|-----------|-----------|-------------|
+| `types.ts` | Domain types (`EntityDoc`, `EdgeDoc`, `OrgContext`, `TokenUsage`, etc.) | Shared by all ports |
+| `graph-store.ts` | `IGraphStore` | `bootstrapGraphSchema()`, `healthCheck()` |
+| `relational-store.ts` | `IRelationalStore` | `healthCheck()`, `getRepos()`, `createRepo()`, `getDeletionLogs()` |
+| `llm-provider.ts` | `ILLMProvider` | `generateObject<T>()`, `streamText()`, `embed()` |
+| `workflow-engine.ts` | `IWorkflowEngine` | `startWorkflow()`, `signalWorkflow()`, `getWorkflowStatus()`, `cancelWorkflow()`, `healthCheck()` |
+| `git-host.ts` | `IGitHost` | `cloneRepo()`, `listFiles()`, `listBranches()`, plus PR/check/review methods |
+| `vector-search.ts` | `IVectorSearch` | `embed()`, `search()`, `upsert()` |
+| `billing-provider.ts` | `IBillingProvider` | `createCheckoutSession()`, `createSubscription()`, `cancelSubscription()`, `reportUsage()` |
+| `observability.ts` | `IObservability` | `getOrgLLMCost()`, `getCostBreakdown()`, `getModelUsage()`, `healthCheck()` |
+| `cache-store.ts` | `ICacheStore` | `get()`, `set()`, `setIfNotExists()`, `invalidate()`, `invalidateByPrefix()`, `rateLimit()`, `healthCheck()` |
+| `code-intelligence.ts` | `ICodeIntelligence` | `indexWorkspace()`, `getDefinitions()`, `getReferences()` |
+| `pattern-engine.ts` | `IPatternEngine` | `scanPatterns()`, `matchRule()` |
+| `storage-provider.ts` | `IStorageProvider` | `generateUploadUrl()`, `downloadFile()`, `deleteFile()`, `healthCheck()` |
 
-- [x] **`lib/ports/relational-store.ts`** — `IRelationalStore` interface — S
-  - `healthCheck()`, `getRepos(orgId)`, `createRepo()`, `getDeletionLogs()` (Phase 0); CRUD surface for Phase 1+
-  - **Test:** Type-check only.
-  - Notes: Implemented 2026-02-17. Aligns with Prisma/Supabase usage.
+`IGitHost` was extended with `listBranches()` during Phase 1 work (two-step repo picker: select repos → choose branch per repo).
 
-- [x] **`lib/ports/llm-provider.ts`** — `ILLMProvider` interface — S
-  - `generateObject<T>()`, `streamText()`, `embed()`
-  - **Test:** Type-check only.
-  - Notes: Implemented 2026-02-17. Stub in Phase 0; Vercel AI SDK in Phase 4+.
+`ICacheStore` has two additional methods beyond the original design: `setIfNotExists()` (atomic set-if-absent for distributed locks and deduplication, using Redis `SET … NX`) and `invalidateByPrefix()` (cursor-based SCAN + multi-DEL — never uses the blocking `KEYS` command).
 
-- [x] **`lib/ports/workflow-engine.ts`** — `IWorkflowEngine` interface — S
-  - `startWorkflow()`, `signalWorkflow()`, `getWorkflowStatus()`, `cancelWorkflow()`, `healthCheck()`
-  - **Test:** Type-check only.
-  - Notes: Implemented 2026-02-17. Temporal TypeScript SDK (not Python); same concepts (determinism, retry).
+### Production Adapters
 
-- [x] **`lib/ports/git-host.ts`** — `IGitHost` interface — S
-  - `cloneRepo()`, `getPullRequest()`, `createPullRequest()`, `getDiff()`, `listFiles()`, `createWebhook()`, `listBranches()`
-  - **Test:** Type-check only.
-  - Notes: Implemented 2026-02-17. Stub in Phase 0; Octokit in Phase 1+. `listBranches()` added 2026-02-20 for branch selection during repo import (see PHASE_1 § P1-ADAPT-14).
+**Fully implemented adapters:**
 
-- [x] **`lib/ports/vector-search.ts`** — `IVectorSearch` interface — S
-  - `embed()`, `search()`, `upsert()`
-  - **Test:** Type-check only.
-  - Notes: Implemented 2026-02-17. Stub in Phase 0.
+| Adapter | Implements | Notes |
+|---------|-----------|-------|
+| `arango-graph-store.ts` | `IGraphStore` | `arangojs`; lazy `getDbAsync()` creates DB if missing; idempotent bootstrap; all methods implemented (Phase 1+ features) |
+| `prisma-relational-store.ts` | `IRelationalStore` | `@prisma/client`; `healthCheck()` via `$queryRaw SELECT 1`; full CRUD for Phase 0–2 entities |
+| `bedrock-provider.ts` | `ILLMProvider` | AWS Bedrock via `@ai-sdk/amazon-bedrock` (Vercel AI SDK); includes proactive sliding-window rate limiting (RPM/TPM via `RateLimiter`), exponential backoff with jitter for throttling errors, token budget pre-checks. Auth via `AWS_BEARER_TOKEN_BEDROCK` env var. `embed()` throws — embeddings handled by `LlamaIndexVectorSearch`. |
+| `temporal-workflow-engine.ts` | `IWorkflowEngine` | `@temporalio/client`; lazy client via `getClient()`; all workflow operations implemented |
+| `github-host.ts` | `IGitHost` | Octokit (GitHub App) + `simple-git`; `cloneRepo()`, `listFiles()`, `listBranches()`, `diffFiles()`, `getLatestSha()`, `blame()`, `getFileGitHistory()`, PR review methods, check run methods, issue commenting, branch creation, and file creation. `createWebhook()` is a no-op (App-level webhooks only). |
+| `redis-cache-store.ts` | `ICacheStore` | `ioredis` via `lib/queue`; all methods implemented including `setIfNotExists()` and cursor-based `invalidateByPrefix()` |
+| `langfuse-observability.ts` | `IObservability` | No external dep; reads `LANGFUSE_SECRET_KEY` + `LANGFUSE_PUBLIC_KEY`; if absent: healthCheck returns `unconfigured`, cost methods return 0/empty |
+| `llamaindex-vector-search.ts` | `IVectorSearch` | `@llamaindex`; pgvector-backed; fully implemented for Phase 3 |
+| `scip-code-intelligence.ts` | `ICodeIntelligence` | Full SCIP implementation using modular language plugin system (`lib/indexer/`); `indexWorkspace()` and `indexWorkspaceFull()` run SCIP indexers per language with Tree-sitter fallback for uncovered files; `getDefinitions()`/`getReferences()` return empty (Phase 2 shadow workspace, not yet implemented) |
+| `semgrep-pattern-engine.ts` | `IPatternEngine` | Implemented for Phase 6; `scanPatterns()` and `matchRule()` |
+| `stripe-payments.ts` | `IBillingProvider` | Stripe SDK; partially implemented for Phase 2 billing |
+| `supabase-storage.ts` | `IStorageProvider` | Supabase Storage pre-signed URLs; `generateUploadUrl()`, `downloadFile()`, `deleteFile()`, `healthCheck()` |
 
-- [x] **`lib/ports/billing-provider.ts`** — `IBillingProvider` interface — S
-  - `createCheckoutSession()`, `createSubscription()`, `cancelSubscription()`, `reportUsage()`
-  - **Test:** Type-check only.
-  - Notes: Implemented 2026-02-17. Stub in Phase 0; Stripe in Phase 2+.
-
-- [x] **`lib/ports/observability.ts`** — `IObservability` interface — S
-  - `getOrgLLMCost()`, `getCostBreakdown()`, `getModelUsage()`, `healthCheck()` (up/down/unconfigured)
-  - **Test:** Type-check only.
-  - Notes: Implemented 2026-02-17. Langfuse optional; health reports status.
-
-- [x] **`lib/ports/cache-store.ts`** — `ICacheStore` interface — S
-  - `get()`, `set()`, `invalidate()`, `rateLimit()`, `healthCheck()`
-  - **Test:** Type-check only.
-  - Notes: Implemented 2026-02-17. Redis (ioredis) via existing lib/queue/redis.
-
-- [x] **`lib/ports/code-intelligence.ts`** — `ICodeIntelligence` interface — S
-  - `indexWorkspace()`, `getDefinitions()`, `getReferences()`
-  - **Test:** Type-check only.
-  - Notes: Implemented 2026-02-17. Stub in Phase 0; SCIP in Phase 1+.
-
-- [x] **`lib/ports/pattern-engine.ts`** — `IPatternEngine` interface — S
-  - `scanPatterns()`, `matchRule()`
-  - **Test:** Type-check only.
-  - Notes: Implemented 2026-02-17. Stub in Phase 0; Semgrep/ast-grep in Phase 6+.
-
-- [ ] **`lib/ports/storage-provider.ts`** — `IStorageProvider` interface — S *(Phase 5.5)*
-  - `generateUploadUrl()`, `downloadFile()`, `deleteFile()`, `healthCheck()`
-  - 12th port for CLI-based local repo uploads. Production adapter: `SupabaseStorageAdapter` (`lib/adapters/supabase-storage.ts`). Test fake: `InMemoryStorageProvider`.
-  - Notes: Planned for Phase 5.5. Enables `unerr push` to upload zipped codebases via pre-signed URLs to Supabase Storage.
-
-### Production Adapters (Phase 0 needs 5 working, 6 stubbed)
-
-**Working adapters (used in Phase 0 user flows):**
-
-- [x] **`lib/adapters/arango-graph-store.ts`** — `ArangoGraphStore implements IGraphStore` — L
-  - Dependencies: `arangojs`
-  - Lazy connection via `getDbAsync()`; creates DB if missing, then document/edge collections + persistent index `[org_id, repo_id]` (ArangoDB multi-tenant pattern)
-  - Phase 0: `bootstrapGraphSchema()`, `healthCheck()`; all other methods no-op until Phase 1+
-  - **Test:** Unit test with real ArangoDB (Docker): bootstrap twice (idempotent), health returns up/down.
-  - Notes: Implemented 2026-02-17. Aligns with ArangoDB docs (createDatabase, ensureIndex, edge type 3).
-
-- [x] **`lib/adapters/prisma-relational-store.ts`** — `PrismaRelationalStore implements IRelationalStore` — M
-  - Dependencies: `@prisma/client`
-  - Phase 0: `healthCheck()` ($queryRaw SELECT 1), `getRepos(orgId)`, `createRepo()`, `getDeletionLogs()`
-  - **Test:** Integration test: create repo, query by orgId. Prisma 7 uses prisma.config.ts for URL (Supabase).
-  - Notes: Implemented 2026-02-17. Supabase PostgreSQL via Prisma; no conflict with Better Auth tables.
-
-- [x] **`lib/adapters/temporal-workflow-engine.ts`** — `TemporalWorkflowEngine implements IWorkflowEngine` — M
-  - Dependencies: `@temporalio/client`
-  - Lazy connection; Phase 0: `healthCheck()` only; workflow methods throw until Phase 1+
-  - **Test:** Connect to Temporal (Docker). healthCheck() returns up/down. TypeScript SDK (Temporal docs apply to determinism/versioning).
-  - Notes: Implemented 2026-02-17. Stack is TypeScript/Node (not Python); same Temporal concepts.
-
-- [x] **`lib/adapters/redis-cache-store.ts`** — `RedisCacheStore implements ICacheStore` — M
-  - Uses existing `lib/queue/redis.ts` (ioredis, lazyConnect)
-  - `get()`, `set()`, `invalidate()`, `rateLimit()`, `healthCheck()` (PING)
-  - **Test:** Set/get/invalidate, rateLimit, healthCheck. Redis docs: single connection, pipelining.
-  - Notes: Implemented 2026-02-17.
-
-- [x] **`lib/adapters/langfuse-observability.ts`** — `LangfuseObservability implements IObservability` (Partial) — M
-  - No extra deps; checks `LANGFUSE_SECRET_KEY`/`LANGFUSE_PUBLIC_KEY`. If absent: health returns `unconfigured`, cost methods return 0/empty.
-  - Phase 0 health reports Langfuse status. Full OpenTelemetry + Langfuse span processor deferred (instrumentation.ts uses Vercel OTel only).
-  - **Test:** Without env vars → healthCheck() returns unconfigured; no errors.
-  - Notes: Implemented 2026-02-17. Langfuse integration (OTel/Langfuse SDK) can be added when AI SDK is used.
-
-**Stub adapters (implement interface, throw "not implemented" or return empty data):**
-
-- [x] **`lib/adapters/vercel-ai-provider.ts`** — Stub — S
-  - **Test:** `generateObject()` throws `NotImplementedError`. Compiles against `ILLMProvider`.
-  - Notes: Implemented 2026-02-17.
-
-- [x] **`lib/adapters/github-host.ts`** — Stub — S
-  - **Test:** `cloneRepo()` throws `NotImplementedError`. Compiles against `IGitHost`.
-  - Notes: Implemented 2026-02-17.
-
-- [x] **`lib/adapters/llamaindex-vector-search.ts`** — Stub — S
-  - **Test:** Compiles against `IVectorSearch`. Throws NotImplementedError.
-  - Notes: Implemented 2026-02-17.
-
-- [x] **`lib/adapters/stripe-payments.ts`** — Stub — S
-  - **Test:** Compiles against `IBillingProvider`. Throws NotImplementedError.
-  - Notes: Implemented 2026-02-17.
-
-- [x] **`lib/adapters/scip-code-intelligence.ts`** — Stub — S
-  - **Test:** Compiles against `ICodeIntelligence`. Throws NotImplementedError.
-  - Notes: Implemented 2026-02-17.
-
-- [x] **`lib/adapters/semgrep-pattern-engine.ts`** — Stub — S
-  - **Test:** Compiles against `IPatternEngine`. Throws NotImplementedError.
-  - Notes: Implemented 2026-02-17.
+**Test fakes** (`lib/di/fakes.ts`): `InMemoryGraphStore`, `InMemoryRelationalStore`, `MockLLMProvider`, `InlineWorkflowEngine`, `FakeGitHost`, `InMemoryVectorSearch`, `NoOpBillingProvider`, `InMemoryObservability`, `InMemoryCacheStore`, `FakeCodeIntelligence`, `FakePatternEngine`, `InMemoryStorageProvider`. All 12 fakes implement their respective port interfaces; all use Maps/arrays with no external dependencies.
 
 ### DI Container
 
-- [x] **`lib/di/container.ts`** — Container type + factory functions — M
-  - `Container` interface with all 11 port fields
-  - `createProductionContainer()` — wires real adapters (5 working + 6 stubs)
-  - `createTestContainer(overrides?)` — in-memory fakes for all 11 ports
-  - `getContainer()` — lazy singleton for production use
-  - **Test:** TypeScript compile; createProductionContainer/createTestContainer return all 11 keys; overrides work.
-  - Notes: Implemented 2026-02-17. Phase 5.5: Container grows to 12 ports with the addition of `IStorageProvider` (for CLI-based local repo uploads via Supabase Storage).
-
-### Test Fakes (for `createTestContainer`)
-
-- [x] **In-memory fakes for all 11 ports** — M
-  - `lib/di/fakes.ts`: InMemoryGraphStore, InMemoryRelationalStore, MockLLMProvider, InlineWorkflowEngine, FakeGitHost, InMemoryVectorSearch, NoOpBillingProvider, InMemoryObservability, InMemoryCacheStore, FakeCodeIntelligence, FakePatternEngine
-  - Store data in Maps/arrays; no external dependencies.
-  - **Test:** Each fake implements the port interface; createTestContainer uses them.
-  - Notes: Implemented 2026-02-17.
+`lib/di/container.ts` exports the `Container` interface (12 port fields), `getContainer()` (lazy singleton for production use), and `createTestContainer(overrides?)` (uses all 12 fakes with optional overrides). The production container uses `createLazyProductionContainer()` which loads infra adapters via `require()` on first property access — no infra modules (arangojs, `@temporalio/client`, ioredis) are loaded or connected at build/import time.
 
 ---
 
 ## 2.4 Backend / API Layer
 
-### Health Check Expansion
+### Health Check
 
-- [x] **Expand `/api/health` to check all four systems** — M
-  - Parallel checks: Supabase (`SELECT 1`), ArangoDB (listCollections), Temporal (cluster health), Redis (PING), Langfuse (adapter health)
-  - 2-second timeout per check; uses DI container
-  - Response shape: `{ status, timestamp, checks }`; only Supabase failure returns HTTP 503
-  - **Test:** `app/api/health/route.test.ts` — response shape and 503 when Supabase down.
-  - Notes: Implemented 2026-02-17.
+`app/api/health/route.ts` — `GET /api/health`:
+- Runs 5 parallel checks via `Promise.allSettled()`: Supabase (relationalStore), ArangoDB (graphStore), Temporal (workflowEngine), Redis (cacheStore), Langfuse (observability)
+- Each check is wrapped in `withTimeout()` (2-second deadline); timeout → `{ status: "down" }`
+- Response shape: `{ status, timestamp, checks }` — HTTP 503 only when Supabase is down
+- Langfuse `unconfigured` does NOT count as `down` for overall `degraded` calculation
 
-### Org Creation Enhancement
+### Org Creation Use Case
 
-- [x] **Create `lib/use-cases/create-org.ts`** — M
-  - Receives container as dependency; calls `graphStore.bootstrapGraphSchema(organizationId)` (org created by Better Auth before this)
-  - If ArangoDB bootstrap fails: log error, return success
-  - **Test:** With `createTestContainer()` — verify bootstrap called with correct org id.
-  - Notes: Implemented 2026-02-17.
+`lib/use-cases/create-org.ts` exports `createOrgUseCase(container, { organizationId, name })`. It calls `container.graphStore.bootstrapGraphSchema()` (no per-org argument — bootstrap is global and idempotent). If ArangoDB is down, it logs and returns `{ arangoBootstrapped: false }` rather than throwing. The org is already persisted in Supabase by Better Auth at the time this use case runs.
 
-- [x] **Wire org creation use case into auth flow** — S
-  - POST `/api/org/bootstrap` (session required); frontend calls after Better Auth `organization.create`; runs createOrgUseCase
-  - **Test:** E2E — signup → auto-provisioned org → connect GitHub → callback → ArangoDB bootstrap on first repo connect.
-  - Notes: Implemented 2026-02-17.
+The use case is invoked via `POST /api/org/bootstrap` (session required). The frontend calls this after Better Auth's `organization.create`. The auto-provisioned org on signup also triggers this path.
 
-### Proxy.ts Enhancement (Email Verification Enforcement)
+### Proxy — Email Verification Enforcement
 
-- [x] **Add email verification check to `proxy.ts`** — M
-  - For authenticated, non-public paths: check `session.user.emailVerified` via `auth.api.getSession({ headers })`
-  - If false: redirect to `/verify-email`; exempt: `/verify-email`, `/api/auth/*`, `/api/health`
-  - **Email/password only:** Redirect applies only to users who signed up with email/password. Users with a Google or GitHub account (from `auth.api.listUserAccounts`) are not redirected; OAuth providers already verify email.
-  - **Test:** Register user (unverified) → access `/` → redirected to `/verify-email`. Sign in with Google/GitHub → no redirect to verify-email.
-  - Notes: Implemented 2026-02-17. Aligns with Better Auth session/emailVerified; OAuth exemption added 2026-02-17.
+`proxy.ts` (Next.js middleware export as `proxy`):
+
+```
+FOR every request NOT in publicPaths:
+  IF no session cookie → redirect to /login
+  IF session cookie AND path is /login or /register → redirect to /
+  IF session cookie AND emailVerified === false:
+    IF user has google or github OAuth account → allow through
+    ELSE → redirect to /verify-email
+  ALLOW through
+```
+
+`emailVerified` is read from `auth.api.getSession()`. `listUserAccounts()` is called only when `emailVerified === false` to check for OAuth accounts. Errors during session/accounts lookup are silently swallowed (`catch {}`) — request proceeds (fail-open for auth degradation).
+
+Matcher pattern excludes `api/auth`, `api/webhooks`, `_next/static`, `_next/image`, and static files.
 
 ### Temporal Worker Entry Points
 
-- [x] **`scripts/temporal-worker-heavy.ts`** — S
-  - Connects to Temporal (TypeScript SDK), registers `heavy-compute-queue`; exponential backoff 1s→60s
-  - **Test:** `pnpm temporal:worker:heavy` starts; Temporal UI shows worker.
-  - Notes: Implemented 2026-02-17. Temporal TypeScript SDK (not Python); same concepts (determinism, versioning).
+`scripts/temporal-worker-heavy.ts`: Connects to Temporal TypeScript SDK, registers `heavy-compute-queue`. Uses exponential backoff (1s→60s) on connection failure, retrying indefinitely.
 
-- [x] **`scripts/temporal-worker-light.ts`** — S
-  - Same for `light-llm-queue`, same retry behavior as heavy worker.
-  - **Test:** `pnpm temporal:worker:light` starts.
-  - Notes: Implemented 2026-02-17.
+`scripts/temporal-worker-light.ts`: Same pattern for `light-llm-queue`.
 
-### Langfuse / OpenTelemetry Setup
+Both workers read `TEMPORAL_ADDRESS` from the environment (default `localhost:7233`). When running inside Docker containers, `TEMPORAL_ADDRESS=localhost:7233` is used due to `network_mode: host`.
 
-- [x] **`instrumentation.ts` — OpenTelemetry + Langfuse span processor** — M
-  - `instrumentation.ts`: `registerOTel("next-app")` (Vercel OTel). Langfuse span processor deferred; Langfuse adapter reports health.
-  - **Test:** Build passes; no errors when Langfuse env absent. Full OTel+Langfuse when AI SDK used (Phase 1+).
-  - Notes: Implemented 2026-02-17. Minimal OTel for Vercel; Langfuse optional.
+### Langfuse / OpenTelemetry
+
+`instrumentation.ts` calls `registerOTel("next-app")` (Vercel OTel). Full Langfuse span processor (OTel + Langfuse SDK) is deferred to when the AI SDK is actively used (Phase 1+). The `LangfuseObservability` adapter reports health status as `unconfigured` when `LANGFUSE_SECRET_KEY` and `LANGFUSE_PUBLIC_KEY` are absent.
 
 ---
 
@@ -797,143 +583,112 @@ Seam 5: ArangoDB
 
 ### Dashboard Shell
 
-- [x] **`app/(dashboard)/layout.tsx` — Authenticated dashboard layout** — M
-  - **Header:** Resend-style fixed top bar (`h-14`, `bg-[#0A0A0F]`, `border-b border-white/10`). Left: unerr logo (links to `/`). Right: "Docs" link (external).
-  - **Sidebar:** `w-56`, `bg-[#0A0A0F]`, `border-r border-white/10`. Contains `DashboardNav` (Overview, Repositories, Search) + dynamic **Recents** section (top 5 most recently updated repos for active org, fetched server-side) + `UserProfileMenu` (bottom).
-  - **Nav items:** `text-[13px] font-medium`, inactive: `text-white/60 hover:bg-white/5`, active: `bg-white/[0.08] text-white` with 2px Electric Cyan left indicator. Active icons use `text-[#00E5FF]`. Search shows `⌘K` hint on hover.
-  - `UserProfileMenu` (bottom-left): avatar + context label → DropdownMenu: email header, organization switcher, Settings/Help, Upgrade, dark/light toggle (next-themes), Sign Out.
-  - `DashboardAccountProvider`: wraps dashboard with `AccountProvider` so org hooks only run when authenticated.
-  - `AccountProvider`: organization context (always has active org — no "personal" mode), persisted via Better Auth `setActive`, self-heals by auto-activating first org if none active.
-  - **Files:** `app/(dashboard)/layout.tsx`, `components/dashboard/dashboard-header.tsx`, `components/dashboard/dashboard-nav.tsx`, `components/dashboard/user-profile-menu.tsx`, `components/dashboard/dashboard-account-provider.tsx`, `components/providers/account-context.tsx`
-  - Notes: Implemented 2026-02-17. Overhauled 2026-02-22: Resend-style header + Void Black sidebar with Electric Cyan active states + dynamic Recents section. RepositorySwitcher removed. GlobalSearch removed from sidebar (⌘K shortcut on Search nav item instead).
+`app/(dashboard)/layout.tsx` — Resend-style authenticated dashboard layout:
+- **Header:** Fixed top bar (`h-14`, `bg-[#0A0A0F]`, `border-b border-white/10`). Left: unerr logo. Right: "Docs" external link.
+- **Sidebar:** `w-56`, Void Black (`bg-[#0A0A0F]`), `border-r border-white/10`. Contains `DashboardNav` (Overview, Repositories, Search nav items) + dynamic **Recents** section (top 5 most recently updated repos for active org, fetched server-side) + `UserProfileMenu` (bottom).
+- **Nav active states:** Electric Cyan 2px left indicator, `bg-white/[0.08]` background, active icons use `text-[#00E5FF]`. Inactive: `text-white/60 hover:bg-white/5`.
+- `UserProfileMenu`: avatar + context label → DropdownMenu: email header, organization switcher (with check marks), Settings/Help, Upgrade Plan, dark/light toggle (next-themes), Sign Out.
+- `AccountProvider`: organization context (always has active org — no "personal" mode), persisted via Better Auth `setActive`.
+- `DashboardAccountProvider`: wraps dashboard with `AccountProvider` so org hooks only run when authenticated.
 
-- [x] **`app/(dashboard)/page.tsx` — Dashboard overview** — M
-  - **Layout order:** (1) Platform Usage stats grid → (2) CLI Hero → (3) Repository grid + Add Repo card.
-  - **Platform Usage:** 4-column `StatCard` grid showing Repositories (count + active), Code Intelligence (functions & classes indexed), Governance (active rules from graph store), Intelligence (detected patterns from graph store). Cards use `glass-card`, `hover:shadow-glow-cyan`, Electric Cyan metric values.
-  - **CLI Hero:** `CliHero` component — terminal panel (`bg-[#0e0e14]`) with `npx @autorail/unerr connect`, copy button (Electric Cyan flash on success), "Terminal-First Experience" heading, muted subtext about offline/local-first capability.
-  - **Repository grid:** `grid-cols-1 md:grid-cols-2 lg:grid-cols-4`. `OverviewRepoCard` (repo name, fullName, status dot, file count or sync age) + `OverviewAddRepoCard` (dashed-border card with "Connect Repository" button).
-  - **Data:** Server component fetches repos, active rules (`queryRules`), and detected patterns (`queryPatterns`) for the active org.
-  - **Files:** `app/(dashboard)/page.tsx`, `components/dashboard/cli-hero.tsx`, `components/dashboard/overview-stats.tsx`, `components/dashboard/overview-repo-card.tsx`, `components/dashboard/overview-add-repo-card.tsx`
-  - Notes: Implemented 2026-02-17. Overhauled 2026-02-22: replaced flat repos list with Platform Usage stats + CLI hero + repo grid layout.
+**Files:** `app/(dashboard)/layout.tsx`, `components/dashboard/dashboard-header.tsx`, `components/dashboard/dashboard-nav.tsx`, `components/dashboard/user-profile-menu.tsx`, `components/dashboard/dashboard-account-provider.tsx`, `components/providers/account-context.tsx`
 
-- [x] **Empty state component** — S
-  - `components/dashboard/empty-state-repos.tsx`: icon (Lucide), "No repositories connected", "Connect GitHub" CTA links to `/api/github/install?orgId=xxx`
-  - **Test:** Manual; button links to install route with active org ID.
-  - Notes: Implemented 2026-02-17. Updated 2026-02-20: uses `useAccountContext()` to get `activeOrgId` and build install href dynamically.
+### Dashboard Overview Page
 
-- [x] **`app/(dashboard)/repos/page.tsx` — Repository management page** — M
-  - **Tabular view:** GitHub-style data table with sortable columns (Repository, Status, Branch, Files, Entities, Last Sync, MCP, Actions).
-  - **Toolbar:** Search input (real-time filter by name/fullName) + GitHub account/org filter dropdown (auto-derived from repo owners, appears when multiple orgs connected) + "Add Org" button (links to `/settings/connections`) + "Add Repository" button (opens repo picker).
-  - **Pagination:** 20 repos per page, previous/next controls, total count with filtered indicator.
-  - **Row features:** Status dot with label + inline retry for error states, branch info with `GitBranch` icon, live MCP session count per repo, visible "Open →" button (outline style, always white text), kebab menu (Copy ID, Onboarding PR, Remove Repository).
-  - **Sorting:** Click column headers to toggle sort direction (Repository name, Status, Last Sync).
-  - **Files:** `app/(dashboard)/repos/page.tsx`, `components/dashboard/repos-list.tsx`
-  - Notes: Implemented 2026-02-17. Overhauled 2026-02-22: replaced card grid with paginated tabular view, added search/filter/sort, multiple GitHub org support, "Add Org" action.
+`app/(dashboard)/page.tsx` — Three-section layout:
+1. **Platform Usage stats grid** (4 `StatCard` components): Repositories (count + active), Code Intelligence (functions & classes indexed), Governance (active rules from graph store), Intelligence (detected patterns). Cards use `glass-card`, `hover:shadow-glow-cyan`, Electric Cyan metric values.
+2. **CLI Hero** (`components/dashboard/cli-hero.tsx`): terminal panel with `npx @autorail/unerr connect`, copy button (Electric Cyan flash on copy), heading, muted subtext.
+3. **Repository grid** (`grid-cols-1 md:grid-cols-2 lg:grid-cols-4`): `OverviewRepoCard` + `OverviewAddRepoCard` (dashed-border, "Connect Repository" button).
 
-- [x] **`app/(dashboard)/settings/page.tsx` — Org settings** — M
-  - Org name, members (read-only from Better Auth), danger zone (placeholder)
-  - **Test:** Org name and member list visible.
-  - Notes: Implemented 2026-02-17.
+Data is fetched server-side: repos, active rules (`queryRules`, limit 100), detected patterns (`queryPatterns`, limit 100) for the active org.
 
-### Onboarding / Organization Auto-Provisioning
+### Repository Management Page
 
-- [x] **Auto-create personal organization on signup** — M
-  - Every new user gets a personal organization (`"{name}'s organization"`) immediately on signup via Better Auth `databaseHooks.user.create.after` in `lib/auth/auth.ts`.
-  - The hook inserts directly into `organization` + `member` tables (pg Pool) using Better Auth's `generateId()`. Role: `owner`.
-  - No welcome screen, no manual org creation step. Users land directly on the dashboard with their auto-provisioned org.
-  - `app/onboarding/page.tsx` exists as a legacy fallback — redirects to `/` if user already has an org.
-  - **Removed files:** `components/dashboard/empty-state-no-org.tsx`, `components/dashboard/create-workspace-first-banner.tsx` (org-related), `app/actions/create-workspace.ts` (org creation action) — all obsolete.
-  - **Files:** `lib/auth/auth.ts` (databaseHooks), `app/(dashboard)/page.tsx` (simplified — no EmptyStateNoOrg)
-  - **Test:** E2E: new user → signup → dashboard (org auto-provisioned, empty-state-repos shown).
-  - Notes: Implemented 2026-02-17 (welcome screen). Refactored 2026-02-18: auto-provisioned org on signup, welcome screen removed.
+`app/(dashboard)/repos/page.tsx` — GitHub-style paginated tabular view:
+- **Columns:** Repository, Status, Branch, Files, Entities, Last Sync, MCP sessions, Actions (Open button + kebab: Copy ID, Onboarding PR, Remove Repository)
+- **Toolbar:** Search input (real-time filter by name/fullName), GitHub account/org filter dropdown (auto-derived from repo owners), "Add Org" button → `/settings/connections`, "Add Repository" button → repo picker modal
+- **Pagination:** 20 repos per page, previous/next controls, total count
+- **Sorting:** Repository name, Status, Last Sync (click column headers to toggle direction)
+- **Status dot:** With inline retry for error states
+- **File:** `components/dashboard/repos-list.tsx`
+
+### Empty State
+
+`components/dashboard/empty-state-repos.tsx`: icon (Lucide), "No repositories connected", "Connect GitHub" CTA. Uses `useAccountContext()` to get `activeOrgId` and build the install href dynamically (`/api/github/install?orgId=xxx`); button disabled when no org is active.
+
+### Org Settings Page
+
+`app/(dashboard)/settings/page.tsx`: org name, member list (read-only from Better Auth), danger zone (placeholder).
+
+### Org Auto-Provisioning
+
+Every new user gets a personal organization (`"{name}'s organization"`) immediately on signup via Better Auth `databaseHooks.user.create.after` in `lib/auth/auth.ts`. The hook inserts directly into `organization` + `member` tables (pg Pool, `generateId()`). It retries with a randomized slug on slug conflict. No welcome screen or manual creation step needed.
+
+The following files were removed as obsolete: `components/dashboard/empty-state-no-org.tsx`, `components/dashboard/create-workspace-first-banner.tsx`, `app/actions/create-workspace.ts`.
+
+`app/onboarding/page.tsx` exists as a legacy fallback and redirects to `/` if the user already has an org.
 
 ---
 
 ## 2.6 Testing & Verification
 
-**Testing plan:** This section is the Phase 0 testing plan. Unit, integration, and E2E test _cases_ are largely deferred to Phase 1; the _frameworks_ are installed and configured as below.
+### Testing Frameworks (Installed & Configured)
 
-### Testing frameworks installed & configured (Phase 0)
+| Framework | Purpose | Config | Scripts |
+|-----------|---------|--------|---------|
+| **Vitest** | Unit & integration tests | `vitest.config.ts` (jsdom, `vitest.setup.ts`, include `**/*.test.{ts,tsx}`, exclude e2e/.next) | `pnpm test`, `test:watch`, `test:ui`, `test:coverage` |
+| **Playwright** | E2E tests | `playwright.config.ts` (baseURL, webServer, testDir `./e2e`) | `pnpm e2e:headless`, `pnpm e2e:ui` |
+| **Testing Library** | React component tests | `@testing-library/react`, `@testing-library/jest-dom` (in `vitest.setup.ts`) | Via `pnpm test` |
 
-| Framework | Purpose | Config / entrypoint | Scripts | Status |
-|-----------|---------|--------------------|---------|--------|
-| **Vitest** | Unit & integration tests | `vitest.config.ts` (jsdom, `vitest.setup.ts`, include `**/*.test.{ts,tsx}`, exclude e2e/.next) | `pnpm test`, `test:watch`, `test:ui`, `test:coverage` | Installed & configured |
-| **Playwright** | E2E tests | `playwright.config.ts` (baseURL, webServer, testDir `./e2e`) | `pnpm e2e:headless`, `pnpm e2e:ui` | Installed & configured |
-| **Testing Library** | React component tests | Used in Vitest via `@testing-library/react`, `@testing-library/jest-dom` (in `vitest.setup.ts`) | Via `pnpm test` | Installed & configured |
+Existing tests: `app/api/__tests__/health.test.ts`, `app/api/__tests__/notifications.test.ts`, `app/api/__tests__/api-keys.test.ts`, `components/Button/Button.test.tsx`.
 
-- **Vitest:** `vitest.config.ts` uses Vite path resolution (`vite-tsconfig-paths`), React plugin, jsdom environment. Existing tests: `app/api/__tests__/health.test.ts`, `app/api/__tests__/notifications.test.ts`, `app/api/__tests__/api-keys.test.ts`, `components/Button/Button.test.tsx`.
-- **Playwright:** One-time browser install: `pnpm exec playwright install` (or `--with-deps chromium`). Example spec: `e2e/example.spec.ts`. For CI/Docker, add `pnpm exec playwright install` where E2E runs.
+Port compliance tests (`lib/di/__tests__/port-compliance.test.ts`) exercise all 12 fakes against port interfaces. DI container factory tests (`lib/di/__tests__/container.test.ts`) verify all 12 keys and override behavior.
 
-### Unit Tests
+E2E auth flows (`e2e/auth-flows.spec.ts`) cover: unauthenticated redirect, login/register page rendering, protected route guards. Full authenticated flows (signup → verify → dashboard) are skipped pending a test auth helper.
 
-- [x] **Port interface compliance tests** — M
-  - For each of the 11 ports: verify production adapter AND test fake both satisfy the TypeScript interface
-  - **Test:** `pnpm test lib/di/` — all 22 checks pass (11 adapters + 11 fakes).
-  - Notes: Implemented. `lib/di/__tests__/port-compliance.test.ts` — exercises all 11 fakes against port interfaces.
-
-- [x] **DI container factory tests** — S
-  - `createProductionContainer()` / `createTestContainer()` return all 11 keys; overrides work.
-  - **Test:** `pnpm test lib/di/container.test.ts`
-  - Notes: Implemented. `lib/di/__tests__/container.test.ts` — verifies all 11 keys and override behavior.
+### Remaining Tasks (Deferred)
 
 - [ ] **Domain function tests (pure logic, zero deps)** — S
   - `entity-hashing.ts`, `rule-resolution.ts` (minimal in Phase 0)
   - **Test:** `pnpm test lib/domain/`
   - Notes: Deferred to Phase 1.
 
-### Integration Tests
-
-- [ ] **ArangoDB connection + tenant isolation** — M
+- [ ] **ArangoDB connection + tenant isolation integration test** — M
   - Bootstrap schema; insert/query with org_id; verify isolation.
   - **Test:** `pnpm test lib/adapters/arango-graph-store.test.ts` (requires Docker)
   - Notes: Deferred to Phase 1.
 
-- [ ] **Temporal connection + queue registration** — M
+- [ ] **Temporal connection + queue registration integration test** — M
   - Connect to Temporal; verify queues; no-op workflow.
   - **Test:** `pnpm test lib/adapters/temporal-workflow-engine.test.ts` (requires Docker)
   - Notes: Deferred to Phase 1.
 
-- [x] **Health check integration** — S
-  - Response shape and 503 when Supabase down.
-  - **Test:** `pnpm test app/api/health/` (route.test.ts)
-  - Notes: Implemented 2026-02-17.
+- [~] **Full E2E signup → dashboard flow** — L
+  - Register → verify email → dashboard (org auto-provisioned) → Connect GitHub → Add Repository.
+  - Notes: Partial. Unauthenticated flows pass. Full authenticated flow requires test auth helper.
 
-### E2E Tests (Playwright)
+---
 
-- [~] **Full signup → dashboard flow** — L
-  - Register → verify email → dashboard (org auto-provisioned) → Connect GitHub → Add Repository → select repos.
-  - **Test:** `pnpm e2e:headless`
-  - Notes: Partial. `e2e/auth-flows.spec.ts` covers unauthenticated redirect, login/register page rendering, protected route guards. Full authenticated flow (signup → verify → dashboard) requires test auth helper — skipped in CI.
+## Configuration Reference
 
-- [~] **Returning user → dashboard** — S
-  - Login → dashboard, nav (Repos, Settings).
-  - **Test:** `pnpm e2e:headless`
-  - Notes: Partial. `e2e/auth-flows.spec.ts` covers redirect to `/login` and page structure. Authenticated flow skipped pending test auth helper.
+### Environment Variables
 
-- [~] **Org settings page** — S
-  - Settings → org name, member list.
-  - **Test:** `pnpm e2e:headless`
-  - Notes: Partial. `e2e/auth-flows.spec.ts` has settings test (skipped — needs auth). Protected route redirect verified.
-
-### Phase 0 verification & tech stack alignment
-
-**Completeness verification (2026-02-20):** Phase 0 is implemented per this tracker and per VERTICAL_SLICING_PLAN.md Phase 0 "What ships". All feature deliverables (auth + auto-provisioned org on signup, dashboard shell with RepositorySwitcher + UserProfileMenu, 11 ports, 5 working + 6 stub adapters, DI container, health checks, proxy email verification, Temporal workers, instrumentation) are in place. **Testing:** Port compliance tests (`lib/di/__tests__/port-compliance.test.ts`) and DI container factory tests (`lib/di/__tests__/container.test.ts`) now implemented [x]. E2E auth flows partially implemented (`e2e/auth-flows.spec.ts`) — unauthenticated flows pass, authenticated flows skipped pending test auth helper [~]. **Remaining [ ] items:** domain function tests (minimal in Phase 0), ArangoDB/Temporal integration tests (require Docker), `IStorageProvider` port (Phase 5.5).
-
-Implementation uses the **Temporal TypeScript SDK** (not Python); Temporal platform concepts (determinism, versioning, retries) apply and align with [Temporal TypeScript developer guide](https://docs.temporal.io/develop/typescript/). Gemini is not used in Phase 0 and is planned for later phases.
-
-Tech stack alignment with referenced platforms:
-
-| Stack | Phase 0 usage | Alignment |
-|-------|----------------|-----------|
-| **Temporal** | TypeScript SDK (`@temporalio/client`, `@temporalio/worker`); workers for `heavy-compute-queue` and `light-llm-queue`; health check | Same concepts as Temporal docs (determinism, versioning, retries); implementation is Node/TS, not Python. |
-| **ArangoDB** | `arangojs`; `bootstrapGraphSchema()` creates DB, document/edge collections, persistent index `[org_id, repo_id]`; tenant isolation | Aligns with ArangoDB multi-doc/edge model and indexing. |
-| **Supabase** | PostgreSQL via Prisma (repos, deletion_logs); Better Auth uses same DB for user/session/org | Prisma 7 + Supabase; no RLS on app tables in Phase 0. |
-| **Better Auth** | Session, `listOrganizations`, `organization.create`, `emailVerified` in proxy | Session from headers; org plugin; email verification redirect. |
-| **Prisma** | Prisma 7; `prisma.config.ts` for `SUPABASE_DB_URL`; ORM only (`prisma generate`), no Prisma migrations | No `url` in schema; config-only datasource. Migrations via `supabase/migrations/`. |
-| **Redis** | `ioredis` via `lib/queue/redis.ts`; `RedisCacheStore` adapter (get/set/invalidate/rateLimit/health) | Single client, lazyConnect; health via PING. |
-| **Langfuse** | `IObservability` adapter; health reports up/down/unconfigured; no SDK/OTel in Phase 0 | Optional; full tracing when AI SDK used (Phase 1+). |
-| **Vercel** | Next.js 16, `registerOTel("next-app")` in instrumentation | Vercel OTel; deployment patterns per Vercel docs. |
-| **Gemini** | Not used in Phase 0 | Planned for LLM provider in later phases. |
+| Variable | Adapter/Component | Required | Default | Notes |
+|----------|------------------|----------|---------|-------|
+| `SUPABASE_DB_URL` | `prisma.config.ts` | Yes | — | PostgreSQL connection URL; `search_path=unerr,public` appended automatically |
+| `ARANGODB_URL` | `ArangoGraphStore` | Yes | `http://localhost:8529` | ArangoDB HTTP endpoint |
+| `ARANGODB_DATABASE` | `ArangoGraphStore` | No | `unerr_db` | Database name |
+| `ARANGO_ROOT_PASSWORD` | `ArangoGraphStore`, docker-compose | Yes | `firstPassword12345` (dev) | ArangoDB root auth |
+| `TEMPORAL_ADDRESS` | `TemporalWorkflowEngine`, workers | No | `localhost:7233` | Temporal gRPC address |
+| `REDIS_URL` | `lib/queue` (ioredis) | Yes | `redis://localhost:6379` | Redis connection URL |
+| `LANGFUSE_SECRET_KEY` | `LangfuseObservability` | No | — | If absent: health returns `unconfigured` |
+| `LANGFUSE_PUBLIC_KEY` | `LangfuseObservability` | No | — | If absent: health returns `unconfigured` |
+| `LANGFUSE_BASEURL` | `LangfuseObservability` | No | — | Langfuse server URL |
+| `AWS_BEARER_TOKEN_BEDROCK` | `BedrockProvider` | Phase 1+ | — | AWS Bedrock auth token; auto-read by `@ai-sdk/amazon-bedrock` |
+| `TEI_URL` | `LlamaIndexVectorSearch` | Phase 3+ | `http://localhost:8090` | Text Embeddings Inference server URL |
+| `LLM_RETRY_MAX_ATTEMPTS` | `BedrockProvider` | No | `5` | Max retries for Bedrock throttling |
+| `LLM_RETRY_BASE_DELAY_MS` | `BedrockProvider` | No | `1000` | Base delay (ms) for exponential backoff |
+| `EMBEDDING_BATCH_SIZE` | Embedding activity | No | `32` | Entities per embedding batch; reduced from 100 to prevent OOM |
 
 ---
 
@@ -942,7 +697,7 @@ Tech stack alignment with referenced platforms:
 ```
 Infrastructure ──────────────────────────┐
   Docker Compose (ArangoDB, Temporal,    │
-  Temporal UI, workers)                  │
+  Temporal UI, TEI, workers, MCP server) │
   .env.example updates                   │
   package.json scripts                   │
                                          │
@@ -952,9 +707,9 @@ Database & Schema ────────────────────�
   Better Auth coexistence verified       │
                                          │
 Ports & Adapters ────────────────────────┤ (depends on Database & Schema)
-  11 port interfaces                     │
-  5 working adapters + 6 stubs           │
-  11 test fakes                           │
+  12 port interfaces                     │
+  12 production adapters                 │
+  12 test fakes                          │
   DI container                           │
                                          │
 Backend / API ───────────────────────────┤ (depends on Ports & Adapters)
@@ -967,7 +722,6 @@ Backend / API ──────────────────────
 Frontend / UI ───────────────────────────┤ (depends on Backend / API)
   Dashboard layout + shell               │
   Empty state component                  │
-  Welcome screen                         │
   Settings page                          │
                                          │
 Testing & Verification ──────────────────┘ (runs after all layers)
@@ -984,19 +738,14 @@ Testing & Verification ──────────────────┘
 |------|--------|--------|
 | 2026-02-17 | — | Initial document created |
 | 2026-02-17 | — | Marked Temporal server, Temporal UI, Redis as running. Recorded actual image versions (`auto-setup:1.24.2`, `ui:2.31.2`, `postgres:13`). Noted Temporal uses local PostgreSQL for persistence (not SQLite). Updated memory table with observed values. |
-| 2026-02-17 | — | **Phase 0 implementation complete.** Infrastructure: ArangoDB, Temporal workers, .env.example, worker scripts. Database: Prisma (repos, deletion_logs), ArangoDB bootstrap. Ports: 11 interfaces + types. Adapters: 5 working (Arango, Prisma, Temporal, Redis, Langfuse) + 6 stubs; DI container + fakes. Backend: health expansion, create-org use case, proxy email verification, worker entry points. Frontend: (dashboard) layout, dashboard home + empty state, repos/settings, Phase 0 onboarding (org creation). Tracker items updated to [x] with notes. |
-| 2026-02-17 | — | **Tracker full pass.** All §2.3–§2.6 implemented items marked [x]. Testing: health integration [x]; port/DI/domain, ArangoDB/Temporal integration, E2E deferred to Phase 1. Added "Phase 0 verification & tech stack alignment" table (Temporal TS, ArangoDB, Supabase, Better Auth, Prisma, Redis, Langfuse, Vercel, Gemini). |
-| 2026-02-17 | — | **Phase 0 verification.** Confirmed implementation complete per PHASE_0_DEEP_DIVE_AND_TRACKER and VERTICAL_SLICING_PLAN Phase 0. All "What ships" deliverables present; remaining [ ] items are deferred (tests) or optional (Playwright). Noted Temporal TypeScript SDK (not Python); Gemini reserved for later phases. |
-| 2026-02-17 | — | **Supabase schema `unerr`.** Switched from table prefix to PostgreSQL schema: all unerr tables live in schema `unerr` (multi-app same Supabase project). Prisma: `schemas = ["public", "unerr"]`, `@@schema("unerr")` on models/enums; `@@map("repos")`, `@@map("deletion_logs")`. Migration moves tables and enums into `unerr`. Rule and rationale in VERTICAL_SLICING_PLAN.md and PHASE_0_DEEP_DIVE_AND_TRACKER.md. |
-| 2026-02-17 | — | **Schema approach documented everywhere.** Updated README, CLAUDE.md, .cursorrules, RULESETS.md, VERTICAL_SLICING_PLAN (§ mandatory "from now on" schema convention). All new unerr tables MUST use schema `unerr`. Removed docs/architecture/README.md; convention lives in VERTICAL_SLICING_PLAN § Storage & Infrastructure Split and Phase 0 doc references it. |
-| 2026-02-17 | — | **Testing plan & frameworks verification.** Confirmed §2.6 is the Phase 0 testing plan. Vitest and Playwright are installed and configured (vitest.config.ts, playwright.config.ts, scripts, vitest.setup.ts, e2e/example.spec.ts). Marked "E2E Test Framework Setup" [x] with implementation notes. Added "Testing frameworks installed & configured" table and summary under §2.6. Updated completeness verification to state testing plan and frameworks are in place; only port/DI/domain unit tests, ArangoDB/Temporal integration tests, and E2E flow specs remain deferred to Phase 1. |
-| 2026-02-18 | — | **UserProfileMenu & AccountContext.** Replaced static user info in sidebar footer with Claude-style `UserProfileMenu` (Radix DropdownMenu). Sections: email header, Personal/Org account switcher (with check marks), Settings/Help, Upgrade Plan (electric-cyan), dark/light theme toggle, Sign Out. Added `AccountProvider` (global Personal-vs-Org context, persisted to `localStorage`). Added `ThemeProvider` (next-themes, `defaultTheme="dark"`). Wired into root `<Providers>` tree. Updated Flow 2 (onboarding wizard → welcome screen), Flow 3 (returning user — UserProfileMenu in sidebar). Updated §2.5 dashboard shell tracker item and onboarding section. |
-| 2026-02-18 | — | **Auto-provisioned org on signup + RepositorySwitcher + strict GitHub callback.** (1) Added `databaseHooks.user.create.after` to Better Auth config — auto-creates personal org (`"{name}'s organization"`) + member on signup via raw SQL (pg Pool + `generateId()`). (2) Added `RepositorySwitcher` (top-left sidebar) — Command-based repo search/switch, decoupled from identity (UserProfileMenu bottom-left). Active repo is URL-driven. (3) GitHub callback refactored: no org creation, strictly requires `orgId` in state, calls `setActiveOrganization`. (4) Removed welcome screen: `EmptyStateNoOrg`, `CreateWorkspaceFirstBanner`, `create-workspace.ts` deleted. Dashboard shows `EmptyStateRepos` directly. (5) Added `setActiveOrganization()` server helper to `lib/auth`. (6) `DashboardNav` Repos link highlights on `/repos/*` subpages. |
-| 2026-02-20 | — | **Phase 1 enhancements backported to Phase 0 tracker.** (1) `IGitHost` port: added `listBranches()` method for branch selection during repo import (P1-ADAPT-14). (2) `empty-state-repos.tsx`: uses `useAccountContext()` to get `activeOrgId`, builds install href dynamically with `orgId` query param; button disabled when no org active. (3) `prisma.config.ts`: loads `.env.local` first (Next.js convention), appends `search_path=unerr,public` to DB URL (Prisma 7 workaround). (4) Install route (`/api/github/install`): requires explicit `orgId` param, validates org membership, stores state as `{ orgId }` object with 10-min TTL. (5) Callback route (`/api/github/callback`): `parseStatePayload` handles both object and string state defensively. (6) Branch selection: two-step repo picker modal (select repos → choose branch per repo), `GET /api/repos/available/branches` endpoint, `POST /api/repos` accepts per-repo branch overrides. See PHASE_1 doc for full details. |
-| 2026-02-20 | — | **Remove "personal" context + user-driven repo selection.** (1) Removed `contextType: "personal" \| "organization"` from `AccountProvider`; `activeOrgId` is now `string` (never null). Self-healing: auto-activates first org if none active. (2) Removed "Personal Account" item from `UserProfileMenu`; renamed "Context" label to "Organization". (3) `getActiveOrgId()` now returns `Promise<string>` and throws if no org found. (4) Server pages throw errors instead of silently redirecting when org is missing. (5) `databaseHooks.user.create.after` retries with randomized slug on conflict. (6) **Repos no longer auto-added on GitHub installation.** Callback (`/api/github/callback`) only creates the installation record — repos are added exclusively via user selection in the repo picker modal (`POST /api/repos`). (7) Webhook `installation_repositories` event handler removed — repos are only added when user explicitly requests them. Files: `lib/auth/auth.ts`, `components/providers/account-context.tsx`, `components/dashboard/user-profile-menu.tsx`, `components/dashboard/repository-switcher.tsx`, `components/dashboard/empty-state-repos.tsx`, `lib/api/get-active-org.ts`, `app/(dashboard)/page.tsx`, `app/(dashboard)/settings/page.tsx`, `app/(dashboard)/settings/connections/page.tsx`, `app/(dashboard)/repos/[repoId]/page.tsx`, `app/api/github/callback/route.ts`, `app/api/webhooks/github/route.ts`. |
-| 2026-02-20 | — | **Remove RepositorySwitcher from sidebar + Docker DNS fix.** (1) Removed `RepositorySwitcher` from `app/(dashboard)/layout.tsx` sidebar — repos are managed from the dashboard page, not the sidebar. Will be replaced by a workspace selector in a future phase. (2) Added `dns: [8.8.8.8, 8.8.4.4]` to both `temporal-worker-heavy` and `temporal-worker-light` services in `docker-compose.yml` to fix "Can't reach database server" errors when light worker activities (`writeToArango`, `updateRepoError`) attempt to connect to cloud Supabase from inside Docker containers. The root cause was Docker's default DNS resolver failing to resolve external hostnames like `db.*.supabase.co`. Files: `app/(dashboard)/layout.tsx`, `docker-compose.yml`. |
-| 2026-02-22 | — | **Dashboard overhaul: Resend-style header + Industrial Glass sidebar + Overview revamp + Tabular repos.** (1) **Layout:** Added `DashboardHeader` (fixed top bar: logo + Docs link). Sidebar redesigned: Void Black `bg-[#0A0A0F]`, `border-r border-white/10`, nav items with Electric Cyan active indicator + dynamic Recents section (top 5 repos fetched server-side). `UserProfileMenu` remains at sidebar bottom with org switcher. `GlobalSearch` removed from sidebar. (2) **Overview page:** Three-section layout: Platform Usage stats grid (4 cards: Repositories, Code Intelligence, Governance, Intelligence — pulling real data from relational + graph stores), CLI Hero terminal panel (`npx @autorail/unerr connect` with copy button), and org-scoped repository grid with Add Repo card. (3) **Repos page:** Replaced card grid with GitHub-style paginated data table (20/page). Columns: Repository, Status, Branch, Files, Entities, Last Sync, MCP sessions, Actions (Open button + kebab). Added toolbar: search input, GitHub account/org filter dropdown, "Add Org" button, "Add Repository" button. Sorting on Repository/Status/Last Sync. (4) **New files:** `dashboard-header.tsx`, `cli-hero.tsx`, `overview-repo-card.tsx`, `overview-add-repo-card.tsx`. **Removed:** `header-user-menu.tsx`, `workspace-switcher.tsx`, `onboarding-command-center.tsx`. **Updated:** `dashboard-nav.tsx`, `repos-list.tsx`, `overview-stats.tsx`, layout.tsx, page.tsx, repos/page.tsx. (5) **Docs:** Created `docs/CLI_USER_GUIDE.md` (user-facing CLI documentation). |
-| 2026-02-23 | — | **Repo detail revamp: persistent header layout + Pipeline tab + shadow reindexing + code graph visualization.** (1) **Layout restructure:** `app/(dashboard)/repos/[repoId]/layout.tsx` converted to server component. Fetches repo data server-side, renders persistent header (breadcrumb, Live Sync/Offline pill, MCP status, snapshot badge, Connect to IDE button, telemetry chips) + tabs above children. New `components/repo/repo-tabs.tsx` client component for tab navigation (all 11 tabs: Code, Blueprint, Patterns, Rules, Reviews, Health, Activity, Timeline, Commits, History, Pipeline). Code tab page simplified to language bar + health summary + code explorer only. (2) **Pipeline tab:** New `app/(dashboard)/repos/[repoId]/pipeline/page.tsx` with reindex/stop controls, breathing glow status indicator, IndexEvent history table (`components/repo/pipeline-history-table.tsx`), and pipeline log viewer. New API: `GET /api/repos/[repoId]/history/indexing` returns `IndexEventDoc[]` from graph store. (3) **Shadow reindexing (non-destructive):** Added `index_version?: string` to `EntityDoc` and `EdgeDoc` in `lib/ports/types.ts`. Added `reindexStatus`, `currentIndexVersion`, `pendingIndexVersion` to `RepoRecord`. Workflow `IndexRepoInput` accepts optional `indexVersion`; `writeToArango` stamps version on all entities/edges. `deleteByIndexVersion()` method added to `IGraphStore` port and Arango adapter. Reindex API generates UUID version and keeps repo `status: "ready"` during shadow reindex. (4) **Code graph visualization:** Installed `@xyflow/react`. New `GET /api/repos/[repoId]/entities/[entityId]/graph` API calls `getSubgraph()` + batch justification fetching, returns React Flow-shaped `{ nodes, edges }`. Added GET handler to `app/api/entities/[entityId]/justification/route.ts`. New `components/repo/entity-graph-view.tsx`: full-screen React Flow canvas with custom EntityNode (taxonomy color-coded: VERTICAL=cyan, HORIZONTAL=purple, UTILITY=gray), color-coded edges by type, confidence bars, depth slider (1-4), MiniMap, and justification side panel (click node to see business purpose, confidence, domain concepts). "Graph" button added to Code Explorer detail panel in `repo-detail-client.tsx`. |
-| 2026-02-23 | — | **Light worker OOM fix (exit code 137).** Root cause: embedding activity (`generateAndStoreEmbeds`) caused OOM kills during embedding generation of 768 documents. `buildDocuments` was loading ALL edges via `getAllEdges()` into memory for caller/callee enrichment. Fixes: (1) Removed `getAllEdges()` call from `buildDocuments` — edge-based caller/callee enrichment skipped to prevent OOM; entity names, signatures, and justifications are sufficient for semantic search quality. (2) Reduced default embedding batch size from 100 to 32 (`EMBEDDING_BATCH_SIZE=32`). (3) Increased Temporal heartbeat timeout from 2m to 5m and `startToCloseTimeout` from 30m to 60m in `embed-repo.ts`. (4) Increased light worker Docker container memory from 4GB to 6GB and Node.js heap from 3072MB to 4096MB in `docker-compose.yml`. Files: `lib/temporal/activities/embedding.ts`, `lib/temporal/workflows/embed-repo.ts`, `docker-compose.yml`. |
-| 2026-02-23 | — | **Temporal payload optimization — all pipelines.** Audited and refactored all 9 Temporal workflows to eliminate large payloads (EntityDoc[], EdgeDoc[], full document arrays) from crossing Temporal's data converter (~4MB gRPC limit). The "keep heavy data in the worker" principle is now enforced everywhere. **(1) Embedding pipeline:** Replaced monolithic fetchEntities→buildDocuments→generateAndStoreEmbeds with chunked `fetchFilePaths` → `processAndEmbedBatch` (50 files/batch) — entities fetched, embedded, and stored inside each activity. **(2) Indexing pipeline:** `runSCIP` and `parseRest` now write entities/edges directly to ArangoDB via shared `writeEntitiesToGraph` helper; workflow passes only counts. `finalizeIndexing` replaces `writeToArango` for status updates. **(3) Incremental indexing:** `reIndexBatch` writes directly; `applyEntityDiffs` and `repairEdgesActivity` receive only entity IDs and file paths, fetch full data internally. **(4) Ontology discovery:** Merged 3 activities into single `discoverAndStoreOntology` — fetch+extract+store in one step. **(5) Health report:** Each activity (aggregateAndStoreFeatures, buildAndStoreHealthReport, synthesizeAndStoreADRs) now self-sufficient — fetches own data from ArangoDB. **(6) Graph export:** Merged `queryCompactGraph`+`serializeToMsgpack` into `queryAndSerializeCompactGraph`. **(7) PR review:** Merged `fetchDiff`+`runChecks` into `fetchDiffAndRunChecks`; `postReviewSelfSufficient` re-fetches diff internally. **(8) Pattern detection:** Merged scan+synthesize+store into single `scanSynthesizeAndStore`. **(9) Justification:** Fixed unbounded `cumulativeChangedIds` growth — now only previous level's changes propagate. `loadOntology` returns `void` (was serializing unused DomainOntologyDoc). New shared helper: `lib/temporal/activities/graph-writer.ts`. All tests passing (898 pass, 11 pre-existing failures in indexing-light.test.ts). |
-| 2026-02-23 | — | **Scale safety audit — unbounded query limits.** Audited all ArangoDB, Prisma, and Redis queries for unbounded data fetching that could OOM at scale. **(1) ArangoDB adapter:** Added LIMIT clauses to 10 queries: `getAllEntities` (default 10K, configurable param), `getAllEdges` (default 20K, configurable param), `getJustifications` (10K), `getJustificationHistory` (100), `getFeatureAggregations` (500), `getDriftScores` (5K), `getADRs` (200), `getTokenUsage` (1K), `queryRuleExceptions` (500), `getUncommittedEntries` (500). Port interface updated with optional `limit` param; fakes updated to match. **(2) N+1 query fixes:** `/api/repos/[repoId]/impact` — batched parallel caller lookup (20 at a time via `Promise.all`) instead of sequential per-entity. `lib/mcp/tools/review.ts` — fetch rules once before loop instead of per-blocker. **(3) Prisma:** `getRepos()` → `take: 200`. `listPrReviewComments()` → `LIMIT 500`. **(4) Dashboard limits:** `queryRules` and `queryPatterns` calls in `page.tsx` and `repos/[repoId]/layout.tsx` now have `limit: 100`. **(5) Redis:** Pipeline log fetch capped at 2000 entries (API) and 5000 (download). **(6) Build fix:** `DiffFile.path` → `DiffFile.filePath` type error caught by `pnpm build`. Files: `arango-graph-store.ts`, `prisma-relational-store.ts`, `fakes.ts`, `graph-store.ts`, `impact/route.ts`, `review.ts`, `page.tsx`, `layout.tsx`, `logs/route.ts`, `logs/download/route.ts`. |
+| 2026-02-17 | — | **Phase 0 implementation complete.** Infrastructure: ArangoDB, Temporal workers, .env.example, worker scripts. Database: Prisma (repos, deletion_logs), ArangoDB bootstrap. Ports: 11 interfaces + types. Adapters: 5 working (Arango, Prisma, Temporal, Redis, Langfuse) + 6 stubs; DI container + fakes. Backend: health expansion, create-org use case, proxy email verification, worker entry points. Frontend: (dashboard) layout, dashboard home + empty state, repos/settings, Phase 0 onboarding (org creation). |
+| 2026-02-17 | — | **Supabase schema `unerr`.** Switched from table prefix to PostgreSQL schema: all unerr tables live in schema `unerr`. |
+| 2026-02-18 | — | **Auto-provisioned org on signup.** Added `databaseHooks.user.create.after` to Better Auth — auto-creates personal org on signup. Added `UserProfileMenu` (Radix DropdownMenu) and `AccountProvider`. GitHub callback refactored: no org creation, strictly requires `orgId` in state. Removed welcome screen. |
+| 2026-02-20 | — | **Remove "personal" context + user-driven repo selection.** `activeOrgId` is now always `string`. Repos no longer auto-added on GitHub installation. `prisma.config.ts`: loads `.env.local` first, appends `search_path=unerr,public`. `listBranches()` added to `IGitHost` for two-step repo picker. |
+| 2026-02-20 | — | **Docker DNS fix.** Changed workers to `network_mode: host` to fix Supabase DNS resolution from inside Docker. |
+| 2026-02-22 | — | **Dashboard overhaul: Resend-style header + Industrial Glass sidebar + Overview revamp + Tabular repos.** |
+| 2026-02-23 | — | **Repo detail revamp:** persistent header layout, Pipeline tab, shadow reindexing, code graph visualization. |
+| 2026-02-23 | — | **Light worker OOM fix:** removed `getAllEdges()` from buildDocuments; reduced embedding batch size to 32; increased heartbeat timeouts; increased light worker memory to 6 GB (Docker now 4 GB). |
+| 2026-02-23 | — | **Temporal payload optimization:** refactored all 9 workflows to keep heavy data in workers; chunked embedding pipeline; merged multiple activities into single self-sufficient activities. |
+| 2026-02-23 | — | **Scale safety audit:** added LIMIT clauses to 10 ArangoDB queries; N+1 query fixes; Prisma `take` limits; Redis pipeline log caps. |
+| 2026-03-03 | — | **Doc audit (Phase 0):** merged all [x] completed tasks into architectural prose. Corrected discrepancies: LLM adapter is `BedrockProvider` (not `VercelAIProvider`); `github-host.ts` is fully implemented (not a stub — cloneRepo, listFiles, listBranches, PR/check/review methods all implemented); `scip-code-intelligence.ts` is fully implemented (SCIP + Tree-sitter fallback); 12th port (`IStorageProvider`) implemented and in container; docker workers use `network_mode: host` and 8 GB/4 GB memory limits; `postgresql` image is `pgvector/pgvector:pg13`; `tei`, `tei-reranker`, and `mcp-server` services added to docker-compose (undocumented); `ICacheStore` has `setIfNotExists()` and `invalidateByPrefix()` methods; proxy exempts `/api/cli`. Removed all [x] checklist items from Part 2; renamed Part 2 to "Remaining Tasks". Added Configuration Reference table with all env vars. |

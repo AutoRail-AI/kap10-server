@@ -31,7 +31,7 @@ export async function runSCIPPhp(
   opts: SCIPOptions,
   workspaceRoot: string,
 ): Promise<SCIPPhpResult> {
-  const absRoot = join(opts.workspacePath, workspaceRoot === "." ? "" : workspaceRoot)
+  const absRoot = join(opts.indexDir, workspaceRoot === "." ? "" : workspaceRoot)
   const outputFile = join(absRoot, "index.scip")
 
   try {

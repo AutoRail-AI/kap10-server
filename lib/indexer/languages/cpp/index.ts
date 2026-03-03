@@ -15,7 +15,7 @@ export const cppPlugin: LanguagePlugin = {
     const allEdges: import("../../types").ParsedEdge[] = []
     const allCoveredFiles: string[] = []
 
-    for (const root of opts.workspaceRoots) {
+    for (const root of opts.packageRoots) {
       const result = await runSCIPClang(opts, root, "cpp")
       allEntities.push(...result.entities)
       allEdges.push(...result.edges)

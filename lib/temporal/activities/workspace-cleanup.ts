@@ -1,7 +1,7 @@
 /**
- * Temporal activities for workspace cleanup.
+ * Temporal activities for index directory cleanup.
  * Removes expired workspace overlays from ArangoDB and Supabase,
- * and cleans up workspace filesystem after indexing completes.
+ * and cleans up the repo index directory (temporary clone) after indexing completes.
  */
 
 import { existsSync, rmSync } from "node:fs"
@@ -20,8 +20,8 @@ function resolveContainer(): Container {
   return _testContainer ?? getContainer()
 }
 
-/** Base directory for workspace clones */
-const WORKSPACE_BASE = "/data/workspaces"
+/** Base directory for repo index clones */
+const REPO_INDEX_BASE = "/data/repo-indices"
 
 /**
  * Clean up expired workspaces.
@@ -67,24 +67,24 @@ export interface CleanupWorkspaceFilesystemInput {
  */
 export async function cleanupWorkspaceFilesystem(input: CleanupWorkspaceFilesystemInput): Promise<void> {
   const log = logger.child({ service: "workspace-cleanup", organizationId: input.orgId, repoId: input.repoId })
-  const workspacePath = join(WORKSPACE_BASE, input.orgId, input.repoId)
+  const indexDir = join(REPO_INDEX_BASE, input.orgId, input.repoId)
 
-  if (!existsSync(workspacePath)) {
-    log.info("Workspace directory already removed", { path: workspacePath })
+  if (!existsSync(indexDir)) {
+    log.info("Repo index directory already removed", { path: indexDir })
     return
   }
 
   try {
-    rmSync(workspacePath, { recursive: true, force: true })
-    log.info("Workspace filesystem cleaned up", { path: workspacePath })
+    rmSync(indexDir, { recursive: true, force: true })
+    log.info("Repo index directory cleaned up", { path: indexDir })
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
-    log.warn("Failed to clean up workspace filesystem (non-fatal)", { path: workspacePath, error: message })
+    log.warn("Failed to clean up repo index directory (non-fatal)", { path: indexDir, error: message })
   }
 
   // Also try to remove the org directory if it's now empty
   try {
-    const orgDir = join(WORKSPACE_BASE, input.orgId)
+    const orgDir = join(REPO_INDEX_BASE, input.orgId)
     if (existsSync(orgDir)) {
       const { readdirSync } = await import("node:fs")
       const remaining = readdirSync(orgDir)

@@ -57,20 +57,24 @@ export const env = createEnv({
     // ── Sentry (Error Tracking) ─────────────────────────────────────
     SENTRY_DSN: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
 
-    // ── AWS Bedrock (LLM & Embeddings) ────────────────────────────
+    // ── AWS Bedrock (LLM) ─────────────────────────────────────────
     AWS_BEARER_TOKEN_BEDROCK: z.string().optional(),
     AWS_REGION: z.string().optional(),
     // Per-tier model overrides (optional — defaults in lib/llm/config.ts)
     LLM_MODEL_FAST: z.string().optional(),
     LLM_MODEL_STANDARD: z.string().optional(),
     LLM_MODEL_PREMIUM: z.string().optional(),
-    EMBEDDING_MODEL: z.string().optional(),
 
-    // ── Embedding (Phase 3 — Semantic Search) ──────────────────────
-    EMBEDDING_MODEL_NAME: z.string().optional().default("nomic-ai/nomic-embed-text-v1.5"),
+    // ── Embedding (Phase 3 — Semantic Search via TEI) ──────────────
+    TEI_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid TEI URL").optional(),
+    TEI_BATCH_SIZE: z.string().optional().transform((val) => val ? parseInt(val, 10) : 32),
     EMBEDDING_DIMENSIONS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 768),
-    EMBEDDING_BATCH_SIZE: z.string().optional().transform((val) => val ? parseInt(val, 10) : 100),
     EMBEDDING_MODEL_VERSION: z.string().optional(),
+
+    // ── Reranker (Cross-Encoder via TEI — Optional) ─────────────
+    TEI_RERANKER_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid TEI Reranker URL").optional(),
+    RERANKER_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val === "true").default("false"),
+    RERANKER_TOP_K: z.string().optional().transform((val) => val ? parseInt(val, 10) : 30),
 
     // ── Phase 5: Incremental Indexing ────────────────────────────
     INCREMENTAL_BATCH_SIZE: z.string().optional().transform((val) => val ? parseInt(val, 10) : 5),
@@ -203,11 +207,14 @@ export const env = createEnv({
     LLM_MODEL_FAST: process.env.LLM_MODEL_FAST,
     LLM_MODEL_STANDARD: process.env.LLM_MODEL_STANDARD,
     LLM_MODEL_PREMIUM: process.env.LLM_MODEL_PREMIUM,
-    EMBEDDING_MODEL: process.env.EMBEDDING_MODEL,
-    // Embedding
-    EMBEDDING_MODEL_NAME: process.env.EMBEDDING_MODEL_NAME,
+    // Embedding (TEI)
+    TEI_URL: process.env.TEI_URL,
+    TEI_BATCH_SIZE: process.env.TEI_BATCH_SIZE,
     EMBEDDING_DIMENSIONS: process.env.EMBEDDING_DIMENSIONS,
-    EMBEDDING_BATCH_SIZE: process.env.EMBEDDING_BATCH_SIZE,
+    // Reranker (TEI Cross-Encoder)
+    TEI_RERANKER_URL: process.env.TEI_RERANKER_URL,
+    RERANKER_ENABLED: process.env.RERANKER_ENABLED,
+    RERANKER_TOP_K: process.env.RERANKER_TOP_K,
     // Phase 5: Incremental Indexing
     INCREMENTAL_BATCH_SIZE: process.env.INCREMENTAL_BATCH_SIZE,
     CASCADE_MAX_HOPS: process.env.CASCADE_MAX_HOPS,

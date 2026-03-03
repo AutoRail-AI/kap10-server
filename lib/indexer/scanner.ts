@@ -1,8 +1,8 @@
 /**
- * File discovery for workspace indexing.
+ * File discovery for repo index directory scanning.
  *
- * Walks the workspace directory, respects .gitignore patterns,
- * and returns files with extension-based language detection.
+ * Walks the repo index directory (a temporary clone at /data/repo-indices/{org}/{repo}),
+ * respects .gitignore patterns, and returns files with extension-based language detection.
  */
 import { execFile } from "node:child_process"
 import { extname, join, resolve } from "node:path"
@@ -66,12 +66,12 @@ const EXTENSION_LANGUAGE: Record<string, string> = {
 }
 
 /**
- * Scan a workspace directory for source files.
+ * Scan a repo index directory for source files.
  * Uses `git ls-files` when inside a git repo (respects .gitignore automatically),
  * falls back to manual walk if git is unavailable.
  */
-export async function scanWorkspace(workspacePath: string): Promise<ScannedFile[]> {
-  const absRoot = resolve(workspacePath)
+export async function scanIndexDir(indexDir: string): Promise<ScannedFile[]> {
+  const absRoot = resolve(indexDir)
 
   // Check if directory exists
   try {

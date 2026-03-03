@@ -42,7 +42,7 @@ Each feature links to:
 | | |
 |---|---|
 | **Architecture Doc** | [PHASE_5.5_PROMPT_LEDGER_REWIND_AND_LOCAL_INGESTION.md](PHASE_5.5_PROMPT_LEDGER_REWIND_AND_LOCAL_INGESTION.md) — "Local Repo Ingestion" section |
-| **Design Decisions** | `provider: "local_cli"` repos use Supabase Storage upload instead of git clone. `prepareWorkspace` downloads via pre-signed URL. Rest of indexing pipeline is identical to GitHub repos — same SCIP, same embedding, same justification. IStorageProvider port abstracts upload/download. |
+| **Design Decisions** | `provider: "local_cli"` repos use Supabase Storage upload instead of git clone. `prepareRepoIntelligenceSpace` downloads via pre-signed URL. Rest of indexing pipeline is identical to GitHub repos — same SCIP, same embedding, same justification. IStorageProvider port abstracts upload/download. |
 | **Data Flow** | `unerr init` → `POST /api/cli/init` → repo record created → `unerr push` → zip upload to Supabase Storage → Temporal `indexRepoWorkflow` |
 | **Key Code** | `packages/cli/src/commands/init.ts`, `packages/cli/src/commands/push.ts`, `app/api/cli/init/route.ts`, `app/api/cli/repos/route.ts` |
 | **Data Stores** | PostgreSQL (`unerr.repos`), Supabase Storage (`cli_uploads` bucket, 500MB limit) |
@@ -83,8 +83,8 @@ Each feature links to:
 | | |
 |---|---|
 | **Architecture Doc** | [PHASE_3_SEMANTIC_SEARCH.md](PHASE_3_SEMANTIC_SEARCH.md) |
-| **Design Decisions** | **Hybrid search = pgvector + ArangoDB fulltext + RRF merge.** nomic-embed-text-v1.5 chosen for $0 cost (local CPU inference via `@xenova/transformers`), same model at index + query time. RRF formula: `Σ 1/(k + rank_i)`. Top 20 from each source, merged by `entity_key`. **Two-Step RAG**: return summaries first (~1,500 tokens), agent fetches full bodies on demand — eliminates "lost in the middle" problem. |
-| **Data Flow** | Query → [parallel] pgvector cosine (top 20) + ArangoDB fulltext (top 20) → RRF merge → graph enrichment (1-hop callers/callees) → semantic truncation → response |
+| **Design Decisions** | **Hybrid search = pgvector + ArangoDB fulltext + RRF merge + optional cross-encoder reranking.** nomic-embed-text-v1.5 chosen for $0 cost (served by HuggingFace TEI container via HTTP), same model at index + query time. RRF formula: `Σ 1/(k + rank_i)`. Top 20 from each source (30 when reranker enabled), merged by `entity_key`. Optional cross-encoder (BAAI/bge-reranker-v2-m3) re-scores top RRF candidates for higher precision. **Two-Step RAG**: return summaries first (~1,500 tokens), agent fetches full bodies on demand — eliminates "lost in the middle" problem. |
+| **Data Flow** | Query → [parallel] pgvector cosine + ArangoDB fulltext → RRF merge → [optional] cross-encoder rerank → graph enrichment (1-hop callers/callees) → semantic truncation → response |
 | **Key Code** | `lib/mcp/tools/` (search tool handler), `lib/adapters/llamaindex-vector-search.ts`, `lib/adapters/arango-graph-store.ts`, `lib/ports/vector-search.ts` |
 | **Data Stores** | PostgreSQL (`unerr.entity_embeddings` — pgvector HNSW 768d), ArangoDB (fulltext indexes on entity collections) |
 

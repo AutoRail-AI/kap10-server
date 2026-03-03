@@ -36,7 +36,7 @@ export async function runSCIPClang(
   workspaceRoot: string,
   language: "c" | "cpp",
 ): Promise<SCIPClangResult> {
-  const absRoot = join(opts.workspacePath, workspaceRoot === "." ? "" : workspaceRoot)
+  const absRoot = join(opts.indexDir, workspaceRoot === "." ? "" : workspaceRoot)
   const outputFile = join(absRoot, "index.scip")
 
   try {

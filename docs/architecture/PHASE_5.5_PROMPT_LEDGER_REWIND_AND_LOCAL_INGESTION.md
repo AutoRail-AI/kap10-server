@@ -350,10 +350,10 @@ Step  Actor                           System Action                             
                                        Server triggers indexRepoWorkflow via Temporal
                                        with provider: "local_cli" and storagePath
 
-8                                     indexRepoWorkflow prepareWorkspace activity:                Workspace ready
+8                                     indexRepoWorkflow prepareRepoIntelligenceSpace activity:                Workspace ready
                                        a) Detects provider == "local_cli"
                                        b) Calls IStorageProvider.downloadFile() for the zip
-                                       c) Extracts zip to /data/workspaces/{orgId}/{repoId}/
+                                       c) Extracts zip to /data/repo-indices/{orgId}/{repoId}/
                                        d) Continues with normal SCIP + entity extraction
                                           (same pipeline as GitHub repos)
 
@@ -1298,20 +1298,20 @@ Phase 5.5 establishes foundational infrastructure that Phase 6 (Pattern Enforcem
 - **Testing:** Rewind restores files locally. Timeline shows entries with status indicators. Branches shows fork points.
 - **Blocked by:** P5.5-API-02, P5.5-API-03, P5.5-API-04
 
-### P5.5-API-10: prepareWorkspace Extension for Local Repos
+### P5.5-API-10: prepareRepoIntelligenceSpace Extension for Local Repos
 
 - [x] **Status:** Partial — indexing-heavy.ts not updated for local_cli workspace prep
-- **Description:** Extend the `prepareWorkspace` activity in the indexing pipeline to handle `provider: "local_cli"` repos. Instead of `git clone`, download the zip from Supabase Storage and extract it.
+- **Description:** Extend the `prepareRepoIntelligenceSpace` activity in the indexing pipeline to handle `provider: "local_cli"` repos. Instead of `git clone`, download the zip from Supabase Storage and extract it.
 - **Behavior:**
   1. Check `provider` field on Repo record
   2. If `provider == "local_cli"`:
      a. Call `IStorageProvider.downloadFile(bucket, storagePath)` to get the zip
-     b. Extract zip to `/data/workspaces/{orgId}/{repoId}/`
+     b. Extract zip to `/data/repo-indices/{orgId}/{repoId}/`
      c. Continue with normal SCIP + entity extraction pipeline
   3. If `provider == "github"`: Existing `git clone` behavior (unchanged)
   4. After indexing completes (success or failure), call `IStorageProvider.deleteFile()` to clean up
 - **Files:**
-  - `lib/temporal/activities/indexing-heavy.ts` (modify — add conditional branch in `prepareWorkspace`)
+  - `lib/temporal/activities/indexing-heavy.ts` (modify — add conditional branch in `prepareRepoIntelligenceSpace`)
 - **Testing:** Local CLI repo downloads zip and extracts. GitHub repo still clones normally. Zip cleaned up after indexing. Missing zip returns clear error.
 - **Blocked by:** P5.5-ADAPT-03
 
@@ -1674,7 +1674,7 @@ lib/di/fakes.ts                       ← Add InMemoryStorageProvider, ledger me
 lib/di/__tests__/port-compliance.test.ts ← Add 12th port test
 lib/mcp/tools/sync.ts                 ← Add prompt tracking, ledger append, snapshot auto-creation
 lib/mcp/tools/index.ts                ← Register revert_to_working_state, get_timeline, mark_working
-lib/temporal/activities/indexing-heavy.ts ← prepareWorkspace branch for local_cli provider
+lib/temporal/activities/indexing-heavy.ts ← prepareRepoIntelligenceSpace branch for local_cli provider
 prisma/schema.prisma                  ← Add LedgerSnapshot model, local_cli enum value
 packages/cli/package.json             ← Add new dependencies
 packages/cli/src/index.ts             ← Register new commands

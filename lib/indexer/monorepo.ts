@@ -1,9 +1,9 @@
 /**
- * Monorepo / workspace root detection.
+ * Monorepo / package root detection.
  *
  * Detects pnpm, yarn, npm, nx, and lerna workspaces.
- * Returns workspace root paths for SCIP indexers that need per-package runs.
- * A-05: Also detects dominant language per workspace root for polyglot support.
+ * Returns package root paths for SCIP indexers that need per-package runs.
+ * A-05: Also detects dominant language per package root for polyglot support.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { extname, join, resolve } from "node:path"
@@ -11,11 +11,11 @@ import { extname, join, resolve } from "node:path"
 import type { WorkspaceInfo } from "./types"
 
 /**
- * Detect workspace roots in a repository.
+ * Detect package roots in a repository.
  * Returns the list of package/module roots and the monorepo tool type.
  */
-export function detectWorkspaceRoots(workspacePath: string): WorkspaceInfo {
-  const absRoot = resolve(workspacePath)
+export function detectPackageRoots(indexDir: string): WorkspaceInfo {
+  const absRoot = resolve(indexDir)
 
   // Check pnpm-workspace.yaml
   const pnpmWorkspacePath = join(absRoot, "pnpm-workspace.yaml")
@@ -74,15 +74,17 @@ export function detectWorkspaceRoots(workspacePath: string): WorkspaceInfo {
   return { roots: ["."], type: "single" }
 }
 
+export const detectWorkspaceRoots = detectPackageRoots
+
 /**
- * A-05: Detect the dominant programming language for each workspace root.
+ * A-05: Detect the dominant programming language for each package root.
  * Scans files in each root directory and returns the language with the most files.
  */
 export function detectLanguagePerRoot(
-  workspacePath: string,
+  indexDir: string,
   roots: string[]
 ): Record<string, string> {
-  const absRoot = resolve(workspacePath)
+  const absRoot = resolve(indexDir)
   const result: Record<string, string> = {}
 
   for (const root of roots) {

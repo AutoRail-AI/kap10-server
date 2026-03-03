@@ -861,7 +861,7 @@ const text = `${j.taxonomy}: ${j.business_purpose}. Concepts: ${j.domain_concept
 embedJustifications activity
   → graphStore.getJustifications()          (ArangoDB: taxonomy, purpose, concepts, feature_tag)
   → graphStore.getAllEntities()              (ArangoDB: resolve entity_id → entity name)
-  → vectorSearch.embed(texts)               (ONNX nomic-embed-text-v1.5, local CPU)
+  → vectorSearch.embed(texts)               (TEI nomic-embed-text-v1.5 via HTTP)
   → vectorSearch.upsertJustificationEmbeddings(embeddings, metadata)
                                             (pgvector: justification_embeddings table)
 

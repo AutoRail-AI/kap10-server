@@ -483,14 +483,14 @@ Phase 2 introduces a split deployment. The Next.js dashboard and the MCP server 
 ┌──────────────────────────────────┐    ┌──────────────────────────────────┐
 │         Vercel (Dashboard)        │    │       Fly.io (MCP Server)         │
 │                                   │    │                                   │
-│  Next.js 16 SSR/SSG              │    │  Express / Hono + Streamable HTTP│
+│  Next.js SSR/SSG                 │    │  Node.js HTTP + Streamable HTTP  │
 │  /dashboard/*                     │    │  /mcp (single MCP endpoint)      │
 │  /api/repos/*                     │    │  /oauth/* (OAuth 2.1 endpoints)  │
 │  /api/api-keys/*                  │    │  /.well-known/* (discovery)      │
 │  /api/webhooks/*                  │    │                                   │
 │  /api/github/*                    │    │  Stateless HTTP (SSE optional)   │
-│                                   │    │  Auto-scaling (min: 1, max: 10)  │
-│  Serverless (10s–60s timeout)    │    │  256 MB per instance              │
+│                                   │    │  Auto-scaling (suspend/resume)   │
+│  Serverless (10s–60s timeout)    │    │  512 MB per instance, port 8787   │
 └──────────────┬───────────────────┘    └──────────────┬───────────────────┘
                │                                        │
                │         Shared Infrastructure          │
@@ -541,40 +541,40 @@ Phase 2 introduces a split deployment. The Next.js dashboard and the MCP server 
 **Key storage schema (Supabase `unerr.api_keys`):**
 
 ```
-key_hash        VARCHAR    SHA-256 of raw key (lookup index)
-key_prefix      VARCHAR    First 8 chars of raw key (display: "unerr_sk_a3f7****")
+key_hash        VARCHAR    HMAC-SHA256 of raw key (lookup index)
+key_prefix      VARCHAR    "unerr_sk_{first 4 random chars}****" (display only)
 org_id          VARCHAR    FK → organization
 repo_id         VARCHAR    FK → repo (nullable for future org-wide keys)
 name            VARCHAR    User-provided label ("Cursor - main branch")
-transport       VARCHAR    "streamable-http" (Phase 2) | "mcp-stdio" (future)
-scopes          JSONB      ["mcp:read"] (read-only) | ["mcp:read", "mcp:sync"] (full — includes sync_local_diff)
+is_default      BOOLEAN    Auto-generated key for onboarding PR (default false)
+scopes          TEXT[]     ["mcp:read"] (read-only) | ["mcp:read", "mcp:sync"] (includes sync_local_diff)
 last_used_at    TIMESTAMP  Updated on every MCP request (async, non-blocking)
 revoked_at      TIMESTAMP  NULL = active, non-NULL = revoked
 created_at      TIMESTAMP
 ```
 
-**Lookup path (on every MCP request — Mode B only):** API key is in the `Authorization: Bearer` header. Server detects `unerr_sk_` prefix, computes SHA-256, queries `unerr.api_keys WHERE key_hash = ? AND revoked_at IS NULL`. This lookup is cached in Redis (`unerr:apikey:{hash}`, TTL 5 min) to avoid hitting Supabase on every tool call. For OAuth Mode A, the JWT is validated locally (signature + expiry) with no database lookup.
+> **Note on hashing:** Keys are hashed using HMAC-SHA256 with a fixed server-side salt (`unerr-api-key-salt`), not plain SHA-256. This prevents preimage attacks even if the salt is leaked without the key material.
+
+**Lookup path (on every MCP request — Mode B only):** API key is in the `Authorization: Bearer` header. Server detects `unerr_sk_` prefix, computes HMAC-SHA256, queries `unerr.api_keys WHERE key_hash = ? AND revoked_at IS NULL`. This lookup is cached in Redis (`mcp:apikey:{hash}`, TTL 5 min) to avoid hitting Supabase on every tool call. For OAuth Mode A, the JWT is validated locally (signature + expiry) with no database lookup.
 
 ### MCP Session State
 
 Sessions are managed via the `Mcp-Session-Id` header (MCP spec 2025-03-26). The server generates a session ID on the first authenticated request and returns it in the response header. The client includes this header in all subsequent requests.
 
 ```
-Redis key: unerr:mcp:session:{sessionId}
-TTL: 12 hours from last request (sliding expiry, configurable per-org 1–24 h)
+Redis key: mcp:session:{sessionId}
+TTL: 1 hour from last request (fixed — not configurable per session)
 Value: {
   authMode: "oauth" | "api_key",
-  identityId: "uuid",       // JWT sub (OAuth) or API key ID
   orgId: "uuid",
   repoId: "uuid|null",      // null for OAuth (org-scoped), set for API key (repo-scoped)
-  userId: "uuid",            // resolved from JWT or API key owner
-  branch: "main",
-  workspaceId: "uuid|null",  // linked workspace for sync_local_diff
+  userId: "uuid",
   createdAt: ISO-8601,
-  toolCallCount: number,     // total calls in this session
   lastToolCallAt: ISO-8601
 }
 ```
+
+> **Note:** The session record omits `authMode`-specific fields like `identityId` and `toolCallCount` compared to the original spec — the production implementation stores a minimal set for re-auth context.
 
 **Session persistence via Redis:** Session state is stored in Redis (key `unerr:mcp:session:{sessionId}`) with a sliding TTL. Because Redis is external to the MCP server container, sessions survive zero-downtime deployments (blue/green, rolling restart). When a new container starts, it reads the existing session from Redis — no re-authentication required. Fly.io rolling deploys drain in-flight requests to the old container while the new container picks up new requests with full session context.
 
@@ -582,19 +582,24 @@ Value: {
 
 ### MCP Tool Registry
 
-All 9 Phase 2 tools are read-only (no mutations to the committed graph). `sync_local_diff` writes to the workspace overlay only.
+The MCP server exposes tools across **Phases 2–8**. All tools are discovered by agents via `tools/list`. Phase 2 tools are the foundational set; subsequent phases add tools without breaking backward compatibility.
+
+**Phase 2 — Core code intelligence (keyword + graph):**
 
 | Tool | Input Schema | Output Shape | ArangoDB Queries | Estimated Latency |
 |------|-------------|-------------|-----------------|-------------------|
-| `search_code` | `{ query: string, limit?: number }` | `{ results: [{ name, kind, file, line, signature, score }] }` | Fulltext search on `functions.name` + `functions.signature` | < 200ms |
+| `search_code` | `{ query: string, limit?: number }` | `{ results: [{ name, kind, file, line, signature, score }] }` | Fulltext search on entity names + signatures | < 200ms |
 | `get_function` | `{ name: string } \| { file: string, line: number }` | `{ function: EntityDoc, callers: EntityDoc[], callees: EntityDoc[] }` | Entity lookup + 1-hop `calls` traversal | < 300ms |
 | `get_class` | `{ name: string }` | `{ class: EntityDoc, methods: EntityDoc[], extends: EntityDoc[], implements: EntityDoc[] }` | Entity lookup + `extends`/`implements` traversal | < 300ms |
 | `get_file` | `{ path: string }` | `{ file: FileDoc, entities: EntityDoc[] }` | `getEntitiesByFile()` | < 200ms |
+| `file_context` | `{ path: string }` | File-level context summary with entity list | `getEntitiesByFile()` | < 200ms |
 | `get_callers` | `{ name: string, depth?: number }` | `{ entity: EntityDoc, callers: EntityDoc[] }` | N-hop INBOUND on `calls` (max depth: 5) | < 500ms (depth 5) |
-| `get_callees` | `{ name: string, depth?: number }` | `{ entity: EntityDoc, callees: EntityDoc[] }` | N-hop OUTBOUND on `calls` (max depth: 5) | < 500ms (depth 5) |
+| `get_callees` | `{ name: string, depth?: number }` | `{ entity: EntityDoc, callees: EntityDoc[] }` | N-hop OUTBOUND on `calls` (max depth: 5) | < 500ms |
 | `get_imports` | `{ file: string, depth?: number }` | `{ file: string, imports: [{ path, entities }] }` | N-hop OUTBOUND on `imports` | < 500ms |
 | `get_project_stats` | `{}` | `{ files, functions, classes, interfaces, languages: {} }` | Aggregation across collections | < 300ms |
-| `sync_local_diff` | `{ diff: string, branch?: string }` | `{ synced: boolean, filesAffected, entitiesUpdated }` | Read + workspace overlay write | < 1s |
+| `sync_local_diff` | `{ diff: string, branch?, prompt?, agent_model?, agent_tool?, mcp_tools_called?, validation_result? }` | `{ synced: boolean, filesAffected, entitiesUpdated, ledgerEntryId? }` | Read + workspace overlay write + optional ledger append | < 1s |
+
+**Phase 3–8 tools** are also registered in the same server (see [Phase 3](./PHASE_3_SEMANTIC_SEARCH.md) onward for full specs): `semantic_search`, `find_similar` (Phase 3); `get_business_context`, `search_by_purpose`, `analyze_impact`, `get_blueprint` (Phase 4); `get_recent_changes` (Phase 5); `get_timeline`, `mark_working`, `revert_to_working_state`, `sync_dirty_buffer` (Phase 5.5); `get_rules`, `check_rules`, `check_patterns`, `get_conventions`, `suggest_approach`, `get_relevant_rules`, `draft_architecture_rule` (Phase 6); `review_pr_status` (Phase 7); `assemble_context`, `refresh_context` (Phase 8).
 
 ---
 
@@ -617,9 +622,11 @@ All 9 Phase 2 tools are read-only (no mutations to the committed graph). `sync_l
 | 11 | **OAuth token expiry during agent session** | Medium | Tool call returns 401. Agent cannot refresh without user interaction. | JWT `exp` check on every request. | MCP spec supports token refresh: client uses refresh token to get new access token (no browser needed). If refresh token also expired: client prompts user to re-authorize (opens browser). Session preserved via `Mcp-Session-Id`. |
 | 12 | **Concurrent `sync_local_diff` calls** (same workspace) | Medium | Without locking, parallel writes to ArangoDB overlay produce inconsistent entity state (partial updates, duplicate keys). | Redis distributed lock on `unerr:lock:workspace:{userId}:{repoId}:{branch}`. | Lock acquired before sync execution (TTL 30 s, 3 retries, 200 ms backoff). If lock unavailable: tool returns structured error asking agent to retry. Lock released in `finally` block. No data corruption possible — lock serializes all writes to the same workspace. |
 
-### Circuit Breaker Pattern for ArangoDB
+### Circuit Breaker Patterns
 
-The MCP server handles dozens of concurrent tool calls. A single slow ArangoDB query can cascade into connection pool exhaustion. The circuit breaker prevents this:
+**ArangoDB connection circuit breaker (in-process per container):**
+
+Each MCP server container maintains a lightweight in-process state machine to prevent ArangoDB connection pool exhaustion from cascading into full container failure:
 
 ```
 State: CLOSED (normal operation)
@@ -639,7 +646,22 @@ State: HALF-OPEN (allow 1 probe query)
   └── Probe fails → OPEN (reset 30s timer)
 ```
 
-Implementation: use a lightweight in-process state machine (no library needed — 30 lines of code). The circuit breaker is per MCP server instance, not global. Each Fly.io container has its own breaker.
+This is a simple in-process state machine (no shared Redis state). Each Fly.io container has its own breaker — there is no global circuit-open state.
+
+**Ledger circuit breaker (`lib/mcp/security/circuit-breaker.ts`) — Phase 5.5:**
+
+A separate circuit breaker halts entity sync from `sync_local_diff` when it detects an AI hallucination loop (the same entity being modified repeatedly within a short window). This uses Redis atomic counters:
+
+```
+Redis key: unerr:circuit:{orgId}:{repoId}:{entityKey}   ← sliding counter (TTL: window)
+Redis key: unerr:circuit:tripped:{orgId}:{repoId}:{entityKey}  ← cooldown flag (TTL: cooldown)
+
+Defaults: threshold=4 edits in 10 min → 5 min cooldown
+Config:   CIRCUIT_BREAKER_THRESHOLD, CIRCUIT_BREAKER_WINDOW_MINUTES,
+          CIRCUIT_BREAKER_COOLDOWN_MINUTES, CIRCUIT_BREAKER_ENABLED
+```
+
+When tripped, `sync_local_diff` skips overlay writes for the flagged entity and returns a structured message instructing the agent to pause and review.
 
 ---
 
@@ -665,11 +687,11 @@ Implementation: use a lightweight in-process state machine (no library needed �
 | Redis (MCP server) | N/A | **5 connections per container** | Rate limit checks + session reads + API key cache. All sub-millisecond operations. |
 | Supabase (MCP server) | N/A | **3 connections per container** | Only for API key validation cache miss and workspace upserts. Most reads hit Redis cache. |
 
-### Memory Budget (MCP Server Container)
+### Memory Budget (MCP Server Container — 512 MB)
 
 | Component | Memory | Rationale |
 |-----------|--------|-----------|
-| Node.js baseline | 50 MB | Express/Hono + MCP SDK |
+| Node.js baseline | 50 MB | Node.js HTTP + custom streamable transport |
 | Session state (per active session) | ~2 KB | Mcp-Session-Id, auth context, rate limit counters |
 | ArangoDB connection pool | 10 MB | 10 connections × ~1 MB TCP buffer each |
 | Redis connection | 2 MB | Single multiplexed connection |
@@ -788,13 +810,13 @@ Seam 5: IVectorSearch activation
     - Min machines: 1, max machines: 10
     - Auto-scale based on connection count
     - Health check: HTTP GET `/health`, interval 10s, timeout 2s
-  - Environment variables: same set as Next.js (`SUPABASE_DB_URL`, `ARANGODB_URL`, `REDIS_URL`, etc.) + `MCP_SERVER_PORT=3001`
+  - Environment variables: same set as Next.js (`SUPABASE_DB_URL`, `ARANGODB_URL`, `REDIS_URL`, etc.) + `MCP_SERVER_PORT=8787`
   - Secrets: `GITHUB_APP_PRIVATE_KEY`, `BETTER_AUTH_SECRET` via `fly secrets set`
   - **Test:** `fly deploy` succeeds. `curl https://unerr-mcp.fly.dev/health` returns 200.
   - **Depends on:** P2-INFRA-02
   - **Files:** `fly.toml`, `.github/workflows/deploy-mcp.yml` (CI/CD)
   - **Acceptance:** MCP server accessible at public URL. Auto-scales under load. Restarts on crash.
-  - Notes: _____
+  - Notes: Port is `8787` in `fly.toml`. Internal port mapped to `process.env.PORT ?? 8787` in `mcp-server/index.ts`.
 
 - [x] **P2-INFRA-04: Add MCP server to Docker Compose for local dev** — S
   - Service `mcp-server` built from `Dockerfile.mcp-server`
@@ -808,15 +830,17 @@ Seam 5: IVectorSearch activation
   - Notes: _____
 
 - [x] **P2-INFRA-05: Add MCP-specific env vars to `env.mjs`** — S
-  - New variables: `MCP_SERVER_URL` (public URL, e.g., `https://mcp.unerr.dev` — used for OAuth discovery and Auto-PR), `MCP_SERVER_PORT` (default 3001)
-  - OAuth: `MCP_JWT_AUDIENCE` (default `https://mcp.unerr.dev/mcp`), `MCP_OAUTH_DCR_TTL_HOURS` (default 24 — DCR client cache TTL)
-  - Rate limiting: `MCP_RATE_LIMIT_PER_MINUTE` (default 60)
+  - New variables: `MCP_SERVER_URL` (public URL, e.g., `https://mcp.unerr.dev` — used for OAuth discovery and Auto-PR), `MCP_SERVER_PORT` (default `3001` in env.mjs Zod schema, overridden to `8787` in fly.toml)
+  - OAuth: `MCP_JWT_AUDIENCE` (default `"unerr-mcp"` — a short opaque string, **not** a full URL), `MCP_OAUTH_DCR_TTL_HOURS` (default 24 — DCR client cache TTL)
+  - Rate limiting: `MCP_RATE_LIMIT_MAX` (default 60), `MCP_RATE_LIMIT_WINDOW_S` (default 60)
+  - Response size: `MCP_MAX_RESPONSE_BYTES` (default 32768 = 32 KB)
+  - Workspace: `MCP_WORKSPACE_TTL_HOURS` (default 12)
   - Note: JWT signing uses existing `BETTER_AUTH_SECRET` (no new secret needed)
-  - **Test:** `pnpm build` succeeds. Missing MCP vars don't crash dashboard (lazy init).
+  - **Test:** `pnpm build` succeeds. Missing MCP vars don't crash dashboard (all optional with defaults).
   - **Depends on:** Nothing
   - **Files:** `env.mjs`, `.env.example`
   - **Acceptance:** Env vars documented in `.env.example` with explanatory comments.
-  - Notes: _____
+  - Notes: All vars validated by Zod in `env.mjs`. `MCP_JWT_AUDIENCE` defaults to `"unerr-mcp"` (string audience used in HMAC-SHA256 JWT verification, not a URL).
 
 ---
 
@@ -825,16 +849,16 @@ Seam 5: IVectorSearch activation
 ### Prisma Schema Updates
 
 - [x] **P2-DB-01: Add `ApiKey` model to Prisma schema** — M
-  - Fields: `id` (UUID PK), `keyHash` (String — SHA-256 of raw key, indexed), `keyPrefix` (String — first 8 chars for display), `orgId` (String FK), `repoId` (String? FK), `name` (String — user label), `transport` (String, default "streamable-http"), `scopes` (Json — `["mcp:read"]` or `["mcp:read", "mcp:sync"]`), `lastUsedAt` (DateTime?), `revokedAt` (DateTime?), `createdAt`, `updatedAt`
-  - **Scope enforcement:** `mcp:read` grants access to all read-only tools (`search_code`, `get_function`, `get_class`, `get_callers`, `get_callees`, `get_imports`, `get_file_entities`, `get_project_stats`). `mcp:sync` grants access to `sync_local_diff` (workspace write). Keys without `mcp:sync` receive a 403 error when calling `sync_local_diff`: `"This API key does not have the 'mcp:sync' scope. Generate a new key with workspace sync enabled."` Default for interactive IDE keys: `["mcp:read", "mcp:sync"]`. Default for CI/read-only keys: `["mcp:read"]`.
+  - Fields: `id` (UUID PK), `keyHash` (String — HMAC-SHA256 of raw key, indexed), `keyPrefix` (String — `unerr_sk_{4 chars}****` for display), `orgId` (String FK), `repoId` (String? FK), `name` (String — user label), `isDefault` (Boolean, default false — marks auto-generated onboarding key), `scopes` (String[] — `["mcp:read"]` or `["mcp:read", "mcp:sync"]`), `lastUsedAt` (DateTime?), `revokedAt` (DateTime?), `createdAt`, `updatedAt`
+  - **Scope enforcement:** `mcp:read` grants access to all read-only tools. `mcp:sync` grants access to `sync_local_diff`, `sync_dirty_buffer`, `mark_working`, `revert_to_working_state`, `draft_architecture_rule`, `refresh_context`. Keys without required scope receive a structured error message. Default for interactive IDE keys: `["mcp:read", "mcp:sync"]`. Default for CI/read-only keys: `["mcp:read"]`.
   - Unique index: `keyHash`
-  - Relations: `Repo` (optional), `Organization` (via `orgId`)
+  - Relations: `Repo` (optional)
   - Schema: `@@schema("unerr")`, `@@map("api_keys")`
   - **Test:** `pnpm migrate` runs cleanly. Insert + lookup by hash works.
   - **Depends on:** Nothing
   - **Files:** `prisma/schema.prisma`
   - **Acceptance:** Table created with correct indexes. Revoked keys are soft-deleted (retained for audit).
-  - Notes: _____
+  - Notes: No `transport` field in actual schema. Scopes are `String[]` not `JSONB`.
 
 - [x] **P2-DB-02: Add `Workspace` model to Prisma schema** — M
   - Fields: `id` (UUID PK), `userId` (String), `repoId` (String FK), `branch` (String), `baseSha` (String?), `lastSyncAt` (DateTime?), `expiresAt` (DateTime), `createdAt`
@@ -847,12 +871,13 @@ Seam 5: IVectorSearch activation
   - Notes: _____
 
 - [x] **P2-DB-03: Extend `Repo` model with onboarding fields** — S
-  - Add: `onboardingPrUrl` (String?), `onboardingPrNumber` (Int?), `onboardingPrStatus` (String? — "open"/"merged"/"closed")
+  - Add: `onboardingPrUrl` (String?), `onboardingPrNumber` (Int?)
+  - Note: `onboardingPrStatus` field is **not in the schema** — PR status is derived at query time from GitHub API via the Auto-PR service.
   - **Test:** Migration runs. Existing repos get NULL defaults.
   - **Depends on:** Nothing
   - **Files:** `prisma/schema.prisma`
   - **Acceptance:** Auto-PR metadata stored and queryable per repo.
-  - Notes: _____
+  - Notes: Only 2 onboarding fields added to Repo, not 3 as originally specced.
 
 - [x] **P2-DB-04: Create ArangoDB fulltext index on entity names** — S
   - Fulltext index on `functions` collection: `name` and `signature` fields

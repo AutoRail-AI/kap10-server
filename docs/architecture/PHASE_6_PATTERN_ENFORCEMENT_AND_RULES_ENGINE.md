@@ -101,7 +101,7 @@ Step  Actor                           System Action                             
                                       Queue: heavy-compute-queue (first activity)
 
 2                                     Activity: astGrepScan (heavy-compute-queue)                 Raw detection results
-                                       a) Load workspace source at /data/workspaces/{orgId}/{repoId}
+                                       a) Load workspace source at /data/repo-indices/{orgId}/{repoId}
                                        b) Run built-in detection catalog (see § 1.2.3):
                                           - Structural patterns (zod validation, error handling,
                                             rate limiting, logging)
@@ -619,11 +619,11 @@ The existing `IPatternEngine` port has two methods (`scanPatterns`, `matchRule`)
 ```
 IPatternEngine {
   // Existing (Phase 1 stubs → Phase 6 real implementation)
-  scanPatterns(workspacePath, rulesPath): Promise<PatternMatch[]>
+  scanPatterns(indexDir, rulesPath): Promise<PatternMatch[]>
   matchRule(code, ruleYaml): Promise<PatternMatch[]>
 
   // New — Phase 6 additions
-  scanWithAstGrep(workspacePath, queries: AstGrepQuery[]): Promise<AstGrepResult[]>
+  scanWithAstGrep(indexDir, queries: AstGrepQuery[]): Promise<AstGrepResult[]>
   validateSemgrepYaml(yamlString): Promise<{ valid: boolean, errors?: string[] }>
 }
 ```
@@ -1261,11 +1261,11 @@ simulateRuleWorkflow(orgId, repoId, ruleId):
   ASSERT rule.status == "staged"
 
   // Activity 1: Scan workspace with rule (heavy-compute-queue)
-  workspacePath = getWorkspacePath(orgId, repoId)
+  indexDir = getIndexDir(orgId, repoId)
   IF rule.semgrepRule:
-    findings = patternEngine.scanPatterns(workspacePath, rule.semgrepRule)
+    findings = patternEngine.scanPatterns(indexDir, rule.semgrepRule)
   ELSE IF rule.astGrepQuery:
-    findings = patternEngine.scanWithAstGrep(workspacePath, [rule.astGrepQuery])
+    findings = patternEngine.scanWithAstGrep(indexDir, [rule.astGrepQuery])
   ELSE:
     findings = []   // non-structural rule — manual review only
 
@@ -1715,8 +1715,8 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 - [x] **Status:** Complete
 - **Description:** Replace the `NotImplementedError` stubs in `SemgrepPatternEngine` with real implementations that invoke Semgrep CLI and ast-grep.
 - **Implementation:**
-  - `scanPatterns(workspacePath, rulesPath)`:
-    a) Execute `semgrep --config {rulesPath} {workspacePath} --json --timeout 60`
+  - `scanPatterns(indexDir, rulesPath)`:
+    a) Execute `semgrep --config {rulesPath} {indexDir} --json --timeout 60`
     b) Parse JSON output into `PatternMatch[]`
     c) Handle Semgrep exit codes (0 = no findings, 1 = findings, other = error)
   - `matchRule(code, ruleYaml)`:
@@ -1724,7 +1724,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
     b) Execute `semgrep --config {tempConfig} {tempFile} --json`
     c) Parse and return matches
     d) Clean up temp files
-  - `scanWithAstGrep(workspacePath, queries)` (new):
+  - `scanWithAstGrep(indexDir, queries)` (new):
     a) Use `@ast-grep/napi` to parse source files
     b) Run each query against parsed ASTs
     c) Collect matches with file:line evidence
@@ -1889,7 +1889,7 @@ Phase 6 establishes the enforcement infrastructure that Phase 7 (PR Review) dire
 - [x] **Status:** Complete
 - **Description:** Pattern detection workflow. Originally three activities, now combined into one to avoid serializing pattern evidence arrays through Temporal's data converter.
 - **Workflow definition:**
-  - Input: `{ orgId, repoId, workspacePath, languages }`
+  - Input: `{ orgId, repoId, indexDir, languages }`
   - Activity: `scanSynthesizeAndStore` (heavy-compute-queue, timeout: 15 min) — scan + synthesize + store all in one step; pattern evidence arrays stay inside the worker, only `{ patternsDetected, rulesGenerated }` counts cross Temporal.
   - Chained after indexing but non-blocking for repo status
 - **Activities (combined inside `scanSynthesizeAndStore`):**
@@ -2589,7 +2589,7 @@ lib/
     activities/
       pattern-detection.ts          ← scanSynthesizeAndStore (combined — scan + synthesize + store in one activity; legacy: astGrepScan, llmSynthesizeRules, storePatterns)
       pattern-mining.ts             ← extractTopology, validateMotifs, storeMinedPatterns
-      rule-simulation.ts            ← scanWorkspace, enrichFindings, generateImpactReport
+      rule-simulation.ts            ← scanIndexDir, enrichFindings, generateImpactReport
       rule-decay.ts                 ← decayEvaluation, autoDowngrade activities
       __tests__/
         pattern-detection.test.ts   ← Activity tests

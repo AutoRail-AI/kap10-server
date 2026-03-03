@@ -1344,6 +1344,17 @@ export class InMemoryVectorSearch implements IVectorSearch {
     return deleted
   }
 
+  /** Fake rerank: score by simple query token overlap for deterministic tests. */
+  async rerank(query: string, documents: string[], topK: number): Promise<{ index: number; score: number }[]> {
+    const queryTokens = new Set(query.toLowerCase().split(/\s+/))
+    const scored = documents.map((doc, index) => {
+      const docTokens = doc.toLowerCase().split(/\s+/)
+      const overlap = docTokens.filter((t) => queryTokens.has(t)).length
+      return { index, score: overlap / Math.max(queryTokens.size, 1) }
+    })
+    return scored.sort((a, b) => b.score - a.score).slice(0, topK)
+  }
+
   /** Generate a deterministic 768-dim pseudo-vector from text using simple hash. */
   private pseudoEmbed(text: string): number[] {
     const dims = 768
