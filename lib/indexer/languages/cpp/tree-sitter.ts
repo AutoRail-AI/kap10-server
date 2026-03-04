@@ -169,7 +169,7 @@ function countCParams(params: string): number {
   return count
 }
 
-function fillBraceMatchedBodies(entities: ParsedEntity[], lines: string[], language: string): void {
+function fillBraceMatchedBodies(entities: ParsedEntity[], lines: string[], _language: string): void {
   for (const entity of entities) {
     const startLine = entity.start_line
     if (startLine == null) continue

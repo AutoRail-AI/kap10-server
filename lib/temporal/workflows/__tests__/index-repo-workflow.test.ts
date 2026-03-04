@@ -19,6 +19,7 @@ const mockParseRest = vi.fn()
 const mockFinalizeIndexing = vi.fn()
 const mockUpdateRepoError = vi.fn()
 const mockPrecomputeBlastRadius = vi.fn()
+const mockComputeTemporalAnalysis = vi.fn()
 
 vi.mock("@temporalio/workflow", () => ({
   defineQuery: vi.fn((_name: string) => Symbol("query")),
@@ -40,6 +41,9 @@ vi.mock("@temporalio/workflow", () => ({
             finalizeIndexing: (...args: unknown[]) => { activityCalls.push({ name: "finalizeIndexing", args }); return mockFinalizeIndexing(...args) },
             updateRepoError: (...args: unknown[]) => { activityCalls.push({ name: "updateRepoError", args }); return mockUpdateRepoError(...args) },
             precomputeBlastRadius: (...args: unknown[]) => { activityCalls.push({ name: "precomputeBlastRadius", args }); return mockPrecomputeBlastRadius(...args) },
+            wipeRepoGraphData: (...args: unknown[]) => { activityCalls.push({ name: "wipeRepoGraphData", args }); return Promise.resolve() },
+            computeTemporalAnalysis: (...args: unknown[]) => { activityCalls.push({ name: "computeTemporalAnalysis", args }); return mockComputeTemporalAnalysis(...args) },
+            cleanupWorkspaceFilesystem: () => Promise.resolve(),
             appendPipelineLog: () => Promise.resolve(),
             archivePipelineLogs: () => Promise.resolve(),
             initPipelineRun: () => Promise.resolve(),
@@ -74,9 +78,9 @@ describe("indexRepoWorkflow", () => {
     progressHandler = null
 
     mockPrepareWorkspace.mockResolvedValue({
-      workspacePath: "/data/workspaces/org-1/repo-1",
+      indexDir: "/data/repo-indices/org-1/repo-1",
       languages: ["typescript"],
-      workspaceRoots: ["."],
+      packageRoots: ["."],
     })
 
     mockRunSCIP.mockResolvedValue({
@@ -99,6 +103,7 @@ describe("indexRepoWorkflow", () => {
     mockFinalizeIndexing.mockResolvedValue(undefined)
     mockUpdateRepoError.mockResolvedValue(undefined)
     mockPrecomputeBlastRadius.mockResolvedValue({ updatedCount: 5, highRiskCount: 1 })
+    mockComputeTemporalAnalysis.mockResolvedValue({ coChangeEdgesStored: 3, entitiesUpdated: 2, filesAnalyzed: 5 })
   })
 
   it("calls activities in correct order", async () => {
@@ -106,10 +111,12 @@ describe("indexRepoWorkflow", () => {
 
     expect(activityCalls.map((c) => c.name)).toEqual([
       "prepareRepoIntelligenceSpace",
+      "wipeRepoGraphData",
       "runSCIP",
       "parseRest",
       "finalizeIndexing",
       "precomputeBlastRadius",
+      "computeTemporalAnalysis",
     ])
   })
 
@@ -130,11 +137,11 @@ describe("indexRepoWorkflow", () => {
 
     expect(mockRunSCIP).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspacePath: "/data/workspaces/org-1/repo-1",
+        indexDir: "/data/repo-indices/org-1/repo-1",
         orgId: "org-1",
         repoId: "repo-1",
         languages: ["typescript"],
-        workspaceRoots: ["."],
+        packageRoots: ["."],
       }),
     )
   })
@@ -144,7 +151,7 @@ describe("indexRepoWorkflow", () => {
 
     expect(mockParseRest).toHaveBeenCalledWith(
       expect.objectContaining({
-        workspacePath: "/data/workspaces/org-1/repo-1",
+        indexDir: "/data/repo-indices/org-1/repo-1",
         orgId: "org-1",
         repoId: "repo-1",
         coveredFiles: ["src/index.ts"],

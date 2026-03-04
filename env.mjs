@@ -60,10 +60,13 @@ export const env = createEnv({
     // ── AWS Bedrock (LLM) ─────────────────────────────────────────
     AWS_BEARER_TOKEN_BEDROCK: z.string().optional(),
     AWS_REGION: z.string().optional(),
-    // Per-tier model overrides (optional — defaults in lib/llm/config.ts)
-    LLM_MODEL_FAST: z.string().optional(),
-    LLM_MODEL_STANDARD: z.string().optional(),
-    LLM_MODEL_PREMIUM: z.string().optional(),
+    // Per-group model overrides (optional — defaults in lib/llm/config.ts)
+    LLM_MODEL_CODE_REASONING: z.string().optional(),
+    LLM_MODEL_CODE_REASONING_COMPLEX: z.string().optional(),
+    LLM_MODEL_CODE_REASONING_SIMPLE: z.string().optional(),
+    LLM_MODEL_ANALYSIS: z.string().optional(),
+    LLM_MODEL_WRITING: z.string().optional(),
+    LLM_MODEL_CLASSIFICATION: z.string().optional(),
 
     // ── Embedding (Phase 3 — Semantic Search via TEI) ──────────────
     TEI_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid TEI URL").optional(),
@@ -204,9 +207,12 @@ export const env = createEnv({
     // AWS Bedrock
     AWS_BEARER_TOKEN_BEDROCK: process.env.AWS_BEARER_TOKEN_BEDROCK,
     AWS_REGION: process.env.AWS_REGION,
-    LLM_MODEL_FAST: process.env.LLM_MODEL_FAST,
-    LLM_MODEL_STANDARD: process.env.LLM_MODEL_STANDARD,
-    LLM_MODEL_PREMIUM: process.env.LLM_MODEL_PREMIUM,
+    LLM_MODEL_CODE_REASONING: process.env.LLM_MODEL_CODE_REASONING,
+    LLM_MODEL_CODE_REASONING_COMPLEX: process.env.LLM_MODEL_CODE_REASONING_COMPLEX,
+    LLM_MODEL_CODE_REASONING_SIMPLE: process.env.LLM_MODEL_CODE_REASONING_SIMPLE,
+    LLM_MODEL_ANALYSIS: process.env.LLM_MODEL_ANALYSIS,
+    LLM_MODEL_WRITING: process.env.LLM_MODEL_WRITING,
+    LLM_MODEL_CLASSIFICATION: process.env.LLM_MODEL_CLASSIFICATION,
     // Embedding (TEI)
     TEI_URL: process.env.TEI_URL,
     TEI_BATCH_SIZE: process.env.TEI_BATCH_SIZE,

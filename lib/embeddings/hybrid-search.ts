@@ -14,9 +14,7 @@
 
 import type { Container } from "@/lib/di/container"
 import type { EntityDoc } from "@/lib/ports/types"
-
-/** L-08: Suffix appended to entity key for code-only variant embeddings. Must match embedding.ts. */
-const CODE_VARIANT_SUFFIX = "::code"
+import { CODE_VARIANT_SUFFIX } from "@/lib/temporal/activities/embedding"
 
 /** Whether the cross-encoder reranker is enabled (default: false). */
 const RERANKER_ENABLED = process.env.RERANKER_ENABLED === "true"
@@ -216,7 +214,7 @@ export function tokenizeQuery(query: string): string[] {
     "more", "most", "other", "some", "such", "only", "own", "same",
     "so", "than", "too", "very", "just", "because", "if", "when", "how",
     "what", "where", "why", "functions", "function", "class", "classes",
-    "method", "methods", "variable", "variables", "that", "handle",
+    "method", "methods", "variable", "variables", "handle",
     "handles", "get", "set", "find", "search",
   ])
 
@@ -382,7 +380,8 @@ async function runSemanticLeg(
     queryEmbedding = await container.vectorSearch.embedQuery(input.query)
   } else {
     const embeddings = await container.vectorSearch.embed([input.query])
-    queryEmbedding = embeddings[0]!
+    if (!embeddings[0]) return []
+    queryEmbedding = embeddings[0]
   }
 
   // Search pgvector — widen retrieval window when reranker is enabled
@@ -426,7 +425,8 @@ async function runJustificationLeg(
     queryEmbedding = await container.vectorSearch.embedQuery(input.query)
   } else {
     const embeddings = await container.vectorSearch.embed([input.query])
-    queryEmbedding = embeddings[0]!
+    if (!embeddings[0]) return []
+    queryEmbedding = embeddings[0]
   }
 
   const results = await container.vectorSearch.searchJustificationEmbeddings(

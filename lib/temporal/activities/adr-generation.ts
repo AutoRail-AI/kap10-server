@@ -3,7 +3,7 @@
  */
 
 import { getContainer } from "@/lib/di/container"
-import { LLM_MODELS } from "@/lib/llm/config"
+import { getModelForGroup } from "@/lib/llm/config"
 import type { AdrContent } from "@/lib/ports/types"
 import { AdrSchema, formatAdrFilename, renderAdrMarkdown } from "@/lib/review/adr-schema"
 
@@ -78,7 +78,7 @@ export async function generateAdr(input: {
   const container = getContainer()
 
   const result = await container.llmProvider.generateObject({
-    model: LLM_MODELS.standard,
+    model: getModelForGroup("writing"),
     schema: AdrSchema,
     prompt: `Generate an Architecture Decision Record for this merged PR:
 
@@ -100,7 +100,7 @@ Follow the ADR format:
     id: `adr-${Date.now()}`,
     org_id: input.orgId,
     repo_id: input.repoId,
-    model: LLM_MODELS.standard,
+    model: getModelForGroup("writing"),
     input_tokens: result.usage.inputTokens,
     output_tokens: result.usage.outputTokens,
     activity: "adr-generation",

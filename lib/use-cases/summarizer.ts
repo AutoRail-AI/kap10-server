@@ -3,7 +3,7 @@
  */
 
 import { z } from "zod"
-import { LLM_MODELS } from "@/lib/llm/config"
+import { getModelForGroup } from "@/lib/llm/config"
 import type { ILLMProvider } from "@/lib/ports/llm-provider"
 
 const SummarySchema = z.object({
@@ -23,7 +23,7 @@ export async function summarizeLedger(
   const promptList = input.prompts.slice(0, 20).map((p, i) => `${i + 1}. ${p}`).join("\n")
 
   const result = await llm.generateObject({
-    model: LLM_MODELS.standard,
+    model: getModelForGroup("classification"),
     schema: SummarySchema,
     prompt: `Summarize the following AI coding session for a merge narrative.
 

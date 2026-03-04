@@ -7,7 +7,8 @@
  * connection so Prisma finds unerr tables first.
  */
 
-import type { PrismaClient } from "@prisma/client"
+
+import { getPrisma } from "@/lib/db/prisma"
 import type {
   ApiKeyRecord,
   DeletionLogRecord,
@@ -19,7 +20,6 @@ import type {
 } from "@/lib/ports/relational-store"
 import type { PipelineStepRecord, PrReviewCommentRecord, PrReviewRecord, ReviewConfig } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG } from "@/lib/ports/types"
-import { getPrisma } from "@/lib/db/prisma"
 
 export class PrismaRelationalStore implements IRelationalStore {
   private prisma = getPrisma()

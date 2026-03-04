@@ -131,7 +131,7 @@ export function ReposList({
       })
       return next.size === prev.size ? prev : next
     })
-  }, [serverRepos]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [serverRepos])
 
   const removeRepo = useCallback((repoId: string) => {
     setRemovedIds((prev) => new Set(prev).add(repoId))

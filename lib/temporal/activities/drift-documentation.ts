@@ -61,8 +61,8 @@ export async function proposeDriftDocumentation(
 
   let llmModel = "gemini-2.0-flash"
   try {
-    const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
-    llmModel = LLM_MODELS.standard
+    const { getModelForGroup } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+    llmModel = getModelForGroup("writing")
   } catch {
     // Fallback
   }

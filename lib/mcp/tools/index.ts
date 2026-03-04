@@ -3,6 +3,7 @@
  */
 
 import type { Container } from "@/lib/di/container"
+import { ASSEMBLE_CONTEXT_SCHEMA, handleAssembleContext } from "./assemble-context"
 import {
   ANALYZE_IMPACT_SCHEMA, GET_BLUEPRINT_SCHEMA,
   GET_BUSINESS_CONTEXT_SCHEMA, handleAnalyzeImpact,
@@ -11,10 +12,11 @@ import {
 } from "./business"
 import { GET_RECENT_CHANGES_SCHEMA, handleGetRecentChanges } from "./changes"
 import { handleSyncDirtyBuffer, SYNC_DIRTY_BUFFER_SCHEMA } from "./dirty-buffer"
-import { GET_CALLEES_SCHEMA, GET_CALLERS_SCHEMA, GET_IMPORTS_SCHEMA, handleGetCallees, handleGetCallers, handleGetImports } from "./graph"
 import { FILE_CONTEXT_SCHEMA, handleFileContext } from "./file-context"
+import { GET_CALLEES_SCHEMA, GET_CALLERS_SCHEMA, GET_IMPORTS_SCHEMA, handleGetCallees, handleGetCallers, handleGetImports } from "./graph"
 import { GET_CLASS_SCHEMA, GET_FILE_SCHEMA, GET_FUNCTION_SCHEMA, handleGetClass, handleGetFile, handleGetFunction } from "./inspect"
 import { CHECK_PATTERNS_SCHEMA, GET_CONVENTIONS_SCHEMA, handleCheckPatterns, handleGetConventions, handleSuggestApproach, SUGGEST_APPROACH_SCHEMA } from "./patterns"
+import { handleRefreshContext, REFRESH_CONTEXT_SCHEMA } from "./refresh-context"
 import { handleReviewPrStatus, REVIEW_PR_STATUS_SCHEMA } from "./review"
 import { handleRevertToWorking, REVERT_TO_WORKING_SCHEMA } from "./rewind"
 import { CHECK_RULES_SCHEMA, DRAFT_ARCHITECTURE_RULE_SCHEMA, GET_RELEVANT_RULES_SCHEMA, GET_RULES_SCHEMA, handleCheckRules, handleDraftArchitectureRule, handleGetRelevantRules, handleGetRules } from "./rules"
@@ -28,8 +30,6 @@ import { GET_TIMELINE_SCHEMA, handleGetTimeline, handleMarkWorking, MARK_WORKING
 // Phase 6: Pattern Enforcement & Rules Engine
 // Phase 7: PR Review Integration
 // Phase 8: Alpha-7 — Entity Profiles & Context Assembly
-import { ASSEMBLE_CONTEXT_SCHEMA, handleAssembleContext } from "./assemble-context"
-import { REFRESH_CONTEXT_SCHEMA, handleRefreshContext } from "./refresh-context"
 import { hasScope } from "../auth"
 import type { McpAuthContext } from "../auth"
 import { formatToolError } from "../formatter"

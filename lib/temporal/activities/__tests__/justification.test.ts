@@ -5,7 +5,7 @@ vi.mock("@temporalio/activity", () => ({
 }))
 
 vi.mock("@/lib/llm/config", () => ({
-  LLM_MODELS: { fast: "test-fast", standard: "test-standard", premium: "test-premium" },
+  getModelForGroup: (group: string) => `test-${group}`,
   MODEL_COSTS: {},
   MODEL_COST_FALLBACK: { input: 0, output: 0 },
   getMaxParallelChunks: () => 5,

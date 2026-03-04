@@ -49,6 +49,7 @@ describe("queryCompactGraph v2 — rules + patterns export", () => {
           { id: "fn1", kind: "function", name: "main", file_path: "src/index.ts" },
         ]),
         getCalleesOf: vi.fn().mockResolvedValue([]),
+        getAllEdges: vi.fn().mockResolvedValue([]),
         queryRules: vi.fn().mockResolvedValue([
           {
             id: "rule-1",

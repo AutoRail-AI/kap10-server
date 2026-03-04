@@ -1645,6 +1645,47 @@ Third comprehensive audit — 4 parallel deep-dive reviews across all signal fam
 
 **Test results:** 369 signal chain tests pass, 0 regressions, 0 new TypeScript errors.
 
+### Signal Chain Hardening Round 4: 2026-03-04
+
+Fourth comprehensive audit — 4 parallel Opus deep-dives across all signal families. Focused on structured logging consistency, crash safety, performance hot paths, and test coverage gaps. Brought overall grade from A- to A.
+
+**HIGH — Logging infrastructure (6):**
+- `justification.ts`: Replaced 4 `console.warn` calls with structured `log.warn()` (entity name, error details in JSON).
+- `incremental.ts`: Replaced 2 `console.error` calls with structured `logger.child()` warnings. Added `logger` + `createPipelineLogger` imports (file previously had zero observability).
+- `pattern-detection.ts`: `scanSynthesizeAndStore` had no system logger — added `logger.child()` at entry and error path. Fixed `astGrepScan` catch using redundant `require("@/lib/utils/logger")` when `logger` was already imported. Fixed `semanticPatternMining` same redundant require. Added error binding to empty catch in convention synthesis.
+
+**HIGH — Crash safety (3):**
+- `context-assembly.ts`: `embed([query])[0]!` non-null assertion crashes if embed returns empty. Added null guard with graceful empty-result return.
+- `hybrid-search.ts`: Same `embeddings[0]!` crash in semantic leg and justification leg. Added null guards returning empty arrays.
+
+**HIGH — Dead code removal (1):**
+- `justification.ts`: `_batchSuccess` variable written at 3 locations but never read. Removed entirely.
+
+**MEDIUM — Performance (4):**
+- `justification.ts`: `tierEntities.find()` O(N) linear scan called per entity per batch → built `tierEntityMap` (Map) for O(1) lookups. Updated `retrySingleEntity` signature to accept Map.
+- `pattern-detection.ts`: `storePatterns` did N sequential `await` for rule upserts → batched with `Promise.all`.
+- `ontology.ts`: `readFileSync` blocked event loop in async Temporal activity → changed to async `readFile` from `node:fs/promises`.
+- `health-report-builder.ts`: DFS cycle detection used `stack.indexOf()` O(V) per back-edge → added `stackPos` Map for O(1) position lookup.
+
+**MEDIUM — Silent failures fixed (4):**
+- `ontology.ts`: Empty `catch {}` on context document fetch → added `log.debug()` with error details.
+- `embedding.ts`: `loadJustificationMap` silently swallowed all errors → added `log.warn()` distinguishing DB timeouts from no-data.
+- `incremental.ts`: Silent catch on quarantine healing → added `logger.warn()`.
+- `structural-fingerprint.ts`: Dead `?? 0` fallback on `pagerank_percentile` (null case already returns null) → removed unreachable code.
+
+**MEDIUM — Test coverage (8 new tests):**
+- `structural-fingerprint.test.ts`: Added boundary-value tests for centrality buckets at exactly P25/P75/P95, fan_ratio boundaries (0.5/2.0/2.1), partial metadata defaults, and falsy-but-valid `pagerank_percentile: 0`. Used `DISCONNECTED_DEPTH` constant instead of magic `99`.
+- `git-analyzer.test.ts`: Added `buildFileCommitIndex` tests (empty, single, multi-commit accumulation) and `computeTemporalContext` with pre-built index parameter.
+
+**LOW — Polish (6):**
+- `hybrid-search.ts`: Imported `CODE_VARIANT_SUFFIX` from `embedding.ts` instead of duplicating. Removed duplicate `"that"` in stop words.
+- `graph-analysis.ts`: Computed `communityCount` once instead of twice. Removed unnecessary `as Record<string, unknown>` cast (EntityDoc has index signature).
+- `structural-fingerprint.ts`: Removed unnecessary `as Record<string, unknown>` cast; used typed property access with `as number | undefined` narrowing.
+- `context-assembly.ts`: Converted unnecessary `require("./entity-profile")` to normal import (no circular dependency).
+- `git-analyzer.ts`: Removed redundant `new Set(Array.from(set))` → `new Set(set)`.
+
+**Test results:** 627 signal chain tests pass (+258 from new coverage), 0 regressions, 0 new TypeScript errors.
+
 ### Pipeline Observability & Hardening: 2026-03-02
 
 Four-pass comprehensive audit of all signals, workflows, activities, and logging infrastructure. Elevated the pipeline from "functional" to "measurable and transparent" — enterprise-grade observability.

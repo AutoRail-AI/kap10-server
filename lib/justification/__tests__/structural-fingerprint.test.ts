@@ -1,7 +1,8 @@
-import type { EntityDoc } from "@/lib/ports/types"
 import { describe, expect, it } from "vitest"
+import type { EntityDoc } from "@/lib/ports/types"
 import {
   buildFingerprintFromEntity,
+  DISCONNECTED_DEPTH,
   fingerprintToTokens,
 } from "../structural-fingerprint"
 
@@ -47,6 +48,30 @@ describe("buildFingerprintFromEntity", () => {
       is_boundary: true,
     })
   })
+
+  it("handles pagerank_percentile of 0 (falsy but valid)", () => {
+    const entity = makeEntity("b", "fn2", "src/b.ts", {
+      pagerank_percentile: 0,
+      community_id: 1,
+    })
+    const fp = buildFingerprintFromEntity(entity)
+    expect(fp).not.toBeNull()
+    expect(fp!.pagerank_percentile).toBe(0)
+  })
+
+  it("uses defaults for missing optional fields", () => {
+    const entity = makeEntity("c", "fn3", "src/c.ts", {
+      pagerank_percentile: 50,
+    })
+    const fp = buildFingerprintFromEntity(entity)
+    expect(fp).toEqual({
+      pagerank_percentile: 50,
+      community_id: -1,
+      depth_from_entry: DISCONNECTED_DEPTH,
+      fan_ratio: 0,
+      is_boundary: false,
+    })
+  })
 })
 
 describe("fingerprintToTokens", () => {
@@ -85,7 +110,7 @@ describe("fingerprintToTokens", () => {
     const tokens = fingerprintToTokens({
       pagerank_percentile: 10,
       community_id: 0,
-      depth_from_entry: 99,
+      depth_from_entry: DISCONNECTED_DEPTH,
       fan_ratio: 0.2,
       is_boundary: false,
     })
@@ -106,5 +131,27 @@ describe("fingerprintToTokens", () => {
 
     expect(tokens).toContain("Centrality: medium (P50)")
     expect(tokens).toContain("Depth: 0 hops from entry")
+  })
+
+  it("boundary values: exactly P25 → medium, P75 → high, P95 → critical", () => {
+    const at25 = fingerprintToTokens({ pagerank_percentile: 25, community_id: -1, depth_from_entry: 0, fan_ratio: 0, is_boundary: false })
+    expect(at25).toContain("Centrality: medium")
+
+    const at75 = fingerprintToTokens({ pagerank_percentile: 75, community_id: -1, depth_from_entry: 0, fan_ratio: 0, is_boundary: false })
+    expect(at75).toContain("Centrality: high")
+
+    const at95 = fingerprintToTokens({ pagerank_percentile: 95, community_id: -1, depth_from_entry: 0, fan_ratio: 0, is_boundary: false })
+    expect(at95).toContain("Centrality: critical")
+  })
+
+  it("fan_ratio boundary: 0.5 → connector, 2.0 → connector, >2.0 → orchestrator", () => {
+    const conn = fingerprintToTokens({ pagerank_percentile: 50, community_id: -1, depth_from_entry: 0, fan_ratio: 0.5, is_boundary: false })
+    expect(conn).toContain("Role: connector")
+
+    const conn2 = fingerprintToTokens({ pagerank_percentile: 50, community_id: -1, depth_from_entry: 0, fan_ratio: 2.0, is_boundary: false })
+    expect(conn2).toContain("Role: connector")
+
+    const orch = fingerprintToTokens({ pagerank_percentile: 50, community_id: -1, depth_from_entry: 0, fan_ratio: 2.1, is_boundary: false })
+    expect(orch).toContain("Role: orchestrator")
   })
 })

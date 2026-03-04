@@ -9,7 +9,7 @@
  */
 
 import type { IGraphStore } from "@/lib/ports/graph-store"
-import type { PatternDoc, RuleDoc, DomainOntologyDoc } from "@/lib/ports/types"
+import type { DomainOntologyDoc, PatternDoc, RuleDoc } from "@/lib/ports/types"
 
 export type AgentFormat = "claude" | "cursor" | "copilot"
 

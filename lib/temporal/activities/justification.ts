@@ -30,8 +30,8 @@ import { checkStaleness, computeBodyHash } from "@/lib/justification/staleness-c
 import { buildTestContext } from "@/lib/justification/test-context-extractor"
 import { topologicalSortEntityIds } from "@/lib/justification/topological-sort"
 import { getMaxParallelChunks } from "@/lib/llm/config"
-import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
+import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
 export interface JustificationInput {
@@ -404,8 +404,8 @@ export async function justifyBatch(
   const entityNameMap = buildEntityNameMap(allEntities)
   const { parentJustMap, siblingMap } = buildParentAndSiblingContext(entities, allEntities, prevJustMap)
 
-  const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
-  const defaultModel = LLM_MODELS.standard
+  const { getModelForGroup } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+  const defaultModel = getModelForGroup("code_reasoning")
 
   // Dead code detection: auto-classify entities with zero inbound references (L-17: Map with reasons)
   const deadCodeMap = detectDeadCode(allEntities, edges)
@@ -581,6 +581,9 @@ export async function justifyBatch(
     const tierEntities = byTier.get(tier)!
     const modelToUse = tierEntities[0]?.route.model ?? defaultModel
 
+    // Build O(1) lookup for tier entities by ID
+    const tierEntityMap = new Map(tierEntities.map((te) => [te.entity.id, te]))
+
     // Create token-budgeted batches with model-aware limits
     const batcherConfig = getBatcherConfigForModel(modelToUse)
     const batches = createBatches(
@@ -606,7 +609,7 @@ export async function justifyBatch(
       if (batch.entities.length === 1) {
         // Single entity — use individual prompt (richer context)
         const be = batch.entities[0]!
-        const teInfo = tierEntities.find((te) => te.entity.id === be.entity.id)!
+        const teInfo = tierEntityMap.get(be.entity.id)!
 
         const prompt = buildJustificationPrompt(
           be.entity,
@@ -670,12 +673,12 @@ export async function justifyBatch(
           )
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error)
-          console.warn(`[justifyBatch] LLM failed for ${be.entity.name}: ${message}`)
+          log.warn("LLM failed for single entity", { entityName: be.entity.name, error: message })
           if (isFatalLLMError(message)) {
             consecutiveFatalErrors++
             pipelineLog.log("error", "Justification", `Fatal LLM error (${consecutiveFatalErrors}/${FATAL_ERROR_THRESHOLD}): ${message.slice(0, 120)}`)
             if (consecutiveFatalErrors >= FATAL_ERROR_THRESHOLD) {
-              throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${FATAL_ERROR_THRESHOLD} consecutive fatal errors. Check AWS_BEARER_TOKEN_BEDROCK, AWS_REGION, and LLM_MODEL_STANDARD env vars.`)
+              throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${FATAL_ERROR_THRESHOLD} consecutive fatal errors. Check AWS_BEARER_TOKEN_BEDROCK, AWS_REGION, and LLM_MODEL_CODE_REASONING env vars.`)
             }
           } else {
             consecutiveFatalErrors = 0
@@ -687,7 +690,7 @@ export async function justifyBatch(
         // Multi-entity batch — use batch prompt with exponential backoff
         const batchPrompt = buildBatchJustificationPrompt(
           batch.entities.map((be) => {
-            const teInfo = tierEntities.find((te) => te.entity.id === be.entity.id)
+            const teInfo = tierEntityMap.get(be.entity.id)
             return {
               entity: be.entity,
               graphContext: be.graphContext,
@@ -705,7 +708,6 @@ export async function justifyBatch(
 
         // Attempt batch with exponential backoff (2s, 8s, 30s) before falling to individual retries
         const BATCH_BACKOFF_DELAYS = [2_000, 8_000, 30_000]
-        let _batchSuccess = false
 
         for (let attempt = 0; attempt <= BATCH_BACKOFF_DELAYS.length; attempt++) {
           try {
@@ -754,12 +756,12 @@ export async function justifyBatch(
                 )
               } else {
                 // Entity not found in batch response — retry individually
-                console.warn(`[justifyBatch] Entity ${be.entity.name} missing from batch response, retrying individually`)
+                log.warn("Entity missing from batch response, retrying individually", { entityName: be.entity.name })
                 pipelineLog.log("warn", "Justification", `${be.entity.name} missing from batch response, retrying individually`)
-                await retrySingleEntity(container, input, be, ontology, tierEntities, entityNameMap, prevJustMap, modelToUse, tier, results, now, pipelineLog)
+                await retrySingleEntity(container, input, be, ontology, tierEntityMap, entityNameMap, prevJustMap, modelToUse, tier, results, now, pipelineLog)
               }
             }
-            _batchSuccess = true
+
             break // Batch succeeded, exit retry loop
           } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error)
@@ -769,7 +771,7 @@ export async function justifyBatch(
               consecutiveFatalErrors += 1
               pipelineLog.log("error", "Justification", `Fatal LLM error on batch of ${batch.entities.length}: ${message.slice(0, 120)}`)
               if (consecutiveFatalErrors >= FATAL_ERROR_THRESHOLD) {
-                throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${consecutiveFatalErrors} consecutive fatal errors. Check AWS_BEARER_TOKEN_BEDROCK, AWS_REGION, and LLM_MODEL_STANDARD env vars.`)
+                throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${consecutiveFatalErrors} consecutive fatal errors. Check AWS_BEARER_TOKEN_BEDROCK, AWS_REGION, and LLM_MODEL_CODE_REASONING env vars.`)
               }
               // Create fallbacks for this batch but continue (might hit threshold soon)
               pipelineLog.log("warn", "Justification", `Fallback created for ${batch.entities.length} entities in batch: ${message.slice(0, 100)}`)
@@ -797,9 +799,7 @@ export async function justifyBatch(
             }
 
             // All batch retries exhausted — fall back to individual retries
-            console.warn(
-              `[justifyBatch] Batch LLM failed after ${attempt + 1} attempt(s) (${batch.entities.length} entities): ${message}. Retrying individually.`
-            )
+            log.warn("Batch LLM failed, retrying individually", { attempts: attempt + 1, batchSize: batch.entities.length, error: message })
             pipelineLog.log("warn", "Justification", `Batch failed after ${attempt + 1} attempt(s) for ${batch.entities.length} entities: ${message.slice(0, 100)}. Retrying individually.`)
 
             // Add a cooldown before individual retries if rate limited
@@ -812,9 +812,8 @@ export async function justifyBatch(
               if (isRetryable) {
                 await new Promise((r) => setTimeout(r, 3_000))
               }
-              await retrySingleEntity(container, input, be, ontology, tierEntities, entityNameMap, prevJustMap, modelToUse, tier, results, now, pipelineLog)
+              await retrySingleEntity(container, input, be, ontology, tierEntityMap, entityNameMap, prevJustMap, modelToUse, tier, results, now, pipelineLog)
             }
-            _batchSuccess = true // Handled via individual retries
             break
           }
         }
@@ -891,7 +890,7 @@ async function retrySingleEntity(
   input: JustificationInput,
   be: { entity: EntityDoc; graphContext: GraphContext; parentJustification?: JustificationDoc },
   ontology: import("@/lib/ports/types").DomainOntologyDoc | null,
-  tierEntities: Array<{
+  tierEntityMap: Map<string, {
     entity: EntityDoc
     depJustifications: JustificationDoc[]
     callerJustifications: JustificationDoc[]
@@ -908,7 +907,7 @@ async function retrySingleEntity(
   now: string,
   pipelineLog?: ReturnType<typeof createPipelineLogger>
 ): Promise<void> {
-  const teInfo = tierEntities.find((te) => te.entity.id === be.entity.id)
+  const teInfo = tierEntityMap.get(be.entity.id)
   const prompt = buildJustificationPrompt(
     be.entity,
     be.graphContext,
@@ -956,7 +955,7 @@ async function retrySingleEntity(
     results.push(retryResult)
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
-    console.warn(`[justifyBatch] Individual retry failed for ${be.entity.name}: ${message}`)
+    logger.child({ service: "justification" }).warn("Individual retry failed", { entityName: be.entity.name, error: message })
     pipelineLog?.log("warn", "Justification", `Fallback created for ${be.entity.name}: ${message.slice(0, 120)}`)
     results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
   }

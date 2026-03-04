@@ -9,8 +9,8 @@
  * - Same-file call detection in individual language parsers (TS/Python/Go/Java)
  * - SCIP-based cross-file references (which use symbol identity, not imports)
  */
-import type { ParsedEdge, ParsedEntity } from "./types"
 import { logger } from "@/lib/utils/logger"
+import type { ParsedEdge, ParsedEntity } from "./types"
 
 /**
  * Resolve cross-file call edges using import metadata.

@@ -51,8 +51,8 @@ export async function driftEvaluationActivity(input: DriftEvaluationInput): Prom
   heartbeat("LLM drift evaluation")
   let llmModel = "gemini-2.0-flash"
   try {
-    const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
-    llmModel = LLM_MODELS.standard
+    const { getModelForGroup } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+    llmModel = getModelForGroup("classification")
   } catch {
     // Fallback model if config module unavailable (e.g., in tests)
   }

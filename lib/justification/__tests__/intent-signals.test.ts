@@ -1,6 +1,6 @@
-import type { EntityDoc } from "@/lib/ports/types"
 import { describe, expect, it } from "vitest"
-import { extractIntentSignals, extractFromNaming } from "../intent-signals"
+import type { EntityDoc } from "@/lib/ports/types"
+import { extractFromNaming, extractIntentSignals } from "../intent-signals"
 import type { TestContext } from "../types"
 
 function makeEntity(overrides: Partial<EntityDoc> & { name: string; file_path: string }): EntityDoc {

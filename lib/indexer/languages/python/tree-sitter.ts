@@ -4,6 +4,7 @@
  * Extracts functions, classes, methods, and decorators from Python files
  * when SCIP indexing is unavailable.
  */
+import { classifyBoundary, extractExternalPackageName } from "../../boundary-classifier"
 import { computeComplexity } from "../../complexity"
 import { extractPythonDocstring } from "../../doc-extractor"
 import { entityHash } from "../../entity-hash"
@@ -347,7 +348,6 @@ function detectPythonImportEdges(
     const absImportMatch = !absFromMatch ? trimmed.match(/^import\s+(\w+(?:\.\w+)*)(?:\s+as\s+\w+)?$/) : null
 
     if (absFromMatch || absImportMatch) {
-      const { extractExternalPackageName, classifyBoundary } = require("@/lib/indexer/boundary-classifier") as typeof import("@/lib/indexer/boundary-classifier")
       const moduleName = absFromMatch ? absFromMatch[1]! : absImportMatch![1]!
       const pkgName = extractExternalPackageName(moduleName, "python")
       if (pkgName) {

@@ -435,10 +435,13 @@ function dfsIterative(
   cycles: string[][],
   maxCycles: number
 ): void {
+  // O(1) stack position lookup instead of O(V) indexOf
+  const stackPos = new Map<string, number>()
   const callStack: Array<{ node: string; neighbors: string[]; idx: number }> = []
   callStack.push({ node: start, neighbors: Array.from(adj.get(start) ?? []), idx: 0 })
   visited.add(start)
   inStack.add(start)
+  stackPos.set(start, stack.length)
   stack.push(start)
 
   while (callStack.length > 0) {
@@ -446,6 +449,7 @@ function dfsIterative(
     const frame = callStack[callStack.length - 1]!
     if (frame.idx >= frame.neighbors.length) {
       inStack.delete(frame.node)
+      stackPos.delete(frame.node)
       stack.pop()
       callStack.pop()
       continue
@@ -454,9 +458,9 @@ function dfsIterative(
     frame.idx++
 
     if (inStack.has(neighbor)) {
-      // Found a cycle
-      const cycleStart = stack.indexOf(neighbor)
-      if (cycleStart !== -1) {
+      // Found a cycle — O(1) lookup for cycle start position
+      const cycleStart = stackPos.get(neighbor)
+      if (cycleStart != null) {
         cycles.push([...stack.slice(cycleStart), neighbor])
       }
       continue
@@ -465,6 +469,7 @@ function dfsIterative(
     if (!visited.has(neighbor)) {
       visited.add(neighbor)
       inStack.add(neighbor)
+      stackPos.set(neighbor, stack.length)
       stack.push(neighbor)
       callStack.push({ node: neighbor, neighbors: Array.from(adj.get(neighbor) ?? []), idx: 0 })
     }

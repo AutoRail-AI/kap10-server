@@ -3,9 +3,9 @@
  */
 import { describe, expect, it } from "vitest"
 
+import { resolveCrossFileCalls } from "../cross-file-calls"
 import { entityHash } from "../entity-hash"
 import type { ParsedEdge, ParsedEntity } from "../types"
-import { resolveCrossFileCalls } from "../cross-file-calls"
 
 const REPO_ID = "test-repo"
 

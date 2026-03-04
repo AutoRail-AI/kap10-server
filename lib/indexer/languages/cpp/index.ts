@@ -2,8 +2,8 @@
  * C++ language plugin.
  * Shares the scip-clang indexer with the C plugin.
  */
-import { runSCIPClang } from "../c/scip"
 import { parseCppFile } from "./tree-sitter"
+import { runSCIPClang } from "../c/scip"
 import type { LanguagePlugin, SCIPOptions, TreeSitterOptions } from "../types"
 
 export const cppPlugin: LanguagePlugin = {

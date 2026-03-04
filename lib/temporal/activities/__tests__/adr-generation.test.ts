@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { type Container, createTestContainer } from "@/lib/di/container"
 import { FakeGitHost, MockLLMProvider } from "@/lib/di/fakes"
-import { LLM_MODELS } from "@/lib/llm/config"
+import { getModelForGroup } from "@/lib/llm/config"
 import type { AdrContent } from "@/lib/ports/types"
 import type { SignificanceAssessment } from "@/lib/temporal/activities/adr-generation"
 
@@ -240,7 +240,7 @@ describe("adr-generation activities", () => {
       expect(adrUsage).toBeDefined()
       expect(adrUsage!.input_tokens).toBe(600)
       expect(adrUsage!.output_tokens).toBe(250)
-      expect(adrUsage!.model).toBe(LLM_MODELS.standard)
+      expect(adrUsage!.model).toBe(getModelForGroup("writing"))
     })
   })
 

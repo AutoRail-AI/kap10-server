@@ -98,47 +98,51 @@ services:
   tei:
     profiles: [ "app", "worker" ]
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    platform: linux/amd64
     container_name: unerr-tei
     ports:
       - "8090:80"
     volumes:
       - tei_models:/data
-    command: --model-id nomic-ai/nomic-embed-text-v1.5 --port 80
+    command: --model-id nomic-ai/nomic-embed-text-v1.5 --port 80 --max-batch-tokens 4096
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:80/health" ]
-      interval: 10s
-      timeout: 5s
+      interval: 15s
+      timeout: 10s
       retries: 5
-      start_period: 60s
+      start_period: 300s
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
 
-  # TEI Reranker (BAAI/bge-reranker-v2-m3 — cross-encoder for search reranking)
+  # TEI Reranker (BAAI/bge-reranker-base — cross-encoder for search reranking)
   # Optional: improves hybrid search precision by re-scoring RRF candidates.
-  # For GPU production, swap image tag from cpu-latest to latest (CUDA).
+  # Note: cpu-latest image requires ONNX model files. bge-reranker-base ships ONNX;
+  # bge-reranker-v2-m3 does NOT and will fail with the CPU image.
+  # For GPU production, swap image tag from cpu-latest to latest (CUDA) and use bge-reranker-v2-m3.
   tei-reranker:
     profiles: [ "app", "worker" ]
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    platform: linux/amd64
     container_name: unerr-tei-reranker
     ports:
       - "8091:80"
     volumes:
       - tei_reranker_models:/data
-    command: --model-id BAAI/bge-reranker-v2-m3 --port 80
+    command: --model-id BAAI/bge-reranker-base --port 80 --max-batch-tokens 4096
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:80/health" ]
-      interval: 10s
-      timeout: 5s
+      interval: 15s
+      timeout: 10s
       retries: 5
-      start_period: 120s
+      start_period: 300s
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
 
   # Temporal UI (web dashboard for workflow visibility)
   temporal-ui:

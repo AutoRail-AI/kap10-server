@@ -12,9 +12,6 @@
 
 import type { Database } from "arangojs"
 import type { IGraphStore } from "@/lib/ports/graph-store"
-import { logger } from "@/lib/utils/logger"
-
-const arangoLog = logger.child({ service: "arango-graph-store" })
 import type {
   ADRDoc,
   BlueprintData,
@@ -52,6 +49,9 @@ import type {
   WorkingSnapshot,
 } from "@/lib/ports/types"
 import { validateLedgerTransition } from "@/lib/ports/types"
+import { logger } from "@/lib/utils/logger"
+
+const arangoLog = logger.child({ service: "arango-graph-store" })
 
 const DOC_COLLECTIONS = [
   "repos",

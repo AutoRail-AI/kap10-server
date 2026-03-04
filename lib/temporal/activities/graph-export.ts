@@ -9,8 +9,8 @@
  */
 
 import { heartbeat } from "@temporalio/activity"
-import { getContainer } from "@/lib/di/container"
 import { getPrisma } from "@/lib/db/prisma"
+import { getContainer } from "@/lib/di/container"
 import { compactEdge, compactEntity } from "@/lib/use-cases/graph-compactor"
 import type { CompactEdge, CompactEntity } from "@/lib/use-cases/graph-compactor"
 import { computeChecksum, serializeSnapshot, serializeSnapshotChunked } from "@/lib/use-cases/graph-serializer"

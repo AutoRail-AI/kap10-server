@@ -18,7 +18,9 @@ export async function scanSynthesizeAndStore(input: AstGrepScanInput): Promise<{
   patternsDetected: number
   rulesGenerated: number
 }> {
+  const log = logger.child({ service: "pattern-detection", organizationId: input.orgId, repoId: input.repoId })
   const plog = createPipelineLogger(input.repoId, "pattern-detection")
+  log.info("Starting pattern detection scan")
   plog.log("info", "Step 7/7", "Scanning codebase for structural patterns...")
 
   try {
@@ -48,6 +50,7 @@ export async function scanSynthesizeAndStore(input: AstGrepScanInput): Promise<{
     return { patternsDetected: storeResult.patternsStored, rulesGenerated: storeResult.rulesStored }
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error)
+    log.error("Pattern detection failed", { error: msg })
     plog.log("error", "Step 7/7", `Pattern detection failed: ${msg}`)
     throw error
   }
@@ -112,8 +115,7 @@ export async function astGrepScan(input: AstGrepScanInput): Promise<AstGrepScanO
           })
         }
       } catch (error: unknown) {
-        const { logger: log } = require("@/lib/utils/logger") as typeof import("@/lib/utils/logger")
-        log.warn("ast-grep pattern scan failed", {
+        logger.warn("ast-grep pattern scan failed", {
           pattern: pattern.id,
           language,
           error: error instanceof Error ? error.message : String(error),
@@ -161,7 +163,7 @@ export async function llmSynthesizeRules(input: LlmSynthesizeInput): Promise<Llm
   // Try LLM-based synthesis, fall back to heuristic on failure
   try {
     const { getContainer } = require("@/lib/di/container") as typeof import("@/lib/di/container")
-    const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+    const { getModelForGroup } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
     const { z } = require("zod") as typeof import("zod")
     const container = getContainer()
 
@@ -199,7 +201,7 @@ export async function llmSynthesizeRules(input: LlmSynthesizeInput): Promise<Llm
 
       try {
         const { object } = await container.llmProvider.generateObject({
-          model: LLM_MODELS.fast,
+          model: getModelForGroup("classification"),
           schema: RuleSynthesisSchema,
           system: "You are a code quality expert synthesizing enforcement rules from detected code patterns. Generate actionable rules that help teams maintain consistency.",
           prompt: `Analyze these detected code patterns and synthesize enforcement rules.
@@ -302,11 +304,9 @@ export async function storePatterns(input: StorePatternsInput): Promise<{ patter
 
   heartbeat("Storing synthesized rules")
   const crypto = require("node:crypto") as typeof import("node:crypto")
-  let rulesStored = 0
-  for (const rule of input.synthesizedRules) {
+  const rulePromises = input.synthesizedRules.map((rule) => {
     const ruleId = crypto.createHash("sha256").update(`${input.repoId}:rule:${rule.patternId}`).digest("hex").slice(0, 16)
-
-    await container.graphStore.upsertRule(input.orgId, {
+    return container.graphStore.upsertRule(input.orgId, {
       id: ruleId,
       org_id: input.orgId,
       repo_id: input.repoId,
@@ -322,8 +322,9 @@ export async function storePatterns(input: StorePatternsInput): Promise<{ patter
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
-    rulesStored++
-  }
+  })
+  await Promise.all(rulePromises)
+  const rulesStored = input.synthesizedRules.length
 
   return { patternsStored, rulesStored }
 }
@@ -348,13 +349,11 @@ export interface SemanticMiningOutput {
  */
 export async function semanticPatternMining(input: SemanticMiningInput): Promise<SemanticMiningOutput> {
   const { getContainer } = require("@/lib/di/container") as typeof import("@/lib/di/container")
-  const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+  const { getModelForGroup } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
   const { z } = require("zod") as typeof import("zod")
   const crypto = require("node:crypto") as typeof import("node:crypto")
   const container = getContainer()
-  const { logger: log } = require("@/lib/utils/logger") as typeof import("@/lib/utils/logger")
-
-  const sLog = log.child({ service: "semantic-pattern-mining", organizationId: input.orgId, repoId: input.repoId })
+  const sLog = logger.child({ service: "semantic-pattern-mining", organizationId: input.orgId, repoId: input.repoId })
 
   heartbeat("Fetching entities and edges")
 
@@ -492,7 +491,7 @@ export async function semanticPatternMining(input: SemanticMiningInput): Promise
 
     try {
       const { object } = await container.llmProvider.generateObject({
-        model: LLM_MODELS.fast,
+        model: getModelForGroup("classification"),
         schema: ConventionSchema,
         system: "You are a code architecture analyst discovering implicit conventions in codebases.",
         prompt: `A code community contains these entities: ${memberNames.join(", ")}
@@ -550,8 +549,8 @@ Synthesize 1-2 conventions that these patterns represent. For each:
         })
         rulesGenerated++
       }
-    } catch {
-      sLog.warn(`LLM convention synthesis failed for community ${communityId}, skipping`)
+    } catch (error: unknown) {
+      sLog.warn("LLM convention synthesis failed for community, skipping", { communityId, error: error instanceof Error ? error.message : String(error) })
     }
   }
 

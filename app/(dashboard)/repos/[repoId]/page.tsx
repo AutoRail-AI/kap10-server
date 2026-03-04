@@ -1,7 +1,7 @@
 import {
   BookOpen,
   BookText,
-  FileCode,
+
   FileDown,
   Fingerprint,
   HeartPulse,

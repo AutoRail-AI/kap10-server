@@ -2,7 +2,7 @@
  * Unit tests for workspace scanner.
  *
  * Tests file discovery, language detection, and extension mapping.
- * Note: scanWorkspace requires a real git repo, so we test detectLanguages
+ * Note: scanIndexDir requires a real git repo, so we test detectLanguages
  * and getLanguageForExtension which are pure functions.
  */
 import { afterEach, describe, expect, it } from "vitest"
@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { detectLanguages, getLanguageForExtension, scanWorkspace } from "../scanner"
+import { detectLanguages, getLanguageForExtension, scanIndexDir } from "../scanner"
 import type { ScannedFile } from "../types"
 
 describe("getLanguageForExtension", () => {
@@ -117,7 +117,7 @@ describe("detectLanguages", () => {
   })
 })
 
-describe("scanWorkspace", () => {
+describe("scanIndexDir", () => {
   let tempDir: string
 
   afterEach(() => {
@@ -127,7 +127,7 @@ describe("scanWorkspace", () => {
   })
 
   it("returns empty array for non-existent directory", async () => {
-    const result = await scanWorkspace("/nonexistent/path/abc123")
+    const result = await scanIndexDir("/nonexistent/path/abc123")
     expect(result).toEqual([])
   })
 
@@ -149,7 +149,7 @@ describe("scanWorkspace", () => {
     // Add to git so ls-files finds them
     execSync("git add .", { cwd: tempDir, stdio: "pipe" })
 
-    const result = await scanWorkspace(tempDir)
+    const result = await scanIndexDir(tempDir)
 
     expect(result.length).toBe(3)
     const paths = result.map((f) => f.relativePath).sort()
@@ -173,7 +173,7 @@ describe("scanWorkspace", () => {
 
     execSync("git add -f .", { cwd: tempDir, stdio: "pipe" })
 
-    const result = await scanWorkspace(tempDir)
+    const result = await scanIndexDir(tempDir)
 
     // node_modules should be excluded by ALWAYS_IGNORE
     const nmFiles = result.filter((f) => f.relativePath.includes("node_modules"))

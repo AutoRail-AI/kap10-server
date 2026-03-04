@@ -36,10 +36,10 @@ export function detectCommunities(
   }
 
   // Lazy require — graphology may export as default or as the module itself
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+   
   const graphologyModule = require("graphology")
   const Graph = (graphologyModule.default ?? graphologyModule) as typeof import("graphology").default
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
+   
   const louvainModule = require("graphology-communities-louvain")
   const louvain = (louvainModule.default ?? louvainModule) as (
     graph: InstanceType<typeof Graph>
@@ -98,7 +98,7 @@ export function detectCommunities(
 
   // Build CommunityInfo for communities with 3+ entities
   const communities = new Map<number, CommunityInfo>()
-  for (const [communityId, memberIds] of communityMembers) {
+  for (const [communityId, memberIds] of Array.from(communityMembers)) {
     if (memberIds.length < 3) continue
 
     // Sort by pagerank_percentile descending, then alphabetical

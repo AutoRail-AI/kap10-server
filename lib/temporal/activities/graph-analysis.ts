@@ -293,13 +293,12 @@ export async function precomputeBlastRadius(
 
   // Apply structural fingerprint fields to ALL entities
   for (const entity of allEntities) {
-    const ext = entity as Record<string, unknown>
-    const fanIn = (ext.fan_in as number) ?? 0
-    const fanOut = (ext.fan_out as number) ?? 0
-    ext.depth_from_entry = depthMap.get(entity.id) ?? DISCONNECTED_DEPTH
-    ext.fan_ratio = Math.round((fanOut / (fanIn + 1)) * 100) / 100
-    ext.is_boundary = boundaryIds.has(entity.id)
-    ext.community_id = communityMap.get(entity.id) ?? -1
+    const fanIn = (entity.fan_in as number | undefined) ?? 0
+    const fanOut = (entity.fan_out as number | undefined) ?? 0
+    entity.depth_from_entry = depthMap.get(entity.id) ?? DISCONNECTED_DEPTH
+    entity.fan_ratio = Math.round((fanOut / (fanIn + 1)) * 100) / 100
+    entity.is_boundary = boundaryIds.has(entity.id)
+    entity.community_id = communityMap.get(entity.id) ?? -1
   }
 
   // ── Store all enriched entities ───────────────────────────────────────────
@@ -314,7 +313,8 @@ export async function precomputeBlastRadius(
     throw error
   }
 
-  plog.log("info", "Step 4b/7", `Graph analysis complete — ${allEntities.length} entities updated, ${highRiskCount} high-risk, ${new Set(communityMap.values()).size} communities`)
+  const communityCount = new Set(communityMap.values()).size
+  plog.log("info", "Step 4b/7", `Graph analysis complete — ${allEntities.length} entities updated, ${highRiskCount} high-risk, ${communityCount} communities`)
 
   log.info("Blast radius + PageRank + structural fingerprint pre-computation complete", {
     totalEntities: allEntities.length,
@@ -324,7 +324,7 @@ export async function precomputeBlastRadius(
     pagerankIterations: prResult.iterations,
     entryPoints: entryPointIds.size,
     boundaryNodes: boundaryIds.size,
-    communities: new Set(communityMap.values()).size,
+    communities: communityCount,
   })
 
   return { updatedCount: allEntities.length, highRiskCount }

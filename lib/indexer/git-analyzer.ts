@@ -173,7 +173,7 @@ export function computeCoChangeEdges(
       if (support < supportThreshold) continue
 
       const confidence = support / shaSetA.size
-      const unionSet = new Set(Array.from(shaSetA))
+      const unionSet = new Set(shaSetA)
       shaSetB.forEach((sha) => unionSet.add(sha))
       const union = unionSet.size
       const jaccard = support / union

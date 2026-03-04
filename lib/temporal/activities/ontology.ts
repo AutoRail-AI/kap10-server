@@ -5,7 +5,7 @@
 
 import { heartbeat } from "@temporalio/activity"
 import { randomUUID } from "node:crypto"
-import { readFileSync } from "node:fs"
+import { readFile } from "node:fs/promises"
 import {
   buildDomainToArchitectureMap,
   buildOntologyPrompt,
@@ -95,6 +95,7 @@ async function extractAndRefineOntologyInternal(
   entities: EntityDoc[]
 ): Promise<DomainOntologyDoc> {
   const container = lazyContainer()
+  const log = logger.child({ service: "ontology", organizationId: input.orgId, repoId: input.repoId })
   heartbeat("extracting domain terms")
 
   // Step 1: Extract raw terms
@@ -110,8 +111,8 @@ async function extractAndRefineOntologyInternal(
   const prompt = buildOntologyPrompt(rawTerms, entities, classifiedTerms)
 
   // Step 3: Refine with LLM
-  const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
-  const defaultModel = LLM_MODELS.standard
+  const { getModelForGroup } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+  const defaultModel = getModelForGroup("analysis")
   const { DomainOntologySchema } = require("@/lib/justification/schemas") as typeof import("@/lib/justification/schemas")
   const schema = DomainOntologySchema.pick({ terms: true, ubiquitousLanguage: true })
 
@@ -135,7 +136,7 @@ async function extractAndRefineOntologyInternal(
   }
 
   // Extract project-level context from workspace manifest files
-  const projectContext = extractProjectContext(input.orgId, input.repoId)
+  const projectContext = await extractProjectContext(input.orgId, input.repoId)
 
   // Incorporate user-provided context documents (context seeding)
   let enrichedDescription = projectContext.project_description
@@ -148,8 +149,8 @@ async function extractAndRefineOntologyInternal(
         ? `${enrichedDescription}\n\nUser-provided context:\n${userContext}`
         : userContext
     }
-  } catch {
-    // Best-effort — don't fail ontology if context fetch fails
+  } catch (error: unknown) {
+    log.debug("Context document fetch failed (non-fatal)", { error: error instanceof Error ? error.message : String(error) })
   }
 
   // L-25: Build term_tiers from classified terms
@@ -177,16 +178,16 @@ async function extractAndRefineOntologyInternal(
  * Extract project-level context from manifest files (package.json, pyproject.toml, go.mod).
  * Returns partial DomainOntologyDoc fields for project context.
  */
-function extractProjectContext(
+async function extractProjectContext(
   orgId: string,
   repoId: string
-): Pick<DomainOntologyDoc, "project_name" | "project_description" | "project_domain" | "tech_stack"> {
+): Promise<Pick<DomainOntologyDoc, "project_name" | "project_description" | "project_domain" | "tech_stack">> {
   const workspacePath = `/data/workspaces/${orgId}/${repoId}`
   const result: Pick<DomainOntologyDoc, "project_name" | "project_description" | "project_domain" | "tech_stack"> = {}
 
   // Try package.json first (Node.js / JS/TS projects)
   try {
-    const content = readFileSync(`${workspacePath}/package.json`, "utf-8")
+    const content = await readFile(`${workspacePath}/package.json`, "utf-8")
     const pkg = JSON.parse(content) as Record<string, unknown>
     if (pkg.name && typeof pkg.name === "string") result.project_name = pkg.name
     if (pkg.description && typeof pkg.description === "string") result.project_description = pkg.description
@@ -211,7 +212,7 @@ function extractProjectContext(
   // Try pyproject.toml (Python projects)
   if (!result.project_name) {
     try {
-      const content = readFileSync(`${workspacePath}/pyproject.toml`, "utf-8")
+      const content = await readFile(`${workspacePath}/pyproject.toml`, "utf-8")
       const nameMatch = content.match(/^name\s*=\s*"([^"]+)"/m)
       const descMatch = content.match(/^description\s*=\s*"([^"]+)"/m)
       if (nameMatch) result.project_name = nameMatch[1]
@@ -224,7 +225,7 @@ function extractProjectContext(
   // Try go.mod (Go projects)
   if (!result.project_name) {
     try {
-      const content = readFileSync(`${workspacePath}/go.mod`, "utf-8")
+      const content = await readFile(`${workspacePath}/go.mod`, "utf-8")
       const moduleMatch = content.match(/^module\s+(.+)$/m)
       if (moduleMatch) {
         const modulePath = moduleMatch[1]!.trim()

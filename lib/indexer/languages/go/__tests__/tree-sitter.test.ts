@@ -104,7 +104,7 @@ func (u User) String() string {
     expect(methods).toHaveLength(2)
     expect(methods[0]!.name).toBe("Greet")
     expect(methods[0]!.parent).toBe("User")
-    expect(methods[0]!.signature).toContain("(User).Greet(")
+    expect(methods[0]!.signature).toContain("(*User).Greet(")
     expect(methods[0]!.exported).toBe(true)
   })
 

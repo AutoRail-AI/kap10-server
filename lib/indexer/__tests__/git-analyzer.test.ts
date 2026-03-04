@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import {
+  buildFileCommitIndex,
+  type CommitFileEntry,
   computeCoChangeEdges,
   computeTemporalContext,
   mapFileEdgesToEntityEdges,
   parseGitLogOutput,
-  type CommitFileEntry,
 } from "../git-analyzer"
 
 // ── parseGitLogOutput ──────────────────────────────────────────────────────────
@@ -181,6 +182,59 @@ describe("computeTemporalContext", () => {
     const ctx = computeTemporalContext(commits, "stable.ts")
     expect(ctx!.stability_score).toBe(1)
     expect(ctx!.recent_change_frequency).toBe(0)
+  })
+})
+
+// ── buildFileCommitIndex ──────────────────────────────────────────────────────
+
+describe("buildFileCommitIndex", () => {
+  const makeCommit = (sha: string, files: string[]): CommitFileEntry => ({
+    sha,
+    subject: "test",
+    authorEmail: "dev@ex.com",
+    timestamp: 1700000000,
+    files,
+  })
+
+  it("returns empty map for empty commits", () => {
+    const index = buildFileCommitIndex([])
+    expect(index.size).toBe(0)
+  })
+
+  it("indexes single commit with multiple files", () => {
+    const commit = makeCommit("c1", ["a.ts", "b.ts"])
+    const index = buildFileCommitIndex([commit])
+    expect(index.get("a.ts")).toEqual([commit])
+    expect(index.get("b.ts")).toEqual([commit])
+  })
+
+  it("accumulates commits per file across multiple commits", () => {
+    const c1 = makeCommit("c1", ["a.ts", "b.ts"])
+    const c2 = makeCommit("c2", ["a.ts", "c.ts"])
+    const c3 = makeCommit("c3", ["a.ts"])
+    const index = buildFileCommitIndex([c1, c2, c3])
+    expect(index.get("a.ts")).toHaveLength(3)
+    expect(index.get("b.ts")).toHaveLength(1)
+    expect(index.get("c.ts")).toHaveLength(1)
+    expect(index.has("d.ts")).toBe(false)
+  })
+
+  it("computeTemporalContext uses pre-built index when provided", () => {
+    const now = Math.floor(Date.now() / 1000)
+    const commits: CommitFileEntry[] = [
+      { sha: "c1", subject: "fix: bug", authorEmail: "a@ex.com", timestamp: now - 1000, files: ["app.ts", "other.ts"] },
+      { sha: "c2", subject: "feat: add", authorEmail: "b@ex.com", timestamp: now - 2000, files: ["app.ts"] },
+    ]
+    const index = buildFileCommitIndex(commits)
+
+    const ctx = computeTemporalContext(commits, "app.ts", index)
+    expect(ctx).not.toBeNull()
+    expect(ctx!.change_frequency).toBe(2)
+    expect(ctx!.author_count).toBe(2)
+
+    // File not in index returns null
+    const missing = computeTemporalContext(commits, "missing.ts", index)
+    expect(missing).toBeNull()
   })
 })
 

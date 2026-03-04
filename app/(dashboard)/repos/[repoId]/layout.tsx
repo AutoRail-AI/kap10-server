@@ -15,12 +15,12 @@ import { McpStatus } from "@/components/repo/mcp-status"
 import { RepoTabs } from "@/components/repo/repo-tabs"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { getActiveOrgId, getSessionCached } from "@/lib/api/get-active-org"
 import {
   getActiveRulesCached,
   getPatternsCached,
   getProjectStatsCached,
 } from "@/lib/api/cached-queries"
+import { getActiveOrgId, getSessionCached } from "@/lib/api/get-active-org"
 import { getContainer } from "@/lib/di/container"
 
 /**

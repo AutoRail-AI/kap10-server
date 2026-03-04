@@ -10,7 +10,7 @@ import { buildCascadeQueue } from "@/lib/indexer/cascade"
 import { clearCallerCountCache } from "@/lib/indexer/centrality"
 import { repairEdges } from "@/lib/indexer/edge-repair"
 import { entityHash } from "@/lib/indexer/entity-hash"
-import { withQuarantine, shouldHealQuarantine } from "@/lib/indexer/quarantine"
+import { shouldHealQuarantine, withQuarantine } from "@/lib/indexer/quarantine"
 import { detectDeadCode } from "@/lib/justification/dead-code-detector"
 import { buildGraphContexts } from "@/lib/justification/graph-context-builder"
 import { computeHeuristicHint } from "@/lib/justification/model-router"
@@ -23,10 +23,12 @@ import { scoreJustification } from "@/lib/justification/quality-scorer"
 import { JustificationResultSchema } from "@/lib/justification/schemas"
 import { computeBodyHash } from "@/lib/justification/staleness-checker"
 import { buildTestContext } from "@/lib/justification/test-context-extractor"
-import { LLM_MODELS } from "@/lib/llm/config"
+import { getModelForGroup } from "@/lib/llm/config"
 import type { ChangedFile, EntityDiff, EntityDoc, IndexEventDoc, JustificationDoc } from "@/lib/ports/types"
 import { buildEmbeddableDocuments } from "@/lib/temporal/activities/embedding"
 import { writeEntitiesToGraph } from "@/lib/temporal/activities/graph-writer"
+import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
+import { logger } from "@/lib/utils/logger"
 
 export interface PullAndDiffInput {
   orgId: string
@@ -218,8 +220,8 @@ export async function reIndexBatch(input: ReIndexBatchInput): Promise<ReIndexBat
         await container.graphStore.batchDeleteEntities(input.orgId, quarantineKeys)
         heartbeat(`healed ${healedPaths.length} quarantined files`)
       }
-    } catch {
-      // Quarantine healing is non-fatal — entities will be overwritten on next run
+    } catch (error: unknown) {
+      logger.child({ service: "incremental" }).warn("Quarantine healing failed (non-fatal)", { error: error instanceof Error ? error.message : String(error) })
     }
   }
 
@@ -483,7 +485,7 @@ export async function cascadeReJustify(input: CascadeReJustifyInput): Promise<Ca
   const graphContexts = await buildGraphContexts(cascadeEntities, container.graphStore, input.orgId)
 
   const results: JustificationDoc[] = []
-  const defaultModel = LLM_MODELS.standard
+  const defaultModel = getModelForGroup("code_reasoning")
 
   for (let i = 0; i < cascadeEntities.length; i++) {
     const entity = cascadeEntities[i]!
@@ -586,7 +588,7 @@ export async function cascadeReJustify(input: CascadeReJustifyInput): Promise<Ca
       heartbeat(`justified ${entity.name}`)
     } catch (error: unknown) {
       // Log and continue — don't fail the whole cascade for one entity
-      console.error(`Cascade re-justify failed for ${entity.name}:`, error instanceof Error ? error.message : String(error))
+      logger.child({ service: "incremental" }).warn("Cascade re-justify failed", { entityName: entity.name, error: error instanceof Error ? error.message : String(error) })
     }
   }
 
@@ -645,7 +647,7 @@ export async function cascadeReJustify(input: CascadeReJustifyInput): Promise<Ca
       }
     } catch (error: unknown) {
       // Non-fatal — embeddings can be rebuilt on next full justification run
-      console.error("Cascade re-embed failed:", error instanceof Error ? error.message : String(error))
+      logger.child({ service: "incremental" }).warn("Cascade re-embed failed", { error: error instanceof Error ? error.message : String(error) })
     }
   }
 

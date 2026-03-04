@@ -5,7 +5,7 @@
  * Returns package root paths for SCIP indexers that need per-package runs.
  * A-05: Also detects dominant language per package root for polyglot support.
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { extname, join, resolve } from "node:path"
 
 import type { WorkspaceInfo } from "./types"

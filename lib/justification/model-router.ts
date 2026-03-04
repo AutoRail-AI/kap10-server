@@ -9,7 +9,7 @@
  * Safety patterns route to premium tier.
  */
 
-import { LLM_MODELS } from "@/lib/llm/config"
+import { getModelForGroup } from "@/lib/llm/config"
 import type { EntityDoc } from "@/lib/ports/types"
 import type { ModelRoute, ModelTier, Taxonomy } from "./schemas"
 import type { HeuristicResult } from "./types"
@@ -288,7 +288,7 @@ export function routeModel(
   if (isSafetyRelevant(name, filePath)) {
     return {
       tier: "premium" as ModelTier,
-      model: LLM_MODELS.premium,
+      model: getModelForGroup("code_reasoning_complex"),
       reason: "safety-relevant entity (auth/security)",
     }
   }
@@ -306,7 +306,7 @@ export function routeModel(
   ) {
     return {
       tier: "premium" as ModelTier,
-      model: LLM_MODELS.premium,
+      model: getModelForGroup("code_reasoning_complex"),
       reason: callerCount != null && callerCount >= 8
         ? `high caller count (${callerCount} callers)`
         : cognitiveComplexity != null && cognitiveComplexity >= 15
@@ -322,7 +322,7 @@ export function routeModel(
   if (["variable", "constant"].includes(kind)) {
     return {
       tier: "fast" as ModelTier,
-      model: LLM_MODELS.fast,
+      model: getModelForGroup("code_reasoning_simple"),
       reason: "simple entity kind",
     }
   }
@@ -330,7 +330,7 @@ export function routeModel(
   // Standard tier: everything else
   return {
     tier: "standard" as ModelTier,
-    model: LLM_MODELS.standard,
+    model: getModelForGroup("code_reasoning"),
     reason: "default routing",
   }
 }

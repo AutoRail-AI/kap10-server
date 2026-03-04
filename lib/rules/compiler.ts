@@ -4,7 +4,7 @@
 
 import { z } from "zod"
 import type { Container } from "@/lib/di/container"
-import { LLM_MODELS } from "@/lib/llm/config"
+import { getModelForGroup } from "@/lib/llm/config"
 
 const DraftedRuleSchema = z.object({
   title: z.string(),
@@ -26,7 +26,7 @@ export async function draftArchitectureRule(
   enforcement = "suggest"
 ): Promise<{ rule: DraftedRule; usage: { inputTokens: number; outputTokens: number } }> {
   const result = await container.llmProvider.generateObject({
-    model: LLM_MODELS.standard,
+    model: getModelForGroup("analysis"),
     prompt: `You are a code architecture expert. Generate a rule definition for the following requirement:
 
 Requirement: "${description}"

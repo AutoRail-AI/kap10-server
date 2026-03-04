@@ -27,8 +27,8 @@ export async function synthesizeADRs(
   repoId: string
 ): Promise<ADRDoc[]> {
   const adrs: ADRDoc[] = []
-  const { LLM_MODELS } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
-  const defaultModel = LLM_MODELS.standard
+  const { getModelForGroup } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
+  const defaultModel = getModelForGroup("writing")
 
   // Only synthesize ADRs for features with 3+ entities (meaningful features)
   const significantFeatures = features.filter((f) => f.entity_count >= 3)

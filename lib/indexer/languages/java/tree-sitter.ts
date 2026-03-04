@@ -23,7 +23,7 @@ export function parseJavaFile(opts: TreeSitterOptions): JavaParseResult {
   const lines = opts.content.split("\n")
 
   // Extract package name for fully qualified names
-  const packageName = detectPackage(lines)
+  const _packageName = detectPackage(lines)
 
   // First pass: extract import edges
   const fileId = entityHash(opts.repoId, opts.filePath, "file", opts.filePath)

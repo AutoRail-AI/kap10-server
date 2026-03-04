@@ -96,7 +96,7 @@ export function parseRubyFile(opts: TreeSitterOptions): RubyParseResult {
     if (methodMatch) {
       const name = methodMatch[1]!
       const params = methodMatch[2] ?? ""
-      const isClassMethod = trimmed.includes("def self.")
+      const _isClassMethod = trimmed.includes("def self.")
 
       if (currentClass) {
         const sig = `${currentClass.name}#${name}(${params})`

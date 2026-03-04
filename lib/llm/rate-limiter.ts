@@ -34,6 +34,7 @@ export class RateLimiter {
     } else {
       // Lazy import to avoid circular dependency at module load
       try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { getProviderTpmLimit } = require("@/lib/llm/config") as typeof import("@/lib/llm/config")
         this.tpm = getProviderTpmLimit()
       } catch {

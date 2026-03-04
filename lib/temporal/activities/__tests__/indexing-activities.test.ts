@@ -61,7 +61,7 @@ describe("indexing-heavy activities", () => {
         defaultBranch: "main",
       })
 
-      expect(result.workspacePath).toBe("/data/workspaces/org-1/repo-1")
+      expect(result.indexDir).toBe("/data/repo-indices/org-1/repo-1")
     })
 
     it("calls gitHost.cloneRepo with correct arguments", async () => {
@@ -82,7 +82,7 @@ describe("indexing-heavy activities", () => {
 
       expect(cloneSpy).toHaveBeenCalledWith(
         "https://github.com/test/repo.git",
-        "/data/workspaces/org-1/repo-1",
+        "/data/repo-indices/org-1/repo-1",
         expect.objectContaining({ ref: "develop", installationId: 456 })
       )
     })
@@ -98,20 +98,20 @@ describe("indexing-heavy activities", () => {
 
       // The workspace path doesn't exist on disk, so scanner returns empty
       expect(result.languages).toBeDefined()
-      expect(result.workspaceRoots).toBeDefined()
+      expect(result.packageRoots).toBeDefined()
       expect(Array.isArray(result.languages)).toBe(true)
-      expect(Array.isArray(result.workspaceRoots)).toBe(true)
+      expect(Array.isArray(result.packageRoots)).toBe(true)
     })
   })
 
   describe("runSCIP", () => {
     it("returns counts and coveredFiles (empty for non-existent workspace)", async () => {
       const result = await runSCIP({
-        workspacePath: "/data/workspaces/org-1/repo-1",
+        indexDir: "/data/repo-indices/org-1/repo-1",
         orgId: "org-1",
         repoId: "repo-1",
         languages: ["typescript"],
-        workspaceRoots: ["."],
+        packageRoots: ["."],
       })
 
       expect(result).toHaveProperty("entityCount")
@@ -126,7 +126,7 @@ describe("indexing-heavy activities", () => {
   describe("parseRest", () => {
     it("returns counts (empty for non-existent workspace)", async () => {
       const result = await parseRest({
-        workspacePath: "/data/workspaces/org-1/repo-1",
+        indexDir: "/data/repo-indices/org-1/repo-1",
         orgId: "org-1",
         repoId: "repo-1",
         coveredFiles: [],

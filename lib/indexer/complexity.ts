@@ -209,8 +209,7 @@ export function estimateCyclomaticComplexity(body: string, language = "typescrip
   const opPattern = config.logicalOps.join("|")
   const fullPattern = new RegExp(`${keywordPattern}|${opPattern}`, "g")
 
-  let match: RegExpExecArray | null
-  while ((match = fullPattern.exec(cleaned)) !== null) {
+  while (fullPattern.exec(cleaned) !== null) {
     complexity++
   }
 

@@ -3,7 +3,7 @@
  */
 
 import type { Container } from "@/lib/di/container"
-import { LLM_MODELS } from "@/lib/llm/config"
+import { getModelForGroup } from "@/lib/llm/config"
 import { resolveRules } from "@/lib/rules/resolver"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
@@ -284,7 +284,7 @@ export async function handleDraftArchitectureRule(
     })
 
     const result = await container.llmProvider.generateObject({
-      model: LLM_MODELS.standard,
+      model: getModelForGroup("analysis"),
       prompt: `Generate an architecture rule for the following requirement:
 "${args.description}"
 

@@ -1,5 +1,5 @@
-import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 import { describe, expect, it } from "vitest"
+import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 import { detectCommunities } from "../community-detection"
 
 function makeEntity(id: string, name: string, pagerank?: number): EntityDoc {

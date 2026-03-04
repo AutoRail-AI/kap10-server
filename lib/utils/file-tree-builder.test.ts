@@ -41,7 +41,7 @@ describe("buildFileTree", () => {
 
   it("sorts directories first then files, alphabetically", () => {
     const tree = buildFileTree(paths(["a.ts", "b.ts", "lib/foo.ts"]))
-    expect(tree.map((n) => n.name)).toEqual(["a.ts", "b.ts", "lib"])
+    expect(tree.map((n) => n.name)).toEqual(["lib", "a.ts", "b.ts"])
     const lib = tree.find((n) => n.name === "lib")
     expect(lib?.children?.map((c) => c.name)).toEqual(["foo.ts"])
   })

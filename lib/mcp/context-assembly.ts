@@ -5,7 +5,7 @@
  */
 
 import type { Container } from "@/lib/di/container"
-import type { EntityProfile } from "./entity-profile"
+import { getEntityProfile, getEntityProfiles, type EntityProfile } from "./entity-profile"
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -32,15 +32,24 @@ export async function assembleContext(
   container: Container,
   options?: { limit?: number; includeSnippets?: boolean },
 ): Promise<AssembledContext> {
-  const { getEntityProfile, getEntityProfiles } = require("./entity-profile") as typeof import("./entity-profile")
-
   const limit = Math.min(Math.max(options?.limit ?? 10, 1), 25)
   const includeSnippets = options?.includeSnippets !== false
 
   // Step 1: Find entry point via vector search
-  const embedQuery = container.vectorSearch.embedQuery
+  const embedResult = container.vectorSearch.embedQuery
     ? await container.vectorSearch.embedQuery(query)
-    : (await container.vectorSearch.embed([query]))[0]!
+    : (await container.vectorSearch.embed([query]))[0]
+  if (!embedResult) {
+    return {
+      entry_point: null,
+      semantic_neighborhood: [],
+      code_snippets: [],
+      confidence: 0,
+      community_context: null,
+      _meta: { query, entry_entity_id: null, neighborhood_size: 0 },
+    }
+  }
+  const embedQuery = embedResult
 
   const vectorResults = await container.vectorSearch.search(embedQuery, 1, { orgId, repoId })
 

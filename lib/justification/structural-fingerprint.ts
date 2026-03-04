@@ -30,16 +30,15 @@ export interface StructuralFingerprint {
  * by graph-analysis (Step 4b).
  */
 export function buildFingerprintFromEntity(entity: EntityDoc): StructuralFingerprint | null {
-  const ext = entity as Record<string, unknown>
   // Require at least pagerank_percentile to be set (indicates Step 4b has run)
-  if (ext.pagerank_percentile == null) return null
+  if (entity.pagerank_percentile == null) return null
 
   return {
-    pagerank_percentile: (ext.pagerank_percentile as number) ?? 0,
-    community_id: (ext.community_id as number) ?? -1,
-    depth_from_entry: (ext.depth_from_entry as number) ?? DISCONNECTED_DEPTH,
-    fan_ratio: (ext.fan_ratio as number) ?? 0,
-    is_boundary: (ext.is_boundary as boolean) ?? false,
+    pagerank_percentile: entity.pagerank_percentile as number,
+    community_id: (entity.community_id as number | undefined) ?? -1,
+    depth_from_entry: (entity.depth_from_entry as number | undefined) ?? DISCONNECTED_DEPTH,
+    fan_ratio: (entity.fan_ratio as number | undefined) ?? 0,
+    is_boundary: (entity.is_boundary as boolean | undefined) ?? false,
   }
 }
 

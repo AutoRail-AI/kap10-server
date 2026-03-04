@@ -1,49 +1,84 @@
 /**
  * Centralized LLM configuration — AWS Bedrock only.
  *
- * ALL model names, cost tables, and limits live here.
- * Authentication uses AWS_BEARER_TOKEN_BEDROCK env var.
+ * Task-based model groups replace the old tier system.
+ * Default models: GPT-OSS (20B/120B) + Qwen3 Coder 30B on Bedrock.
  *
  * Environment overrides (all optional):
- *   AWS_REGION              — AWS region (default: "us-east-1")
- *   LLM_MODEL_FAST          — Model for simple/cheap tasks
- *   LLM_MODEL_STANDARD      — Default model for most entities
- *   LLM_MODEL_PREMIUM       — Model for high-centrality / complex entities
+ *   AWS_REGION                       — AWS region (default: "us-east-1")
+ *   LLM_MODEL_CODE_REASONING         — Bulk code classification (Qwen3 Coder 30B)
+ *   LLM_MODEL_CODE_REASONING_COMPLEX — Safety/high-centrality entities (GPT-OSS 120B)
+ *   LLM_MODEL_CODE_REASONING_SIMPLE  — Variables, constants (GPT-OSS 20B)
+ *   LLM_MODEL_ANALYSIS               — Ontology, anti-patterns, rules (GPT-OSS 120B)
+ *   LLM_MODEL_WRITING                — ADR generation, drift docs (GPT-OSS 120B)
+ *   LLM_MODEL_CLASSIFICATION         — Drift detection, pattern synthesis (GPT-OSS 20B)
  */
 
 // ── Models ────────────────────────────────────────────────────────────────────
 
 export const AWS_REGION: string = process.env.AWS_REGION ?? "us-east-1"
 
-/** Tier-based model selection. Override per-tier via env vars. */
-export const LLM_MODELS = {
-  /** Simple entities (variables, constants) — fastest & cheapest. */
-  fast: process.env.LLM_MODEL_FAST ?? "anthropic.claude-haiku-4-5-20251001-v1:0",
-  /** Default for most entities — good quality/cost balance. */
-  standard: process.env.LLM_MODEL_STANDARD ?? "anthropic.claude-sonnet-4-20250514-v1:0",
-  /** High-centrality / complex dependency entities — best quality. */
-  premium: process.env.LLM_MODEL_PREMIUM ?? "anthropic.claude-sonnet-4-20250514-v1:0",
-} as const
+/** Task-based model groups. Each group maps to a specific workload type. */
+export type ModelGroup =
+  | "code_reasoning"
+  | "code_reasoning_complex"
+  | "code_reasoning_simple"
+  | "analysis"
+  | "writing"
+  | "classification"
+
+/** Default Bedrock model ID for each group. */
+const MODEL_GROUP_DEFAULTS: Record<ModelGroup, string> = {
+  code_reasoning: "qwen.qwen3-coder-30b-a3b-v1:0",
+  code_reasoning_complex: "openai.gpt-oss-120b-1:0",
+  code_reasoning_simple: "openai.gpt-oss-20b-1:0",
+  analysis: "openai.gpt-oss-120b-1:0",
+  writing: "openai.gpt-oss-120b-1:0",
+  classification: "openai.gpt-oss-20b-1:0",
+}
+
+/** Env var name for each group. */
+const MODEL_GROUP_ENV_KEYS: Record<ModelGroup, string> = {
+  code_reasoning: "LLM_MODEL_CODE_REASONING",
+  code_reasoning_complex: "LLM_MODEL_CODE_REASONING_COMPLEX",
+  code_reasoning_simple: "LLM_MODEL_CODE_REASONING_SIMPLE",
+  analysis: "LLM_MODEL_ANALYSIS",
+  writing: "LLM_MODEL_WRITING",
+  classification: "LLM_MODEL_CLASSIFICATION",
+}
+
+/**
+ * Get the Bedrock model ID for a given task group.
+ * Reads the corresponding env var, falling back to the default.
+ */
+export function getModelForGroup(group: ModelGroup): string {
+  const envKey = MODEL_GROUP_ENV_KEYS[group]
+  return process.env[envKey] ?? MODEL_GROUP_DEFAULTS[group]
+}
 
 // ── Costs ─────────────────────────────────────────────────────────────────────
 
-/** Per-token costs (USD) for billing estimation. Fallback: $1/$3 per 1M. */
+/** Per-token costs (USD) for billing estimation. Fallback: $0.15/$0.60 per 1M. */
 export const MODEL_COSTS: Record<string, { input: number; output: number }> = {
-  "anthropic.claude-haiku-4-5-20251001-v1:0": { input: 0.80 / 1_000_000, output: 4.0 / 1_000_000 },
-  "anthropic.claude-sonnet-4-20250514-v1:0": { input: 3.0 / 1_000_000, output: 15.0 / 1_000_000 },
+  "openai.gpt-oss-20b-1:0": { input: 0.07 / 1_000_000, output: 0.30 / 1_000_000 },
+  "openai.gpt-oss-120b-1:0": { input: 0.15 / 1_000_000, output: 0.60 / 1_000_000 },
+  "qwen.qwen3-coder-30b-a3b-v1:0": { input: 0.15 / 1_000_000, output: 0.60 / 1_000_000 },
+  "qwen.qwen3-32b-v1:0": { input: 0.15 / 1_000_000, output: 0.60 / 1_000_000 },
 }
 
-export const MODEL_COST_FALLBACK = { input: 1 / 1_000_000, output: 3 / 1_000_000 }
+export const MODEL_COST_FALLBACK = { input: 0.15 / 1_000_000, output: 0.60 / 1_000_000 }
 
 // ── Model Limits ──────────────────────────────────────────────────────────────
 
 /** Per-model context window and max output token limits. */
 export const MODEL_LIMITS: Record<string, { contextWindow: number; maxOutput: number }> = {
-  "anthropic.claude-haiku-4-5-20251001-v1:0": { contextWindow: 200_000, maxOutput: 8192 },
-  "anthropic.claude-sonnet-4-20250514-v1:0": { contextWindow: 200_000, maxOutput: 8192 },
+  "openai.gpt-oss-20b-1:0": { contextWindow: 128_000, maxOutput: 8192 },
+  "openai.gpt-oss-120b-1:0": { contextWindow: 128_000, maxOutput: 8192 },
+  "qwen.qwen3-coder-30b-a3b-v1:0": { contextWindow: 128_000, maxOutput: 8192 },
+  "qwen.qwen3-32b-v1:0": { contextWindow: 128_000, maxOutput: 8192 },
 }
 
-export const MODEL_LIMITS_FALLBACK = { contextWindow: 200_000, maxOutput: 4096 }
+export const MODEL_LIMITS_FALLBACK = { contextWindow: 128_000, maxOutput: 4096 }
 
 // ── Provider Rate Limits ─────────────────────────────────────────────────────
 
@@ -52,19 +87,21 @@ export const MODEL_LIMITS_FALLBACK = { contextWindow: 200_000, maxOutput: 4096 }
  * Bedrock quotas are per-model and per-region — defaults are conservative.
  */
 export const MODEL_TPM_LIMITS: Record<string, number> = {
-  "anthropic.claude-haiku-4-5-20251001-v1:0": 400_000,
-  "anthropic.claude-sonnet-4-20250514-v1:0": 200_000,
+  "openai.gpt-oss-20b-1:0": 100_000_000,
+  "openai.gpt-oss-120b-1:0": 100_000_000,
+  "qwen.qwen3-coder-30b-a3b-v1:0": 100_000_000,
+  "qwen.qwen3-32b-v1:0": 100_000_000,
 }
 
 /** Fallback TPM if model not in MODEL_TPM_LIMITS. */
 export const MODEL_TPM_FALLBACK = 200_000
 
 /**
- * Get the effective TPM limit for the standard model.
+ * Get the effective TPM limit for the highest-volume model group (code_reasoning).
  * Used as the default for the rate limiter when LLM_TPM_LIMIT is not set.
  */
 export function getProviderTpmLimit(): number {
-  const model = LLM_MODELS.standard
+  const model = getModelForGroup("code_reasoning")
   return MODEL_TPM_LIMITS[model] ?? MODEL_TPM_FALLBACK
 }
 

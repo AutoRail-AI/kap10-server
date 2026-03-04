@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { LLM_MODELS } from "@/lib/llm/config"
+import { getModelForGroup } from "@/lib/llm/config"
 import type { EntityDoc } from "@/lib/ports/types"
 import { applyHeuristics, routeModel } from "../model-router"
 
@@ -70,13 +70,13 @@ describe("routeModel", () => {
   it("routes high-centrality entities to premium", () => {
     const route = routeModel(makeEntity(), { centrality: 0.9 })
     expect(route.tier).toBe("premium")
-    expect(route.model).toBe(LLM_MODELS.premium)
+    expect(route.model).toBe(getModelForGroup("code_reasoning_complex"))
   })
 
   it("routes variables to fast tier", () => {
     const route = routeModel(makeEntity({ kind: "variable" }))
     expect(route.tier).toBe("fast")
-    expect(route.model).toBe(LLM_MODELS.fast)
+    expect(route.model).toBe(getModelForGroup("code_reasoning_simple"))
   })
 
   it("routes regular entities to standard tier", () => {

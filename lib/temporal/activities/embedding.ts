@@ -244,7 +244,9 @@ async function loadJustificationMap(
   try {
     const justifications = await container.graphStore.getJustifications(orgId, repoId)
     return new Map(justifications.map((j) => [j.entity_id, j]))
-  } catch {
+  } catch (error: unknown) {
+    const { logger: log } = require("@/lib/utils/logger") as typeof import("@/lib/utils/logger")
+    log.warn("Failed to load justifications for embedding enrichment", { orgId, repoId, error: error instanceof Error ? error.message : String(error) })
     return new Map()
   }
 }

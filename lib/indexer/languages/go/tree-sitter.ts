@@ -372,8 +372,6 @@ function detectGoImportEdges(
   // Go files within a project share a common module prefix (from go.mod).
   // We detect the repo's directory prefix from the file path and use it
   // to identify which imports point back into the same repo.
-  const fileDir = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : ""
-
   for (const importPath of importPaths) {
     // Skip standard library (no "/" means single-segment = stdlib)
     if (!importPath.includes("/")) continue

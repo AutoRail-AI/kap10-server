@@ -7,10 +7,10 @@ import { promisify } from "node:util"
 const execFileAsync = promisify(execFile)
 
 import { getContainer } from "@/lib/di/container"
+import { resolveCrossFileCalls } from "@/lib/indexer/cross-file-calls"
 import { extractDocComment } from "@/lib/indexer/doc-extractor"
 import { entityHash } from "@/lib/indexer/entity-hash"
 import { readFileWithEncoding } from "@/lib/indexer/file-reader"
-import { resolveCrossFileCalls } from "@/lib/indexer/cross-file-calls"
 import { createFileEntity } from "@/lib/indexer/languages/generic"
 import { getPluginForExtension, getPluginsForExtensions, initializeRegistry } from "@/lib/indexer/languages/registry"
 import { detectLanguagePerRoot, detectPackageRoots } from "@/lib/indexer/monorepo"

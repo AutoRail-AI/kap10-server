@@ -12,6 +12,7 @@
     "skipLibCheck": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    "downlevelIteration": true,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
     "esModuleInterop": true,

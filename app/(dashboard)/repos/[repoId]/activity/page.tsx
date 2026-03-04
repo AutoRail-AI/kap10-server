@@ -111,7 +111,6 @@ export default function ActivityPage() {
     if (!isProcessing && !loading) {
       fetchData()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isProcessing])
 
   const handleReindex = async () => {

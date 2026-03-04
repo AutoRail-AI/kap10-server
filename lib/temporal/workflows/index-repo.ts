@@ -165,11 +165,11 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "scip", status: "running" })
     wfLog("INFO", "Step 2/7: Running SCIP indexers", ctx, "Step 2/7")
     const scip = await heavyActivities.runSCIP({
-      workspacePath: workspace.workspacePath,
+      indexDir: workspace.indexDir,
       orgId: input.orgId,
       repoId: input.repoId,
       languages: workspace.languages,
-      workspaceRoots: workspace.workspaceRoots,
+      packageRoots: workspace.packageRoots,
       indexVersion: input.indexVersion,
     })
     progress = 50
@@ -182,7 +182,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "parse", status: "running" })
     wfLog("INFO", "Step 3/7: Parsing remaining files", ctx, "Step 3/7")
     const parse = await heavyActivities.parseRest({
-      workspacePath: workspace.workspacePath,
+      indexDir: workspace.indexDir,
       orgId: input.orgId,
       repoId: input.repoId,
       coveredFiles: scip.coveredFiles,
@@ -234,7 +234,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     const temporal = await temporalAnalysisActivities.computeTemporalAnalysis({
       orgId: input.orgId,
       repoId: input.repoId,
-      workspacePath: workspace.workspacePath,
+      workspacePath: workspace.indexDir,
     })
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "temporalAnalysis", status: "completed", meta: { coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated } })
     stepDurations.temporalAnalysis = Date.now() - t0
@@ -300,7 +300,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
         args: [{
           orgId: input.orgId,
           repoId: input.repoId,
-          workspacePath: workspace.workspacePath,
+          workspacePath: workspace.indexDir,
           languages: workspace.languages,
         }],
         parentClosePolicy: ParentClosePolicy.ABANDON,
