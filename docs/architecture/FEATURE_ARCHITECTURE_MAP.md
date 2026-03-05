@@ -83,9 +83,9 @@ Each feature links to:
 | | |
 |---|---|
 | **Architecture Doc** | [PHASE_3_SEMANTIC_SEARCH.md](PHASE_3_SEMANTIC_SEARCH.md) |
-| **Design Decisions** | **Hybrid search = pgvector + ArangoDB fulltext + RRF merge + optional cross-encoder reranking.** nomic-embed-text-v1.5 chosen for $0 cost (served by HuggingFace TEI container via HTTP), same model at index + query time. RRF formula: `Σ 1/(k + rank_i)`. Top 20 from each source (30 when reranker enabled), merged by `entity_key`. Optional cross-encoder (BAAI/bge-reranker-v2-m3) re-scores top RRF candidates for higher precision. **Two-Step RAG**: return summaries first (~1,500 tokens), agent fetches full bodies on demand — eliminates "lost in the middle" problem. |
-| **Data Flow** | Query → [parallel] pgvector cosine + ArangoDB fulltext → RRF merge → [optional] cross-encoder rerank → graph enrichment (1-hop callers/callees) → semantic truncation → response |
-| **Key Code** | `lib/mcp/tools/` (search tool handler), `lib/adapters/llamaindex-vector-search.ts`, `lib/adapters/arango-graph-store.ts`, `lib/ports/vector-search.ts` |
+| **Design Decisions** | **Hybrid search = pgvector + ArangoDB fulltext + RRF merge + cross-encoder reranking.** Gemini Embedding 001 (Vertex AI, 768d) for embedding with task-type optimization (RETRIEVAL_DOCUMENT/RETRIEVAL_QUERY). RRF formula: `Σ 1/(k + rank_i)`. Top 20 from each source (30 for reranking pool), merged by `entity_key`. Cohere Rerank 3.5 (Bedrock) re-scores top RRF candidates for higher precision. **Two-Step RAG**: return summaries first (~1,500 tokens), agent fetches full bodies on demand — eliminates "lost in the middle" problem. |
+| **Data Flow** | Query → [parallel] pgvector cosine + ArangoDB fulltext → RRF merge → Cohere Rerank 3.5 → graph enrichment (1-hop callers/callees) → semantic truncation → response |
+| **Key Code** | `lib/mcp/tools/` (search tool handler), `lib/adapters/llamaindex-vector-search.ts`, `lib/adapters/arango-graph-store.ts`, `lib/ports/vector-search.ts`, `lib/llm/config.ts` |
 | **Data Stores** | PostgreSQL (`unerr.entity_embeddings` — pgvector HNSW 768d), ArangoDB (fulltext indexes on entity collections) |
 
 ### 2.2 Function/Class Lookup

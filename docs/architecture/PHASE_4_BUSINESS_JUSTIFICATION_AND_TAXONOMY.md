@@ -242,7 +242,7 @@ Step  Actor Action                     System Action                            
                                        (Semantic search is NOT scoped — it naturally ranks relevant)
 
 4                                      Parallel search on justification text:                   —
-                                       a) Embed query (+ expanded terms) via nomic-embed-text
+                                       a) Embed query (+ expanded terms) via Vertex AI gemini-embedding-001
                                        b) Search justification_embeddings (pgvector) — top 30
                                        c) ArangoDB fulltext on justifications.purpose field
                                        d) RRF merge with intent-tuned k constants:
@@ -861,7 +861,7 @@ const text = `${j.taxonomy}: ${j.business_purpose}. Concepts: ${j.domain_concept
 embedJustifications activity
   → graphStore.getJustifications()          (ArangoDB: taxonomy, purpose, concepts, feature_tag)
   → graphStore.getAllEntities()              (ArangoDB: resolve entity_id → entity name)
-  → vectorSearch.embed(texts)               (TEI nomic-embed-text-v1.5 via HTTP)
+  → vectorSearch.embed(texts)               (Vertex AI gemini-embedding-001, 768d)
   → vectorSearch.upsertJustificationEmbeddings(embeddings, metadata)
                                             (pgvector: justification_embeddings table)
 
@@ -1171,7 +1171,7 @@ Phase 4 establishes the business intelligence layer that Phase 5 (Incremental In
 - [x] **P4-ADAPT-08: Implement justification embedding storage via `IVectorSearch`** — M
   - Extend `LlamaIndexVectorSearch` (or create a parallel instance) to manage `justification_embeddings` table
   - New methods or separate adapter: `upsertJustificationEmbedding(id, embedding, metadata)`, `searchJustificationEmbeddings(embedding, topK, filter)`
-  - Uses same `nomic-embed-text-v1.5` model as Phase 3 (shared embedding function)
+  - Uses same `gemini-embedding-001` model as Phase 3 (shared embedding function via `IVectorSearch.embed()`)
   - **Test:** Embed justification text → upsert → search → returns similar justifications. Multi-tenant isolation on `org_id` + `repo_id`.
   - **Depends on:** P4-DB-03, Phase 3 `IVectorSearch` implementation
   - **Files:** `lib/adapters/llamaindex-vector-search.ts` (extend), or `lib/adapters/justification-vector-search.ts` (new)

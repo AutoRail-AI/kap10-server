@@ -49,7 +49,7 @@ export async function runSCIPPhp(
       return { entities: [], edges: [], coveredFiles: [] }
     }
 
-    const result = parseSCIPOutput(outputFile, opts.repoId, "php")
+    const result = parseSCIPOutput(outputFile, opts.repoId, "php", opts.isIncluded)
 
     try {
       unlinkSync(outputFile)

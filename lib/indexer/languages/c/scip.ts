@@ -54,7 +54,7 @@ export async function runSCIPClang(
       return { entities: [], edges: [], coveredFiles: [] }
     }
 
-    const result = parseSCIPOutput(outputFile, opts.repoId, language)
+    const result = parseSCIPOutput(outputFile, opts.repoId, language, opts.isIncluded)
 
     try {
       unlinkSync(outputFile)

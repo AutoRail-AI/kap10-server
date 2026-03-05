@@ -9,6 +9,7 @@
  * for Phase 2 (Shadow Workspace overlay).
  */
 
+import { loadIgnoreFilter } from "@/lib/indexer/ignore"
 import { getPluginsForExtensions, initializeRegistry } from "@/lib/indexer/languages/registry"
 import { detectPackageRoots } from "@/lib/indexer/monorepo"
 import { detectLanguages, scanIndexDir } from "@/lib/indexer/scanner"
@@ -58,6 +59,8 @@ export class SCIPCodeIntelligence implements ICodeIntelligence {
     const extensions = Array.from(new Set(files.map((f) => f.extension)))
     const plugins = getPluginsForExtensions(extensions)
 
+    const isIncluded = loadIgnoreFilter(indexDir)
+
     const allEntities: ParsedEntity[] = []
     const allEdges: ParsedEdge[] = []
     const allCoveredFiles: string[] = []
@@ -70,6 +73,7 @@ export class SCIPCodeIntelligence implements ICodeIntelligence {
           packageRoots,
           orgId,
           repoId,
+          isIncluded,
         })
         allEntities.push(...result.entities)
         allEdges.push(...result.edges)

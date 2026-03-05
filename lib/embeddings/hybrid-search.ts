@@ -16,12 +16,6 @@ import type { Container } from "@/lib/di/container"
 import type { EntityDoc } from "@/lib/ports/types"
 import { CODE_VARIANT_SUFFIX } from "@/lib/temporal/activities/embedding"
 
-/** Whether the cross-encoder reranker is enabled (default: false). */
-const RERANKER_ENABLED = process.env.RERANKER_ENABLED === "true"
-
-/** Number of candidates to retrieve per leg when reranking is enabled (wider pool for reranker). */
-const RERANKER_TOP_K = parseInt(process.env.RERANKER_TOP_K ?? "30", 10)
-
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type SearchMode = "hybrid" | "semantic" | "keyword"
@@ -302,41 +296,33 @@ export async function hybridSearch(
   }
 
   // L-15: Use adaptive k (undefined → auto-computed from inter-source agreement)
-  // When reranking is enabled, retrieve more candidates for the reranker to re-score
-  const rrfLimit = RERANKER_ENABLED ? RERANKER_TOP_K : input.limit
+  // Fetch more candidates when reranker is available so it has enough to reorder
+  const RERANKER_TOP_K = 30
+  const hasReranker = !!container.vectorSearch.rerank
+  const rrfLimit = hasReranker ? RERANKER_TOP_K : input.limit
+
   let candidates = rankings.length > 0
     ? reciprocalRankFusion(rankings, queryTokens, undefined, rrfLimit, weights)
     : []
 
-  // ── Cross-Encoder Reranking (optional) ──────────────────────────────────────
-  // Re-scores RRF candidates with a cross-encoder for higher-quality relevance.
-  // Exact matches (score=1.0) are pinned and excluded from reranking.
-  if (RERANKER_ENABLED && container.vectorSearch.rerank && candidates.length > 1) {
+  // Cross-encoder reranking via Bedrock Cohere Rerank 3.5
+  if (hasReranker && candidates.length > 1) {
     try {
-      // Gotcha B: Pin exact matches — skip reranking for score=1.0 entries
-      const pinned = candidates.filter((c) => c.score >= 1.0)
-      const toRerank = candidates.filter((c) => c.score < 1.0)
-
-      if (toRerank.length > 1) {
-        // Gotcha A: Build compact entity descriptions for the cross-encoder (512-token limit)
-        const docs = toRerank.map(
-          (c) => `${c.entityType}: ${c.entityName} | ${c.filePath}${c.signature ? "\n" + c.signature : ""}`
-        )
-        const reranked = await container.vectorSearch.rerank(
-          input.query,
-          docs,
-          input.limit - pinned.length
-        )
-        const rerankedItems = reranked.map((r) => ({
-          ...toRerank[r.index]!,
-          score: r.score, // Replace RRF score with cross-encoder score
-        }))
-        candidates = [...pinned, ...rerankedItems].slice(0, input.limit)
-      }
+      const docs = candidates.map((c) =>
+        [c.entityName, c.entityType, c.filePath, c.signature].filter(Boolean).join(" | ")
+      )
+      const reranked = await withTimeout(
+        container.vectorSearch.rerank!(input.query, docs, input.limit),
+        3000
+      )
+      candidates = reranked.map((r) => ({
+        ...candidates[r.index]!,
+        score: r.relevanceScore,
+      }))
     } catch (err: unknown) {
-      // Graceful degradation: fall back to RRF results if reranker fails
       const msg = err instanceof Error ? err.message : String(err)
-      degraded.reranker = `Cross-encoder reranking failed: ${msg}`
+      degraded.reranker = `Cohere Rerank failed: ${msg}`
+      // Fall back to RRF-only results, trimmed to limit
       candidates = candidates.slice(0, input.limit)
     }
   }
@@ -384,8 +370,7 @@ async function runSemanticLeg(
     queryEmbedding = embeddings[0]
   }
 
-  // Search pgvector — widen retrieval window when reranker is enabled
-  const legLimit = RERANKER_ENABLED ? RERANKER_TOP_K : 20
+  const legLimit = 20
   const results = await container.vectorSearch.search(
     queryEmbedding,
     legLimit,
@@ -450,8 +435,7 @@ async function runKeywordLeg(
   input: HybridSearchInput,
   container: Container
 ): Promise<RankedItem[]> {
-  // Widen retrieval window when reranker is enabled
-  const legLimit = RERANKER_ENABLED ? RERANKER_TOP_K : 20
+  const legLimit = 20
   const results = await container.graphStore.searchEntities(
     input.orgId,
     input.repoId,

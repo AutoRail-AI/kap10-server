@@ -3,6 +3,7 @@
  * Phase 6: Real detection via subprocess execution (execa) and native AST scanning.
  */
 
+import { ALWAYS_IGNORE, loadIgnoreFilter } from "@/lib/indexer/ignore"
 import type { IPatternEngine, PatternMatch } from "@/lib/ports/pattern-engine"
 import type { AstGrepResult } from "@/lib/ports/types"
 
@@ -21,6 +22,9 @@ export class SemgrepPatternEngine implements IPatternEngine {
 
       if (!result.stdout) return []
 
+      const path = require("node:path") as typeof import("node:path")
+      const isIncluded = loadIgnoreFilter(workspacePath)
+
       const parsed = JSON.parse(result.stdout) as {
         results?: Array<{
           check_id: string
@@ -30,16 +34,23 @@ export class SemgrepPatternEngine implements IPatternEngine {
         }>
       }
 
-      return (parsed.results ?? []).map((r) => ({
-        ruleId: r.check_id,
-        file: r.path,
-        line: r.start.line,
-        column: r.start.col,
-        message: r.extra?.message,
-        severity: mapSeverity(r.extra?.severity),
-        fix: r.extra?.fix,
-        matchedCode: r.extra?.lines,
-      }))
+      return (parsed.results ?? [])
+        .filter((r) => {
+          const rel = path.isAbsolute(r.path)
+            ? path.relative(workspacePath, r.path)
+            : r.path
+          return isIncluded(rel)
+        })
+        .map((r) => ({
+          ruleId: r.check_id,
+          file: r.path,
+          line: r.start.line,
+          column: r.start.col,
+          message: r.extra?.message,
+          severity: mapSeverity(r.extra?.severity),
+          fix: r.extra?.fix,
+          matchedCode: r.extra?.lines,
+        }))
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error)
       console.warn(`[SemgrepPatternEngine] scanPatterns failed: ${message}`)
@@ -125,15 +136,20 @@ export class SemgrepPatternEngine implements IPatternEngine {
       }
 
       const exts = extensions[language.toLowerCase()] ?? [`.${language}`]
+      const isIncluded = loadIgnoreFilter(workspacePath)
 
       const walkDir = (dir: string) => {
         const entries = fs.readdirSync(dir, { withFileTypes: true })
         for (const entry of entries) {
           const fullPath = path.join(dir, entry.name)
           if (entry.isDirectory()) {
-            if (entry.name === "node_modules" || entry.name === ".git" || entry.name === "dist") continue
+            // Fast check: skip well-known dirs without computing relative path
+            if (ALWAYS_IGNORE.has(entry.name)) continue
             walkDir(fullPath)
           } else if (exts.some((ext: string) => entry.name.endsWith(ext))) {
+            // Full ignore check for files (respects .gitignore + .unerrignore)
+            const relPath = path.relative(workspacePath, fullPath)
+            if (!isIncluded(relPath)) continue
             try {
               const source = fs.readFileSync(fullPath, "utf8")
               const tree = astGrep.parse(astLang, source)

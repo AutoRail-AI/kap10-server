@@ -59,7 +59,7 @@ export async function runSCIPDotnet(
       return { entities: [], edges: [], coveredFiles: [] }
     }
 
-    const result = parseSCIPOutput(outputFile, opts.repoId, "csharp")
+    const result = parseSCIPOutput(outputFile, opts.repoId, "csharp", opts.isIncluded)
 
     try {
       unlinkSync(outputFile)

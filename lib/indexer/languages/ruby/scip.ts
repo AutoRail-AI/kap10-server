@@ -46,7 +46,7 @@ export async function runSCIPRuby(
       return { entities: [], edges: [], coveredFiles: [] }
     }
 
-    const result = parseSCIPOutput(outputFile, opts.repoId, "ruby")
+    const result = parseSCIPOutput(outputFile, opts.repoId, "ruby", opts.isIncluded)
 
     try {
       unlinkSync(outputFile)

@@ -58,7 +58,7 @@ export async function runSCIPPython(
       return { entities: [], edges: [], coveredFiles: [] }
     }
 
-    const result = parseSCIPOutput(outputFile, opts.repoId, "python")
+    const result = parseSCIPOutput(outputFile, opts.repoId, "python", opts.isIncluded)
 
     // Clean up
     try {

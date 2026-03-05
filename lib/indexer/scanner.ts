@@ -8,25 +8,10 @@ import { execFile } from "node:child_process"
 import { extname, join, resolve } from "node:path"
 import { promisify } from "node:util"
 
+import { loadIgnoreFilter } from "./ignore"
 import type { LanguageDetection, ScannedFile } from "./types"
 
 const execFileAsync = promisify(execFile)
-
-/** Directories always excluded from scanning (even if not in .gitignore) */
-const ALWAYS_IGNORE = new Set([
-  "node_modules",
-  ".git",
-  ".next",
-  "__pycache__",
-  ".mypy_cache",
-  ".pytest_cache",
-  "dist",
-  "build",
-  ".turbo",
-  ".cache",
-  "coverage",
-  "vendor",
-])
 
 /** Extension → language mapping */
 const EXTENSION_LANGUAGE: Record<string, string> = {
@@ -81,6 +66,8 @@ export async function scanIndexDir(indexDir: string): Promise<ScannedFile[]> {
     return []
   }
 
+  const isIncluded = loadIgnoreFilter(absRoot)
+
   try {
     // Use git ls-files — automatically respects .gitignore
     const { stdout } = await execFileAsync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
@@ -93,9 +80,8 @@ export async function scanIndexDir(indexDir: string): Promise<ScannedFile[]> {
       const relativePath = line.trim()
       if (!relativePath) continue
 
-      // Skip always-ignored directories
-      const parts = relativePath.split("/")
-      if (parts.some((p) => ALWAYS_IGNORE.has(p))) continue
+      // Skip ignored paths (ALWAYS_IGNORE + .gitignore + .unerrignore)
+      if (!isIncluded(relativePath)) continue
 
       files.push({
         relativePath,
@@ -116,8 +102,7 @@ export async function scanIndexDir(indexDir: string): Promise<ScannedFile[]> {
       if (!absPath) continue
 
       const relativePath = absPath.slice(absRoot.length + 1)
-      const parts = relativePath.split("/")
-      if (parts.some((p) => ALWAYS_IGNORE.has(p))) continue
+      if (!isIncluded(relativePath)) continue
 
       files.push({
         relativePath,

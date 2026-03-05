@@ -68,16 +68,12 @@ export const env = createEnv({
     LLM_MODEL_WRITING: z.string().optional(),
     LLM_MODEL_CLASSIFICATION: z.string().optional(),
 
-    // ── Embedding (Phase 3 — Semantic Search via TEI) ──────────────
-    TEI_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid TEI URL").optional(),
-    TEI_BATCH_SIZE: z.string().optional().transform((val) => val ? parseInt(val, 10) : 32),
-    EMBEDDING_DIMENSIONS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 768),
+    // ── Embedding (Vertex AI Gemini) & Reranking (Bedrock Cohere) ──
+    GOOGLE_VERTEX_API_KEY: z.string().optional(),
+    EMBEDDING_MODEL_ID: z.string().optional(),
+    EMBEDDING_DIMENSIONS: z.string().optional(),
+    RERANKER_MODEL_ID: z.string().optional(),
     EMBEDDING_MODEL_VERSION: z.string().optional(),
-
-    // ── Reranker (Cross-Encoder via TEI — Optional) ─────────────
-    TEI_RERANKER_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid TEI Reranker URL").optional(),
-    RERANKER_ENABLED: z.enum(["true", "false"]).optional().transform((val) => val === "true").default("false"),
-    RERANKER_TOP_K: z.string().optional().transform((val) => val ? parseInt(val, 10) : 30),
 
     // ── Phase 5: Incremental Indexing ────────────────────────────
     INCREMENTAL_BATCH_SIZE: z.string().optional().transform((val) => val ? parseInt(val, 10) : 5),
@@ -213,14 +209,12 @@ export const env = createEnv({
     LLM_MODEL_ANALYSIS: process.env.LLM_MODEL_ANALYSIS,
     LLM_MODEL_WRITING: process.env.LLM_MODEL_WRITING,
     LLM_MODEL_CLASSIFICATION: process.env.LLM_MODEL_CLASSIFICATION,
-    // Embedding (TEI)
-    TEI_URL: process.env.TEI_URL,
-    TEI_BATCH_SIZE: process.env.TEI_BATCH_SIZE,
+    // Embedding (Vertex AI Gemini) & Reranking (Bedrock Cohere)
+    GOOGLE_VERTEX_API_KEY: process.env.GOOGLE_VERTEX_API_KEY,
+    EMBEDDING_MODEL_ID: process.env.EMBEDDING_MODEL_ID,
     EMBEDDING_DIMENSIONS: process.env.EMBEDDING_DIMENSIONS,
-    // Reranker (TEI Cross-Encoder)
-    TEI_RERANKER_URL: process.env.TEI_RERANKER_URL,
-    RERANKER_ENABLED: process.env.RERANKER_ENABLED,
-    RERANKER_TOP_K: process.env.RERANKER_TOP_K,
+    RERANKER_MODEL_ID: process.env.RERANKER_MODEL_ID,
+    EMBEDDING_MODEL_VERSION: process.env.EMBEDDING_MODEL_VERSION,
     // Phase 5: Incremental Indexing
     INCREMENTAL_BATCH_SIZE: process.env.INCREMENTAL_BATCH_SIZE,
     CASCADE_MAX_HOPS: process.env.CASCADE_MAX_HOPS,

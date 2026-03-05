@@ -13,6 +13,8 @@ export interface SCIPOptions {
   packageRoots: string[]
   orgId: string
   repoId: string
+  /** Optional filter: returns true if a relative path should be included in indexing. */
+  isIncluded?: (relativePath: string) => boolean
 }
 
 export interface TreeSitterOptions {

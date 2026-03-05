@@ -50,11 +50,11 @@ Step  System Action                                                         Stat
 3     Activity: fetchFilePaths                                              None (lightweight string[])
       → ArangoDB: getFilePaths(orgId, repoId)
       → Return: string[] of file paths (NOT full entities)
-4     Workflow chunks file paths into batches of 50 files                   None (in-workflow)
-5     For each batch: Activity: processAndEmbedBatch                        pgvector rows inserted/upserted
+4     Workflow chunks file paths into batches of 25 files                   None (in-workflow)
+5     For each batch (10 concurrent): Activity: processAndEmbedBatch        pgvector rows inserted/upserted
       → Fetch entities for this batch of files from ArangoDB
       → Build embeddable documents (name + signature + body + justification)
-      → Generate embeddings (nomic-embed-text-v1.5, sub-batched by 32)
+      → Generate embeddings (Vertex AI gemini-embedding-001, 50-concurrent)
       → Store in pgvector via vectorSearch.upsert()
       → Return: { embeddingsStored, entityKeys } (lightweight)
       All heavy data stays inside the worker — never serialized through Temporal.
@@ -114,7 +114,7 @@ Step  Actor Action                     System Action                            
         limit: 10
       })
 2                                      Hybrid search pipeline:                                  —
-                                       a) Embed query via nomic-embed-text (TEI HTTP, <50ms)
+                                       a) Embed query via Vertex AI gemini-embedding-001 (<100ms)
                                        b) pgvector: cosine similarity search (top 20)
                                        c) ArangoDB: fulltext search on entity names+bodies
                                           (top 20, includes workspace overlay if active)
@@ -139,7 +139,7 @@ Step  Actor Action                     System Action                            
 
 > **Two-Step RAG pattern:** By returning summaries (name, signature, file path, callers/callees) without full bodies, a 10-result search response is ~1,500 tokens instead of ~20,000 tokens. The agent then selectively retrieves full bodies for 1–3 relevant results using `get_function`/`get_class`. This eliminates "lost in the middle" syndrome and reduces time-to-first-token latency by keeping the LLM's context window lean.
 
-**Query embedding reuse:** The query embedding is generated using the same `nomic-embed-text-v1.5` model and the same embedding function as the index-time embeddings. This ensures cosine similarity is meaningful (same vector space).
+**Query embedding reuse:** The query embedding is generated using the same `gemini-embedding-001` model as the index-time embeddings but with `taskType: RETRIEVAL_QUERY` (vs `RETRIEVAL_DOCUMENT` at index time). This ensures cosine similarity is meaningful (same vector space, task-optimized query encoding).
 
 **Multi-tenancy enforcement:** All queries include `org_id` and `repo_id` filters. pgvector queries use a WHERE clause on these columns. ArangoDB fulltext queries already scope by `org_id` (established in Phase 0's pool-based multi-tenancy). Cross-tenant data leakage is architecturally impossible.
 
@@ -227,9 +227,9 @@ The API route accepts `mode=hybrid|semantic|keyword` as a query parameter. The M
 │  ┌─────────────┐    ┌──────────────────┐    ┌────────────────────────────┐  │
 │  │ fetchEntities│───▶│ buildDocuments   │───▶│ generateEmbeds             │  │
 │  │              │    │                  │    │                            │  │
-│  │ ArangoDB     │    │ Entity → text    │    │ nomic-embed-text-v1.5      │  │
-│  │ query        │    │ formatting       │    │ via HuggingFace TEI (HTTP) │  │
-│  │              │    │                  │    │ Self-hosted, $0, no limits │  │
+│  │ ArangoDB     │    │ Entity → text    │    │ gemini-embedding-001       │  │
+│  │ query        │    │ formatting       │    │ via Vertex AI (API key)    │  │
+│  │              │    │                  │    │ 768d, 50-concurrent embed  │  │
 │  └─────────────┘    └──────────────────┘    └────────────┬───────────────┘  │
 │                                                           │                  │
 │                                                           ▼                  │
@@ -315,25 +315,33 @@ LlamaIndex Document:
 
 ### Embedding Model Selection
 
-| Criteria | nomic-embed-text-v1.5 | text-embedding-3-small (OpenAI) | text-embedding-3-large (OpenAI) |
-|----------|----------------------|--------------------------------|--------------------------------|
-| **Dimensions** | 768 | 1536 | 3072 |
-| **Cost per 1K tokens** | $0 (self-hosted TEI) | $0.00002 | $0.00013 |
-| **Quality (MTEB avg)** | 0.627 | 0.620 | 0.644 |
-| **Rate limits** | None (self-hosted) | 3000 RPM | 3000 RPM |
-| **Latency (single embed)** | ~10ms (TEI) | ~100ms (API) | ~120ms (API) |
-| **Batch throughput** | ~500+ entities/sec (TEI batching) | ~30 entities/sec (rate limited) | ~25 entities/sec (rate limited) |
-| **Parallelism** | Unlimited (TEI handles concurrency) | Rate limited | Rate limited |
-| **Privacy** | Code never leaves infra | Code sent to OpenAI API | Code sent to OpenAI API |
+| Criteria | gemini-embedding-001 (Vertex AI) | text-embedding-005 (Vertex AI) | nomic-embed-text-v1.5 (TEI, deprecated) |
+|----------|----------------------------------|-------------------------------|----------------------------------------|
+| **Dimensions** | 768 (configurable up to 3072) | 768 | 768 |
+| **Cost per 1K tokens** | ~$0.000025 | ~$0.000025 | $0 (self-hosted) |
+| **Quality (MTEB avg)** | 0.717 (top-1 multilingual) | 0.671 | 0.627 |
+| **Token limit** | 8,192 tokens | 2,048 tokens | 4,096 tokens (nomic) |
+| **Batch API** | Coming soon | Yes (async, 50% discount) | N/A |
+| **Latency (single embed)** | ~200ms (API) | ~100ms (API) | ~10ms (TEI) |
+| **Effective throughput** | ~250 entities/sec (50-concurrent) | ~100 entities/sec (5/request) | ~500 entities/sec (TEI batching) |
+| **Task types** | RETRIEVAL_DOCUMENT / RETRIEVAL_QUERY | RETRIEVAL_DOCUMENT / RETRIEVAL_QUERY | N/A |
+| **Auth** | API key (express mode) | Service account or API key | N/A (self-hosted) |
+| **Infra overhead** | Zero (managed) | Zero (managed) | Docker container + fly.io deployment |
 
-**Decision: nomic-embed-text-v1.5 via HuggingFace TEI (Text Embeddings Inference).** Rationale:
-1. **$0 cost** — embedding 50,000 entities costs nothing. OpenAI would cost ~$5-15 per repo depending on code density.
-2. **No rate limits** — can embed an entire repo in one batch without throttling. Critical for large monorepos.
-3. **Quality parity** — MTEB scores show nomic is competitive with OpenAI's small model and only slightly behind the large model. For code search (not general NLP), the difference is negligible.
-4. **Privacy** — source code never leaves the infrastructure. Enterprise customers care deeply about this.
-5. **TEI container** — the model runs in a dedicated HuggingFace TEI container (Rust-based, production-optimized). The light worker calls it via HTTP. TEI handles batching, GPU acceleration (swap `cpu-latest` to `latest` for CUDA), and concurrency natively. No ONNX/WASM memory management in the worker.
+**Decision: gemini-embedding-001 via Google Vertex AI.** Rationale:
+1. **Highest quality** — MTEB top-1 for multilingual, significantly better than nomic (0.717 vs 0.627). Stronger code understanding for semantic search.
+2. **8,192 token context** — 2× nomic's 4,096 limit. Code entities rarely need truncation, producing more faithful embeddings.
+3. **Zero infrastructure** — no TEI containers to manage, no fly.io deployments, no Docker volumes. API key auth, managed service.
+4. **Configurable dimensions** — 768 for pgvector efficiency (default), can scale to 3072 for higher fidelity without re-embedding.
+5. **Task-type optimization** — `RETRIEVAL_DOCUMENT` at index time, `RETRIEVAL_QUERY` at search time. The model optimizes embeddings for asymmetric retrieval.
 
-**Forward-compatibility:** If a future phase requires higher-quality embeddings (e.g., for cross-language code search), the `IVectorSearch` port abstracts the embedding model. Swapping nomic for a different model requires changing the TEI `--model-id` flag — the pipeline, storage, and search logic remain identical.
+**Throughput strategy:** `gemini-embedding-001` accepts 1 text per request on Vertex AI (unlike older models that support batching). We achieve high throughput via a semaphore-based concurrency limiter (50 parallel requests with exponential backoff on 429s), yielding ~250 embeddings/sec — sufficient for sub-minute embedding of typical repos.
+
+**Previous providers:**
+- **nomic-embed-text-v1.5** (HuggingFace TEI, self-hosted) — Deprecated. 4,096 token limit caused heavy truncation of code bodies. CPU-only inference on fly.io was slow (2-3 hours for full pipeline). Docker container management overhead.
+- **Cohere Embed v4** (AWS Bedrock) — Evaluated but blocked by AWS Marketplace `INVALID_PAYMENT_INSTRUMENT` error. Would have provided 128K token context and 1536 dims, but requires Marketplace subscription that was not available on the deployment account.
+
+**Forward-compatibility:** The `IVectorSearch` port abstracts the embedding model. Swapping models requires changing `EMBEDDING_MODEL_ID` and `EMBEDDING_DIMENSIONS` env vars — the pipeline, storage, and search logic remain identical. The `model_version` column in pgvector enables zero-downtime blue/green re-embedding on model upgrades.
 
 ### Reciprocal Rank Fusion (RRF)
 
@@ -373,7 +381,7 @@ Return top `limit` entities
 
 After RRF merge, an optional cross-encoder reranking step re-scores the top candidates with higher-quality relevance estimates. While RRF is rank-based (it doesn't look at actual content relevance), a cross-encoder sees (query, document) pairs together, catching nuances that bi-encoders and keyword search miss: negation, argument order, fine-grained code semantics.
 
-**Model:** `BAAI/bge-reranker-v2-m3` served via a second TEI container on port 8091.
+**Model:** Cohere Rerank 3.5 (`cohere.rerank-v3-5:0`) on AWS Bedrock, via Vercel AI SDK `rerank()`.
 
 **Pipeline insertion point:** After RRF merge, before graph enrichment. This re-scores candidates, then enriches only the best results (reducing graph lookups).
 
@@ -381,7 +389,7 @@ After RRF merge, an optional cross-encoder reranking step re-scores the top cand
 Algorithm: Cross-Encoder Reranking
 
 Input:
-  - candidates: RRF-merged results (top RERANKER_TOP_K, default 30)
+  - candidates: RRF-merged results (top 30)
   - query: original search query
 
 Step 1 — Pin exact matches:
@@ -390,24 +398,22 @@ Step 1 — Pin exact matches:
 
 Step 2 — Build compact descriptions:
   For each non-pinned candidate, build: "{entityType}: {entityName} | {filePath}\n{signature}"
-  This fits within the cross-encoder's 512-token limit.
 
 Step 3 — Rerank:
-  POST to TEI reranker with (query, descriptions).
-  Replace RRF scores with cross-encoder scores.
+  Call Bedrock Cohere Rerank 3.5 via AI SDK rerank({ model, query, documents, topN }).
+  Returns { ranking: [{ originalIndex, score }] } sorted by relevance.
 
 Step 4 — Merge:
   Final results = pinned entries + reranked entries, sliced to limit.
 ```
 
-**Graceful degradation:** If the reranker container is unavailable or errors, the pipeline falls back to RRF results with a `degraded.reranker` flag.
+**Graceful degradation:** Reranking has a 3s timeout. If Bedrock is unavailable or errors, the pipeline falls back to RRF results with a `degraded.reranker` flag.
 
 **Reranker env vars:**
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `RERANKER_ENABLED` | `false` | Enable/disable cross-encoder reranking |
-| `TEI_RERANKER_URL` | `http://localhost:8091` | TEI reranker endpoint URL |
-| `RERANKER_TOP_K` | `30` | Candidates to retrieve per leg and rerank (higher = better quality, slower) |
+| `RERANKER_MODEL_ID` | `cohere.rerank-v3-5:0` | Bedrock model ID for cross-encoder reranking |
+| `AWS_REGION` | `us-east-1` | AWS region for Bedrock API calls |
 
 ### ArangoDB Fulltext Search
 
@@ -482,12 +488,12 @@ ON unerr.entity_embeddings (repo_id, entity_key);
 
 | # | Failure | Detection | Recovery | Impact |
 |---|---------|-----------|----------|--------|
-| 1 | **TEI container unreachable** — TEI service not started or network failure | Activity throws connection error | Temporal retries activity (3 retries, 30s backoff). TEI has a healthcheck with 60s start period for model download on first run. Worker retries with exponential backoff (1s/3s/9s). | Embedding delayed until TEI is healthy. Docker Compose restart policy handles TEI crashes. |
-| 2 | **TEI returns 5xx** — TEI overloaded or internal error | HTTP 5xx from TEI `/embed` endpoint | Worker retries 3× with exponential backoff (1s/3s/9s). TEI handles batching natively — reduce `TEI_BATCH_SIZE` if TEI is memory-constrained. | Transient failures retried automatically. Sustained failures cause activity timeout → Temporal retry. |
+| 1 | **Vertex AI API unreachable** — network failure or service outage | Activity throws connection error | Temporal retries activity (2 retries). Embed calls retry 5× with exponential backoff (1s/2s/4s/8s/16s). | Embedding delayed until Vertex AI is reachable. |
+| 2 | **Vertex AI 429 / RESOURCE_EXHAUSTED** — TPM quota exceeded | HTTP 429 or RESOURCE_EXHAUSTED error | Semaphore-based concurrency limiter (50 parallel) self-throttles. Individual embed calls retry 5× with exponential backoff. | Throughput automatically degrades to stay within quota. No data loss. |
 | 3 | **pgvector insert failure** — Supabase connection pool exhausted or transaction timeout | `PGVectorStore.add()` throws `ConnectionError` or `TimeoutError` | Temporal retries activity. Exponential backoff (1s, 2s, 4s). Connection pool has max 10 connections. If sustained, circuit breaker opens (fail-fast for 60s). | Embeddings delayed but not lost — entities are re-fetched and re-embedded on retry. |
 | 4 | **ArangoDB fulltext query timeout** — Complex fulltext query exceeds 5s timeout | Query timeout error from `arangojs` | Hybrid search degrades gracefully: return semantic-only results with a `_meta.degraded: true` flag. Log warning for monitoring. | User gets semantic results only. Keyword results omitted. UX is degraded but functional. |
 | 5 | **Stale embeddings after re-index** — Entities deleted in ArangoDB but embeddings remain in pgvector | Orphaned rows detected by `deleteOrphanedEmbeddings` step | The `embedRepoWorkflow` always runs `deleteOrphanedEmbeddings` as its final activity. This compares current ArangoDB entity keys against pgvector entity keys and deletes orphans. | Search may briefly return stale results during the re-embed window. Acceptable — eventual consistency. |
-| 6 | **Embedding dimension mismatch** — Model version change produces different-dimension vectors | `PGVectorStore.add()` throws dimension error (e.g., inserting 384-dim into 768-dim column) | Fail loudly — this is a deployment error, not a runtime error. Alert ops. Fix: ensure model version is pinned in the worker Docker image. | Blocks embedding pipeline until fixed. Existing embeddings remain valid. |
+| 6 | **Embedding dimension mismatch** — `EMBEDDING_DIMENSIONS` env var doesn't match pgvector column | pgvector throws dimension error (e.g., inserting 1024-dim into 768-dim column) | Fail loudly — this is a deployment error. Fix: run ALTER migration to resize column, or correct `EMBEDDING_DIMENSIONS` env var. The `model_version` column enables blue/green re-embedding. | Blocks embedding pipeline until fixed. Existing embeddings from previous model version remain valid. |
 | 7 | **Concurrent embed workflows for same repo** — User triggers re-index while embedding is in progress | Temporal workflow ID uses `embed-{orgId}-{repoId}` — duplicate start is rejected (or terminates-and-restarts) | Temporal's idempotency guarantee: same workflow ID = same execution. New start request terminates the old workflow and starts fresh. | No duplicate work. The new workflow re-embeds from scratch (correct — ArangoDB entities may have changed). |
 | 8 | **pgvector search returns 0 results** — Repo has embeddings but query is too dissimilar | Empty result set from cosine similarity search | Fall back to keyword-only search. If keyword also returns 0, return empty results with a helpful message: "No results found. Try a broader query or different terms." | User sees fallback results or a clear empty state. |
 | 9 | **Temporal worker crash mid-batch** — Worker process killed during `generateEmbeds` | Temporal detects activity timeout (heartbeat timeout: 60s) | Temporal reschedules the activity on another worker. The activity uses heartbeats to report progress (`{ batchIndex, totalBatches }`). On retry, the activity can optionally skip already-embedded batches by checking pgvector for existing keys. | Partial embedding work may be duplicated (upsert is idempotent — no data corruption). |
@@ -528,13 +534,25 @@ Degraded mode 5 — Reranker unavailable (RERANKER_ENABLED=true):
 
 **Implementation:** Each leg of the pipeline runs with an independent timeout (semantic: 3s, keyword: 3s, graph enrichment: 2s). If a leg times out, the pipeline continues with available results. The `_meta.degraded` field in the MCP response tells the agent which data sources were unavailable.
 
-### Embedding Model Lifecycle (TEI Container)
+### Embedding Provider Lifecycle
 
-The `nomic-embed-text-v1.5` model runs in a dedicated **HuggingFace TEI** (Text Embeddings Inference) container. TEI downloads the model on first start and caches it in a Docker volume (`tei_models`).
+**Embedding (Vertex AI Gemini Embedding 001):** Fully managed — no containers, no model downloads, no infrastructure. Auth via `GOOGLE_VERTEX_API_KEY` (express mode). The adapter lazily initializes the Vertex provider on first embed call.
 
-- **Development:** `docker compose --profile worker up -d` starts TEI alongside the light worker. Model persists across restarts via the `tei_models` volume.
-- **Production:** TEI manages its own model lifecycle. For GPU acceleration, swap the image tag from `cpu-latest` to `latest` (CUDA) or add `--dtype float16`.
-- **Light worker:** No model baked into the worker image. The worker calls TEI via HTTP (`TEI_URL`, default `http://localhost:8090`). Worker memory reduced from 6G to 4G.
+**Reranking (AWS Bedrock Cohere Rerank 3.5):** Fully managed — auth via AWS IAM (configured via `AWS_REGION`). The adapter lazily initializes the Bedrock provider on first rerank call.
+
+- **Development:** No Docker services needed for embedding/reranking. Just set `GOOGLE_VERTEX_API_KEY` and `AWS_REGION` in `.env.local`.
+- **Production:** Both providers are managed services. No container management, no model lifecycle, no GPU provisioning.
+- **Light worker:** No model baked into the worker image. The worker calls Vertex AI and Bedrock via HTTPS. Worker memory requirement reduced vs self-hosted TEI.
+
+**Environment variables:**
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `GOOGLE_VERTEX_API_KEY` | (required) | Vertex AI API key for embedding (express mode) |
+| `EMBEDDING_MODEL_ID` | `gemini-embedding-001` | Vertex AI embedding model ID |
+| `EMBEDDING_DIMENSIONS` | `768` | Output dimensionality (model supports up to 3072) |
+| `EMBEDDING_MODEL_VERSION` | `gemini-emb-001-768` | Model version tag stored in pgvector for blue/green |
+| `RERANKER_MODEL_ID` | `cohere.rerank-v3-5:0` | Bedrock reranker model ID |
+| `AWS_REGION` | `us-east-1` | AWS region for Bedrock API calls |
 
 ---
 
@@ -544,45 +562,36 @@ The `nomic-embed-text-v1.5` model runs in a dedicated **HuggingFace TEI** (Text 
 
 | Operation | Target | Bottleneck | Mitigation |
 |-----------|--------|------------|------------|
-| **Single entity embedding** | <50ms | TEI HTTP call | Single request to TEI `/embed` endpoint. TEI handles tokenization and inference. |
-| **Batch embedding (10 entities)** | <100ms | TEI native batching | Batch of 10 sent in single HTTP request. TEI processes concurrently in Rust. |
-| **Full repo embedding (5K entities)** | <5 min | Total inference time + pgvector insert | ~500 entities per activity × 10 activities. Each activity processes 5 files. |
-| **Full repo embedding (50K entities — large monorepo)** | <30 min | Total inference + insert at scale | Fan-out across Temporal activities with 5 files per batch. |
+| **Single entity embedding** | <200ms | Vertex AI API round-trip | Single request to Vertex AI `embed()` endpoint. |
+| **Batch embedding (100 entities)** | <1s | 50-concurrent semaphore | 100 entities / 50 concurrent ≈ 2 rounds × ~200ms per round. |
+| **Full repo embedding (2K entities)** | <30s | Parallel activities + concurrent embed | 25 files/batch × 10 concurrent activities × 50-concurrent embed calls. |
+| **Full repo embedding (50K entities — large monorepo)** | <10 min | Total inference + insert at scale | Fan-out across Temporal activities with 25 files per batch, 10 concurrent, 50-concurrent embed per activity. |
 | **Semantic search (pgvector)** | <100ms | pgvector ANN search + SQL overhead | HNSW index. For repos <100K entities, exact search is <50ms. |
 | **Keyword search (ArangoDB)** | <50ms | Fulltext index query | ArangoDB fulltext index already optimized in Phase 2. |
 | **Hybrid search (full pipeline)** | <300ms | Serial: embed query + pgvector + ArangoDB + RRF + graph enrichment | Parallelize pgvector and ArangoDB queries (Promise.all). Graph enrichment batches N-hop lookups. |
-| **Hybrid search (with reranker)** | <500ms | Full pipeline + cross-encoder rerank (30 candidates) | Reranker adds ~100-200ms. CPU-only TEI. GPU drops to ~20ms. |
-| **Query embedding** | <50ms | Single TEI HTTP request with truncation | Trivial — one HTTP call to TEI `/embed`. |
+| **Hybrid search (with reranker)** | <500ms | Full pipeline + cross-encoder rerank (30 candidates) | Reranker adds ~100-200ms (Bedrock Cohere Rerank 3.5). 3s timeout with fallback. |
+| **Query embedding** | <200ms | Single Vertex AI API call | One embed() call with `taskType: RETRIEVAL_QUERY`. |
 | **Dashboard search (E2E)** | <500ms | API route + hybrid search + JSON serialization | Client-side debounce (300ms) prevents excessive queries during typing. Server cache (Redis) for repeated queries. |
 
-### Memory Budget (TEI-based design)
+### Memory Budget (Managed API design)
 
-With the migration to TEI, embedding inference is offloaded to a dedicated container. The light worker no longer loads the ~500MB ONNX model in-process or manages WASM memory.
+With the migration to Vertex AI (embedding) and Bedrock (reranking), all inference is offloaded to managed services. The light worker has no model loaded in-process — it only makes HTTPS calls.
 
 | Component | Memory | Notes |
 |-----------|--------|-------|
-| TEI container (separate) | ~2 GB limit | Runs nomic-embed-text-v1.5 in Rust. Handles batching, tokenization, inference. Model cached in `tei_models` Docker volume. |
-| HTTP request/response payload | ~1 MB peak | Batch of 32 texts (~2KB each) + response vectors |
+| HTTPS request/response payload | ~5 MB peak | 50 concurrent embed calls × (~2KB request + ~3KB response) |
 | pgvector connection pool | ~10 MB | 5 connections × ~1 MB each |
-| Worker base overhead | ~200 MB | Node.js + Temporal SDK (no WASM runtime) |
+| Worker base overhead | ~200 MB | Node.js + Temporal SDK |
 
-**Total light-llm-queue worker memory (Phase 3):** ~300 MB baseline. Container limit: 4 GB (down from 6 GB — no ONNX overhead).
+**Total light-llm-queue worker memory (Phase 3):** ~250 MB baseline. Container limit: 4 GB. No in-process model, no Docker containers for embedding/reranking.
 
 **Key design principles:**
-1. **TEI handles batching** — texts sent in batches of `TEI_BATCH_SIZE` (default 32) via HTTP. TEI processes them concurrently in Rust.
-2. **TEI handles truncation** — `truncate: true` in the request body. No tokenizer management in the worker.
-3. **No model in worker** — no ONNX download, no WASM threads, no session rotation, no manual GC.
+1. **Concurrent embedding** — 50-concurrent semaphore fires parallel Vertex AI requests. ~250 embeddings/sec throughput.
+2. **Rate-limit resilience** — exponential backoff on 429/RESOURCE_EXHAUSTED, auto-throttles within Vertex AI TPM quota.
+3. **No model in worker** — no downloads, no WASM, no GPU. Pure HTTPS API calls to managed services.
 4. **File fallback** — files with no code entities get a file-level embedding (path + name)
 
-**Embedding env vars:**
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `TEI_URL` | `http://localhost:8090` | TEI endpoint URL |
-| `TEI_BATCH_SIZE` | `32` | Max texts per HTTP batch to TEI |
-| `EMBEDDING_DIMENSIONS` | `768` | Target dimensions (Matryoshka truncation) |
-| `TEI_RERANKER_URL` | `http://localhost:8091` | TEI reranker endpoint URL (optional) |
-| `RERANKER_ENABLED` | `false` | Enable cross-encoder reranking after RRF merge |
-| `RERANKER_TOP_K` | `30` | Candidates per leg / rerank pool size |
+**Embedding env vars** — see "Embedding Provider Lifecycle" section above for the complete env var table.
 
 **Supabase storage:** Each embedding row is ~3.1 KB (768 float32 values = 3072 bytes + metadata ~100 bytes). A 10K-entity repo requires ~31 MB of pgvector storage. A 50K-entity repo requires ~155 MB. Supabase Pro plans include 8 GB of database storage — this comfortably supports hundreds of repos.
 
@@ -593,7 +602,6 @@ With the migration to TEI, embedding inference is offloaded to a dedicated conta
 | **Query embeddings** | Redis | 1 hour | Same query text → same vector. Cache key: `embed:query:{sha256(query)}` |
 | **Search results** | Redis | 5 minutes | Cache key: `search:{orgId}:{repoId}:{sha256(query)}:{mode}`. Invalidated on repo re-index (embed workflow completion publishes cache-bust event). |
 | **Graph enrichment data** | Redis | 10 minutes | Cache key: `graph:enrichment:{orgId}:{entityKey}`. Invalidated on entity change. |
-| **TEI model** | Docker volume (`tei_models`) | Permanent | Downloaded by TEI on first start. Persists across container restarts. |
 
 **Cache-busting on re-embed:** When `embedRepoWorkflow` completes, it publishes a cache invalidation event: `cacheStore.deletePattern("search:{orgId}:{repoId}:*")`. This ensures stale search results are never served after re-indexing.
 

@@ -56,6 +56,24 @@ export function getModelForGroup(group: ModelGroup): string {
   return process.env[envKey] ?? MODEL_GROUP_DEFAULTS[group]
 }
 
+// ── Embedding & Reranking Models ──────────────────────────────────────────────
+
+/** Vertex AI model for embedding (Gemini Embedding 001, 768 dims via outputDimensionality). */
+export const EMBEDDING_MODEL_ID: string =
+  process.env.EMBEDDING_MODEL_ID ?? "gemini-embedding-001"
+
+/** Embedding output dimensions. Gemini Embedding 001 supports up to 3072; we use 768 for pgvector efficiency. */
+export const EMBEDDING_DIMENSIONS: number =
+  process.env.EMBEDDING_DIMENSIONS ? parseInt(process.env.EMBEDDING_DIMENSIONS, 10) : 768
+
+/** Google Vertex AI API key for embedding (express mode — no service account needed). */
+export const GOOGLE_VERTEX_API_KEY: string | undefined =
+  process.env.GOOGLE_VERTEX_API_KEY
+
+/** Bedrock model ID for cross-encoder reranking (Cohere Rerank 3.5). */
+export const RERANKER_MODEL_ID: string =
+  process.env.RERANKER_MODEL_ID ?? "cohere.rerank-v3-5:0"
+
 // ── Costs ─────────────────────────────────────────────────────────────────────
 
 /** Per-token costs (USD) for billing estimation. Fallback: $0.15/$0.60 per 1M. */

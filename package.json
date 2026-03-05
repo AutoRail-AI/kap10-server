@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "@ai-sdk/amazon-bedrock": "^4.0.69",
+    "@ai-sdk/google-vertex": "^4.0.74",
     "@ast-grep/napi": "^0.40.5",
     "@better-fetch/fetch": "^1.1.21",
     "@hookform/resolvers": "^5.2.2",
@@ -89,6 +90,7 @@
     "execa": "^9.6.1",
     "graphology": "^0.26.0",
     "graphology-communities-louvain": "^2.0.2",
+    "ignore": "^6.0.0",
     "ioredis": "^5.9.1",
     "js-yaml": "^4.1.0",
     "lodash": "^4.17.21",

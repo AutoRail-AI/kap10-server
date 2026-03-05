@@ -5,6 +5,7 @@ import { Command } from "commander"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { getCredentials } from "./auth.js"
+import { createIgnoreFilter } from "../ignore.js"
 
 function loadConfig(): { repoId: string; serverUrl: string; orgId: string } | null {
   const configPath = path.join(process.cwd(), ".unerr", "config.json")
@@ -58,17 +59,9 @@ export function registerPushCommand(program: Command): void {
           uploadPath: string
         }
 
-        // Create .gitignore-aware zip using archiver
+        // Create ignore-aware zip using archiver
         const archiver = (await import("archiver")).default
-        const ignore = (await import("ignore")).default
-
-        // Load .gitignore patterns
-        const gitignorePath = path.join(process.cwd(), ".gitignore")
-        const ig = ignore()
-        ig.add([".git", ".unerr", "node_modules"])
-        if (fs.existsSync(gitignorePath)) {
-          ig.add(fs.readFileSync(gitignorePath, "utf-8"))
-        }
+        const ig = await createIgnoreFilter(process.cwd())
 
         // Create zip buffer
         const archive = archiver("zip", { zlib: { level: 6 } })

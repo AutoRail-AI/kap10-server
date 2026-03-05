@@ -1,29 +1,49 @@
 "use client"
 
-import { Activity, Check, Clock, FileCode, GitFork, Layers } from "lucide-react"
+import { Activity, AlertTriangle, Check, Clock, FileCode, GitFork, Layers, MessageSquare, Shield, Sparkles, Zap } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { PipelineLogEntry } from "@/hooks/use-pipeline-logs"
+import type { PipelineStepRecord } from "@/lib/ports/types"
 
 interface WhatsHappeningPanelProps {
   status: string
   progress: number
   logs: PipelineLogEntry[]
+  steps?: PipelineStepRecord[]
   indexingStartedAt?: number | null
+  errorMessage?: string | null
 }
 
-const _PHASE_ORDER = ["indexing", "embedding", "ontology", "justifying"] as const
-type _Phase = (typeof _PHASE_ORDER)[number]
-
+/** User-friendly labels for both repo status values and pipeline log phases. */
 const PHASE_LABELS: Record<string, string> = {
-  pending: "Queued",
-  indexing: "Indexing",
-  embedding: "Embedding",
-  ontology: "Ontology Discovery",
-  justifying: "Justification",
-  ready: "Complete",
-  error: "Error",
-  embed_failed: "Embed Failed",
-  justify_failed: "Justify Failed",
+  // Repo status values
+  pending:          "Queued",
+  ready:            "Complete",
+  error:            "Error",
+  embed_failed:     "Embed Failed",
+  justify_failed:   "Justify Failed",
+  // Pipeline log phases (must match PipelineLogEntry["phase"] union)
+  indexing:            "Scanning & Parsing",
+  embedding:           "Building Intelligence Graph",
+  "graph-analysis":    "Graph Analysis",
+  "temporal-analysis": "Mining Temporal Patterns",
+  ontology:            "Ontology Discovery",
+  justifying:          "Understanding Business Context",
+  "graph-sync":        "Syncing Graph",
+  "pattern-detection": "Detecting Patterns",
+}
+
+/** Maps status to a contextual description of what's happening right now. */
+const STATUS_DESCRIPTIONS: Record<string, string> = {
+  pending:         "Waiting in queue for a worker to pick up...",
+  indexing:        "Cloning your repository and analyzing its structure with SCIP & tree-sitter.",
+  embedding:       "Generating vector embeddings for semantic search across your codebase.",
+  ontology:        "Discovering domain concepts, feature boundaries, and architectural layers.",
+  justifying:      "Classifying every entity with business purpose, feature tags, and health signals.",
+  ready:           "All analysis complete. Your codebase intelligence is ready.",
+  error:           "The pipeline encountered an error. Check the logs for details.",
+  embed_failed:    "Embedding generation failed. Indexing data is preserved — you can resume.",
+  justify_failed:  "Justification failed. Embeddings and ontology are preserved — you can resume.",
 }
 
 interface PhaseTiming {
@@ -78,6 +98,7 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${remainingSeconds}s`
 }
 
+/** Extract a named metric from log messages or metadata, searching newest first. */
 function extractMetric(logs: PipelineLogEntry[], patterns: RegExp[]): string | null {
   for (let i = logs.length - 1; i >= 0; i--) {
     const entry = logs[i]
@@ -101,16 +122,58 @@ function extractMetric(logs: PipelineLogEntry[], patterns: RegExp[]): string | n
   return null
 }
 
-export function WhatsHappeningPanel({ status, progress, logs, indexingStartedAt }: WhatsHappeningPanelProps) {
+/** Extract a numeric value from the most recent log meta. */
+function extractMetaValue(logs: PipelineLogEntry[], key: string): number | null {
+  for (let i = logs.length - 1; i >= 0; i--) {
+    const entry = logs[i]
+    if (!entry?.meta) continue
+    const val = entry.meta[key]
+    if (typeof val === "number") return val
+  }
+  return null
+}
+
+/** Get the most recent log message for display. */
+function getLastLogMessage(logs: PipelineLogEntry[]): { message: string; level: string; phase: string } | null {
+  if (logs.length === 0) return null
+  const last = logs[logs.length - 1]!
+  return { message: last.message, level: last.level, phase: last.phase }
+}
+
+// ── Stat Row Component ────────────────────────────────────────────────────────
+
+function StatRow({ icon, label, value, accent }: {
+  icon: React.ReactNode
+  label: string
+  value: string
+  accent?: boolean
+}) {
+  return (
+    <div className="flex items-center justify-between">
+      <div className="flex items-center gap-2">
+        {icon}
+        <span className="text-xs text-muted-foreground">{label}</span>
+      </div>
+      <span className={`text-xs font-medium font-mono tabular-nums ${accent ? "text-electric-cyan" : "text-foreground"}`}>
+        {value}
+      </span>
+    </div>
+  )
+}
+
+// ── Main Component ────────────────────────────────────────────────────────────
+
+export function WhatsHappeningPanel({ status, progress, logs, steps, indexingStartedAt, errorMessage }: WhatsHappeningPanelProps) {
   const [now, setNow] = useState(Date.now())
 
-  const isActive = ["indexing", "embedding", "justifying", "ontology", "pending"].includes(status)
-  const isEndState = ["ready", "error", "embed_failed", "justify_failed"].includes(status)
+  const isActive = !["ready", "error", "embed_failed", "justify_failed"].includes(status)
+  const isEndState = !isActive
+  const isError = ["error", "embed_failed", "justify_failed"].includes(status)
 
   // Use server-persisted timestamp first, fall back to first log entry
   const pipelineStartTime = useMemo(
     () => indexingStartedAt ?? getPipelineStartTime(logs),
-    [indexingStartedAt, logs]
+    [indexingStartedAt, logs],
   )
   const phaseTimings = useMemo(() => derivePhaseTimings(logs), [logs])
 
@@ -129,6 +192,8 @@ export function WhatsHappeningPanel({ status, progress, logs, indexingStartedAt 
     ? now - currentPhase.startedAt
     : null
 
+  // ── Metrics from logs ───────────────────────────────────────────────────────
+
   const filesProcessed = extractMetric(logs, [
     /(\d+)\s*files?\s*(processed|indexed|scanned|found)/i,
     /scanned\s*(\d+)\s*files?/i,
@@ -146,70 +211,130 @@ export function WhatsHappeningPanel({ status, progress, logs, indexingStartedAt 
     /(\d+)\s*relationships?/i,
   ])
 
+  // Quality metrics from completion logs
+  const scipCoverage = extractMetaValue(logs, "scipCoveragePercent")
+  const highRiskNodes = extractMetaValue(logs, "highRiskCount")
+  const coChangeEdges = extractMetaValue(logs, "coChangeEdges")
+  const embeddingsStored = extractMetaValue(logs, "embeddingsStored")
+
+  // Last log for live activity feed
+  const lastLog = useMemo(() => getLastLogMessage(logs), [logs])
+
+  // Step-level stats from pipeline run data
+  const stepStats = useMemo(() => {
+    if (!steps || steps.length === 0) return null
+    const completed = steps.filter((s) => s.status === "completed" || s.status === "skipped").length
+    const failed = steps.filter((s) => s.status === "failed").length
+    const running = steps.filter((s) => s.status === "running").length
+    const currentStep = steps.find((s) => s.status === "running")
+    return { completed, failed, running, total: steps.length, currentStep }
+  }, [steps])
+
   return (
     <div className="glass-card border-border rounded-lg border p-4 space-y-4">
       <h3 className="font-grotesk text-xs font-semibold text-foreground uppercase tracking-wider">
         What&apos;s Happening
       </h3>
 
-      {/* Current status + total duration */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Activity className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">Status</span>
-          </div>
-          <span className="text-xs font-medium text-electric-cyan font-mono">
+      {/* Current Activity Description */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          {isError ? (
+            <AlertTriangle className="h-3.5 w-3.5 text-destructive shrink-0" />
+          ) : isActive ? (
+            <span className="relative flex h-3 w-3 shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-electric-cyan/40" />
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-electric-cyan/70" />
+            </span>
+          ) : (
+            <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+          )}
+          <span className={`text-xs font-medium ${isError ? "text-destructive" : isActive ? "text-electric-cyan" : "text-emerald-400"}`}>
             {PHASE_LABELS[status] ?? status}
           </span>
         </div>
-        {pipelineStartTime && (
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="text-xs text-muted-foreground">Started</span>
-            </div>
-            <span className="text-xs font-medium text-foreground font-mono tabular-nums">
-              {new Date(pipelineStartTime).toLocaleTimeString()}
+        <p className="text-[11px] text-muted-foreground leading-relaxed pl-5">
+          {STATUS_DESCRIPTIONS[status] ?? "Processing..."}
+        </p>
+      </div>
+
+      {/* Current Step Indicator (from pipeline run data) */}
+      {stepStats?.currentStep && isActive && (
+        <div className="rounded-md bg-electric-cyan/5 border border-electric-cyan/10 px-3 py-2">
+          <div className="flex items-center gap-2">
+            <Zap className="h-3 w-3 text-electric-cyan shrink-0" />
+            <span className="text-[11px] text-electric-cyan font-medium">
+              {stepStats.currentStep.label}
+            </span>
+            <span className="text-[10px] text-muted-foreground ml-auto font-mono tabular-nums">
+              {stepStats.completed}/{stepStats.total} steps
             </span>
           </div>
+        </div>
+      )}
+
+      {/* Error Detail */}
+      {isError && errorMessage && (
+        <div className="rounded-md bg-destructive/5 border border-destructive/10 px-3 py-2">
+          <p className="text-[11px] text-destructive/80 leading-relaxed">
+            {errorMessage.length > 200 ? errorMessage.slice(0, 200) + "…" : errorMessage}
+          </p>
+        </div>
+      )}
+
+      {/* Stats Grid */}
+      <div className="space-y-2.5">
+        {pipelineStartTime && (
+          <StatRow
+            icon={<Clock className="h-3.5 w-3.5 text-muted-foreground" />}
+            label="Duration"
+            value={totalElapsed > 0 ? formatDuration(totalElapsed) : "--"}
+          />
         )}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">Total Duration</span>
-          </div>
-          <span className="text-xs font-medium text-foreground font-mono tabular-nums">
-            {totalElapsed > 0 ? formatDuration(totalElapsed) : "--"}
-          </span>
-        </div>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <FileCode className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">Files</span>
-          </div>
-          <span className="text-xs font-medium text-foreground font-mono tabular-nums">
-            {filesProcessed ?? "--"}
-          </span>
-        </div>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Layers className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">Entities</span>
-          </div>
-          <span className="text-xs font-medium text-foreground font-mono tabular-nums">
-            {entitiesFound ?? "--"}
-          </span>
-        </div>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <GitFork className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-xs text-muted-foreground">Edges</span>
-          </div>
-          <span className="text-xs font-medium text-foreground font-mono tabular-nums">
-            {edgesCreated ?? "--"}
-          </span>
-        </div>
+        <StatRow
+          icon={<FileCode className="h-3.5 w-3.5 text-muted-foreground" />}
+          label="Files"
+          value={filesProcessed ?? "--"}
+        />
+        <StatRow
+          icon={<Layers className="h-3.5 w-3.5 text-muted-foreground" />}
+          label="Entities"
+          value={entitiesFound ?? "--"}
+        />
+        <StatRow
+          icon={<GitFork className="h-3.5 w-3.5 text-muted-foreground" />}
+          label="Relationships"
+          value={edgesCreated ?? "--"}
+        />
+        {embeddingsStored != null && (
+          <StatRow
+            icon={<Sparkles className="h-3.5 w-3.5 text-muted-foreground" />}
+            label="Embeddings"
+            value={embeddingsStored.toLocaleString()}
+          />
+        )}
+        {coChangeEdges != null && coChangeEdges > 0 && (
+          <StatRow
+            icon={<Activity className="h-3.5 w-3.5 text-muted-foreground" />}
+            label="Co-change Pairs"
+            value={coChangeEdges.toLocaleString()}
+          />
+        )}
+        {highRiskNodes != null && highRiskNodes > 0 && (
+          <StatRow
+            icon={<Shield className="h-3.5 w-3.5 text-muted-foreground" />}
+            label="High-risk Nodes"
+            value={highRiskNodes.toLocaleString()}
+          />
+        )}
+        {scipCoverage != null && (
+          <StatRow
+            icon={<Zap className="h-3.5 w-3.5 text-muted-foreground" />}
+            label="SCIP Coverage"
+            value={`${scipCoverage}%`}
+            accent
+          />
+        )}
       </div>
 
       {/* Progress bar */}
@@ -220,11 +345,28 @@ export function WhatsHappeningPanel({ status, progress, logs, indexingStartedAt 
         </div>
         <div className="h-1.5 rounded-full bg-border overflow-hidden">
           <div
-            className="h-full rounded-full bg-electric-cyan transition-all duration-500"
-            style={{ width: `${progress}%` }}
+            className={`h-full rounded-full transition-all duration-500 ${
+              isError ? "bg-destructive" : "bg-electric-cyan"
+            }`}
+            style={{ width: `${Math.min(progress, 100)}%` }}
           />
         </div>
       </div>
+
+      {/* Last Activity Message */}
+      {lastLog && (
+        <div className="border-t border-border pt-3 space-y-1.5">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk">
+            Latest Activity
+          </p>
+          <div className="flex items-start gap-2">
+            <MessageSquare className="h-3 w-3 text-white/30 mt-0.5 shrink-0" />
+            <p className="text-[11px] text-white/50 leading-relaxed line-clamp-2">
+              {lastLog.message}
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Phase Timeline */}
       {phaseTimings.length > 0 && (

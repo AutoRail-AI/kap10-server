@@ -1,159 +1,111 @@
 /**
  * IVectorSearch implementation using:
- *   - HuggingFace TEI (Text Embeddings Inference) for embedding via HTTP
+ *   - Google Vertex AI Gemini Embedding 001 for embedding (768 dims, configurable)
+ *   - AWS Bedrock Cohere Rerank 3.5 for cross-encoder reranking
  *   - pgvector (Supabase PostgreSQL) for vector storage and similarity search
  *
  * Phase 3: Semantic Search
- *
- * The embedding model (nomic-embed-text-v1.5) runs in a dedicated TEI container.
- * TEI handles batching, GPU acceleration, and concurrency — all production-optimized in Rust.
  */
 
 import type { IVectorSearch } from "@/lib/ports/vector-search"
+import { EMBEDDING_MODEL_ID, EMBEDDING_DIMENSIONS, GOOGLE_VERTEX_API_KEY, RERANKER_MODEL_ID, AWS_REGION } from "@/lib/llm/config"
 
-/** TEI endpoint — defaults to local Docker container on port 8090. */
-const TEI_URL = process.env.TEI_URL ?? "http://localhost:8090"
+// ── Lazy Vertex AI Embedding ────────────────────────────────────────────────
 
-/** TEI reranker endpoint — defaults to local Docker container on port 8091. */
-const TEI_RERANKER_URL = process.env.TEI_RERANKER_URL ?? "http://localhost:8091"
+let _vertexProvider: ReturnType<typeof import("@ai-sdk/google-vertex").createVertex> | null = null
 
-/** Max texts per HTTP batch to TEI. Keeps request payloads reasonable. */
-const TEI_BATCH_SIZE = parseInt(process.env.TEI_BATCH_SIZE ?? "32", 10)
-
-/** Max retry attempts for TEI HTTP calls on 5xx / network errors. */
-const TEI_MAX_RETRIES = 3
-
-/** Backoff delays (ms) between retries. */
-const TEI_RETRY_DELAYS = [1000, 3000, 9000]
-
-/**
- * Call TEI's /embed endpoint with retry on 5xx / network errors.
- */
-async function teiEmbed(inputs: string | string[], truncate = true): Promise<number[][]> {
-  const body = JSON.stringify({ inputs, truncate })
-
-  for (let attempt = 0; attempt < TEI_MAX_RETRIES; attempt++) {
-    try {
-      const res = await fetch(`${TEI_URL}/embed`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-      })
-
-      if (res.ok) {
-        return (await res.json()) as number[][]
-      }
-
-      // Retry on 5xx, throw on 4xx
-      if (res.status >= 500) {
-        const text = await res.text().catch(() => "")
-        const isLast = attempt === TEI_MAX_RETRIES - 1
-        if (isLast) {
-          throw new Error(`TEI /embed returned ${res.status}: ${text}`)
-        }
-        console.warn(
-          `[embedding] TEI /embed returned ${res.status} (attempt ${attempt + 1}/${TEI_MAX_RETRIES}). Retrying...`
-        )
-        await new Promise((r) => setTimeout(r, TEI_RETRY_DELAYS[attempt]!))
-        continue
-      }
-
-      // 4xx — don't retry
-      const text = await res.text().catch(() => "")
-      throw new Error(`TEI /embed returned ${res.status}: ${text}`)
-    } catch (error: unknown) {
-      if (error instanceof Error && error.message.startsWith("TEI /embed returned")) {
-        throw error
-      }
-      // Network error — retry
-      const isLast = attempt === TEI_MAX_RETRIES - 1
-      if (isLast) {
-        throw new Error(
-          `TEI /embed unreachable after ${TEI_MAX_RETRIES} attempts. ` +
-          `Is the TEI container running at ${TEI_URL}? ` +
-          `Error: ${error instanceof Error ? error.message : String(error)}`
-        )
-      }
-      console.warn(
-        `[embedding] TEI /embed network error (attempt ${attempt + 1}/${TEI_MAX_RETRIES}): ` +
-        `${error instanceof Error ? error.message : String(error)}. Retrying...`
-      )
-      await new Promise((r) => setTimeout(r, TEI_RETRY_DELAYS[attempt]!))
-    }
+function getVertexProvider() {
+  if (_vertexProvider) return _vertexProvider
+  const { createVertex } = require("@ai-sdk/google-vertex") as typeof import("@ai-sdk/google-vertex")
+  const apiKey = GOOGLE_VERTEX_API_KEY
+  if (!apiKey) {
+    throw new Error("GOOGLE_VERTEX_API_KEY is required for Vertex AI embedding")
   }
-
-  // Unreachable — last attempt throws
-  throw new Error("TEI /embed failed")
+  _vertexProvider = createVertex({ apiKey })
+  return _vertexProvider
 }
 
 /**
- * Call TEI's /rerank endpoint with retry on 5xx / network errors.
- * Uses the same retry pattern as teiEmbed().
+ * Concurrent embedding with rate-limit resilience.
+ *
+ * gemini-embedding-001 on Vertex AI accepts 1 text per request.
+ * The AI SDK's embedMany() processes them sequentially — too slow for
+ * large batches. Instead, we fire EMBED_CONCURRENCY requests in parallel
+ * with exponential backoff on 429s (TPM quota: ~5M tokens/min default).
+ *
+ * At 50 concurrent × ~200ms avg latency = ~250 embeddings/sec.
+ * For 2000 entities: ~8s instead of ~16 minutes sequential.
  */
-async function teiRerank(
-  query: string,
-  texts: string[],
-  topK: number
-): Promise<{ index: number; score: number }[]> {
-  const body = JSON.stringify({ query, texts, truncate: true })
+const EMBED_CONCURRENCY = 50
+const EMBED_MAX_RETRIES = 5
 
-  for (let attempt = 0; attempt < TEI_MAX_RETRIES; attempt++) {
-    try {
-      const res = await fetch(`${TEI_RERANKER_URL}/rerank`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-      })
-
-      if (res.ok) {
-        const results = (await res.json()) as { index: number; score: number }[]
-        // Sort by score descending and slice to topK
-        return results
-          .sort((a, b) => b.score - a.score)
-          .slice(0, topK)
-      }
-
-      // Retry on 5xx, throw on 4xx
-      if (res.status >= 500) {
-        const text = await res.text().catch(() => "")
-        const isLast = attempt === TEI_MAX_RETRIES - 1
-        if (isLast) {
-          throw new Error(`TEI /rerank returned ${res.status}: ${text}`)
-        }
-        console.warn(
-          `[reranker] TEI /rerank returned ${res.status} (attempt ${attempt + 1}/${TEI_MAX_RETRIES}). Retrying...`
-        )
-        await new Promise((r) => setTimeout(r, TEI_RETRY_DELAYS[attempt]!))
-        continue
-      }
-
-      // 4xx — don't retry
-      const text = await res.text().catch(() => "")
-      throw new Error(`TEI /rerank returned ${res.status}: ${text}`)
-    } catch (error: unknown) {
-      if (error instanceof Error && error.message.startsWith("TEI /rerank returned")) {
-        throw error
-      }
-      // Network error — retry
-      const isLast = attempt === TEI_MAX_RETRIES - 1
-      if (isLast) {
-        throw new Error(
-          `TEI /rerank unreachable after ${TEI_MAX_RETRIES} attempts. ` +
-          `Is the TEI reranker container running at ${TEI_RERANKER_URL}? ` +
-          `Error: ${error instanceof Error ? error.message : String(error)}`
-        )
-      }
-      console.warn(
-        `[reranker] TEI /rerank network error (attempt ${attempt + 1}/${TEI_MAX_RETRIES}): ` +
-        `${error instanceof Error ? error.message : String(error)}. Retrying...`
-      )
-      await new Promise((r) => setTimeout(r, TEI_RETRY_DELAYS[attempt]!))
-    }
+/** Simple semaphore for bounding concurrency without external deps. */
+function createSemaphore(max: number) {
+  let active = 0
+  const queue: Array<() => void> = []
+  return {
+    async acquire(): Promise<void> {
+      if (active < max) { active++; return }
+      await new Promise<void>((resolve) => queue.push(resolve))
+    },
+    release(): void {
+      active--
+      const next = queue.shift()
+      if (next) { active++; next() }
+    },
   }
-
-  // Unreachable — last attempt throws
-  throw new Error("TEI /rerank failed")
 }
+
+async function vertexEmbed(texts: string[], taskType: "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY"): Promise<number[][]> {
+  if (texts.length === 0) return []
+  const { embed } = require("ai") as typeof import("ai")
+  const vertex = getVertexProvider()
+  const model = vertex.textEmbeddingModel(EMBEDDING_MODEL_ID)
+  const sem = createSemaphore(EMBED_CONCURRENCY)
+
+  const tasks = texts.map(async (text, i): Promise<number[]> => {
+    await sem.acquire()
+    try {
+      for (let attempt = 0; attempt <= EMBED_MAX_RETRIES; attempt++) {
+        try {
+          const { embedding } = await embed({
+            model,
+            value: text,
+            providerOptions: {
+              vertex: { taskType, outputDimensionality: EMBEDDING_DIMENSIONS },
+            },
+          })
+          return embedding
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if ((msg.includes("429") || msg.includes("RESOURCE_EXHAUSTED")) && attempt < EMBED_MAX_RETRIES) {
+            await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)))
+            continue
+          }
+          throw new Error(`Embedding failed for text ${i}: ${msg}`)
+        }
+      }
+      throw new Error(`Embedding failed for text ${i} after ${EMBED_MAX_RETRIES} retries`)
+    } finally {
+      sem.release()
+    }
+  })
+
+  return Promise.all(tasks)
+}
+
+// ── Lazy Bedrock Provider (reranking only) ──────────────────────────────────
+
+let _bedrockProvider: ReturnType<typeof import("@ai-sdk/amazon-bedrock").createAmazonBedrock> | null = null
+
+function getBedrockProvider() {
+  if (_bedrockProvider) return _bedrockProvider
+  const { createAmazonBedrock } = require("@ai-sdk/amazon-bedrock") as typeof import("@ai-sdk/amazon-bedrock")
+  _bedrockProvider = createAmazonBedrock({ region: AWS_REGION })
+  return _bedrockProvider
+}
+
+// ── pgvector Pool ───────────────────────────────────────────────────────────
 
 /**
  * Get a pg Pool lazily (production use only — reuses the Supabase DB connection).
@@ -173,82 +125,28 @@ function getPgPool(): import("pg").Pool {
 
 export class LlamaIndexVectorSearch implements IVectorSearch {
   /**
-   * Get the target embedding dimensions.
-   * nomic-embed-text-v1.5 supports Matryoshka Representation Learning —
-   * vectors can be truncated to 256/384/512 dims with negligible quality loss.
-   * Set EMBEDDING_DIMENSIONS to a smaller value to save ~66% storage.
-   */
-  private getTargetDimensions(): number {
-    return parseInt(process.env.EMBEDDING_DIMENSIONS ?? "768", 10)
-  }
-
-  /**
-   * Truncate and re-normalize a vector for Matryoshka dimensions.
-   * Only truncates if target < native 768 dims.
-   */
-  private truncateVector(vec: number[]): number[] {
-    const targetDims = this.getTargetDimensions()
-    if (targetDims >= vec.length) return vec
-
-    // Slice to target dimensions
-    const truncated = vec.slice(0, targetDims)
-    // Re-normalize after truncation (required for cosine similarity correctness)
-    let norm = 0
-    for (let i = 0; i < truncated.length; i++) {
-      norm += truncated[i]! * truncated[i]!
-    }
-    norm = Math.sqrt(norm)
-    if (norm > 0) {
-      for (let i = 0; i < truncated.length; i++) {
-        truncated[i] = truncated[i]! / norm
-      }
-    }
-    return truncated
-  }
-
-  /**
-   * Embed texts using TEI (nomic-embed-text-v1.5).
-   * Batches into TEI_BATCH_SIZE chunks, prefixes each text with "search_document: ".
+   * Embed texts using Vertex AI Gemini Embedding 001 (document encoding).
    */
   async embed(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return []
-
-    const allEmbeddings: number[][] = []
-
-    // Process in batches to avoid overwhelming TEI with huge payloads
-    for (let i = 0; i < texts.length; i += TEI_BATCH_SIZE) {
-      const batch = texts.slice(i, i + TEI_BATCH_SIZE)
-      // Prefix with "search_document: " for nomic model (document encoding convention)
-      const prefixed = batch.map((t) => `search_document: ${t}`)
-
-      const vectors = await teiEmbed(prefixed)
-
-      for (const vec of vectors) {
-        allEmbeddings.push(this.truncateVector(vec))
-      }
-    }
-
-    return allEmbeddings
+    return vertexEmbed(texts, "RETRIEVAL_DOCUMENT")
   }
 
   /**
-   * Embed a query text (uses "search_query: " prefix for nomic model).
-   * Applies same Matryoshka truncation as document encoding.
+   * Embed a single query text (query encoding).
    */
   async embedQuery(text: string): Promise<number[]> {
-    const vectors = await teiEmbed(`search_query: ${text}`)
-    return this.truncateVector(vectors[0]!)
+    const vectors = await vertexEmbed([text], "RETRIEVAL_QUERY")
+    return vectors[0]!
   }
 
   /**
    * Get the current model version string for embedding provenance.
-   * Format: "{model-name}-{dimensions}" e.g. "nomic-v1.5-768" or "nomic-v1.5-256"
    * Override via EMBEDDING_MODEL_VERSION env var for custom model deployments.
    */
   private getModelVersion(): string {
     if (process.env.EMBEDDING_MODEL_VERSION) return process.env.EMBEDDING_MODEL_VERSION
-    const dims = this.getTargetDimensions()
-    return `nomic-v1.5-${dims}`
+    return "gemini-emb-001-768"
   }
 
   /**
@@ -529,17 +427,30 @@ export class LlamaIndexVectorSearch implements IVectorSearch {
     return result.rowCount ?? 0
   }
 
-  // ── Cross-Encoder Reranking ─────────────────────────────────────────────────
+  // ── Reranking (Bedrock Cohere Rerank 3.5) ────────────────────────────────
 
   /**
-   * Re-score (query, document) pairs using the TEI cross-encoder reranker.
-   * Delegates to teiRerank() which handles retries and sorting.
+   * Rerank documents by relevance to a query using Cohere Rerank 3.5 on Bedrock.
+   * Returns indices + relevance scores sorted by relevance (highest first).
    */
   async rerank(
     query: string,
     documents: string[],
     topK: number
-  ): Promise<{ index: number; score: number }[]> {
-    return teiRerank(query, documents, topK)
+  ): Promise<{ index: number; relevanceScore: number }[]> {
+    if (documents.length === 0) return []
+    const { rerank } = require("ai") as typeof import("ai")
+    const bedrock = getBedrockProvider()
+    const model = bedrock.reranking(RERANKER_MODEL_ID)
+    const { ranking } = await rerank({
+      model,
+      query,
+      documents,
+      topN: topK,
+    })
+    return ranking.map((r) => ({
+      index: r.originalIndex,
+      relevanceScore: r.score,
+    }))
   }
 }

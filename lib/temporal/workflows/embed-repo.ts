@@ -2,7 +2,7 @@
  * Phase 3: embedRepoWorkflow — generates and stores vector embeddings for all entities.
  *
  * Workflow ID: embed-{orgId}-{repoId} (idempotent — stable ID prevents duplicates)
- * Queue: light-llm-queue (CPU-bound ONNX inference)
+ * Queue: light-llm-queue (Vertex AI Gemini Embedding 001 — managed service)
  *
  * Steps:
  *   1. Set repo status to "embedding"
@@ -10,7 +10,8 @@
  *   3. Process file batches: for each chunk of FILES_PER_BATCH files, call
  *      processAndEmbedBatch which fetches entities, builds docs, embeds,
  *      and stores — all inside the worker, never serializing large payloads
- *      through Temporal's data converter.
+ *      through Temporal's data converter. Batches run in parallel (sliding
+ *      window of CONCURRENT_BATCHES) to maximize Bedrock throughput.
  *   4. Delete orphaned embeddings (DB-side comparison — no large arrays in workflow)
  *   5. Set repo status to "ready"
  *   6. Chain to ontology discovery workflow
@@ -28,7 +29,7 @@ const activities = proxyActivities<typeof embeddingActivities>({
   taskQueue: "light-llm-queue",
   startToCloseTimeout: "60m",
   heartbeatTimeout: "5m",
-  retry: { maximumAttempts: 3 },
+  retry: { maximumAttempts: 2 },
 })
 
 const logActivities = proxyActivities<typeof pipelineLogs>({
@@ -44,12 +45,11 @@ const runActivities = proxyActivities<typeof pipelineRun>({
 })
 
 /**
- * Number of files to process per activity invocation. Kept small so each
- * activity completes quickly (good for heartbeats) and limits peak memory.
- * ONNX model (~500MB base) + inference (~200MB per doc at 512 tokens).
- * 5 files ≈ 8-10 entities — finishes in ~30s, well under heartbeat timeout.
+ * Number of files to process per activity invocation. Vertex AI Gemini Embedding
+ * supports large batches (up to 2048 texts/request), so we use bigger file
+ * batches to reduce Temporal activity overhead while keeping memory bounded.
  */
-const FILES_PER_BATCH = 5
+const FILES_PER_BATCH = 25
 
 export const getEmbedProgressQuery = defineQuery<number>("getEmbedProgress")
 
@@ -118,25 +118,33 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
 
     let totalEmbeddingsStored = 0
 
-    for (let i = 0; i < totalBatches; i++) {
-      const start = i * FILES_PER_BATCH
-      const batchPaths = allFilePaths.slice(start, start + FILES_PER_BATCH)
+    // Sliding-window concurrency: process CONCURRENT_BATCHES in parallel.
+    // Each processAndEmbedBatch is independent (different files, no shared state),
+    // so parallel execution is safe and fully utilizes Vertex AI throughput.
+    const CONCURRENT_BATCHES = 10
 
-      const result = await activities.processAndEmbedBatch(
-        { orgId: input.orgId, repoId: input.repoId },
-        batchPaths,
-        { index: i, total: totalBatches },
-      )
-
-      totalEmbeddingsStored += result.embeddingsStored
-      // NOTE: We no longer accumulate entityKeys here. Orphan deletion
-      // is handled DB-side by comparing graph store vs pgvector directly.
+    for (let windowStart = 0; windowStart < totalBatches; windowStart += CONCURRENT_BATCHES) {
+      const windowEnd = Math.min(windowStart + CONCURRENT_BATCHES, totalBatches)
+      const promises = []
+      for (let i = windowStart; i < windowEnd; i++) {
+        const start = i * FILES_PER_BATCH
+        const batchPaths = allFilePaths.slice(start, start + FILES_PER_BATCH)
+        promises.push(
+          activities.processAndEmbedBatch(
+            { orgId: input.orgId, repoId: input.repoId },
+            batchPaths,
+            { index: i, total: totalBatches },
+          )
+        )
+      }
+      const results = await Promise.all(promises)
+      totalEmbeddingsStored += results.reduce((sum: number, r) => sum + r.embeddingsStored, 0)
 
       // Progress: 10% (after file paths) → 85% (after all batches)
-      progress = 10 + Math.round(((i + 1) / totalBatches) * 75)
-      wfLog("INFO", `Batch ${i + 1}/${totalBatches} complete`, {
+      progress = 10 + Math.round((windowEnd / totalBatches) * 75)
+      wfLog("INFO", `Batches ${windowStart + 1}-${windowEnd}/${totalBatches} complete`, {
         ...ctx,
-        batchEmbeddings: result.embeddingsStored,
+        windowEmbeddings: results.reduce((sum: number, r) => sum + r.embeddingsStored, 0),
         totalSoFar: totalEmbeddingsStored,
       }, "Step 3/6")
     }

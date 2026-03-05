@@ -8,6 +8,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { extname, join, resolve } from "node:path"
 
+import { ALWAYS_IGNORE } from "./ignore"
 import type { WorkspaceInfo } from "./types"
 
 /**
@@ -21,7 +22,12 @@ export function detectPackageRoots(indexDir: string): WorkspaceInfo {
   const pnpmWorkspacePath = join(absRoot, "pnpm-workspace.yaml")
   if (existsSync(pnpmWorkspacePath)) {
     const roots = parsePnpmWorkspace(absRoot, pnpmWorkspacePath)
-    if (roots.length > 0) return { roots, type: "pnpm" }
+    if (roots.length > 0) {
+      // Always include the root project — monorepos often have code at the root
+      // (e.g., Next.js app at root + CLI package in packages/*)
+      if (!roots.includes(".")) roots.unshift(".")
+      return { roots, type: "pnpm" }
+    }
   }
 
   // Check nx.json
@@ -137,7 +143,7 @@ function countLanguageFiles(
   try {
     const entries = readdirSync(dir, { withFileTypes: true })
     for (const entry of entries) {
-      if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "vendor" || entry.name === "__pycache__") continue
+      if (entry.name.startsWith(".") || ALWAYS_IGNORE.has(entry.name)) continue
       if (entry.isDirectory()) {
         countLanguageFiles(join(dir, entry.name), counts, depth + 1, maxDepth)
       } else if (entry.isFile()) {

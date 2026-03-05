@@ -1,6 +1,7 @@
 "use client"
 
 import { AlertCircle, Check } from "lucide-react"
+import { useRef } from "react"
 import type { PipelineStepRecord } from "@/lib/ports/types"
 
 interface PipelineStepperProps {
@@ -15,69 +16,138 @@ interface Stage {
 }
 
 const STAGES: Stage[] = [
-  { label: "Cloning", description: "Fetching repository from GitHub..." },
-  { label: "Indexing", description: "Analyzing code structure with SCIP..." },
-  { label: "Embedding", description: "Generating semantic embeddings..." },
-  { label: "Analyzing", description: "Running business justification..." },
-  { label: "Ready", description: "Your codebase blueprint is ready!" },
+  { label: "Cloning",        description: "Fetching and preparing your repository..." },
+  { label: "Scanning",       description: "Analyzing code structure and relationships..." },
+  { label: "Mapping",        description: "Building the intelligence graph..." },
+  { label: "Understanding",  description: "Discovering business context and purpose..." },
+  { label: "Patterns",       description: "Detecting conventions and code patterns..." },
+  { label: "Ready",          description: "Your codebase intelligence is ready!" },
 ]
 
-// Map pipeline step names to stage indices
+const STAGE_READY = STAGES.length - 1
+
+// Map each granular pipeline step to a high-level stage index.
 const STEP_TO_STAGE: Record<string, number> = {
-  clone: 0,
-  scip: 1,
-  parse: 1,
-  finalize: 1,
-  embed: 2,
-  graphSync: 3,
-  patternDetection: 3,
+  clone:             0, // Cloning
+  wipe:              0,
+  scip:              1, // Scanning
+  parse:             1,
+  finalize:          1,
+  blastRadius:       2, // Mapping
+  temporalAnalysis:  2,
+  embed:             2,
+  ontology:          3, // Understanding
+  justification:     3,
+  graphSync:         4, // Patterns
+  patternDetection:  4,
 }
+
+// Steps that the parent workflow marks "completed" immediately after *launching*
+// the child workflow (fire-and-forget). Their "completed" status does NOT mean
+// the actual work is done — the real work runs in a child workflow. Ignore these
+// when computing active stage so the stepper doesn't jump ahead prematurely.
+const FIRE_AND_FORGET_STEPS = new Set(["embed", "graphSync", "patternDetection"])
 
 const ERROR_STATUSES = ["error", "embed_failed", "justify_failed"]
 
+/**
+ * Compute the active stage from granular step data.
+ *
+ * Strategy: walk steps in order and find the highest stage that has real
+ * (non-fire-and-forget) progress. This avoids the backward-walk issue where
+ * fire-and-forget steps at the end misleadingly show as "completed".
+ */
 function getActiveStageFromSteps(steps: PipelineStepRecord[]): number {
-  // Find the last running or completed step
-  for (let i = steps.length - 1; i >= 0; i--) {
-    const step = steps[i]!
-    if (step.status === "running" || step.status === "failed") {
-      return STEP_TO_STAGE[step.name] ?? 0
+  let highestCompleted = -1
+  let activeRunning = -1
+
+  for (const step of steps) {
+    const stage = STEP_TO_STAGE[step.name] ?? 0
+
+    if (step.status === "running") {
+      activeRunning = Math.max(activeRunning, stage)
     }
-    if (step.status === "completed") {
-      const stageIdx = STEP_TO_STAGE[step.name] ?? 0
-      // If this is the last step, show Ready
-      if (step.name === "patternDetection") return 4
-      return stageIdx
+
+    if (step.status === "failed") {
+      // Show the stage where failure occurred
+      return stage
+    }
+
+    if (step.status === "completed" && !FIRE_AND_FORGET_STEPS.has(step.name)) {
+      highestCompleted = Math.max(highestCompleted, stage)
     }
   }
+
+  // A running step takes priority — it's the active stage
+  if (activeRunning >= 0) return activeRunning
+
+  // Otherwise advance one past the highest completed stage,
+  // capped at STAGE_READY - 1 (Patterns) to avoid premature Ready
+  if (highestCompleted >= 0) {
+    return Math.min(highestCompleted + 1, STAGE_READY - 1)
+  }
+
   return 0
 }
 
+/**
+ * Derive the active UI stage index from available signals.
+ *
+ * Priority: steps data (most granular) → repo status (coarser) → progress (fallback).
+ * The `status` field alone is unreliable — the embed workflow temporarily sets
+ * status to "ready" before ontology/justification start, causing flicker.
+ */
 function getActiveStageIndex(status: string, progress: number, steps?: PipelineStepRecord[]): number {
-  // Use real step data if available
+  // Terminal states — use status directly
+  if (ERROR_STATUSES.includes(status)) {
+    // If we have steps, show the error at the right stage
+    if (steps && steps.length > 0) {
+      const failedStep = steps.find((s) => s.status === "failed")
+      if (failedStep) return STEP_TO_STAGE[failedStep.name] ?? 0
+    }
+    if (status === "embed_failed") return 2
+    if (status === "justify_failed") return 3
+    return progress < 15 ? 0 : progress < 40 ? 1 : 2
+  }
+
+  // Use real step data when available — most reliable signal
   if (steps && steps.length > 0) {
-    const allCompleted = steps.every((s) => s.status === "completed" || s.status === "skipped")
-    if (allCompleted || status === "ready") return 4
-    const hasFailed = steps.some((s) => s.status === "failed")
-    if (hasFailed) return getActiveStageFromSteps(steps)
+    // Only trust "ready" as truly ready when ALL non-fire-and-forget steps are done
+    const coreSteps = steps.filter((s) => !FIRE_AND_FORGET_STEPS.has(s.name))
+    const allCoreDone = coreSteps.every((s) => s.status === "completed" || s.status === "skipped")
+    if (allCoreDone && status === "ready") return STAGE_READY
+
     return getActiveStageFromSteps(steps)
   }
 
-  // Fallback: derive from status/progress
-  if (status === "ready") return 4
+  // Fallback: derive from status/progress when step data is unavailable
+  if (status === "ready") return STAGE_READY
   if (status === "embedding") return 2
-  if (status === "ontology" || status === "justifying") return 3
-  if (status === "embed_failed") return 2
-  if (status === "justify_failed") return 3
-  if (status === "error") return progress < 20 ? 0 : 1
-  // pending/indexing — use progress to distinguish clone vs index
-  if (progress < 20) return 0
-  return 1
+  if (status === "ontology") return 3
+  if (status === "justifying") return 3
+  // pending/indexing — use progress to distinguish clone vs scan
+  if (progress < 15) return 0
+  if (progress < 40) return 1
+  return 2
 }
 
 export function PipelineStepper({ status, progress, steps }: PipelineStepperProps) {
-  const activeIndex = getActiveStageIndex(status, progress, steps)
+  const rawIndex = getActiveStageIndex(status, progress, steps)
   const isError = ERROR_STATUSES.includes(status)
-  const isReady = status === "ready"
+
+  // Monotonic high-water mark — the stepper never goes backwards during a
+  // single pipeline run. This prevents flicker from out-of-order status
+  // updates (SSE vs polling race, embed setting "ready" prematurely, etc.).
+  // Resets when an error occurs or a new run starts (progress drops to 0).
+  const highWaterRef = useRef(0)
+  if (isError || progress === 0) {
+    highWaterRef.current = rawIndex
+  } else {
+    highWaterRef.current = Math.max(highWaterRef.current, rawIndex)
+  }
+  const activeIndex = highWaterRef.current
+
+  const isReady = activeIndex === STAGE_READY && status === "ready"
 
   return (
     <div className="glass-card border-border rounded-lg border p-6">

@@ -48,7 +48,7 @@ export async function runSCIPRust(
       return { entities: [], edges: [], coveredFiles: [] }
     }
 
-    const result = parseSCIPOutput(outputFile, opts.repoId, "rust")
+    const result = parseSCIPOutput(outputFile, opts.repoId, "rust", opts.isIncluded)
 
     try {
       unlinkSync(outputFile)

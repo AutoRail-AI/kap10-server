@@ -81,10 +81,12 @@ export async function computeTemporalAnalysis(
 
     const entityFileMap = new Map<string, string[]>()
     const entityKindMap = new Map<string, string>()
+    const entityKindLookup = new Map<string, string>()
     for (const entity of allEntities) {
       const coll = KIND_TO_COLL[entity.kind] ?? "functions"
       const qualifiedId = `${coll}/${entity.id}`
       entityKindMap.set(entity.id, qualifiedId)
+      entityKindLookup.set(entity.id, entity.kind)
       if (!entity.file_path) continue
       const existing = entityFileMap.get(entity.file_path)
       if (existing) {
@@ -142,8 +144,11 @@ export async function computeTemporalAnalysis(
       if (!entityIds) continue
 
       for (const entityId of entityIds) {
+        const kind = entityKindLookup.get(entityId)
+        if (!kind) continue // skip entities not found in graph
         entityUpdates.push({
           id: entityId,
+          kind,
           org_id: input.orgId,
           repo_id: input.repoId,
           change_frequency: ctx.change_frequency,

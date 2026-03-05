@@ -92,58 +92,6 @@ services:
       retries: 10
       start_period: 30s
 
-  # TEI Embedding Server (nomic-embed-text-v1.5)
-  # Runs the embedding model in a dedicated container — the light worker calls it via HTTP.
-  # For GPU production, swap image tag from cpu-latest to latest (CUDA) or add --dtype float16.
-  tei:
-    profiles: [ "app", "worker" ]
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
-    platform: linux/amd64
-    container_name: unerr-tei
-    ports:
-      - "8090:80"
-    volumes:
-      - tei_models:/data
-    command: --model-id nomic-ai/nomic-embed-text-v1.5 --port 80 --max-batch-tokens 4096
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:80/health" ]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 300s
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-
-  # TEI Reranker (BAAI/bge-reranker-base — cross-encoder for search reranking)
-  # Optional: improves hybrid search precision by re-scoring RRF candidates.
-  # Note: cpu-latest image requires ONNX model files. bge-reranker-base ships ONNX;
-  # bge-reranker-v2-m3 does NOT and will fail with the CPU image.
-  # For GPU production, swap image tag from cpu-latest to latest (CUDA) and use bge-reranker-v2-m3.
-  tei-reranker:
-    profiles: [ "app", "worker" ]
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
-    platform: linux/amd64
-    container_name: unerr-tei-reranker
-    ports:
-      - "8091:80"
-    volumes:
-      - tei_reranker_models:/data
-    command: --model-id BAAI/bge-reranker-base --port 80 --max-batch-tokens 4096
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:80/health" ]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 300s
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-
   # Temporal UI (web dashboard for workflow visibility)
   temporal-ui:
     image: temporalio/ui:2.31.2
@@ -221,7 +169,8 @@ services:
         limits:
           memory: 8G
 
-  # Temporal light-llm worker (TEI embedding via HTTP, LLM calls, DB writes)
+  # Temporal light-llm worker (Bedrock embedding, LLM calls, DB writes)
+  # network_mode: host — uses localhost to reach other services.
   temporal-worker-light:
     profiles: [ "app", "worker" ]
     build:
@@ -235,7 +184,6 @@ services:
       - TEMPORAL_ADDRESS=localhost:7233
       - TASK_QUEUE=light-llm-queue
       - NODE_OPTIONS=--max-old-space-size=4096
-      - TEI_URL=http://localhost:8090
     env_file:
       - path: .env
         required: false
@@ -304,5 +252,3 @@ volumes:
   arangodb_data:
   postgresql_data:
   repo-indices:
-  tei_models:
-  tei_reranker_models:

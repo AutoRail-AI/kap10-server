@@ -1,8 +1,8 @@
 "use client"
 
-import { ArrowRight, ChevronDown, ChevronRight, FileDown, FileText, RefreshCw, Save, Square } from "lucide-react"
+import { ArrowRight, ChevronDown, ChevronRight, FileDown, FileText, RotateCcw, RefreshCw, Save, Square } from "lucide-react"
 import { useRouter } from "next/navigation"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { PipelineLogViewer } from "@/components/repo/pipeline-log-viewer"
 import { PipelineStepper } from "@/components/repo/pipeline-stepper"
@@ -19,6 +19,7 @@ import { Spinner } from "@/components/ui/spinner"
 import { usePipelineLogs } from "@/hooks/use-pipeline-logs"
 import { useRepoEvents } from "@/hooks/use-repo-events"
 import { useRepoStatus } from "@/hooks/use-repo-status"
+import type { PipelineStepRecord } from "@/lib/ports/types"
 
 interface RepoOnboardingConsoleProps {
   repoId: string
@@ -30,6 +31,62 @@ interface RepoOnboardingConsoleProps {
 }
 
 const ERROR_STATUSES = ["error", "embed_failed", "justify_failed"]
+
+// ── Resume Point Definitions ────────────────────────────────────────────────
+// Each resume point maps to a backend phase and lists the pipeline steps that
+// must be completed before this resume point becomes available.
+
+interface ResumePoint {
+  phase: string              // Backend phase key (sent to /api/repos/.../resume)
+  label: string              // Human-friendly label
+  description: string        // Explains what re-runs from this point
+  prerequisiteSteps: string[] // Steps that must be completed/skipped
+}
+
+const RESUME_POINTS: ResumePoint[] = [
+  {
+    phase: "embedding",
+    label: "From Embedding",
+    description: "Re-generate vector embeddings, then re-run ontology & justification",
+    prerequisiteSteps: ["clone", "wipe", "scip", "parse", "finalize"],
+  },
+  {
+    phase: "ontology",
+    label: "From Ontology",
+    description: "Re-discover domain ontology, then re-run justification",
+    prerequisiteSteps: ["clone", "wipe", "scip", "parse", "finalize", "embed"],
+  },
+  {
+    phase: "justification",
+    label: "From Justification",
+    description: "Re-justify all entities with business context",
+    prerequisiteSteps: ["clone", "wipe", "scip", "parse", "finalize", "embed", "ontology"],
+  },
+  {
+    phase: "graph_sync",
+    label: "From Graph Sync",
+    description: "Re-export and sync the graph snapshot",
+    prerequisiteSteps: ["clone", "wipe", "scip", "parse", "finalize"],
+  },
+  {
+    phase: "health_report",
+    label: "From Health Report",
+    description: "Re-generate the codebase health report",
+    prerequisiteSteps: ["clone", "wipe", "scip", "parse", "finalize", "embed", "ontology", "justification"],
+  },
+]
+
+/** Returns resume points whose prerequisites are satisfied by completed steps. */
+function getAvailableResumePoints(steps: PipelineStepRecord[]): ResumePoint[] {
+  const completedSteps = new Set(
+    steps
+      .filter((s) => s.status === "completed" || s.status === "skipped")
+      .map((s) => s.name),
+  )
+  return RESUME_POINTS.filter((rp) =>
+    rp.prerequisiteSteps.every((step) => completedSteps.has(step)),
+  )
+}
 
 export function RepoOnboardingConsole({
   repoId,
@@ -59,11 +116,18 @@ export function RepoOnboardingConsole({
   // SSE for real-time updates during active pipeline
   const { status: sseStatus, logs: _sseLogs } = useRepoEvents(repoId, { enabled: isActive })
 
-  // Sync SSE status into local state
+  // Sync SSE status into local state — but guard against premature terminal states.
+  // The embed workflow temporarily sets status to "ready" before ontology/justification
+  // start, which causes the UI to flicker (celebration shows, then disappears). SSE is
+  // great for fast intermediate updates (indexing→embedding→ontology), but terminal
+  // states ("ready", errors) should only come from the polling hook which also fetches
+  // step data for confirmation.
   useEffect(() => {
-    if (sseStatus) {
-      setStatus(sseStatus.status)
-    }
+    if (!sseStatus) return
+    const incoming = sseStatus.status
+    // Terminal states: let polling handle these — it brings step data for validation
+    if (incoming === "ready" || ERROR_STATUSES.includes(incoming)) return
+    setStatus(incoming)
   }, [sseStatus, setStatus])
 
   // Load existing context documents on mount
@@ -152,6 +216,7 @@ export function RepoOnboardingConsole({
           embedding: "embedding",
           ontology: "ontology",
           justification: "justifying",
+          graph_sync: "ready",
           health_report: "ready",
         }
         setStatus(statusMap[phase] ?? "indexing")
@@ -168,6 +233,9 @@ export function RepoOnboardingConsole({
       setResuming(false)
     }
   }
+
+  // Compute which resume points are available based on completed steps
+  const availableResumePoints = useMemo(() => getAvailableResumePoints(steps), [steps])
 
   const handleViewBlueprint = () => {
     // Navigate to the repo page — layout re-renders with ready status
@@ -263,39 +331,84 @@ export function RepoOnboardingConsole({
 
       {/* Error state */}
       {isError && (
-        <div className="glass-card border-destructive/30 rounded-lg border p-4 flex items-center justify-between">
-          <div className="space-y-1">
-            <p className="text-sm font-medium text-destructive">Pipeline Error</p>
-            <p className="text-xs text-muted-foreground">
-              {errorMessage ?? `The pipeline encountered an error during ${status.replace("_", " ")}.`}
-            </p>
-          </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                size="sm"
-                variant="outline"
-                className="border-destructive/30 text-destructive hover:bg-destructive/10"
-                disabled={retrying || resuming}
-              >
-                {retrying || resuming ? (
-                  <Spinner className="mr-2 h-3.5 w-3.5" />
-                ) : (
-                  <RefreshCw className="mr-2 h-3.5 w-3.5" />
+        <div className="glass-card border-destructive/30 rounded-lg border p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <p className="text-sm font-medium text-destructive">Pipeline Error</p>
+              <p className="text-xs text-muted-foreground">
+                {errorMessage ?? `The pipeline encountered an error during ${status.replace("_", " ")}.`}
+              </p>
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border-destructive/30 text-destructive hover:bg-destructive/10"
+                  disabled={retrying || resuming}
+                >
+                  {retrying || resuming ? (
+                    <Spinner className="mr-2 h-3.5 w-3.5" />
+                  ) : (
+                    <RefreshCw className="mr-2 h-3.5 w-3.5" />
+                  )}
+                  Restart
+                  <ChevronDown className="ml-1.5 h-3 w-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-72">
+                <DropdownMenuItem onClick={handleRetry} className="flex items-start gap-2 py-2">
+                  <RefreshCw className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-xs font-medium">Full Pipeline</p>
+                    <p className="text-[10px] text-muted-foreground">Start fresh from clone & scan</p>
+                  </div>
+                </DropdownMenuItem>
+                {availableResumePoints.length > 0 && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <p className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-widest text-white/30">
+                      Resume from stage
+                    </p>
+                    {availableResumePoints.map((rp) => (
+                      <DropdownMenuItem
+                        key={rp.phase}
+                        onClick={() => handleResume(rp.phase)}
+                        className="flex items-start gap-2 py-2"
+                      >
+                        <RotateCcw className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                        <div>
+                          <p className="text-xs font-medium">{rp.label}</p>
+                          <p className="text-[10px] text-muted-foreground">{rp.description}</p>
+                        </div>
+                      </DropdownMenuItem>
+                    ))}
+                  </>
                 )}
-                Restart
-                <ChevronDown className="ml-1.5 h-3 w-3" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={handleRetry}>Full Pipeline</DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => handleResume("embedding")}>From Embedding</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleResume("ontology")}>From Ontology</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleResume("justification")}>From Justification</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleResume("health_report")}>From Health Report</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          {/* Failed step detail — show which granular step failed */}
+          {steps.some((s) => s.status === "failed") && (
+            <div className="rounded-md bg-destructive/5 border border-destructive/10 px-3 py-2">
+              {steps
+                .filter((s) => s.status === "failed")
+                .map((s) => (
+                  <div key={s.name} className="flex items-center gap-2">
+                    <span className="h-1.5 w-1.5 rounded-full bg-destructive shrink-0" />
+                    <span className="text-[11px] text-destructive/80">
+                      Failed at <span className="font-medium text-destructive">{s.label}</span>
+                      {s.errorMessage && (
+                        <span className="text-destructive/60"> — {s.errorMessage.length > 120 ? s.errorMessage.slice(0, 120) + "…" : s.errorMessage}</span>
+                      )}
+                      {s.durationMs != null && (
+                        <span className="text-destructive/40 ml-1">({Math.round(s.durationMs / 1000)}s)</span>
+                      )}
+                    </span>
+                  </div>
+                ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -349,7 +462,7 @@ export function RepoOnboardingConsole({
             <PipelineLogViewer repoId={repoId} status={status} />
           </div>
           <div className="lg:col-span-1">
-            <WhatsHappeningPanel status={status} progress={progress} logs={logs} indexingStartedAt={indexingStartedAt} />
+            <WhatsHappeningPanel status={status} progress={progress} logs={logs} steps={steps} indexingStartedAt={indexingStartedAt} errorMessage={errorMessage} />
           </div>
         </div>
       )}

@@ -92,6 +92,25 @@ export async function detectCommunitiesActivity(
   const entities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
   const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
 
+  // Diagnostic: surface entities that would have caused the localeCompare crash
+  const namelessEntities = entities.filter((e) => !e.name && e.kind !== "file" && e.kind !== "directory")
+  if (namelessEntities.length > 0) {
+    log.warn("Found entities without name field (should have been filtered by getAllEntities)", {
+      count: namelessEntities.length,
+      samples: namelessEntities.slice(0, 5).map((e) => ({ id: e.id, kind: e.kind, file_path: e.file_path })),
+    })
+  }
+  log.info("Community detection input", {
+    totalEntities: entities.length,
+    totalEdges: edges.length,
+    namelessCount: namelessEntities.length,
+    kindBreakdown: entities.reduce((acc: Record<string, number>, e) => {
+      const k = e.kind ?? "unknown"
+      acc[k] = (acc[k] ?? 0) + 1
+      return acc
+    }, {}),
+  })
+
   heartbeat(`running Louvain on ${entities.length} entities`)
   const result = detectCommunities(entities, edges)
   log.info("Community detection complete", {
@@ -102,11 +121,16 @@ export async function detectCommunitiesActivity(
   // Write community_id and community_label back onto entities
   if (result.assignments.size > 0) {
     heartbeat(`writing community labels to ${result.assignments.size} entities`)
-    const updates: Array<{ id: string; community_id: number; community_label: string }> = []
+    // Build entity kind lookup for correct collection routing
+    const entityKindMap = new Map(entities.map((e) => [e.id, e.kind]))
+    const updates: Array<{ id: string; kind: string; community_id: number; community_label: string }> = []
     for (const [entityId, communityId] of result.assignments) {
+      const kind = entityKindMap.get(entityId)
+      if (!kind) continue // skip entities not found in graph
       const info = result.communities.get(communityId)
       updates.push({
         id: entityId,
+        kind,
         community_id: communityId,
         community_label: info?.label ?? `Community ${communityId}`,
       })
@@ -121,6 +145,7 @@ export async function detectCommunitiesActivity(
         input.orgId,
         chunk.map((u) => ({
           id: u.id,
+          kind: u.kind,
           community_id: u.community_id,
           community_label: u.community_label,
         }) as unknown as import("@/lib/ports/types").EntityDoc)

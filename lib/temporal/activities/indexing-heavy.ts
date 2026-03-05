@@ -8,6 +8,7 @@ const execFileAsync = promisify(execFile)
 
 import { getContainer } from "@/lib/di/container"
 import { resolveCrossFileCalls } from "@/lib/indexer/cross-file-calls"
+import { loadIgnoreFilter } from "@/lib/indexer/ignore"
 import { extractDocComment } from "@/lib/indexer/doc-extractor"
 import { entityHash } from "@/lib/indexer/entity-hash"
 import { readFileWithEncoding } from "@/lib/indexer/file-reader"
@@ -225,6 +226,9 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
 
   heartbeat("starting SCIP indexers")
 
+  const isIncluded = loadIgnoreFilter(input.indexDir)
+
+  log.info("SCIP plugins resolved", { pluginIds: plugins.map((p) => p.id), packageRoots: input.packageRoots })
   for (const plugin of plugins) {
     try {
       heartbeat(`running SCIP for ${plugin.id}`)
@@ -233,7 +237,17 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
         packageRoots: input.packageRoots,
         orgId: input.orgId,
         repoId: input.repoId,
+        isIncluded,
       })
+      log.info(`SCIP plugin ${plugin.id} result`, {
+        pluginId: plugin.id,
+        entities: result.entities.length,
+        edges: result.edges.length,
+        coveredFiles: result.coveredFiles.length,
+      })
+      if (result.coveredFiles.length === 0) {
+        plog.log("warn", "Step 2/7", `SCIP indexer for ${plugin.id} produced 0 covered files — project markers may be missing (tsconfig.json, go.mod, etc.)`)
+      }
       allEntities.push(...result.entities)
       allEdges.push(...result.edges)
       allCoveredFiles.push(...result.coveredFiles)

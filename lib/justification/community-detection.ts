@@ -31,15 +31,22 @@ export function detectCommunities(
   entities: EntityDoc[],
   edges: EdgeDoc[]
 ): CommunityResult {
-  if (entities.length === 0) {
+  // Filter to entities that are meaningful community members:
+  // - Must have a name (ArangoDB is schemaless — some docs lack `name`)
+  // - Exclude file/directory entities (containers, not code)
+  const codeEntities = entities.filter(
+    (e) => e.name && e.kind !== "file" && e.kind !== "directory"
+  )
+
+  if (codeEntities.length === 0) {
     return { assignments: new Map(), communities: new Map(), totalCommunities: 0 }
   }
 
   // Lazy require — graphology may export as default or as the module itself
-   
+
   const graphologyModule = require("graphology")
   const Graph = (graphologyModule.default ?? graphologyModule) as typeof import("graphology").default
-   
+
   const louvainModule = require("graphology-communities-louvain")
   const louvain = (louvainModule.default ?? louvainModule) as (
     graph: InstanceType<typeof Graph>
@@ -47,8 +54,8 @@ export function detectCommunities(
 
   const graph = new Graph({ multi: false, type: "undirected" })
 
-  // Add nodes
-  for (const entity of entities) {
+  // Add nodes (code entities only — files/directories excluded above)
+  for (const entity of codeEntities) {
     if (!graph.hasNode(entity.id)) {
       graph.addNode(entity.id, {
         kind: entity.kind,
@@ -93,8 +100,8 @@ export function detectCommunities(
     }
   }
 
-  // Build entity lookup for name/pagerank
-  const entityMap = new Map(entities.map((e) => [e.id, e]))
+  // Build entity lookup for name/pagerank (code entities only)
+  const entityMap = new Map(codeEntities.map((e) => [e.id, e]))
 
   // Build CommunityInfo for communities with 3+ entities
   const communities = new Map<number, CommunityInfo>()

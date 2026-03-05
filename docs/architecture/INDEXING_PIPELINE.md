@@ -71,7 +71,7 @@ indexRepoWorkflow (heavy-compute-queue)
   |-- (fire-and-forget children) -------+
   |                                     |
   |   [5] embedRepoWorkflow            |  Pass 1: structural embedding (light-llm-queue)
-  |     |-- Kind-aware embedding        |  TEI nomic-embed-text (HTTP), pgvector
+  |     |-- Kind-aware embedding        |  Vertex AI Gemini Embedding 001 (768d), pgvector
   |     |                               |
   |     +-> [6] discoverOntology        |  Three-tier ontology extraction
   |           |                         |
@@ -557,6 +557,36 @@ Git history mining to produce temporal signals — the "hidden knowledge layer" 
 **Workflow:** `embedRepoWorkflow` | **Queue:** light-llm
 **Source:** `lib/temporal/workflows/embed-repo.ts`, `lib/temporal/activities/embedding.ts`
 
+### Embedding Provider
+
+**Google Vertex AI — Gemini Embedding 001** (managed service, API key auth).
+
+| Property | Value |
+|----------|-------|
+| Model | `gemini-embedding-001` (configurable via `EMBEDDING_MODEL_ID` env var) |
+| Dimensions | **768** (configurable via `EMBEDDING_DIMENSIONS`, model supports up to 3072) |
+| Auth | `GOOGLE_VERTEX_API_KEY` — express mode, no service account needed |
+| Task types | `RETRIEVAL_DOCUMENT` (index-time), `RETRIEVAL_QUERY` (search-time) |
+| Token limit | 8,192 tokens per input text |
+| SDK | `@ai-sdk/google-vertex` → `vertex.textEmbeddingModel()` via Vercel AI SDK `embed()` |
+| Model version tag | `gemini-emb-001-768` (stored in `model_version` column for blue/green re-embedding) |
+| Config | `lib/llm/config.ts` — `EMBEDDING_MODEL_ID`, `EMBEDDING_DIMENSIONS`, `GOOGLE_VERTEX_API_KEY` |
+
+**Previous providers (deprecated):**
+- Self-hosted TEI `nomic-embed-text-v1.5` (768d, CPU-only on fly.io) — removed due to 4096 token limit, slow CPU inference, and operational overhead
+- AWS Bedrock Cohere Embed v4 (1536d) — removed due to AWS Marketplace `INVALID_PAYMENT_INSTRUMENT` blocking model access
+
+### Cross-Encoder Reranking
+
+**AWS Bedrock — Cohere Rerank 3.5** (managed service, IAM auth).
+
+| Property | Value |
+|----------|-------|
+| Model | `cohere.rerank-v3-5:0` (configurable via `RERANKER_MODEL_ID` env var) |
+| SDK | `@ai-sdk/amazon-bedrock` → `bedrock.reranking()` via Vercel AI SDK `rerank()` |
+| Usage | Post-RRF reranking in `hybrid-search.ts` — top 30 candidates re-scored, top `limit` returned |
+| Fallback | 3s timeout; on failure, falls back to RRF order with `degraded.reranker` flag |
+
 ### Input
 
 - `orgId`, `repoId`
@@ -573,7 +603,7 @@ Two-pass embedding solves the ordering problem where first-time embeddings had n
 
 2. **Fetch all file paths** from ArangoDB `files` collection.
 
-3. **Process in batches of 5 files** (`FILES_PER_BATCH = 5`):
+3. **Process in batches of 25 files** (`FILES_PER_BATCH = 25`), with **10 batches running concurrently** (`CONCURRENT_BATCHES = 10`):
 
    a. Fetch entities per file via `graphStore.getEntitiesByFile()`
 
@@ -589,15 +619,31 @@ Two-pass embedding solves the ordering problem where first-time embeddings had n
       - **Code-only variant** (key suffix `::code`): omits all LLM-derived context, embedding only structural signals
       - Both variants stored separately via entity key / entity key `::code`
 
-   d. **Body truncation** via AST summarization — `summarizeBody()` (`lib/justification/ast-summarizer.ts`) replaces naive `.slice()`. Extracts 6 anchor categories (decision points, external calls, mutations, errors, returns, assertions) verbatim; compresses non-anchor lines into structural tokens: `[IMPORTS: N lines]`, `[SETUP: N variables]`, `[LOOP: for over items]`, `[TRY_CATCH]`, `[LOG]`, `[... N lines ...]`. Body capped at 2,000 characters (~500 tokens).
+   d. **Body truncation** via AST summarization — `summarizeBody()` (`lib/justification/ast-summarizer.ts`) replaces naive `.slice()`. Extracts 6 anchor categories (decision points, external calls, mutations, errors, returns, assertions) verbatim; compresses non-anchor lines into structural tokens: `[IMPORTS: N lines]`, `[SETUP: N variables]`, `[LOOP: for over items]`, `[TRY_CATCH]`, `[LOG]`, `[... N lines ...]`. Body capped at 10,000 characters (Gemini supports 8,192 tokens ≈ ~32k chars).
 
-   e. **Embed via TEI** — `nomic-embed-text-v1.5` model (768 dimensions) served by HuggingFace TEI container. Texts batched into `TEI_BATCH_SIZE` chunks (default 32) and sent via HTTP POST to `TEI_URL/embed`.
+   e. **Embed via Vertex AI** — `gemini-embedding-001` model (768 dimensions). Each text is embedded as a separate API request (`gemini-embedding-001` accepts 1 text per request on Vertex AI). Requests are parallelized with a **semaphore-based concurrency limiter** (`EMBED_CONCURRENCY = 50`) with exponential backoff on 429/RESOURCE_EXHAUSTED errors (1s → 2s → 4s → 8s → 16s, up to 5 retries). This achieves ~250 embeddings/sec vs ~2/sec sequential.
 
-   f. **Upsert to pgvector** in sub-batches of 10 with conflict-based deduplication.
+   f. **Upsert to pgvector** in sub-batches of 100 with conflict-based deduplication.
 
 4. **Delete orphaned embeddings** — includes both `entityId` and `entityId::code` in current key set for dual variant cleanup.
 
 5. **Set status** to `"ready"` in PostgreSQL.
+
+#### Throughput Architecture
+
+```
+Workflow level:  31 batches (25 files each) → 10 concurrent activities
+                 ↓
+Activity level:  ~50 entities per batch → 100-doc embed sub-batches
+                 ↓
+Adapter level:   50-concurrent semaphore → individual Vertex AI embed() calls
+                 ↓
+                 Result: ~250 embeddings/sec → 2000 entities in ~8s
+```
+
+**Why this approach vs batch API:** Vertex AI's asynchronous Batch Prediction API does not yet support `gemini-embedding-001` (only `text-embedding-005`). When batch API support ships (announced "coming soon" with 50% cost discount), it will be worth switching for repos >10K entities. For current scale (hundreds to low thousands of entities), concurrent real-time calls with semaphore throttling achieves sub-minute embedding times.
+
+**Rate limit resilience:** Vertex AI quotas for `gemini-embedding-001` are token-based (~5M TPM default, scalable to 20M TPM). At 50 concurrent requests averaging 500 tokens each, throughput is ~1.5M TPM — well within default quota. The semaphore + exponential backoff pattern self-throttles if quota is reached.
 
 #### Pass 2: Synthesis Embedding (runs after justification in Stage 7)
 
@@ -612,21 +658,23 @@ Triggered by `reEmbedWithJustifications` activity as Step 8b in `justify-repo` w
 - **768-dimensional embedding vectors** for every code entity, stored in PostgreSQL pgvector with HNSW index
 - **Dual variants**: semantic (with justification context) + code-only (structural signals only)
 - Metadata: `entity_key`, `kind`, `file_path`, `repo_id`, `org_id`
+- Model version: `gemini-emb-001-768` (enables zero-downtime blue/green re-embedding on model upgrades)
 
 ### Implementation Details
 
 - **Embedding vector validation** — `Number.isFinite()` check on every vector. NaN/Infinity vectors logged and skipped.
-- **TEI resilience** — HTTP calls to TEI retry 3× with exponential backoff (1s/3s/9s) on 5xx/network errors. TEI container has healthcheck with 60s start period.
-- **TEI batching** — Texts batched into `TEI_BATCH_SIZE` chunks (default 32). TEI handles tokenization, truncation, and concurrent inference in Rust.
+- **Vertex AI resilience** — Each embed call retries up to 5× with exponential backoff (1s/2s/4s/8s/16s) on 429 or RESOURCE_EXHAUSTED errors. Semaphore limits in-flight requests to 50 to prevent quota exhaustion.
+- **Concurrent embedding** — `gemini-embedding-001` on Vertex AI accepts 1 text per request. A semaphore-based concurrency limiter (`createSemaphore(50)`) fires 50 requests in parallel, achieving ~250 embeddings/sec throughput. No external dependency — semaphore is implemented inline (~15 lines).
 - **Search fusion** — in `hybrid-search.ts`, all three legs (semantic, keyword, justification) use entity ID as `entityKey` for consistent RRF merging. Semantic search strips `::code` suffix before RRF. Both variants for same entity contribute to fused score. `SearchResult` type carries `id` field (ArangoDB `_key`) alongside `name`.
 - **Adaptive RRF k-parameter** — `computeAdaptiveK()` dynamically adjusts k from inter-source Jaccard similarity of top-10 result sets. High overlap → lower k (amplify consensus). Low overlap → higher k (smooth noise). Range: `[0.5*baseK, 2.0*baseK]`.
-- **Optional cross-encoder reranking** — when `RERANKER_ENABLED=true`, a second TEI container running `BAAI/bge-reranker-v2-m3` re-scores RRF candidates with (query, entity summary) pairs. Exact matches (score=1.0) are pinned and excluded from reranking. Retrieval window widens to `RERANKER_TOP_K` (default 30) per leg. Falls back to RRF results on reranker failure.
+- **Cross-encoder reranking** — Cohere Rerank 3.5 on AWS Bedrock re-scores top 30 RRF candidates via `rerank()` from AI SDK. Exact matches (score=1.0) are pinned and excluded from reranking. Falls back to RRF order on reranker failure (3s timeout).
 
 ### Verification
 
-- Embeddings stored — `SELECT COUNT(*) FROM embeddings WHERE repo_id = @repoId`
-- Dual variants — `SELECT COUNT(*) FROM embeddings WHERE entity_key LIKE '%::code' AND repo_id = @repoId`
-- Vector dimensions correct — `SELECT vector_dims(embedding) FROM embeddings LIMIT 1` = 768
+- Embeddings stored — `SELECT COUNT(*) FROM unerr.entity_embeddings WHERE repo_id = @repoId`
+- Dual variants — `SELECT COUNT(*) FROM unerr.entity_embeddings WHERE entity_key LIKE '%::code' AND repo_id = @repoId`
+- Vector dimensions correct — `SELECT vector_dims(embedding) FROM unerr.entity_embeddings LIMIT 1` = 768
+- Model version — `SELECT DISTINCT model_version FROM unerr.entity_embeddings WHERE repo_id = @repoId` = `gemini-emb-001-768`
 - Search works — call `hybridSearch({ query: "payment processing", orgId, repoId, mode: "hybrid", limit: 10 })`
 
 **Completion: ~95%**
@@ -1131,8 +1179,8 @@ The workflow waits **60 seconds** for additional `pushSignal` signals before pro
 |-------|-------|-------|
 | Max body lines per entity (extraction) | **3,000 lines** | `lib/indexer/types.ts` → `MAX_BODY_LINES` |
 | Max body lines per entity (graph snapshot) | **50 lines** | `lib/use-cases/graph-compactor.ts` |
-| Max body chars per entity (embedding) | **2,000 chars** (~500 tokens) | `lib/temporal/activities/embedding.ts` → `MAX_BODY_CHARS` |
-| Embedding tokenizer limit | **512 tokens** | TEI `truncate: true` (model default) |
+| Max body chars per entity (embedding) | **10,000 chars** (~2,500 tokens) | `lib/temporal/activities/embedding.ts` → `MAX_BODY_CHARS` |
+| Embedding model token limit | **8,192 tokens** | Gemini Embedding 001 model limit |
 | MCP response body truncation | **2,000 bytes** | `lib/mcp/formatter.ts` |
 
 ### Justification Prompt Limits
@@ -1190,8 +1238,9 @@ Token estimation: **~3.5 chars per token** (conservative for code).
 | Stage | Batch Size | Where |
 |-------|-----------|-------|
 | ArangoDB bulk upsert | **1,000 entities** | `arango-graph-store.ts` |
-| Embedding file batches | **5 files per batch** | `embed-repo.ts` |
-| Embedding pgvector upsert | **10 vectors per sub-batch** | `embedding.ts` |
+| Embedding file batches | **25 files per batch** (10 concurrent) | `embed-repo.ts` |
+| Embedding pgvector upsert | **100 vectors per sub-batch** | `embedding.ts` |
+| Embedding API concurrency | **50 parallel requests** (semaphore) | `llamaindex-vector-search.ts` |
 | Justification parallel chunks | **100 entities per chunk** | `justify-repo.ts` |
 | Justification embedding chunks | **20 per chunk** | `justification.ts` |
 | Ontology refinement frequency | **Every 20 levels** | `justify-repo.ts` |

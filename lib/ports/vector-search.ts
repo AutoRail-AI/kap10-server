@@ -1,6 +1,6 @@
 /**
  * Vector search port — embedding generation, storage, and similarity search.
- * Phase 3: Entity embeddings via nomic-embed-text-v1.5 + pgvector (entity_embeddings).
+ * Phase 3: Entity embeddings via Bedrock Cohere Embed v4 + pgvector (entity_embeddings).
  * Phase 4: Justification embeddings for business-purpose search (justification_embeddings).
  */
 
@@ -65,12 +65,12 @@ export interface IVectorSearch {
   /** Delete all justification embeddings for a repo (cleanup on re-justification). */
   deleteJustificationEmbeddings?(repoId: string): Promise<number>
 
-  // ── Cross-Encoder Reranking (Optional) ──────────────────────────────────────
+  // ── Reranking ──────────────────────────────────────────────────────
 
-  /**
-   * Re-score (query, document) pairs using a cross-encoder model.
-   * Returns indices and scores sorted by relevance descending, sliced to topK.
-   * Optional — only available when TEI reranker container is running.
-   */
-  rerank?(query: string, documents: string[], topK: number): Promise<{ index: number; score: number }[]>
+  /** Rerank documents by relevance to a query. Returns indices + scores sorted by relevance. */
+  rerank?(
+    query: string,
+    documents: string[],
+    topK: number
+  ): Promise<{ index: number; relevanceScore: number }[]>
 }

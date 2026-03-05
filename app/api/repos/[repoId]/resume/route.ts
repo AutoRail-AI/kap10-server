@@ -8,7 +8,7 @@ import { errorResponse, successResponse } from "@/lib/utils/api-response"
 import { logger } from "@/lib/utils/logger"
 
 const RESUMABLE_STATUSES = ["error", "ready", "embed_failed", "justify_failed"]
-const VALID_PHASES = ["embedding", "ontology", "justification", "health_report"] as const
+const VALID_PHASES = ["embedding", "ontology", "justification", "graph_sync", "health_report"] as const
 type ResumePhase = (typeof VALID_PHASES)[number]
 
 /** Maps resume phase → Temporal workflow function name */
@@ -16,6 +16,7 @@ const PHASE_WORKFLOW: Record<ResumePhase, string> = {
   embedding: "embedRepoWorkflow",
   ontology: "discoverOntologyWorkflow",
   justification: "justifyRepoWorkflow",
+  graph_sync: "syncLocalGraphWorkflow",
   health_report: "generateHealthReportWorkflow",
 }
 
@@ -24,15 +25,17 @@ const PHASE_WORKFLOW_PREFIX: Record<ResumePhase, string> = {
   embedding: "embed",
   ontology: "ontology",
   justification: "justify",
+  graph_sync: "sync",
   health_report: "health",
 }
 
 /** Maps resume phase → repo status to set */
 const PHASE_STATUS: Record<ResumePhase, string> = {
   embedding: "embedding",
-  ontology: "embedding", // ontology is part of the embedding→ontology→justify chain
+  ontology: "embedding",   // ontology is part of the embedding→ontology→justify chain
   justification: "justifying",
-  health_report: "ready", // health report runs in background, repo is usable
+  graph_sync: "ready",     // graph sync runs in background, repo is usable
+  health_report: "ready",  // health report runs in background, repo is usable
 }
 
 export const POST = withAuth(async (req: NextRequest, { userId }) => {

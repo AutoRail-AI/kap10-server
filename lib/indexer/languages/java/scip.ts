@@ -61,7 +61,7 @@ export async function runSCIPJava(
       return { entities: [], edges: [], coveredFiles: [] }
     }
 
-    const result = parseSCIPOutput(outputFile, opts.repoId, "java")
+    const result = parseSCIPOutput(outputFile, opts.repoId, "java", opts.isIncluded)
 
     // Clean up
     try {

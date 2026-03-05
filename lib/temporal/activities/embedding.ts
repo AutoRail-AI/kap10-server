@@ -1,6 +1,6 @@
 /**
  * Phase 3: Embedding activities for the embedRepoWorkflow.
- * Runs on light-llm-queue (CPU-bound ONNX inference, no GPU needed).
+ * Runs on light-llm-queue (Vertex AI Gemini Embedding 001 — managed service, no local inference).
  *
  * Primary activities (chunked — avoids large Temporal payloads):
  *   - setEmbeddingStatus: Set repo status to "embedding"
@@ -49,11 +49,10 @@ export interface EmbeddableDocument {
 
 /**
  * Max chars for entity body before truncation.
- * 2000 chars ≈ 500 tokens. Combined with EMBEDDING_MAX_TOKENS=512 tokenizer
- * truncation in the adapter, this ensures ONNX never processes sequences
- * long enough to cause quadratic attention memory blowup.
+ * Gemini Embedding 001 supports up to 8192 tokens (~32k chars),
+ * but we cap at 10000 chars to keep pgvector upsert payloads reasonable.
  */
-const MAX_BODY_CHARS = 2000
+const MAX_BODY_CHARS = 10000
 
 function formatKindLabel(kind: string): string {
   switch (kind) {
@@ -253,15 +252,16 @@ async function loadJustificationMap(
 
 /**
  * Embed a set of documents and store in pgvector.
- * The adapter processes one doc at a time with token truncation (O(n²)-safe).
- * We chunk into small DB-upsert batches of UPSERT_BATCH_SIZE for heartbeats.
+ * Vertex AI Gemini Embedding supports large batches (up to 2048 texts),
+ * so we use 100-doc chunks to maximize throughput while keeping
+ * pgvector upsert transactions manageable.
  */
 async function embedAndStore(
   container: Container,
   docs: EmbeddableDocument[],
   _log: ReturnType<typeof logger.child>,
 ): Promise<number> {
-  const upsertBatchSize = 10
+  const upsertBatchSize = 100
   const totalBatches = Math.ceil(docs.length / upsertBatchSize)
   let totalStored = 0
 

@@ -6,14 +6,16 @@
  * using the shared SCIP decoder.
  */
 import { execFile } from "node:child_process"
-import { existsSync, unlinkSync } from "node:fs"
+import { existsSync, statSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
+import { logger } from "@/lib/utils/logger"
 import { parseSCIPOutput } from "../../scip-decoder"
 import type { SCIPOptions } from "../types"
 
 const execFileAsync = promisify(execFile)
+const log = logger.child({ service: "scip-typescript" })
 
 /** Maximum time for scip-typescript to run (10 minutes) */
 const SCIP_TIMEOUT_MS = 10 * 60 * 1000
@@ -41,11 +43,14 @@ export async function runSCIPTypeScript(
       existsSync(join(absRoot, "tsconfig.json")) || existsSync(join(absRoot, "jsconfig.json"))
 
     if (!hasTsConfig) {
+      log.warn("No tsconfig.json or jsconfig.json found — skipping SCIP", { workspaceRoot, absRoot })
       return { entities: [], edges: [], coveredFiles: [] }
     }
 
+    log.info("Running scip-typescript", { workspaceRoot, absRoot })
+
     // Run scip-typescript
-    await execFileAsync(
+    const { stdout, stderr } = await execFileAsync(
       "npx",
       ["--yes", "@sourcegraph/scip-typescript", "index", "--output", outputFile],
       {
@@ -56,12 +61,30 @@ export async function runSCIPTypeScript(
       },
     )
 
+    if (stderr) {
+      log.warn("scip-typescript stderr", { workspaceRoot, stderr: stderr.slice(0, 2000) })
+    }
+    if (stdout) {
+      log.info("scip-typescript stdout", { workspaceRoot, stdout: stdout.slice(0, 1000) })
+    }
+
     // Parse the .scip output file
     if (!existsSync(outputFile)) {
+      log.warn("scip-typescript completed but no index.scip file produced", { workspaceRoot, absRoot })
       return { entities: [], edges: [], coveredFiles: [] }
     }
 
-    const result = parseSCIPOutput(outputFile, opts.repoId, "typescript")
+    const fileSize = statSync(outputFile).size
+    log.info("Parsing SCIP output", { workspaceRoot, outputFile, fileSizeBytes: fileSize })
+
+    const result = parseSCIPOutput(outputFile, opts.repoId, "typescript", opts.isIncluded)
+
+    log.info("SCIP parsing complete", {
+      workspaceRoot,
+      entities: result.entities.length,
+      edges: result.edges.length,
+      coveredFiles: result.coveredFiles.length,
+    })
 
     // Clean up
     try {
@@ -73,7 +96,14 @@ export async function runSCIPTypeScript(
     return result
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
-    console.warn(`[scip-typescript] Failed for ${absRoot}: ${message}`)
+    // Include stderr if available (exec errors often have it)
+    const stderr = (error as { stderr?: string }).stderr
+    log.error("scip-typescript failed", {
+      workspaceRoot,
+      absRoot,
+      error: message.slice(0, 2000),
+      stderr: stderr ? stderr.slice(0, 2000) : undefined,
+    })
     return { entities: [], edges: [], coveredFiles: [] }
   }
 }

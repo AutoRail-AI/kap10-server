@@ -167,3 +167,5 @@ temp/
 *.temp
 
 /generated/prisma
+
+.ssh

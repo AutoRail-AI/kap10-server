@@ -12,6 +12,7 @@
 import { readFileSync } from "node:fs"
 
 import { entityHash } from "./entity-hash"
+import { ALWAYS_IGNORE } from "./ignore"
 import type { ParsedEdge, ParsedEntity } from "./types"
 
 export interface SCIPDecodeResult {
@@ -26,11 +27,13 @@ export interface SCIPDecodeResult {
  * @param scipFilePath - Absolute path to the .scip file
  * @param repoId - Repository ID for deterministic entity hashing
  * @param language - Language identifier (e.g., "typescript", "python", "go")
+ * @param isIncluded - Optional filter: returns true if a relative path should be included
  */
 export function parseSCIPOutput(
   scipFilePath: string,
   repoId: string,
   language: string,
+  isIncluded?: (relativePath: string) => boolean,
 ): SCIPDecodeResult {
   const entities: ParsedEntity[] = []
   const edges: ParsedEdge[] = []
@@ -41,6 +44,21 @@ export function parseSCIPOutput(
     const buffer = readFileSync(scipFilePath)
     const documents = decodeSCIPDocuments(buffer)
 
+    // Use the full ignore filter when provided; fall back to ALWAYS_IGNORE
+    // directory matching for backward compat (tests, standalone usage).
+    const shouldSkip = isIncluded
+      ? (relPath: string) => !isIncluded(relPath)
+      : (relPath: string) => relPath.split("/").some((segment) => ALWAYS_IGNORE.has(segment))
+    const externalDocs = documents.filter((d) => shouldSkip(d.relativePath))
+    const projectDocs = documents.length - externalDocs.length
+
+    if (documents.length === 0) {
+      console.warn(`[scip-${language}] Decoded 0 documents from ${buffer.length} byte SCIP file`)
+    } else {
+      const totalOccurrences = documents.reduce((s, d) => s + d.occurrences.length, 0)
+      console.log(`[scip-${language}] Decoded ${documents.length} documents (${projectDocs} project, ${externalDocs.length} external/skipped), ${totalOccurrences} occurrences from ${buffer.length} bytes`)
+    }
+
     // Pass 1: Collect all definitions and build symbol→entity map
     const symbolToEntityId = new Map<string, string>()
     // L-18a: Per-file entity index for containment lookup in Pass 2
@@ -49,6 +67,9 @@ export function parseSCIPOutput(
     for (const doc of documents) {
       const relPath = doc.relativePath
       if (!relPath) continue
+
+      // Skip external/ignored files (node_modules, .yarn, .unerrignore patterns, etc.)
+      if (shouldSkip(relPath)) continue
 
       coveredFiles.push(relPath)
 
@@ -101,6 +122,7 @@ export function parseSCIPOutput(
     for (const doc of documents) {
       const relPath = doc.relativePath
       if (!relPath) continue
+      if (shouldSkip(relPath)) continue
 
       for (const occurrence of doc.occurrences) {
         if (!occurrence.symbol || occurrence.symbol.startsWith("local ")) continue
@@ -185,7 +207,7 @@ interface SCIPOccurrence {
  *
  * SCIP protobuf wire format:
  * - Message: Index { documents: repeated Document (field 2) }
- * - Document: { relative_path: string (field 4), occurrences: repeated Occurrence (field 2) }
+ * - Document: { relative_path: string (field 1), occurrences: repeated Occurrence (field 2) }
  * - Occurrence: { range: repeated int32 (field 1), symbol: string (field 2), symbol_roles: int32 (field 4) }
  */
 function decodeSCIPDocuments(buffer: Buffer): SCIPDocument[] {
@@ -261,8 +283,8 @@ function decodeDocument(buffer: Buffer, start: number, end: number): SCIPDocumen
       // K-04: Bounds check
       if (fieldEnd > end || fieldEnd < offset) break
 
-      if (fieldNumber === 4) {
-        // relative_path
+      if (fieldNumber === 1) {
+        // relative_path (field 1 in SCIP proto)
         doc.relativePath = buffer.toString("utf-8", offset, fieldEnd)
       } else if (fieldNumber === 2) {
         // occurrence
@@ -380,22 +402,27 @@ export function parseSCIPSymbol(
 
   if (descriptor.endsWith("().")) {
     const name = descriptor.slice(0, -3)
+    if (!name) return null
     return { kind: "method", name, signature: `${name}()` }
   }
   if (descriptor.endsWith("()")) {
     const name = descriptor.slice(0, -2)
+    if (!name) return null
     return { kind: "function", name, signature: `${name}()` }
   }
   if (descriptor.endsWith("#")) {
     const name = descriptor.slice(0, -1)
+    if (!name) return null
     return { kind: "class", name }
   }
   if (descriptor.endsWith(".")) {
     const name = descriptor.slice(0, -1)
+    if (!name) return null
     return { kind: "variable", name }
   }
   if (descriptor.endsWith("/")) {
     const name = descriptor.slice(0, -1)
+    if (!name) return null
     return { kind: "module", name }
   }
 

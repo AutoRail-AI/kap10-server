@@ -5,6 +5,7 @@ import { Command } from "commander"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { getCredentials } from "./auth.js"
+import { createIgnoreFilter } from "../ignore.js"
 
 function loadConfig(): { repoId: string; serverUrl: string; orgId: string } | null {
   const configPath = path.join(process.cwd(), ".unerr", "config.json")
@@ -39,14 +40,8 @@ export function registerWatchCommand(program: Command): void {
 
       const chokidar = await import("chokidar")
 
-      // Load .gitignore patterns
-      const ignore = (await import("ignore")).default
-      const ig = ignore()
-      ig.add([".git", ".unerr", "node_modules"])
-      const gitignorePath = path.join(process.cwd(), ".gitignore")
-      if (fs.existsSync(gitignorePath)) {
-        ig.add(fs.readFileSync(gitignorePath, "utf-8"))
-      }
+      // Load ignore patterns (.gitignore + .unerrignore)
+      const ig = await createIgnoreFilter(process.cwd())
 
       const watcher = chokidar.watch(process.cwd(), {
         ignored: (filePath: string) => {

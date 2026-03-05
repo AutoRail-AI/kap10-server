@@ -29,6 +29,7 @@ import {
   type IdeType,
   isGitRepo,
 } from "../utils/detect.js"
+import { createIgnoreFilter } from "../ignore.js"
 import { getLogFilePath, initLogFile, logApi, logError, logInfo } from "../utils/log.js"
 import { banner, blank, detail, done, fail, info, pc, section, success, warn } from "../utils/ui.js"
 
@@ -561,18 +562,12 @@ async function stepLocalFlow(ctx: SetupContext): Promise<{ repoId: string } | nu
     uploadPath: string
   }
 
-  // Create .gitignore-aware zip
+  // Create ignore-aware zip (.gitignore + .unerrignore)
   const archiver = (await import("archiver")).default
-  const ignore = (await import("ignore")).default
   const path = await import("node:path")
   const fs = await import("node:fs")
 
-  const gitignoreFilePath = path.join(cwd, ".gitignore")
-  const ig = ignore()
-  ig.add([".git", ".unerr", "node_modules"])
-  if (fs.existsSync(gitignoreFilePath)) {
-    ig.add(fs.readFileSync(gitignoreFilePath, "utf-8"))
-  }
+  const ig = await createIgnoreFilter(cwd)
 
   const archive = archiver("zip", { zlib: { level: 6 } })
   const chunks: Buffer[] = []

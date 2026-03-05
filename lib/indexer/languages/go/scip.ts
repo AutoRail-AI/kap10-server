@@ -51,7 +51,7 @@ export async function runSCIPGo(
       return { entities: [], edges: [], coveredFiles: [] }
     }
 
-    const result = parseSCIPOutput(outputFile, opts.repoId, "go")
+    const result = parseSCIPOutput(outputFile, opts.repoId, "go", opts.isIncluded)
 
     // Clean up
     try {

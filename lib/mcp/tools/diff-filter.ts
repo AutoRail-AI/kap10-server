@@ -2,6 +2,7 @@
  * Diff filter — strips lockfile and build artifact hunks from diffs.
  * These contain no meaningful code structure for the knowledge graph.
  */
+import { ALWAYS_IGNORE } from "@/lib/indexer/ignore"
 
 const LOCKFILE_PATTERNS = [
   "package-lock.json",
@@ -16,26 +17,21 @@ const LOCKFILE_PATTERNS = [
   "bun.lockb",
 ]
 
-const BUILD_DIR_PATTERNS = [
-  "node_modules/",
-  "dist/",
-  ".next/",
-  "build/",
-  "__pycache__/",
-  ".tox/",
-  "vendor/",
-  "target/",
-]
+/** Additional build/artifact dirs for diff filtering beyond ALWAYS_IGNORE. */
+const EXTRA_BUILD_DIRS = new Set([".tox", "target"])
 
 /**
  * Check if a file path matches lockfile or build artifact patterns.
+ * Uses the shared ALWAYS_IGNORE set plus review-specific extras.
  */
 function isExcludedPath(filePath: string): boolean {
   for (const lockfile of LOCKFILE_PATTERNS) {
     if (filePath.endsWith(lockfile) || filePath === lockfile) return true
   }
-  for (const buildDir of BUILD_DIR_PATTERNS) {
-    if (filePath.includes(buildDir)) return true
+  // Check path segments against ALWAYS_IGNORE + review-specific extras
+  const segments = filePath.split("/")
+  for (const segment of segments) {
+    if (ALWAYS_IGNORE.has(segment) || EXTRA_BUILD_DIRS.has(segment)) return true
   }
   return false
 }

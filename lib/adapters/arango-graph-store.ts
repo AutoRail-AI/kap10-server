@@ -734,8 +734,10 @@ export class ArangoGraphStore implements IGraphStore {
     arangoLog.info("Bulk upserting entities", { orgId, count: entities.length })
     const db = await getDbAsync()
     const byKind = new Map<string, EntityDoc[]>()
+    let missingKindCount = 0
     for (const e of entities) {
       const kind = (e.kind as string) ?? "function"
+      if (!e.kind) missingKindCount++
       const coll = KIND_TO_COLLECTION[kind] ?? "functions"
       if (!byKind.has(coll)) byKind.set(coll, [])
       const key = (e.id ?? (e as { _key?: string })._key) as string
@@ -751,6 +753,11 @@ export class ArangoGraphStore implements IGraphStore {
         await col.import(batch, { onDuplicate: "update" })
       }
       arangoLog.info("Entities upserted into collection", { collection: collName, count: list.length })
+    }
+    if (missingKindCount > 0) {
+      arangoLog.warn("Entities upserted without kind field — defaulted to functions collection", {
+        orgId, missingKindCount, total: entities.length,
+      })
     }
     arangoLog.info("Bulk upsert entities complete", { orgId, total: entities.length, durationMs: Date.now() - start })
   }
@@ -839,29 +846,53 @@ export class ArangoGraphStore implements IGraphStore {
     const start = Date.now()
     arangoLog.info("Deleting all repo graph data", { orgId, repoId, docCollections: DOC_COLLECTIONS.length, edgeCollections: EDGE_COLLECTIONS.length })
     const db = await getDbAsync()
-    const docCols = [...DOC_COLLECTIONS]
-    const edgeCols = [...EDGE_COLLECTIONS]
-    for (const name of docCols) {
-      const cursor = await db.query(
-        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId REMOVE doc IN @@coll RETURN 1`,
-        { "@coll": name, orgId, repoId }
-      )
-      const removed = await cursor.all()
-      if (removed.length > 0) {
-        arangoLog.info("Removed docs from collection", { collection: name, count: removed.length, repoId })
+
+    // Pre-fetch existing collections so we only query ones that actually exist.
+    // This avoids AQL "collection or view not found" errors entirely.
+    const existingCollections = new Set<string>()
+    try {
+      const colList = await db.listCollections(false)
+      for (const col of colList) {
+        existingCollections.add(col.name)
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      arangoLog.warn("Failed to list collections, will attempt all", { error: msg })
+    }
+
+    const allCollections = [
+      ...DOC_COLLECTIONS.map((name) => ({ name, type: "doc" as const })),
+      ...EDGE_COLLECTIONS.map((name) => ({ name, type: "edge" as const })),
+    ]
+    let totalRemoved = 0
+    for (const { name, type } of allCollections) {
+      // Skip collections that don't exist in the database
+      if (existingCollections.size > 0 && !existingCollections.has(name)) {
+        arangoLog.debug("Collection does not exist, skipping wipe", { collection: name })
+        continue
+      }
+      try {
+        const cursor = await db.query(
+          `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId REMOVE doc IN @@coll RETURN 1`,
+          { "@coll": name, orgId, repoId }
+        )
+        const removed = await cursor.all()
+        if (removed.length > 0) {
+          totalRemoved += removed.length
+          arangoLog.info(`Removed ${type}s from collection`, { collection: name, count: removed.length, repoId })
+        }
+      } catch (error: unknown) {
+        // Belt-and-suspenders: still catch per-collection errors gracefully
+        const errNum = (error as { errorNum?: number }).errorNum
+        const msg = error instanceof Error ? error.message : String(error)
+        if (errNum === 1203 || msg.includes("collection or view not found")) {
+          arangoLog.debug("Collection not found during wipe, skipping", { collection: name })
+        } else {
+          arangoLog.warn("Failed to wipe collection (non-fatal)", { collection: name, error: msg })
+        }
       }
     }
-    for (const name of edgeCols) {
-      const cursor = await db.query(
-        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId REMOVE doc IN @@coll RETURN 1`,
-        { "@coll": name, orgId, repoId }
-      )
-      const removed = await cursor.all()
-      if (removed.length > 0) {
-        arangoLog.info("Removed edges from collection", { collection: name, count: removed.length, repoId })
-      }
-    }
-    arangoLog.info("Repo graph data deleted", { orgId, repoId, durationMs: Date.now() - start })
+    arangoLog.info("Repo graph data deleted", { orgId, repoId, totalRemoved, durationMs: Date.now() - start })
   }
 
   async healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }> {
@@ -1485,9 +1516,21 @@ export class ArangoGraphStore implements IGraphStore {
         { "@coll": collName, orgId, repoId, lim: perCollectionLimit }
       )
       const docs = await cursor.all()
+      let skipped = 0
       for (const d of docs) {
         const { _key, _id, ...rest } = d as { _key: string; _id: string; [k: string]: unknown }
+        // ArangoDB is schemaless — skip entities missing required `name` field
+        // (file/directory entities use `path` instead, so they're exempt)
+        if (!rest.name && collName !== "files") {
+          skipped++
+          continue
+        }
         results.push({ id: _key, ...rest } as EntityDoc)
+      }
+      if (skipped > 0) {
+        arangoLog.warn("Skipped nameless entities in getAllEntities", {
+          collection: collName, skipped, total: docs.length, orgId, repoId,
+        })
       }
     }
     return results.slice(0, limit)
@@ -2177,10 +2220,14 @@ export class ArangoGraphStore implements IGraphStore {
       )
     }
     for (const name of EDGE_COLLECTIONS) {
-      await db.query(
-        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.index_version == @iv REMOVE doc IN @@coll`,
-        { "@coll": name, orgId, repoId, iv: indexVersion }
-      )
+      try {
+        await db.query(
+          `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.index_version == @iv REMOVE doc IN @@coll`,
+          { "@coll": name, orgId, repoId, iv: indexVersion }
+        )
+      } catch {
+        // Collection may not exist yet — skip gracefully
+      }
     }
   }
 
@@ -2194,10 +2241,14 @@ export class ArangoGraphStore implements IGraphStore {
       )
     }
     for (const name of EDGE_COLLECTIONS) {
-      await db.query(
-        `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.index_version != @iv REMOVE doc IN @@coll`,
-        { "@coll": name, orgId, repoId, iv: currentIndexVersion }
-      )
+      try {
+        await db.query(
+          `FOR doc IN @@coll FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.index_version != @iv REMOVE doc IN @@coll`,
+          { "@coll": name, orgId, repoId, iv: currentIndexVersion }
+        )
+      } catch {
+        // Collection may not exist yet — skip gracefully
+      }
     }
   }
 

@@ -3,6 +3,7 @@
  */
 
 import { heartbeat } from "@temporalio/activity"
+import { ALWAYS_IGNORE } from "@/lib/indexer/ignore"
 import type { AstGrepResult, ImpactReportDoc } from "@/lib/ports/types"
 
 export interface SimulateRuleInput {
@@ -37,7 +38,7 @@ export async function simulateRuleBlastRadius(input: SimulateRuleInput): Promise
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true })
       for (const entry of entries) {
-        if (entry.isDirectory() && !["node_modules", ".git", "dist"].includes(entry.name)) {
+        if (entry.isDirectory() && !ALWAYS_IGNORE.has(entry.name)) {
           countFiles(path.join(dir, entry.name))
         } else if (entry.isFile()) {
           totalFiles++

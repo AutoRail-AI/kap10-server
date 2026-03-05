@@ -195,6 +195,17 @@ export async function wipeRepoGraphData(input: { orgId: string; repoId: string }
   const log = logger.child({ service: "indexing-light", organizationId: input.orgId, repoId: input.repoId })
   log.info("Wiping existing graph data for clean reindex")
   const container = getContainer()
+
+  // Best-effort bootstrap — covers newly added collections that may not yet exist.
+  // If bootstrap itself fails (e.g., ArangoDB edge case), deleteRepoData handles
+  // missing collections gracefully with per-collection try/catch.
+  try {
+    await container.graphStore.bootstrapGraphSchema()
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error)
+    log.warn("Bootstrap before wipe failed (non-fatal, proceeding with wipe)", { error: msg })
+  }
+
   const start = Date.now()
   await container.graphStore.deleteRepoData(input.orgId, input.repoId)
   log.info("Graph data wiped", { durationMs: Date.now() - start })
