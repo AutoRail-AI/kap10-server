@@ -42,9 +42,9 @@ Each feature links to:
 | | |
 |---|---|
 | **Architecture Doc** | [PHASE_5.5_PROMPT_LEDGER_REWIND_AND_LOCAL_INGESTION.md](PHASE_5.5_PROMPT_LEDGER_REWIND_AND_LOCAL_INGESTION.md) — "Local Repo Ingestion" section |
-| **Design Decisions** | `provider: "local_cli"` repos use Supabase Storage upload instead of git clone. `prepareRepoIntelligenceSpace` downloads via pre-signed URL. Rest of indexing pipeline is identical to GitHub repos — same SCIP, same embedding, same justification. IStorageProvider port abstracts upload/download. |
-| **Data Flow** | `unerr init` → `POST /api/cli/init` → repo record created → `unerr push` → zip upload to Supabase Storage → Temporal `indexRepoWorkflow` |
-| **Key Code** | `packages/cli/src/commands/init.ts`, `packages/cli/src/commands/push.ts`, `app/api/cli/init/route.ts`, `app/api/cli/repos/route.ts` |
+| **Design Decisions** | `provider: "local_cli"` repos use Supabase Storage upload instead of git clone. `prepareRepoIntelligenceSpace` downloads via pre-signed URL. Rest of indexing pipeline is identical to GitHub repos — same SCIP, same embedding, same justification. IStorageProvider port abstracts upload/download. Zip creation uses the unified ignore system (`packages/cli/src/ignore.ts`) respecting `.gitignore` + `.unerrignore`. |
+| **Data Flow** | `unerr init` → `POST /api/cli/init` → repo record created → `unerr push` → ignore-aware zip upload to Supabase Storage → Temporal `indexRepoWorkflow` |
+| **Key Code** | `packages/cli/src/commands/init.ts`, `packages/cli/src/commands/push.ts`, `packages/cli/src/ignore.ts`, `app/api/cli/init/route.ts`, `app/api/cli/repos/route.ts` |
 | **Data Stores** | PostgreSQL (`unerr.repos`), Supabase Storage (`cli_uploads` bucket, 500MB limit) |
 
 ### 1.4 Ephemeral Sandbox
@@ -215,8 +215,8 @@ Each feature links to:
 | | |
 |---|---|
 | **Architecture Doc** | [PHASE_5.6_CLI_FIRST_ONBOARDING.md](PHASE_5.6_CLI_FIRST_ONBOARDING.md) |
-| **Design Decisions** | Chokidar-based, respects `.gitignore`. 2s debounce default. Runs config integrity check every 60s with auto-repair. Calls `sync_local_diff` via MCP — reuses existing sync infrastructure. |
-| **Key Code** | `packages/cli/src/commands/watch.ts` |
+| **Design Decisions** | Chokidar-based, respects `.gitignore` + `.unerrignore` via the shared `createIgnoreFilter()` utility. 2s debounce default. Runs config integrity check every 60s with auto-repair. Calls `sync_local_diff` via MCP — reuses existing sync infrastructure. |
+| **Key Code** | `packages/cli/src/commands/watch.ts`, `packages/cli/src/ignore.ts` |
 | **Data Stores** | Redis (via sync_local_diff) |
 
 ### 3.4 Local-First Mode
@@ -736,6 +736,16 @@ These design decisions affect multiple features:
 | **Affects** | Live coding context, prompt ledger, MCP tool accuracy |
 | **Key Code** | `lib/onboarding/bootstrap-rule.ts` |
 | **Design** | `.cursor/rules/unerr.mdc` forces agents to call `sync_local_diff` before/after every operation. Per-user, per-repo, per-branch scope. 12h TTL with sliding window. |
+
+### Unified Ignore System
+
+| | |
+|---|---|
+| **Architecture Doc** | [INDEXING_PIPELINE.md](INDEXING_PIPELINE.md) — Section 20.12 |
+| **Affects** | All file scanning, SCIP indexing, pattern detection, diff filtering, CLI commands |
+| **Key Code** | `lib/indexer/ignore.ts` (server — single source of truth), `packages/cli/src/ignore.ts` (CLI mirror) |
+| **Design** | Three-layer filtering: `ALWAYS_IGNORE` set (30+ dirs for all 10 language ecosystems) + `.gitignore` + `.unerrignore`. `loadIgnoreFilter(indexDir)` returns a cached predicate. Directory walkers use `ALWAYS_IGNORE.has()` for O(1) fast skipping; file-level filtering uses the full predicate. `ALWAYS_IGNORE_GLOBS` handles patterns like `*.egg-info/` that require glob matching. CLI mirrors the server list and adds `.unerr`. |
+| **Consumers** | `scanner.ts`, `scip-decoder.ts`, `monorepo.ts`, `indexing-heavy.ts`, `scip-code-intelligence.ts`, `semgrep-pattern-engine.ts`, `rule-simulation.ts`, `diff-filter.ts`, CLI `push.ts`/`watch.ts`/`setup.ts` |
 
 ### Performance Rewrite (Rust Sidecar)
 

@@ -17,21 +17,18 @@ const LOCKFILE_PATTERNS = [
   "bun.lockb",
 ]
 
-/** Additional build/artifact dirs for diff filtering beyond ALWAYS_IGNORE. */
-const EXTRA_BUILD_DIRS = new Set([".tox", "target"])
-
 /**
  * Check if a file path matches lockfile or build artifact patterns.
- * Uses the shared ALWAYS_IGNORE set plus review-specific extras.
+ * Uses the shared ALWAYS_IGNORE set for directory exclusion.
  */
 function isExcludedPath(filePath: string): boolean {
   for (const lockfile of LOCKFILE_PATTERNS) {
     if (filePath.endsWith(lockfile) || filePath === lockfile) return true
   }
-  // Check path segments against ALWAYS_IGNORE + review-specific extras
+  // Check path segments against ALWAYS_IGNORE
   const segments = filePath.split("/")
   for (const segment of segments) {
-    if (ALWAYS_IGNORE.has(segment) || EXTRA_BUILD_DIRS.has(segment)) return true
+    if (ALWAYS_IGNORE.has(segment)) return true
   }
   return false
 }

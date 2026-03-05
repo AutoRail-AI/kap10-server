@@ -147,7 +147,7 @@ Generates a `runId` (UUID) and `indexVersion` (UUID for shadow re-indexing). If 
 
 ### 3d. CLI Upload (Local/Non-GitHub)
 
-`unerr push` creates a `.gitignore`-respecting zip, uploads to Supabase Storage, then triggers `indexRepoWorkflow` with `provider: "local_cli"`. The intelligence space preparation stage downloads and extracts the zip instead of cloning from GitHub.
+`unerr push` creates an ignore-aware zip (respecting `.gitignore` + `.unerrignore` via the shared `createIgnoreFilter()` utility in `packages/cli/src/ignore.ts`), uploads to Supabase Storage, then triggers `indexRepoWorkflow` with `provider: "local_cli"`. The intelligence space preparation stage downloads and extracts the zip instead of cloning from GitHub.
 
 **Features that depend on this:** 1.3 Local CLI Upload, 1.4 Ephemeral Sandbox.
 
@@ -172,7 +172,11 @@ Generates a `runId` (UUID) and `indexVersion` (UUID for shadow re-indexing). If 
 3. **Scan the intelligence space** via `scanIndexDir()`:
    - Runs `git ls-files --cached --others --exclude-standard` (respects `.gitignore`)
    - Falls back to `find` if git is unavailable
-   - Skips known noise: `node_modules`, `.git`, `.next`, `dist`, `vendor`, `__pycache__`, lockfiles, binary files
+   - All results post-filtered through the **unified ignore system** (`loadIgnoreFilter()` from `lib/indexer/ignore.ts`) which combines three layers:
+     - **`ALWAYS_IGNORE`** — 30+ hardcoded directories for all supported ecosystems (Node, Python, Go, Rust, Java, C#, Ruby, PHP, C/C++): `node_modules`, `.git`, `target`, `.gradle`, `obj`, `.bundle`, `__pycache__`, `dist`, `vendor`, `.venv`, etc.
+     - **`.gitignore`** — standard gitignore patterns from the repository root
+     - **`.unerrignore`** — optional user-defined patterns (gitignore syntax) for excluding test fixtures, generated code, docs, etc. from indexing
+   - The filter is **cached per indexDir** — `scanIndexDir`, `parseSCIPOutput`, and `scanWithAstGrep` all share the same cached filter instance within a single indexing run
    - Returns a flat list of `ScannedFile[]` with `relativePath`, `absolutePath`, `extension`
 
 4. **Detect languages** via `detectLanguages()` with polyglot monorepo support:
@@ -242,7 +246,8 @@ SCIP (Sourcegraph Code Intelligence Protocol) is a compiler-grade code analysis 
    All 10 language plugins now have SCIP wiring. If the binary is not installed on the worker, the pipeline falls back to tree-sitter transparently — the binary pre-check surfaces missing binaries as pipeline log warnings.
 
 3. **Parse the SCIP output** (protobuf binary) into `ParsedEntity[]` and `ParsedEdge[]`:
-   - **Two-pass decoder** — Pass 1 builds per-file entity index (definitions). Pass 2 classifies edges as `calls` (function/method targets) or `references` (class/variable/module targets) using containment-based lookup with binary search on entity start lines. Deduplicates edges.
+   - **Ignore filtering** — the `isIncluded` filter (from `loadIgnoreFilter()`) is created once in `runSCIP` and threaded through `SCIPOptions` → language plugin → `parseSCIPOutput()`. This filters out dependency type definitions (e.g., `node_modules/.pnpm/@types/*/...`) that SCIP resolves but that inflate entity counts and drop coverage metrics. Without this filter, ~2,400 ghost file entities from `node_modules` type definitions can drop SCIP coverage from ~87% to 47%.
+   - **Two-pass decoder** — Pass 1 builds per-file entity index (definitions), skipping documents whose path fails the ignore filter. Pass 2 classifies edges as `calls` (function/method targets) or `references` (class/variable/module targets) using containment-based lookup with binary search on entity start lines. Deduplicates edges. Pass 2 also skips ignored documents.
    - Entities: functions, classes, interfaces, types, variables — with precise `start_line`, `end_line`, `signature`, `documentation`
    - Edges: `calls`, `references`, `imports`, `extends`, `implements`
 
@@ -1085,7 +1090,7 @@ Triggered after a rewind action (Feature 4.3). Fetches reverted ledger entries, 
 
 #### Sub-task 10.2: Structural Pattern Detection (ast-grep)
 
-Runs structural pattern matching via the Semgrep adapter. 23 built-in detectors: N+1 queries, empty catch blocks, missing cleanup, hardcoded credentials, etc. Evidence limited to 10 matches per pattern, snippets capped at 200 chars.
+Runs structural pattern matching via the Semgrep adapter (`lib/adapters/semgrep-pattern-engine.ts`). 23 built-in detectors: N+1 queries, empty catch blocks, missing cleanup, hardcoded credentials, etc. Evidence limited to 10 matches per pattern, snippets capped at 200 chars. Both `scanPatterns` (Semgrep CLI, runs with `--no-git-ignore`) and `scanWithAstGrep` (native AST walking) post-filter results through the unified ignore system (`loadIgnoreFilter` + `ALWAYS_IGNORE`) to exclude matches in dependency directories and user-ignored paths.
 
 #### Sub-task 10.3: LLM-Enhanced Rule Synthesis
 
@@ -1489,6 +1494,48 @@ Every stage has fallback behavior:
 - Profile cache miss → falls back to direct DB queries
 
 No single file or entity failure can prevent the pipeline from completing.
+
+### 20.12 Unified Ignore System
+
+All file filtering throughout the entire pipeline is centralized in **`lib/indexer/ignore.ts`** — a single source of truth.
+
+**Three layers, one filter function:**
+
+| Layer | Source | Purpose |
+|-------|--------|---------|
+| `ALWAYS_IGNORE` (Set) | Hardcoded in `ignore.ts` | 30+ directories for all 10 supported language ecosystems (Node, Python, Go, Rust, Java, C#, Ruby, PHP, C/C++) |
+| `.gitignore` | Repository root | Standard gitignore patterns |
+| `.unerrignore` | Repository root | User-defined exclusions (test fixtures, generated code, docs) using gitignore syntax |
+
+**Two consumption patterns:**
+
+1. **`loadIgnoreFilter(indexDir)`** — returns a cached `(relativePath: string) => boolean` predicate for file-level filtering. Used by `scanIndexDir`, `parseSCIPOutput`, `scanPatterns`, `scanWithAstGrep`.
+2. **`ALWAYS_IGNORE.has(entry.name)`** — O(1) directory name check for fast skipping in recursive directory walkers. Used by `monorepo.ts`, `semgrep-pattern-engine.ts`, `rule-simulation.ts`, `diff-filter.ts`.
+
+**Design rationale:**
+- **Cache per indexDir** — scanner, SCIP decoder, and Semgrep all hit the same repo root; avoid re-reading `.gitignore`/`.unerrignore` files.
+- **Lazy `require("ignore")`** — per the project's lazy initialization rules, no top-level import of the `ignore` npm package.
+- **`.unerrignore` loaded after `.gitignore`** — patterns stack, so `.unerrignore` can override `.gitignore` with negation (`!important-file.log`).
+- **`ALWAYS_IGNORE_GLOBS`** — separated from the Set for patterns requiring glob matching (e.g., `*.egg-info/`) that can't be matched via `Set.has()`.
+- **`clearIgnoreCache()`** — exported for test isolation.
+
+**CLI mirror:** `packages/cli/src/ignore.ts` provides `createIgnoreFilter(cwd)` with the same `ALWAYS_IGNORE` list plus `.unerr` (CLI-specific). The CLI is explicitly documented to keep its list in sync with the server.
+
+**Consumers (exhaustive):**
+
+| File | What it uses | Context |
+|------|-------------|---------|
+| `lib/indexer/scanner.ts` | `loadIgnoreFilter` | File discovery for all indexing |
+| `lib/indexer/scip-decoder.ts` | `isIncluded` param + `ALWAYS_IGNORE` fallback | SCIP protobuf document filtering |
+| `lib/indexer/monorepo.ts` | `ALWAYS_IGNORE` | Language detection per workspace root |
+| `lib/temporal/activities/indexing-heavy.ts` | `loadIgnoreFilter` | Creates filter, passes to all SCIP plugins |
+| `lib/adapters/scip-code-intelligence.ts` | `loadIgnoreFilter` | Port adapter for code intelligence |
+| `lib/adapters/semgrep-pattern-engine.ts` | `ALWAYS_IGNORE` + `loadIgnoreFilter` | Two-tier: fast dir skip + full file filter |
+| `lib/temporal/activities/rule-simulation.ts` | `ALWAYS_IGNORE` | Blast radius file counting |
+| `lib/mcp/tools/diff-filter.ts` | `ALWAYS_IGNORE` | PR diff hunk stripping |
+| `packages/cli/src/commands/push.ts` | `createIgnoreFilter` | Zip archive creation |
+| `packages/cli/src/commands/watch.ts` | `createIgnoreFilter` | Chokidar file watcher |
+| `packages/cli/src/commands/setup.ts` | `createIgnoreFilter` | Onboarding zip upload |
 
 ---
 
