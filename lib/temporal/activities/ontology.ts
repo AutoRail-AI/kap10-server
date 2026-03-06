@@ -13,13 +13,11 @@ import {
   extractDomainTerms,
 } from "@/lib/justification/ontology-extractor"
 import type { DomainOntologyDoc, EntityDoc } from "@/lib/ports/types"
-import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
+import type { PipelineContext } from "@/lib/temporal/activities/pipeline-logs"
+import { pipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
-export interface OntologyInput {
-  orgId: string
-  repoId: string
-}
+export interface OntologyInput extends PipelineContext {}
 
 /** Lazy container accessor — avoids static import of DI container at module load. */
 function lazyContainer() {
@@ -42,24 +40,43 @@ export async function discoverAndStoreOntology(
   input: OntologyInput,
 ): Promise<{ termCount: number }> {
   const log = logger.child({ service: "ontology", organizationId: input.orgId, repoId: input.repoId })
-  const plog = createPipelineLogger(input.repoId, "ontology")
+  const plog = pipelineLogger(input, "ontology")
+  const activityStart = Date.now()
   const container = lazyContainer()
 
   heartbeat("fetching entities for ontology")
   plog.log("info", "Step 3/7", "Discovering domain ontology...")
+  const fetchStart = Date.now()
   const entities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
-  log.info("Fetched entities for ontology", { entityCount: entities.length })
-  plog.log("info", "Step 3/7", `Analyzing ${entities.length} entities for domain terms...`)
+  const fetchMs = Date.now() - fetchStart
+
+  // Entity kind distribution for observability
+  const kindDist: Record<string, number> = {}
+  for (const e of entities) { kindDist[e.kind] = (kindDist[e.kind] ?? 0) + 1 }
+  log.info("Fetched entities for ontology", { entityCount: entities.length, kindDist, fetchMs })
+  plog.log("info", "Step 3/7", `Analyzing ${entities.length} entities for domain terms (${fetchMs}ms) | ${Object.entries(kindDist).map(([k, v]) => `${k}:${v}`).join(", ")}`)
 
   heartbeat("extracting and refining ontology")
+  const refineStart = Date.now()
   const ontology = await extractAndRefineOntologyInternal(input, entities)
-  log.info("Ontology refined", { termCount: ontology.terms.length })
-  plog.log("info", "Step 3/7", `Ontology refined — ${ontology.terms.length} domain terms discovered`)
+  const refineMs = Date.now() - refineStart
+
+  const tierCounts = {
+    domain: ontology.term_tiers?.domain?.length ?? 0,
+    architectural: ontology.term_tiers?.architectural?.length ?? 0,
+    framework: ontology.term_tiers?.framework?.length ?? 0,
+  }
+  log.info("Ontology refined", { termCount: ontology.terms.length, tierCounts, refineMs })
+  plog.log("info", "Step 3/7", `Ontology refined — ${ontology.terms.length} terms (domain: ${tierCounts.domain}, arch: ${tierCounts.architectural}, framework: ${tierCounts.framework}) (${refineMs}ms)`)
 
   heartbeat("storing ontology")
+  const storeStart = Date.now()
   await container.graphStore.upsertDomainOntology(input.orgId, ontology)
-  log.info("Ontology stored")
-  plog.log("info", "Step 3/7", "Domain ontology stored")
+  const storeMs = Date.now() - storeStart
+
+  const totalMs = Date.now() - activityStart
+  log.info("Ontology stored", { totalMs, storeMs, projectName: ontology.project_name, techStack: ontology.tech_stack })
+  plog.log("info", "Step 3/7", `Domain ontology stored (project: ${ontology.project_name ?? "unknown"}) | Fetch: ${fetchMs}ms, Refine: ${refineMs}ms, Store: ${storeMs}ms, Total: ${totalMs}ms`)
 
   // TBI-C-03: Persist workspace manifest to relational store for fast access
   if (ontology.project_name || ontology.tech_stack || ontology.project_domain) {
@@ -182,7 +199,7 @@ async function extractProjectContext(
   orgId: string,
   repoId: string
 ): Promise<Pick<DomainOntologyDoc, "project_name" | "project_description" | "project_domain" | "tech_stack">> {
-  const workspacePath = `/data/workspaces/${orgId}/${repoId}`
+  const workspacePath = `/data/repo-indices/${orgId}/${repoId}`
   const result: Pick<DomainOntologyDoc, "project_name" | "project_description" | "project_domain" | "tech_stack"> = {}
 
   // Try package.json first (Node.js / JS/TS projects)

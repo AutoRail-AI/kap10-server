@@ -21,7 +21,7 @@ export const POST = withAuth(async (req: NextRequest) => {
   if (!repo) {
     return errorResponse("Repo not found", 404)
   }
-  const stopAllowed = ["indexing", "embedding", "justifying", "ontology", "pending"]
+  const stopAllowed = ["indexing", "embedding", "justifying", "ontology", "analyzing", "pending"]
   if (!stopAllowed.includes(repo.status)) {
     return errorResponse(
       `Cannot stop: repo is in '${repo.status}' state. Only active pipeline states can be stopped.`,
@@ -29,11 +29,10 @@ export const POST = withAuth(async (req: NextRequest) => {
     )
   }
 
-  const workflowId = repo.workflowId ?? `index-${orgId}-${repoId}`
   try {
-    await container.workflowEngine.cancelWorkflow(workflowId)
+    await container.workflowEngine.cancelAllRepoWorkflows(orgId, repoId)
   } catch {
-    // workflow may already be done
+    // workflow engine may be unavailable
   }
 
   await container.relationalStore.updateRepoStatus(repoId, {

@@ -7,7 +7,8 @@
  */
 
 import { heartbeat } from "@temporalio/activity"
-import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
+import type { PipelineContext } from "@/lib/temporal/activities/pipeline-logs"
+import { pipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
 /**
@@ -19,46 +20,62 @@ export async function scanSynthesizeAndStore(input: AstGrepScanInput): Promise<{
   rulesGenerated: number
 }> {
   const log = logger.child({ service: "pattern-detection", organizationId: input.orgId, repoId: input.repoId })
-  const plog = createPipelineLogger(input.repoId, "pattern-detection")
-  log.info("Starting pattern detection scan")
-  plog.log("info", "Step 7/7", "Scanning codebase for structural patterns...")
+  const plog = pipelineLogger(input, "pattern-detection")
+  const activityStart = Date.now()
+  log.info("Starting pattern detection scan", { languages: input.languages })
+  plog.log("info", "Step 7/7", `Scanning codebase for structural patterns (languages: ${input.languages.join(", ")})...`)
 
   try {
+    const scanStart = Date.now()
     const scanResult = await astGrepScan(input)
+    const scanMs = Date.now() - scanStart
+    log.info("AST-grep scan complete", { patternsFound: scanResult.detectedPatterns.length, scanMs })
+
     if (scanResult.detectedPatterns.length === 0) {
-      plog.log("info", "Step 7/7", "No structural patterns detected")
+      const totalMs = Date.now() - activityStart
+      plog.log("info", "Step 7/7", `No structural patterns detected (scan: ${scanMs}ms, total: ${totalMs}ms)`)
       return { patternsDetected: 0, rulesGenerated: 0 }
     }
 
-    plog.log("info", "Step 7/7", `Found ${scanResult.detectedPatterns.length} patterns — synthesizing rules...`)
+    // Log pattern type distribution
+    const typeDist: Record<string, number> = {}
+    for (const p of scanResult.detectedPatterns) { typeDist[p.type] = (typeDist[p.type] ?? 0) + 1 }
+    log.info("Pattern distribution", { typeDist, totalMatches: scanResult.detectedPatterns.reduce((s: number, p) => s + p.matchCount, 0) })
+    plog.log("info", "Step 7/7", `Found ${scanResult.detectedPatterns.length} patterns (${Object.entries(typeDist).map(([k, v]) => `${k}:${v}`).join(", ")}) — synthesizing rules...`)
 
+    const synthStart = Date.now()
     const synthesizeResult = await llmSynthesizeRules({
       orgId: input.orgId,
       repoId: input.repoId,
       detectedPatterns: scanResult.detectedPatterns,
     })
+    const synthMs = Date.now() - synthStart
+    log.info("Rule synthesis complete", { rulesGenerated: synthesizeResult.synthesizedRules.length, synthMs })
 
+    const storeStart = Date.now()
     const storeResult = await storePatterns({
       orgId: input.orgId,
       repoId: input.repoId,
       detectedPatterns: scanResult.detectedPatterns,
       synthesizedRules: synthesizeResult.synthesizedRules,
     })
+    const storeMs = Date.now() - storeStart
 
-    plog.log("info", "Step 7/7", `Pattern detection complete — ${storeResult.patternsStored} patterns, ${storeResult.rulesStored} rules`)
+    const totalMs = Date.now() - activityStart
+    log.info("Pattern detection complete", { patternsStored: storeResult.patternsStored, rulesStored: storeResult.rulesStored, timing: { scanMs, synthMs, storeMs, totalMs } })
+    plog.log("info", "Step 7/7", `Pattern detection complete — ${storeResult.patternsStored} patterns, ${storeResult.rulesStored} rules | Scan: ${scanMs}ms, Synth: ${synthMs}ms, Store: ${storeMs}ms, Total: ${totalMs}ms`)
 
     return { patternsDetected: storeResult.patternsStored, rulesGenerated: storeResult.rulesStored }
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error)
-    log.error("Pattern detection failed", { error: msg })
-    plog.log("error", "Step 7/7", `Pattern detection failed: ${msg}`)
+    const totalMs = Date.now() - activityStart
+    log.error("Pattern detection failed", { error: msg, totalMs })
+    plog.log("error", "Step 7/7", `Pattern detection failed after ${totalMs}ms: ${msg}`)
     throw error
   }
 }
 
-export interface AstGrepScanInput {
-  orgId: string
-  repoId: string
+export interface AstGrepScanInput extends PipelineContext {
   workspacePath: string
   languages: string[]
 }
@@ -80,16 +97,22 @@ export async function astGrepScan(input: AstGrepScanInput): Promise<AstGrepScanO
   const { getContainer } = require("@/lib/di/container") as typeof import("@/lib/di/container")
   const { loadCatalogPatterns } = require("@/lib/patterns/catalog-loader") as typeof import("@/lib/patterns/catalog-loader")
   const container = getContainer()
+  const log = logger.child({ service: "pattern-detection", organizationId: input.orgId, repoId: input.repoId })
 
   const catalogPatterns = loadCatalogPatterns()
   const detectedPatterns: AstGrepScanOutput["detectedPatterns"] = []
+  let totalScans = 0
+  let failedScans = 0
 
   for (const language of input.languages) {
     heartbeat(`Scanning ${language} patterns`)
+    const langStart = Date.now()
 
     const langPatterns = catalogPatterns.filter((p) => p.language === language)
+    let langMatches = 0
 
     for (const pattern of langPatterns) {
+      totalScans++
       try {
         const results = await container.patternEngine.scanWithAstGrep(
           input.workspacePath,
@@ -98,6 +121,7 @@ export async function astGrepScan(input: AstGrepScanInput): Promise<AstGrepScanO
         )
 
         if (results.length > 0) {
+          langMatches += results.length
           const crypto = require("node:crypto") as typeof import("node:crypto")
           detectedPatterns.push({
             id: crypto.createHash("sha256").update(`${input.repoId}:${pattern.id}`).digest("hex").slice(0, 16),
@@ -115,6 +139,7 @@ export async function astGrepScan(input: AstGrepScanInput): Promise<AstGrepScanO
           })
         }
       } catch (error: unknown) {
+        failedScans++
         logger.warn("ast-grep pattern scan failed", {
           pattern: pattern.id,
           language,
@@ -122,9 +147,13 @@ export async function astGrepScan(input: AstGrepScanInput): Promise<AstGrepScanO
         })
       }
     }
+
+    const langMs = Date.now() - langStart
+    log.info(`AST-grep scan for ${language}`, { catalogPatterns: langPatterns.length, matches: langMatches, durationMs: langMs })
   }
 
   heartbeat(`Found ${detectedPatterns.length} patterns`)
+  log.info("AST-grep scan summary", { totalScans, failedScans, patternsDetected: detectedPatterns.length, languages: input.languages })
   return { detectedPatterns }
 }
 
@@ -355,12 +384,16 @@ export async function semanticPatternMining(input: SemanticMiningInput): Promise
   const container = getContainer()
   const sLog = logger.child({ service: "semantic-pattern-mining", organizationId: input.orgId, repoId: input.repoId })
 
+  const activityStart = Date.now()
   heartbeat("Fetching entities and edges")
 
   // Step 1: Fetch all entities and edges
+  const fetchStart = Date.now()
   const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
   const allEdges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
+  const fetchMs = Date.now() - fetchStart
   heartbeat(`Loaded ${allEntities.length} entities, ${allEdges.length} edges`)
+  sLog.info("Data loaded for semantic mining", { entities: allEntities.length, edges: allEdges.length, fetchMs })
 
   // Step 2: Group entities by community_id
   const communities = new Map<number, typeof allEntities>()
@@ -554,7 +587,8 @@ Synthesize 1-2 conventions that these patterns represent. For each:
     }
   }
 
-  sLog.info("Semantic pattern mining complete", { clustersFound, rulesGenerated })
+  const totalMs = Date.now() - activityStart
+  sLog.info("Semantic pattern mining complete", { clustersFound, rulesGenerated, communitiesAnalyzed: communities.size, timing: { fetchMs, totalMs } })
   heartbeat("Semantic mining complete")
 
   return { clustersFound, rulesGenerated }

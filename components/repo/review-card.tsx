@@ -32,7 +32,7 @@ export function ReviewCard({ review, repoId }: ReviewCardProps) {
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <Link
-                href={`/repos/${repoId}/reviews/${review.id}`}
+                href={`/repos/${repoId}/guardrails/reviews/${review.id}`}
                 className="text-sm font-medium text-foreground hover:text-primary truncate"
               >
                 #{review.prNumber} {review.prTitle}

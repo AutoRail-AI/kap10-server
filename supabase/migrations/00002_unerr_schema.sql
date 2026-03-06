@@ -1,16 +1,19 @@
 -- =============================================================================
 -- Consolidated unerr schema: All unerr app tables
 -- =============================================================================
--- Single migration replacing 15 incremental files (pre-launch consolidation).
--- All unerr-managed tables live in PostgreSQL schema "unerr".
+-- Single migration for all unerr-managed tables in PostgreSQL schema "unerr".
 -- Better Auth tables stay in "public" (see 00001_public_schema.sql).
+--
+-- This file is the source of truth. On a fresh database, run:
+--   pnpm migrate
+-- which applies 00001 → 00002 in order, then runs Better Auth migrate.
 -- =============================================================================
 
 CREATE SCHEMA IF NOT EXISTS unerr;
 
--- ═════════════════════════════════════════════════════════════════════════
+-- ═════════════════════════════════════════════════════════════════════════════
 -- Enums
--- ═════════════════════════════════════════════════════════════════════════
+-- ═════════════════════════════════════════════════════════════════════════════
 
 CREATE TYPE unerr."RepoStatus" AS ENUM (
   'pending', 'indexing', 'embedding', 'ready',
@@ -24,11 +27,15 @@ CREATE TYPE unerr."DeletionLogStatus" AS ENUM ('pending', 'in_progress', 'comple
 
 CREATE TYPE unerr."SnapshotStatus" AS ENUM ('generating', 'available', 'failed');
 
--- ═════════════════════════════════════════════════════════════════════════
--- Tables
--- ═════════════════════════════════════════════════════════════════════════
+CREATE TYPE unerr."PipelineRunStatus" AS ENUM ('running', 'completed', 'failed', 'cancelled');
 
--- ── Repos ─────────────────────────────────────────────────────────────
+CREATE TYPE unerr."PipelineTriggerType" AS ENUM ('initial', 'retry', 'reindex', 'webhook', 'resume');
+
+-- ═════════════════════════════════════════════════════════════════════════════
+-- Tables
+-- ═════════════════════════════════════════════════════════════════════════════
+
+-- ── Repos ───────────────────────────────────────────────────────────────────
 CREATE TABLE unerr.repos (
   id                    TEXT PRIMARY KEY,
   organization_id       TEXT NOT NULL,
@@ -51,6 +58,8 @@ CREATE TABLE unerr.repos (
   class_count           INT NOT NULL DEFAULT 0,
   error_message         TEXT,
   workflow_id           TEXT,
+  -- Context seeding
+  context_documents     TEXT,
   -- Onboarding
   onboarding_pr_url     TEXT,
   onboarding_pr_number  INT,
@@ -67,7 +76,7 @@ CREATE TABLE unerr.repos (
   UNIQUE (organization_id, provider, provider_id)
 );
 
--- ── GitHub Installations ──────────────────────────────────────────────
+-- ── GitHub Installations ────────────────────────────────────────────────────
 CREATE TABLE unerr.github_installations (
   id              TEXT PRIMARY KEY,
   organization_id TEXT NOT NULL,
@@ -82,7 +91,31 @@ CREATE TABLE unerr.github_installations (
   UNIQUE (organization_id, installation_id)
 );
 
--- ── Deletion Logs ─────────────────────────────────────────────────────
+-- ── Pipeline Runs ───────────────────────────────────────────────────────────
+CREATE TABLE unerr.pipeline_runs (
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  repo_id          TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
+  organization_id  TEXT NOT NULL,
+  workflow_id      TEXT,
+  temporal_run_id  TEXT,
+  status           unerr."PipelineRunStatus" NOT NULL DEFAULT 'running',
+  trigger_type     unerr."PipelineTriggerType" NOT NULL,
+  trigger_user_id  TEXT,
+  pipeline_type    TEXT NOT NULL DEFAULT 'full',
+  index_version    TEXT,
+  started_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at     TIMESTAMPTZ,
+  duration_ms      INT,
+  error_message    TEXT,
+  steps            JSONB NOT NULL DEFAULT '[]'::jsonb,
+  file_count       INT,
+  function_count   INT,
+  class_count      INT,
+  entities_written INT,
+  edges_written    INT
+);
+
+-- ── Deletion Logs ───────────────────────────────────────────────────────────
 CREATE TABLE unerr.deletion_logs (
   id                 TEXT PRIMARY KEY,
   organization_id    TEXT NOT NULL,
@@ -95,7 +128,7 @@ CREATE TABLE unerr.deletion_logs (
   error_message      TEXT
 );
 
--- ── API Keys (unerr — org-level or repo-scoped) ──────────────────────
+-- ── API Keys (unerr — org-level or repo-scoped) ────────────────────────────
 CREATE TABLE unerr.api_keys (
   id              TEXT PRIMARY KEY,
   organization_id TEXT NOT NULL,
@@ -111,11 +144,11 @@ CREATE TABLE unerr.api_keys (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ── Workspaces ────────────────────────────────────────────────────────
+-- ── Workspaces ──────────────────────────────────────────────────────────────
 CREATE TABLE unerr.workspaces (
   id          TEXT PRIMARY KEY,
   user_id     TEXT NOT NULL,
-  repo_id     TEXT NOT NULL,
+  repo_id     TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
   branch      TEXT NOT NULL,
   base_sha    TEXT,
   last_sync_at TIMESTAMPTZ,
@@ -125,7 +158,7 @@ CREATE TABLE unerr.workspaces (
   UNIQUE (user_id, repo_id, branch)
 );
 
--- ── Entity Embeddings (pgvector) ──────────────────────────────────────
+-- ── Entity Embeddings (pgvector) ────────────────────────────────────────────
 CREATE TABLE unerr.entity_embeddings (
   id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id         TEXT NOT NULL,
@@ -135,7 +168,7 @@ CREATE TABLE unerr.entity_embeddings (
   entity_name    TEXT NOT NULL,
   file_path      TEXT NOT NULL,
   text_content   TEXT NOT NULL,
-  model_version  TEXT NOT NULL DEFAULT 'nomic-v1.5-768',
+  model_version  TEXT NOT NULL DEFAULT 'gemini-emb-001-768',
   embedding      extensions.vector(768) NOT NULL,
   vector_version UUID DEFAULT gen_random_uuid(),
   created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -144,7 +177,7 @@ CREATE TABLE unerr.entity_embeddings (
   UNIQUE (repo_id, entity_key, model_version)
 );
 
--- ── Justification Embeddings (pgvector) ───────────────────────────────
+-- ── Justification Embeddings (pgvector) ─────────────────────────────────────
 CREATE TABLE unerr.justification_embeddings (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id           TEXT NOT NULL,
@@ -154,7 +187,7 @@ CREATE TABLE unerr.justification_embeddings (
   taxonomy         TEXT NOT NULL,
   feature_tag      TEXT NOT NULL,
   business_purpose TEXT NOT NULL,
-  model_version    TEXT NOT NULL DEFAULT 'nomic-v1.5-768',
+  model_version    TEXT NOT NULL DEFAULT 'gemini-emb-001-768',
   embedding        vector(768),
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -162,11 +195,11 @@ CREATE TABLE unerr.justification_embeddings (
   UNIQUE (repo_id, entity_id, model_version)
 );
 
--- ── Graph Snapshot Meta ───────────────────────────────────────────────
+-- ── Graph Snapshot Meta ─────────────────────────────────────────────────────
 CREATE TABLE unerr.graph_snapshot_meta (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id       TEXT NOT NULL,
-  repo_id      TEXT NOT NULL UNIQUE,
+  repo_id      TEXT NOT NULL UNIQUE REFERENCES unerr.repos(id) ON DELETE CASCADE,
   status       unerr."SnapshotStatus" NOT NULL DEFAULT 'generating',
   checksum     TEXT,
   storage_path TEXT,
@@ -178,7 +211,7 @@ CREATE TABLE unerr.graph_snapshot_meta (
   updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ── PR Reviews ────────────────────────────────────────────────────────
+-- ── PR Reviews ──────────────────────────────────────────────────────────────
 CREATE TABLE unerr.pr_reviews (
   id                  UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   repo_id             TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
@@ -200,7 +233,7 @@ CREATE TABLE unerr.pr_reviews (
   completed_at        TIMESTAMPTZ
 );
 
--- ── PR Review Comments ────────────────────────────────────────────────
+-- ── PR Review Comments ──────────────────────────────────────────────────────
 CREATE TABLE unerr.pr_review_comments (
   id                UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   review_id         UUID NOT NULL REFERENCES unerr.pr_reviews(id) ON DELETE CASCADE,
@@ -217,7 +250,7 @@ CREATE TABLE unerr.pr_review_comments (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ── Active Vector Versions (blue/green re-embedding) ──────────────────
+-- ── Active Vector Versions (blue/green re-embedding) ────────────────────────
 CREATE TABLE unerr.active_vector_versions (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id           TEXT NOT NULL,
@@ -230,7 +263,7 @@ CREATE TABLE unerr.active_vector_versions (
   UNIQUE(repo_id)
 );
 
--- ── Ledger Snapshots ──────────────────────────────────────────────────
+-- ── Ledger Snapshots ────────────────────────────────────────────────────────
 CREATE TABLE unerr.ledger_snapshots (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id          TEXT NOT NULL,
@@ -244,16 +277,16 @@ CREATE TABLE unerr.ledger_snapshots (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- ── Rule Embeddings (pgvector) ────────────────────────────────────────
+-- ── Rule Embeddings (pgvector) ──────────────────────────────────────────────
 CREATE TABLE unerr.rule_embeddings (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id           TEXT NOT NULL,
-  repo_id          TEXT NOT NULL,
+  repo_id          TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
   rule_id          TEXT NOT NULL,
   rule_name        TEXT NOT NULL,
   rule_type        TEXT NOT NULL,
   text_content     TEXT NOT NULL,
-  model_version    TEXT NOT NULL DEFAULT 'nomic-v1.5-768',
+  model_version    TEXT NOT NULL DEFAULT 'gemini-emb-001-768',
   embedding        vector(768),
   matched_entities TEXT[] NOT NULL DEFAULT '{}',
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -262,23 +295,23 @@ CREATE TABLE unerr.rule_embeddings (
   UNIQUE(repo_id, rule_id, model_version)
 );
 
--- ═════════════════════════════════════════════════════════════════════════
+-- ═════════════════════════════════════════════════════════════════════════════
 -- Vector indexes (HNSW for approximate nearest-neighbor search)
--- ═════════════════════════════════════════════════════════════════════════
+-- ═════════════════════════════════════════════════════════════════════════════
 
-CREATE INDEX IF NOT EXISTS idx_entity_embeddings_hnsw
+CREATE INDEX idx_entity_embeddings_hnsw
   ON unerr.entity_embeddings
   USING hnsw (embedding extensions.vector_cosine_ops)
   WITH (m = 16, ef_construction = 64);
 
-CREATE INDEX IF NOT EXISTS idx_justification_embeddings_hnsw
+CREATE INDEX idx_justification_embeddings_hnsw
   ON unerr.justification_embeddings
   USING hnsw (embedding vector_cosine_ops)
   WITH (m = 16, ef_construction = 64);
 
--- ═════════════════════════════════════════════════════════════════════════
+-- ═════════════════════════════════════════════════════════════════════════════
 -- Storage buckets (Supabase Storage)
--- ═════════════════════════════════════════════════════════════════════════
+-- ═════════════════════════════════════════════════════════════════════════════
 
 -- Graph snapshots bucket (private, 100 MB max)
 INSERT INTO storage.buckets (id, name, public, file_size_limit)
@@ -327,58 +360,64 @@ BEGIN
   END IF;
 END $$;
 
--- ═════════════════════════════════════════════════════════════════════════
+-- ═════════════════════════════════════════════════════════════════════════════
 -- Indexes
--- ═════════════════════════════════════════════════════════════════════════
+-- ═════════════════════════════════════════════════════════════════════════════
 
 -- Repos
-CREATE INDEX IF NOT EXISTS idx_repos_organization_id ON unerr.repos(organization_id);
+CREATE INDEX idx_repos_organization_id ON unerr.repos(organization_id);
 
 -- GitHub Installations
-CREATE INDEX IF NOT EXISTS idx_github_installations_organization_id ON unerr.github_installations(organization_id);
+CREATE INDEX idx_github_installations_organization_id ON unerr.github_installations(organization_id);
+
+-- Pipeline Runs
+CREATE INDEX idx_pipeline_runs_repo_id ON unerr.pipeline_runs(repo_id);
+CREATE INDEX idx_pipeline_runs_org_id ON unerr.pipeline_runs(organization_id);
+CREATE INDEX idx_pipeline_runs_status ON unerr.pipeline_runs(status);
+CREATE INDEX idx_pipeline_runs_repo_started ON unerr.pipeline_runs(repo_id, started_at DESC);
 
 -- Deletion Logs
-CREATE INDEX IF NOT EXISTS idx_deletion_logs_organization_id ON unerr.deletion_logs(organization_id);
-CREATE INDEX IF NOT EXISTS idx_deletion_logs_status          ON unerr.deletion_logs(status);
+CREATE INDEX idx_deletion_logs_organization_id ON unerr.deletion_logs(organization_id);
+CREATE INDEX idx_deletion_logs_status          ON unerr.deletion_logs(status);
 
 -- API Keys (unerr)
-CREATE INDEX IF NOT EXISTS idx_unerr_api_keys_organization_id ON unerr.api_keys(organization_id);
-CREATE INDEX IF NOT EXISTS idx_unerr_api_keys_key_hash        ON unerr.api_keys(key_hash);
-CREATE INDEX IF NOT EXISTS idx_unerr_api_keys_repo_id         ON unerr.api_keys(repo_id);
+CREATE INDEX idx_unerr_api_keys_organization_id ON unerr.api_keys(organization_id);
+CREATE INDEX idx_unerr_api_keys_key_hash        ON unerr.api_keys(key_hash);
+CREATE INDEX idx_unerr_api_keys_repo_id         ON unerr.api_keys(repo_id);
 
 -- Workspaces
-CREATE INDEX IF NOT EXISTS idx_workspaces_expires_at ON unerr.workspaces(expires_at);
+CREATE INDEX idx_workspaces_expires_at ON unerr.workspaces(expires_at);
 
 -- Entity Embeddings
-CREATE INDEX IF NOT EXISTS idx_entity_embeddings_org_repo     ON unerr.entity_embeddings(org_id, repo_id);
-CREATE INDEX IF NOT EXISTS idx_entity_embeddings_repo_entity  ON unerr.entity_embeddings(repo_id, entity_key);
-CREATE INDEX IF NOT EXISTS idx_entity_embeddings_model        ON unerr.entity_embeddings(model_version);
+CREATE INDEX idx_entity_embeddings_org_repo     ON unerr.entity_embeddings(org_id, repo_id);
+CREATE INDEX idx_entity_embeddings_repo_entity  ON unerr.entity_embeddings(repo_id, entity_key);
+CREATE INDEX idx_entity_embeddings_model        ON unerr.entity_embeddings(model_version);
 
 -- Justification Embeddings
-CREATE INDEX IF NOT EXISTS idx_justification_embeddings_org_repo     ON unerr.justification_embeddings(org_id, repo_id);
-CREATE INDEX IF NOT EXISTS idx_justification_embeddings_taxonomy     ON unerr.justification_embeddings(taxonomy);
-CREATE INDEX IF NOT EXISTS idx_justification_embeddings_feature_tag  ON unerr.justification_embeddings(feature_tag);
+CREATE INDEX idx_justification_embeddings_org_repo     ON unerr.justification_embeddings(org_id, repo_id);
+CREATE INDEX idx_justification_embeddings_taxonomy     ON unerr.justification_embeddings(taxonomy);
+CREATE INDEX idx_justification_embeddings_feature_tag  ON unerr.justification_embeddings(feature_tag);
 
 -- Graph Snapshot Meta
-CREATE INDEX IF NOT EXISTS idx_graph_snapshot_meta_org_id ON unerr.graph_snapshot_meta(org_id);
+CREATE INDEX idx_graph_snapshot_meta_org_id ON unerr.graph_snapshot_meta(org_id);
 
 -- PR Reviews
-CREATE INDEX IF NOT EXISTS idx_pr_reviews_repo_id    ON unerr.pr_reviews(repo_id);
-CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr_number  ON unerr.pr_reviews(repo_id, pr_number);
-CREATE INDEX IF NOT EXISTS idx_pr_reviews_status      ON unerr.pr_reviews(status);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_pr_reviews_idempotent ON unerr.pr_reviews(repo_id, pr_number, head_sha);
+CREATE INDEX idx_pr_reviews_repo_id    ON unerr.pr_reviews(repo_id);
+CREATE INDEX idx_pr_reviews_pr_number  ON unerr.pr_reviews(repo_id, pr_number);
+CREATE INDEX idx_pr_reviews_status     ON unerr.pr_reviews(status);
+CREATE UNIQUE INDEX idx_pr_reviews_idempotent ON unerr.pr_reviews(repo_id, pr_number, head_sha);
 
 -- PR Review Comments
-CREATE INDEX IF NOT EXISTS idx_pr_review_comments_review   ON unerr.pr_review_comments(review_id);
-CREATE INDEX IF NOT EXISTS idx_pr_review_comments_severity ON unerr.pr_review_comments(severity);
+CREATE INDEX idx_pr_review_comments_review   ON unerr.pr_review_comments(review_id);
+CREATE INDEX idx_pr_review_comments_severity ON unerr.pr_review_comments(severity);
 
 -- Active Vector Versions
-CREATE INDEX IF NOT EXISTS idx_active_vector_versions_org ON unerr.active_vector_versions(org_id);
+CREATE INDEX idx_active_vector_versions_org ON unerr.active_vector_versions(org_id);
 
 -- Ledger Snapshots
-CREATE INDEX IF NOT EXISTS idx_ledger_snapshots_org_repo_branch ON unerr.ledger_snapshots(org_id, repo_id, branch);
-CREATE INDEX IF NOT EXISTS idx_ledger_snapshots_entry           ON unerr.ledger_snapshots(ledger_entry_id);
+CREATE INDEX idx_ledger_snapshots_org_repo_branch ON unerr.ledger_snapshots(org_id, repo_id, branch);
+CREATE INDEX idx_ledger_snapshots_entry           ON unerr.ledger_snapshots(ledger_entry_id);
 
 -- Rule Embeddings
-CREATE INDEX IF NOT EXISTS idx_rule_embeddings_org_repo ON unerr.rule_embeddings(org_id, repo_id);
-CREATE INDEX IF NOT EXISTS idx_rule_embeddings_type     ON unerr.rule_embeddings(rule_type);
+CREATE INDEX idx_rule_embeddings_org_repo ON unerr.rule_embeddings(org_id, repo_id);
+CREATE INDEX idx_rule_embeddings_type     ON unerr.rule_embeddings(rule_type);

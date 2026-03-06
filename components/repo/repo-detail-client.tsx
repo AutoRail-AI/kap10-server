@@ -219,7 +219,7 @@ export function RepoDetailClient({
                         {entityDetail.entity.kind}
                       </Badge>
                       <Link
-                        href={`/repos/${repoId}/entities/${entityDetail.entity.id}`}
+                        href={`/repos/${repoId}/blueprint/entities/${entityDetail.entity.id}`}
                         className="text-xs text-electric-cyan hover:underline"
                       >
                         Full detail

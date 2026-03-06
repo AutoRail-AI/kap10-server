@@ -9,6 +9,7 @@ import { Command } from "commander"
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { gunzipSync } from "node:zlib"
 import { getCredentials } from "./auth.js"
 import { getManifest } from "./pull.js"
 import { getStalenessInfo } from "../auto-sync.js"
@@ -85,7 +86,11 @@ export function registerServeCommand(program: Command): void {
           continue
         }
 
-        const snapshotPath = join(SNAPSHOTS_DIR, `${repoId}.msgpack`)
+        // Support both new (.msgpack.gz) and legacy (.msgpack) formats
+        let snapshotPath = join(SNAPSHOTS_DIR, `${repoId}.msgpack.gz`)
+        if (!existsSync(snapshotPath)) {
+          snapshotPath = join(SNAPSHOTS_DIR, `${repoId}.msgpack`)
+        }
         if (!existsSync(snapshotPath)) {
           console.warn(`Snapshot file not found for ${repoId}, skipping`)
           continue
@@ -93,7 +98,8 @@ export function registerServeCommand(program: Command): void {
 
         console.log(`Loading snapshot for ${repoId}...`)
         const { unpack } = await import("msgpackr")
-        const buffer = readFileSync(snapshotPath)
+        const raw = readFileSync(snapshotPath)
+        const buffer = snapshotPath.endsWith(".gz") ? gunzipSync(raw) : raw
         const envelope = unpack(buffer) as import("../local-graph.js").SnapshotEnvelope
         localGraph.loadSnapshot(envelope)
         console.log(`Loaded ${manifest.entityCount} entities, ${manifest.edgeCount} edges`)

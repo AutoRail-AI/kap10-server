@@ -3,7 +3,7 @@
  * In-memory, no external dependencies.
  *
  * Configured via env vars:
- *   LLM_RPM_LIMIT        — Requests per minute (0 = unlimited, default: 15)
+ *   LLM_RPM_LIMIT        — Requests per minute (0 = unlimited, default: 120)
  *   LLM_TPM_LIMIT        — Tokens per minute (0 = unlimited, default: auto from provider)
  *
  * When LLM_TPM_LIMIT is not set, the limiter auto-detects the provider's TPM
@@ -24,7 +24,9 @@ export class RateLimiter {
   private readonly tokenRecords: Array<{ ts: number; tokens: number }> = []
 
   constructor(config?: Partial<RateLimiterConfig>) {
-    this.rpm = config?.rpm ?? parseInt(process.env.LLM_RPM_LIMIT ?? "15", 10)
+    // Default RPM tuned for AWS Bedrock & Google Vertex AI.
+    // Adjust via LLM_RPM_LIMIT when switching to providers with lower rate limits.
+    this.rpm = config?.rpm ?? parseInt(process.env.LLM_RPM_LIMIT ?? "120", 10)
     // Auto-detect TPM from provider config when not explicitly set
     const envTpm = process.env.LLM_TPM_LIMIT
     if (config?.tpm != null) {

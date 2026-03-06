@@ -12,7 +12,6 @@ import { getContainer } from "@/lib/di/container"
 import { detectCommunities } from "@/lib/justification/community-detection"
 import { computeCalibratedConfidence, isDescriptiveName } from "@/lib/justification/confidence"
 import { detectDeadCode } from "@/lib/justification/dead-code-detector"
-import { createBatches, getBatcherConfigForModel } from "@/lib/justification/dynamic-batcher"
 import { buildGraphContexts } from "@/lib/justification/graph-context-builder"
 import { extractIntentSignals } from "@/lib/justification/intent-signals"
 import type { IntentSignals } from "@/lib/justification/intent-signals"
@@ -24,21 +23,18 @@ import {
   JUSTIFICATION_SYSTEM_PROMPT,
 } from "@/lib/justification/prompt-builder"
 import { scoreJustification } from "@/lib/justification/quality-scorer"
-import { BatchJustificationResultSchema, JustificationResultSchema } from "@/lib/justification/schemas"
+import { BatchJustificationItemSchema, BatchJustificationResultSchema } from "@/lib/justification/schemas"
 import type { GraphContext } from "@/lib/justification/schemas"
 import { checkStaleness, computeBodyHash } from "@/lib/justification/staleness-checker"
 import { buildTestContext } from "@/lib/justification/test-context-extractor"
 import { topologicalSortEntityIds } from "@/lib/justification/topological-sort"
 import { getMaxParallelChunks } from "@/lib/llm/config"
 import type { EntityDoc, JustificationDoc } from "@/lib/ports/types"
-import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
+import type { PipelineContext } from "@/lib/temporal/activities/pipeline-logs"
+import { pipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
-export interface JustificationInput {
-  orgId: string
-  repoId: string
-  runId?: string
-}
+export interface JustificationInput extends PipelineContext {}
 
 export async function setJustifyingStatus(input: JustificationInput): Promise<void> {
   const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
@@ -86,11 +82,15 @@ export async function detectCommunitiesActivity(
   input: JustificationInput
 ): Promise<{ communityCount: number }> {
   const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
+  const plog = pipelineLogger(input, "justifying")
   const container = getContainer()
+  const activityStart = Date.now()
 
   heartbeat("fetching entities and edges for community detection")
+  const fetchStart = Date.now()
   const entities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
   const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
+  const fetchMs = Date.now() - fetchStart
 
   // Diagnostic: surface entities that would have caused the localeCompare crash
   const namelessEntities = entities.filter((e) => !e.name && e.kind !== "file" && e.kind !== "directory")
@@ -112,10 +112,13 @@ export async function detectCommunitiesActivity(
   })
 
   heartbeat(`running Louvain on ${entities.length} entities`)
+  const louvainStart = Date.now()
   const result = detectCommunities(entities, edges)
+  const louvainMs = Date.now() - louvainStart
   log.info("Community detection complete", {
     totalCommunities: result.totalCommunities,
     significantCommunities: result.communities.size,
+    louvainMs,
   })
 
   // Write community_id and community_label back onto entities
@@ -153,6 +156,10 @@ export async function detectCommunitiesActivity(
     }
   }
 
+  const totalMs = Date.now() - activityStart
+  log.info("Community labels stored", { assignments: result.assignments.size, timing: { fetchMs, louvainMs, totalMs } })
+  plog.log("info", "Step 4b/10", `Community detection — ${result.communities.size} communities, ${result.assignments.size} assignments | Fetch: ${fetchMs}ms, Louvain: ${louvainMs}ms, Total: ${totalMs}ms`)
+
   return { communityCount: result.communities.size }
 }
 
@@ -169,20 +176,53 @@ export async function detectCommunitiesActivity(
 export async function performTopologicalSort(
   input: JustificationInput
 ): Promise<{ levelCount: number }> {
+  const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
+  const plog = pipelineLogger(input, "justifying")
+  const activityStart = Date.now()
   heartbeat("performing topological sort")
   const container = getContainer()
-  const entities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
+
+  const fetchStart = Date.now()
+  const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
   const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
+  const fetchMs = Date.now() - fetchStart
+
+  // Filter out file/directory entities — they have no justifiable business purpose.
+  const entities = allEntities.filter((e) => e.kind !== "file" && e.kind !== "directory")
+  const skippedFileEntities = allEntities.length - entities.length
+
+  // Entity kind distribution for observability
+  const kindDist: Record<string, number> = {}
+  for (const e of entities) { kindDist[e.kind] = (kindDist[e.kind] ?? 0) + 1 }
+
+  log.info("Topological sort input", { totalEntities: allEntities.length, codeEntities: entities.length, skippedFileEntities, edges: edges.length, fetchMs, kindDist })
+  plog.log("info", "Step 4/10", `Sorting ${entities.length} code entities (skipped ${skippedFileEntities} file/dir) with ${edges.length} edges (fetch: ${fetchMs}ms)`)
+
+  const sortStart = Date.now()
   const levels = topologicalSortEntityIds(entities, edges)
+  const sortMs = Date.now() - sortStart
+
+  // Level size distribution for observability
+  const levelSizes = levels.map((l) => l.length)
+  const maxLevelSize = Math.max(...levelSizes, 0)
+  const avgLevelSize = levels.length > 0 ? Math.round(entities.length / levels.length) : 0
+
+  log.info("Topological sort complete", { levelCount: levels.length, sortMs, maxLevelSize, avgLevelSize })
 
   // Store each level in Redis — data residency pattern
   const TTL = 7200 // 2 hours
   const baseKey = `topo:${input.orgId}:${input.repoId}`
+  const storeStart = Date.now()
   for (let i = 0; i < levels.length; i++) {
     heartbeat(`storing topo level ${i + 1}/${levels.length} in cache`)
     await container.cacheStore.set(`${baseKey}:level:${i}`, levels[i], TTL)
   }
   await container.cacheStore.set(`${baseKey}:meta`, { levelCount: levels.length }, TTL)
+  const storeMs = Date.now() - storeStart
+
+  const totalMs = Date.now() - activityStart
+  log.info("Topological sort stored in Redis", { timing: { fetchMs, sortMs, storeMs, totalMs } })
+  plog.log("info", "Step 4/10", `Topological sort: ${levels.length} levels (max: ${maxLevelSize}, avg: ${avgLevelSize}) | Fetch: ${fetchMs}ms, Sort: ${sortMs}ms, Store: ${storeMs}ms, Total: ${totalMs}ms`)
 
   return { levelCount: levels.length }
 }
@@ -364,16 +404,21 @@ export async function justifyBatch(
   const container = getContainer()
   const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
   const results: JustificationDoc[] = []
-  const pipelineLog = createPipelineLogger(input.repoId, "justifying", input.runId)
+  const pipelineLog = pipelineLogger(input, "justifying")
+  const batchStart = Date.now()
 
   // Fetch all data needed for this batch from ArangoDB (parallelized)
   heartbeat(`fetching data for ${entityIds.length} entities`)
+  const fetchStart = Date.now()
   const [allEntities, edges, ontology, previousJustifications] = await Promise.all([
     container.graphStore.getAllEntities(input.orgId, input.repoId),
     container.graphStore.getAllEdges(input.orgId, input.repoId),
     container.graphStore.getDomainOntology(input.orgId, input.repoId),
     container.graphStore.getJustifications(input.orgId, input.repoId),
   ])
+
+  const fetchMs = Date.now() - fetchStart
+  log.info("justifyBatch data loaded", { batchSize: entityIds.length, allEntities: allEntities.length, edges: edges.length, prevJustifications: previousJustifications.length, fetchMs })
 
   // Fetch user-provided context documents for prompt anchoring (context seeding)
   let contextDocuments: string | undefined
@@ -386,9 +431,9 @@ export async function justifyBatch(
     // Best-effort — don't fail justification if context fetch fails
   }
 
-  // Filter to just the entities in this batch
+  // Filter to just the entities in this batch, excluding file/directory entities
   const entityIdSet = new Set(entityIds)
-  let entities = allEntities.filter((e) => entityIdSet.has(e.id))
+  let entities = allEntities.filter((e) => entityIdSet.has(e.id) && e.kind !== "file" && e.kind !== "directory")
 
   // Build lookup maps early for staleness check
   const prevJustMap = new Map<string, JustificationDoc>()
@@ -437,7 +482,7 @@ export async function justifyBatch(
 
   // I-02: Fetch git history per unique file path (grouped to avoid redundant git log calls)
   const fileHistoryMap = new Map<string, string[]>()
-  const workspacePath = `/data/workspaces/${input.orgId}/${input.repoId}`
+  const workspacePath = `/data/repo-indices/${input.orgId}/${input.repoId}`
   try {
     const filePathSet = new Set(entities.map((e) => e.file_path).filter(Boolean))
     const uniqueFilePaths = Array.from(filePathSet)
@@ -584,8 +629,14 @@ export async function justifyBatch(
     })
   }
 
-  // Dynamic batching for LLM entities
-  // Group by model tier for batching (don't mix premium with fast)
+  log.info("justifyBatch entity preparation", {
+    batchEntities: entities.length,
+    heuristicBypassed: bypassedResults.length,
+    llmEntities: llmEntities.length,
+    deadCodeCount: Array.from(deadCodeMap.keys()).filter((id) => entityIdSet.has(id)).length,
+  })
+
+  // Group entities by model tier for batching (don't mix premium with fast)
   const byTier = new Map<string, typeof llmEntities>()
   for (const item of llmEntities) {
     const tier = item.route.tier
@@ -597,10 +648,12 @@ export async function justifyBatch(
     }
   }
 
-  // Fatal error detection: abort early if LLM endpoint is fundamentally broken
-  // (e.g., 405 Method Not Allowed, 401 Unauthorized, 403 Forbidden)
-  let consecutiveFatalErrors = 0
-  const FATAL_ERROR_THRESHOLD = 5
+  const now = new Date().toISOString()
+
+  // Log tier distribution
+  const tierDist: Record<string, number> = {}
+  for (const [tier, items] of Array.from(byTier.entries())) { tierDist[tier] = items.length }
+  log.info("justifyBatch tier distribution", { tierDist })
 
   for (const tier of Array.from(byTier.keys())) {
     const tierEntities = byTier.get(tier)!
@@ -608,241 +661,125 @@ export async function justifyBatch(
 
     // Build O(1) lookup for tier entities by ID
     const tierEntityMap = new Map(tierEntities.map((te) => [te.entity.id, te]))
+    const tierStart = Date.now()
 
-    // Create token-budgeted batches with model-aware limits
-    const batcherConfig = getBatcherConfigForModel(modelToUse)
-    const batches = createBatches(
-      tierEntities.map((te) => ({
-        entity: te.entity,
-        graphContext: te.graphContext,
-        parentJustification: te.parentJustification,
-      })),
-      batcherConfig
-    )
+    heartbeat(`processing tier ${tier} (${tierEntities.length} entities) via generateBatchObjects`)
+    log.info(`LLM justification starting for tier`, { tier, entities: tierEntities.length, model: modelToUse })
 
-    heartbeat(`processing ${batches.length} batches for tier ${tier} (${tierEntities.length} entities)`)
-
-    for (let batchIdx = 0; batchIdx < batches.length; batchIdx++) {
-      const batch = batches[batchIdx]!
-      heartbeat(`LLM batch ${batchIdx + 1}/${batches.length} (${batch.entities.length} entities, tier: ${tier})`)
-
-      // GC between LLM batches to free response objects and prompt strings
-      if (batchIdx > 0 && batchIdx % 3 === 0 && global.gc) global.gc()
-
-      const now = new Date().toISOString()
-
-      if (batch.entities.length === 1) {
-        // Single entity — use individual prompt (richer context)
-        const be = batch.entities[0]!
-        const teInfo = tierEntityMap.get(be.entity.id)!
-
-        const prompt = buildJustificationPrompt(
-          be.entity,
-          be.graphContext,
-          ontology,
-          teInfo.depJustifications,
-          teInfo.testContext,
-          {
-            entityNameMap,
-            parentJustification: teInfo.parentJustification,
-            siblingNames: teInfo.siblingNames,
-            modelTier: tier === "premium" ? "premium" : tier === "fast" ? "fast" : "standard",
-            callerJustifications: teInfo.callerJustifications,
-            heuristicHint: teInfo.heuristicHint,
-            isDeadCode: teInfo.isDeadCode,
-            deadCodeReason: teInfo.deadCodeReason,
-            contextDocuments,
-            historicalContext: teInfo.historicalContext,
-            intentSignals: teInfo.intentSignals,
-          }
-        )
-
-        try {
-          const llmResult = await container.llmProvider.generateObject({
-            model: modelToUse,
-            schema: JustificationResultSchema,
-            prompt,
-            system: JUSTIFICATION_SYSTEM_PROMPT,
-            temperature: 0.1,
-          })
-
-          const singleResult: JustificationDoc = {
-            id: randomUUID(),
-            org_id: input.orgId,
-            repo_id: input.repoId,
-            entity_id: be.entity.id,
-            taxonomy: llmResult.object.taxonomy,
-            confidence: llmResult.object.confidence,
-            business_purpose: llmResult.object.businessPurpose,
-            domain_concepts: llmResult.object.domainConcepts,
-            feature_tag: llmResult.object.featureTag,
-            semantic_triples: llmResult.object.semanticTriples,
-            compliance_tags: llmResult.object.complianceTags ?? [],
-            architectural_pattern: llmResult.object.architecturalPattern,
-            model_tier: tier as JustificationDoc["model_tier"],
-            model_used: modelToUse,
-            valid_from: now,
-            valid_to: null,
-            created_at: now,
-          }
-          ;(singleResult as Record<string, unknown>).reasoning = llmResult.object.reasoning
-          results.push(singleResult)
-          // Chain-of-thought: emit reasoning to pipeline logs
-          const purposeTruncated = singleResult.business_purpose.length > 100
-            ? singleResult.business_purpose.slice(0, 100) + "…"
-            : singleResult.business_purpose
-          pipelineLog.log(
-            "info",
-            "Justification",
-            `Analyzed ${be.entity.name}. Tagged as ${singleResult.taxonomy} (${Math.round(singleResult.confidence * 100)}%) — ${purposeTruncated}`
-          )
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error)
-          log.warn("LLM failed for single entity", { entityName: be.entity.name, error: message })
-          if (isFatalLLMError(message)) {
-            consecutiveFatalErrors++
-            pipelineLog.log("error", "Justification", `Fatal LLM error (${consecutiveFatalErrors}/${FATAL_ERROR_THRESHOLD}): ${message.slice(0, 120)}`)
-            if (consecutiveFatalErrors >= FATAL_ERROR_THRESHOLD) {
-              throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${FATAL_ERROR_THRESHOLD} consecutive fatal errors. Check AWS_BEARER_TOKEN_BEDROCK, AWS_REGION, and LLM_MODEL_CODE_REASONING env vars.`)
-            }
-          } else {
-            consecutiveFatalErrors = 0
-          }
-          pipelineLog.log("warn", "Justification", `Fallback created for ${be.entity.name}: ${message.slice(0, 120)}`)
-          results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
+    // Delegate all batching, retry, rate-limiting, and error recovery to the LLM port layer
+    const { results: batchResults, failures } = await container.llmProvider.generateBatchObjects({
+      model: modelToUse,
+      items: tierEntities,
+      buildPrompt: (items) => buildBatchJustificationPrompt(
+        items.map((te) => ({
+          entity: te.entity,
+          graphContext: te.graphContext,
+          parentJustification: te.parentJustification,
+          calleeJustifications: te.depJustifications,
+          heuristicHint: te.heuristicHint,
+          isDeadCode: te.isDeadCode,
+          deadCodeReason: te.deadCodeReason,
+          intentSignals: te.intentSignals,
+        })),
+        ontology,
+        entityNameMap
+      ),
+      buildSinglePrompt: (item) => buildJustificationPrompt(
+        item.entity,
+        item.graphContext,
+        ontology,
+        item.depJustifications,
+        item.testContext,
+        {
+          entityNameMap,
+          parentJustification: item.parentJustification,
+          siblingNames: item.siblingNames,
+          modelTier: tier === "premium" ? "premium" : tier === "fast" ? "fast" : "standard",
+          callerJustifications: item.callerJustifications,
+          heuristicHint: item.heuristicHint,
+          isDeadCode: item.isDeadCode,
+          deadCodeReason: item.deadCodeReason,
+          contextDocuments,
+          historicalContext: item.historicalContext,
+          intentSignals: item.intentSignals,
         }
-      } else {
-        // Multi-entity batch — use batch prompt with exponential backoff
-        const batchPrompt = buildBatchJustificationPrompt(
-          batch.entities.map((be) => {
-            const teInfo = tierEntityMap.get(be.entity.id)
-            return {
-              entity: be.entity,
-              graphContext: be.graphContext,
-              parentJustification: be.parentJustification,
-              calleeJustifications: teInfo?.depJustifications,
-              heuristicHint: teInfo?.heuristicHint,
-              isDeadCode: teInfo?.isDeadCode,
-              deadCodeReason: teInfo?.deadCodeReason,
-              intentSignals: teInfo?.intentSignals,
-            }
-          }),
-          ontology,
-          entityNameMap
-        )
+      ),
+      schema: BatchJustificationItemSchema,
+      batchSchema: BatchJustificationResultSchema,
+      matchResult: (item, result) => result.entityId === item.entity.id,
+      system: JUSTIFICATION_SYSTEM_PROMPT,
+      temperature: 0.1,
+      onProgress: (msg) => heartbeat(msg),
+    })
 
-        // Attempt batch with exponential backoff (2s, 8s, 30s) before falling to individual retries
-        const BATCH_BACKOFF_DELAYS = [2_000, 8_000, 30_000]
-
-        for (let attempt = 0; attempt <= BATCH_BACKOFF_DELAYS.length; attempt++) {
-          try {
-            const llmResult = await container.llmProvider.generateObject({
-              model: modelToUse,
-              schema: BatchJustificationResultSchema,
-              prompt: batchPrompt,
-              system: JUSTIFICATION_SYSTEM_PROMPT,
-              temperature: 0.1,
-            })
-
-            // Match results to entities (unwrap from wrapper object)
-            const batchResults = llmResult.object.results
-            for (const be of batch.entities) {
-              const match = batchResults.find((r) => r.entityId === be.entity.id)
-              if (match) {
-                const batchItem: JustificationDoc = {
-                  id: randomUUID(),
-                  org_id: input.orgId,
-                  repo_id: input.repoId,
-                  entity_id: be.entity.id,
-                  taxonomy: match.taxonomy,
-                  confidence: match.confidence,
-                  business_purpose: match.businessPurpose,
-                  domain_concepts: match.domainConcepts,
-                  feature_tag: match.featureTag,
-                  semantic_triples: match.semanticTriples,
-                  compliance_tags: match.complianceTags ?? [],
-                  architectural_pattern: match.architecturalPattern,
-                  model_tier: tier as JustificationDoc["model_tier"],
-                  model_used: modelToUse,
-                  valid_from: now,
-                  valid_to: null,
-                  created_at: now,
-                }
-                ;(batchItem as Record<string, unknown>).reasoning = match.reasoning
-                results.push(batchItem)
-                // Chain-of-thought: emit reasoning to pipeline logs
-                const purposeTruncated = batchItem.business_purpose.length > 100
-                  ? batchItem.business_purpose.slice(0, 100) + "…"
-                  : batchItem.business_purpose
-                pipelineLog.log(
-                  "info",
-                  "Justification",
-                  `Analyzed ${be.entity.name}. Tagged as ${batchItem.taxonomy} (${Math.round(batchItem.confidence * 100)}%) — ${purposeTruncated}`
-                )
-              } else {
-                // Entity not found in batch response — retry individually
-                log.warn("Entity missing from batch response, retrying individually", { entityName: be.entity.name })
-                pipelineLog.log("warn", "Justification", `${be.entity.name} missing from batch response, retrying individually`)
-                await retrySingleEntity(container, input, be, ontology, tierEntityMap, entityNameMap, prevJustMap, modelToUse, tier, results, now, pipelineLog)
-              }
-            }
-
-            break // Batch succeeded, exit retry loop
-          } catch (error: unknown) {
-            const message = error instanceof Error ? error.message : String(error)
-
-            // Fatal errors: abort immediately — don't retry or create fallbacks
-            if (isFatalLLMError(message)) {
-              consecutiveFatalErrors += 1
-              pipelineLog.log("error", "Justification", `Fatal LLM error on batch of ${batch.entities.length}: ${message.slice(0, 120)}`)
-              if (consecutiveFatalErrors >= FATAL_ERROR_THRESHOLD) {
-                throw new Error(`LLM endpoint is misconfigured: ${message}. Aborting justification after ${consecutiveFatalErrors} consecutive fatal errors. Check AWS_BEARER_TOKEN_BEDROCK, AWS_REGION, and LLM_MODEL_CODE_REASONING env vars.`)
-              }
-              // Create fallbacks for this batch but continue (might hit threshold soon)
-              pipelineLog.log("warn", "Justification", `Fallback created for ${batch.entities.length} entities in batch: ${message.slice(0, 100)}`)
-              for (const be of batch.entities) {
-                results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
-              }
-              break
-            }
-
-            consecutiveFatalErrors = 0
-            const isRetryable =
-              message.includes("429") ||
-              message.toLowerCase().includes("resource exhausted") ||
-              message.toLowerCase().includes("rate limit") ||
-              message.toLowerCase().includes("too many requests") ||
-              message.toLowerCase().includes("timeout") ||
-              message.toLowerCase().includes("overloaded") ||
-              message.toLowerCase().includes("503")
-
-            if (isRetryable && attempt < BATCH_BACKOFF_DELAYS.length) {
-              const delay = BATCH_BACKOFF_DELAYS[attempt]!
-              heartbeat(`batch retry ${attempt + 1}/${BATCH_BACKOFF_DELAYS.length} after ${delay / 1000}s (${message.slice(0, 80)})`)
-              await new Promise((r) => setTimeout(r, delay))
-              continue // Retry the batch
-            }
-
-            // All batch retries exhausted — fall back to individual retries
-            log.warn("Batch LLM failed, retrying individually", { attempts: attempt + 1, batchSize: batch.entities.length, error: message })
-            pipelineLog.log("warn", "Justification", `Batch failed after ${attempt + 1} attempt(s) for ${batch.entities.length} entities: ${message.slice(0, 100)}. Retrying individually.`)
-
-            // Add a cooldown before individual retries if rate limited
-            if (isRetryable) {
-              heartbeat("cooling down before individual retries (15s)")
-              await new Promise((r) => setTimeout(r, 15_000))
-            }
-
-            for (const be of batch.entities) {
-              if (isRetryable) {
-                await new Promise((r) => setTimeout(r, 3_000))
-              }
-              await retrySingleEntity(container, input, be, ontology, tierEntityMap, entityNameMap, prevJustMap, modelToUse, tier, results, now, pipelineLog)
-            }
-            break
-          }
-        }
+    // Map successful results to JustificationDocs
+    for (const [item, result] of batchResults) {
+      const doc: JustificationDoc = {
+        id: randomUUID(),
+        org_id: input.orgId,
+        repo_id: input.repoId,
+        entity_id: item.entity.id,
+        taxonomy: result.taxonomy,
+        confidence: result.confidence,
+        business_purpose: result.businessPurpose,
+        domain_concepts: result.domainConcepts,
+        feature_tag: result.featureTag,
+        semantic_triples: result.semanticTriples,
+        compliance_tags: result.complianceTags ?? [],
+        architectural_pattern: result.architecturalPattern,
+        model_tier: tier as JustificationDoc["model_tier"],
+        model_used: modelToUse,
+        valid_from: now,
+        valid_to: null,
+        created_at: now,
       }
+      ;(doc as Record<string, unknown>).reasoning = result.reasoning
+      results.push(doc)
+
+      const purposeTruncated = doc.business_purpose.length > 100
+        ? doc.business_purpose.slice(0, 100) + "…"
+        : doc.business_purpose
+      pipelineLog.log(
+        "info",
+        "Justification",
+        `Analyzed ${item.entity.name}. Tagged as ${doc.taxonomy} (${Math.round(doc.confidence * 100)}%) — ${purposeTruncated}`
+      )
+    }
+
+    // Failures → heuristic fallback or fallback justification
+    for (const item of failures) {
+      const hint = computeHeuristicHint(item.entity)
+      if (hint && hint.confidence >= 0.85) {
+        results.push({
+          id: randomUUID(),
+          org_id: input.orgId,
+          repo_id: input.repoId,
+          entity_id: item.entity.id,
+          taxonomy: hint.taxonomy,
+          confidence: hint.confidence,
+          business_purpose: hint.businessPurpose,
+          domain_concepts: [],
+          feature_tag: hint.featureTag,
+          semantic_triples: [],
+          compliance_tags: [],
+          model_tier: "heuristic" as JustificationDoc["model_tier"],
+          model_used: "heuristic-fallback",
+          valid_from: now,
+          valid_to: null,
+          created_at: now,
+        })
+        pipelineLog.log("info", "Justification", `Heuristic fallback for ${item.entity.name}: ${hint.taxonomy}`)
+      } else {
+        results.push(createFallbackJustification(input, item.entity.id, tier, modelToUse, "All retries exhausted", now))
+        pipelineLog.log("warn", "Justification", `Fallback created for ${item.entity.name}: all retries exhausted`)
+      }
+    }
+
+    const tierMs = Date.now() - tierStart
+    if (failures.length > 0) {
+      log.warn("Batch processing had failures", { tier, failures: failures.length, succeeded: batchResults.size, tierMs })
+    } else {
+      log.info(`LLM justification complete for tier`, { tier, succeeded: batchResults.size, tierMs })
     }
   }
 
@@ -855,9 +792,6 @@ export async function justifyBatch(
     }
   }
 
-  // Free intermediate data before storing results
-  llmEntities.length = 0
-  byTier.clear()
   if (global.gc) global.gc()
 
   // C-05: Merge heuristic-bypassed results with LLM results
@@ -906,108 +840,28 @@ export async function justifyBatch(
 
   // Return IDs of entities that were re-justified (for cascading invalidation)
   const changedEntityIds = results.map((r) => r.entity_id)
+  const totalBatchMs = Date.now() - batchStart
+
+  // Quality score distribution for observability
+  const qualityScores = results.map((r) => (r as Record<string, unknown>).quality_score as number | undefined).filter(Boolean) as number[]
+  const avgQuality = qualityScores.length > 0 ? Math.round(qualityScores.reduce((a: number, b: number) => a + b, 0) / qualityScores.length * 100) / 100 : 0
+
+  // Taxonomy distribution
+  const taxDist: Record<string, number> = {}
+  for (const r of results) { taxDist[r.taxonomy] = (taxDist[r.taxonomy] ?? 0) + 1 }
+
+  log.info("justifyBatch complete", {
+    inputSize: entityIds.length,
+    justified: results.length,
+    heuristicBypassed: bypassedResults.length,
+    avgQuality,
+    taxDist,
+    totalBatchMs,
+  })
+
   return { justifiedCount: results.length, changedEntityIds }
 }
 
-/** Retry a single entity that failed in a batch */
-async function retrySingleEntity(
-  container: ReturnType<typeof getContainer>,
-  input: JustificationInput,
-  be: { entity: EntityDoc; graphContext: GraphContext; parentJustification?: JustificationDoc },
-  ontology: import("@/lib/ports/types").DomainOntologyDoc | null,
-  tierEntityMap: Map<string, {
-    entity: EntityDoc
-    depJustifications: JustificationDoc[]
-    callerJustifications: JustificationDoc[]
-    testContext: import("@/lib/justification/types").TestContext | undefined
-    siblingNames?: string[]
-    parentJustification?: JustificationDoc
-    historicalContext?: string[]
-  }>,
-  entityNameMap: Map<string, string>,
-  prevJustMap: Map<string, JustificationDoc>,
-  modelToUse: string,
-  tier: string,
-  results: JustificationDoc[],
-  now: string,
-  pipelineLog?: ReturnType<typeof createPipelineLogger>
-): Promise<void> {
-  const teInfo = tierEntityMap.get(be.entity.id)
-  const prompt = buildJustificationPrompt(
-    be.entity,
-    be.graphContext,
-    ontology,
-    teInfo?.depJustifications ?? [],
-    teInfo?.testContext,
-    {
-      entityNameMap,
-      parentJustification: be.parentJustification,
-      siblingNames: teInfo?.siblingNames,
-      callerJustifications: teInfo?.callerJustifications,
-      historicalContext: teInfo?.historicalContext,
-    }
-  )
-
-  try {
-    const llmResult = await container.llmProvider.generateObject({
-      model: modelToUse,
-      schema: JustificationResultSchema,
-      prompt,
-      system: JUSTIFICATION_SYSTEM_PROMPT,
-      temperature: 0.1,
-    })
-
-    const retryResult: JustificationDoc = {
-      id: randomUUID(),
-      org_id: input.orgId,
-      repo_id: input.repoId,
-      entity_id: be.entity.id,
-      taxonomy: llmResult.object.taxonomy,
-      confidence: llmResult.object.confidence,
-      business_purpose: llmResult.object.businessPurpose,
-      domain_concepts: llmResult.object.domainConcepts,
-      feature_tag: llmResult.object.featureTag,
-      semantic_triples: llmResult.object.semanticTriples,
-      compliance_tags: llmResult.object.complianceTags ?? [],
-      architectural_pattern: llmResult.object.architecturalPattern,
-      model_tier: tier as JustificationDoc["model_tier"],
-      model_used: modelToUse,
-      valid_from: now,
-      valid_to: null,
-      created_at: now,
-    }
-    ;(retryResult as Record<string, unknown>).reasoning = llmResult.object.reasoning
-    results.push(retryResult)
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error)
-    logger.child({ service: "justification" }).warn("Individual retry failed", { entityName: be.entity.name, error: message })
-    pipelineLog?.log("warn", "Justification", `Fallback created for ${be.entity.name}: ${message.slice(0, 120)}`)
-    results.push(createFallbackJustification(input, be.entity.id, tier, modelToUse, message, now))
-  }
-}
-
-/**
- * Detect fatal (non-retryable) LLM errors that indicate endpoint misconfiguration.
- * These should abort the justification batch early rather than producing thousands
- * of fallback stubs.
- */
-function isFatalLLMError(message: string): boolean {
-  const lower = message.toLowerCase()
-  return (
-    lower.includes("405") ||
-    lower.includes("method not allowed") ||
-    lower.includes("401") ||
-    lower.includes("unauthorized") ||
-    lower.includes("403") ||
-    lower.includes("forbidden") ||
-    lower.includes("404") ||
-    lower.includes("not found") ||
-    lower.includes("invalid api key") ||
-    lower.includes("invalid_api_key") ||
-    lower.includes("model_not_found") ||
-    lower.includes("model not found")
-  )
-}
 
 /** Create a fallback justification when LLM fails */
 function createFallbackJustification(
@@ -1050,15 +904,20 @@ export async function propagateContextActivity(
 ): Promise<void> {
   const { propagateContext } = require("@/lib/justification/context-propagator") as typeof import("@/lib/justification/context-propagator")
   const container = getContainer()
-  const plog = createPipelineLogger(input.repoId, "justifying", input.runId)
+  const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
+  const plog = pipelineLogger(input, "justifying")
+  const activityStart = Date.now()
   heartbeat("propagating context across entity hierarchy")
   plog.log("info", "Step 6/10", "Fetching entities, edges, and justifications for context propagation...")
 
+  const fetchStart = Date.now()
   const [allEntities, edges, justifications] = await Promise.all([
     container.graphStore.getAllEntities(input.orgId, input.repoId),
     container.graphStore.getAllEdges(input.orgId, input.repoId),
     container.graphStore.getJustifications(input.orgId, input.repoId),
   ])
+  const fetchMs = Date.now() - fetchStart
+  log.info("Context propagation data loaded", { entities: allEntities.length, edges: edges.length, justifications: justifications.length, fetchMs })
 
   if (justifications.length === 0) {
     plog.log("info", "Step 6/10", "No justifications to propagate — skipping")
@@ -1072,17 +931,25 @@ export async function propagateContextActivity(
     justMap.set(j.entity_id, j)
   }
 
+  const propStart = Date.now()
   propagateContext(allEntities, edges, justMap)
+  const propMs = Date.now() - propStart
 
   // Store propagated justifications back
   const propagated = Array.from(justMap.values()).filter(
     (j) => (j as Record<string, unknown>).propagated_feature_tag !== undefined
   )
   if (propagated.length > 0) {
+    const storeStart = Date.now()
     await container.graphStore.bulkUpsertJustifications(input.orgId, propagated)
-    plog.log("info", "Step 6/10", `Context propagation complete — ${propagated.length} entities enriched with propagated tags`)
+    const storeMs = Date.now() - storeStart
+    const totalMs = Date.now() - activityStart
+    log.info("Context propagation complete", { propagated: propagated.length, timing: { fetchMs, propMs, storeMs, totalMs } })
+    plog.log("info", "Step 6/10", `Context propagation — ${propagated.length} entities enriched | Fetch: ${fetchMs}ms, Propagate: ${propMs}ms, Store: ${storeMs}ms, Total: ${totalMs}ms`)
   } else {
-    plog.log("info", "Step 6/10", "Context propagation complete — no additional tags to propagate")
+    const totalMs = Date.now() - activityStart
+    log.info("Context propagation — no tags to propagate", { timing: { fetchMs, propMs, totalMs } })
+    plog.log("info", "Step 6/10", `Context propagation — no tags to propagate (${totalMs}ms)`)
   }
 }
 
@@ -1094,16 +961,21 @@ export async function storeFeatureAggregations(
   input: JustificationInput
 ): Promise<void> {
   const container = getContainer()
-  const plog = createPipelineLogger(input.repoId, "justifying", input.runId)
+  const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
+  const plog = pipelineLogger(input, "justifying")
+  const activityStart = Date.now()
   heartbeat("computing feature aggregations")
   plog.log("info", "Step 7/10", "Computing feature aggregations from justifications...")
 
+  const fetchStart = Date.now()
   const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
+  const fetchMs = Date.now() - fetchStart
 
   // Cluster feature tags into higher-level feature areas by shared domain concepts
+  const clusterStart = Date.now()
   const areaMap = clusterFeatureAreas(justifications)
-
   const features = deduplicateFeatures(justifications, input.orgId, input.repoId)
+  const clusterMs = Date.now() - clusterStart
 
   // Annotate features with their area cluster
   for (const f of features) {
@@ -1113,8 +985,13 @@ export async function storeFeatureAggregations(
     }
   }
 
+  const storeStart = Date.now()
   await container.graphStore.bulkUpsertFeatureAggregations(input.orgId, features)
-  plog.log("info", "Step 7/10", `Feature aggregations stored — ${features.length} features across ${areaMap.size} areas`)
+  const storeMs = Date.now() - storeStart
+
+  const totalMs = Date.now() - activityStart
+  log.info("Feature aggregations stored", { justifications: justifications.length, features: features.length, areas: areaMap.size, timing: { fetchMs, clusterMs, storeMs, totalMs } })
+  plog.log("info", "Step 7/10", `Feature aggregations — ${features.length} features, ${areaMap.size} areas from ${justifications.length} justifications | Fetch: ${fetchMs}ms, Cluster: ${clusterMs}ms, Store: ${storeMs}ms, Total: ${totalMs}ms`)
 }
 
 /**
@@ -1126,10 +1003,15 @@ export async function embedJustifications(
   input: JustificationInput
 ): Promise<number> {
   const container = getContainer()
-  const plog = createPipelineLogger(input.repoId, "justifying", input.runId)
+  const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
+  const plog = pipelineLogger(input, "justifying")
+  const activityStart = Date.now()
+
+  const fetchStart = Date.now()
   const justifications = await container.graphStore.getJustifications(input.orgId, input.repoId)
+  const fetchMs = Date.now() - fetchStart
   heartbeat(`embedding ${justifications.length} justifications`)
-  plog.log("info", "Step 8/10", `Generating vector embeddings for ${justifications.length} justifications...`)
+  plog.log("info", "Step 8/10", `Generating vector embeddings for ${justifications.length} justifications (fetch: ${fetchMs}ms)...`)
 
   if (justifications.length === 0) {
     plog.log("info", "Step 8/10", "No justifications to embed — skipping")
@@ -1216,7 +1098,9 @@ export async function embedJustifications(
     }
   }
 
-  plog.log("info", "Step 8/10", `Embedding complete — ${totalStored} justification vectors stored`)
+  const totalMs = Date.now() - activityStart
+  log.info("Justification embedding complete", { totalStored, totalChunks: Math.ceil(justifications.length / CHUNK_SIZE), timing: { fetchMs, totalMs } })
+  plog.log("info", "Step 8/10", `Embedding complete — ${totalStored} vectors | Fetch: ${fetchMs}ms, Total: ${totalMs}ms`)
   return totalStored
 }
 

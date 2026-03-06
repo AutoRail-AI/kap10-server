@@ -88,7 +88,7 @@ export function InsightCard({
   const IconComponent = ICON_MAP[icon] ?? AlertTriangle
 
   const ruleLink = ruleTemplate
-    ? `/repos/${repoId}/rules/new?title=${encodeURIComponent(ruleTemplate.title)}&description=${encodeURIComponent(ruleTemplate.description)}&type=${encodeURIComponent(ruleTemplate.type)}&enforcement=${encodeURIComponent(ruleTemplate.enforcement)}&priority=${ruleTemplate.priority}`
+    ? `/repos/${repoId}/guardrails/new?title=${encodeURIComponent(ruleTemplate.title)}&description=${encodeURIComponent(ruleTemplate.description)}&type=${encodeURIComponent(ruleTemplate.type)}&enforcement=${encodeURIComponent(ruleTemplate.enforcement)}&priority=${ruleTemplate.priority}`
     : null
 
   return (

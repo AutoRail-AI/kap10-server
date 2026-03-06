@@ -26,8 +26,8 @@ const lightActivities = proxyActivities<typeof light>({
 
 const logActivities = proxyActivities<typeof pipelineLogs>({
   taskQueue: "light-llm-queue",
-  startToCloseTimeout: "5s",
-  retry: { maximumAttempts: 1 },
+  startToCloseTimeout: "30s",
+  retry: { maximumAttempts: 2 },
 })
 
 const runActivities = proxyActivities<typeof pipelineRun>({
@@ -142,6 +142,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     const workspace = await heavyActivities.prepareRepoIntelligenceSpace({
       orgId: input.orgId,
       repoId: input.repoId,
+      runId: input.runId,
       installationId: input.installationId,
       cloneUrl: input.cloneUrl,
       defaultBranch: input.defaultBranch,
@@ -168,6 +169,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
       indexDir: workspace.indexDir,
       orgId: input.orgId,
       repoId: input.repoId,
+      runId: input.runId,
       languages: workspace.languages,
       packageRoots: workspace.packageRoots,
       indexVersion: input.indexVersion,
@@ -185,6 +187,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
       indexDir: workspace.indexDir,
       orgId: input.orgId,
       repoId: input.repoId,
+      runId: input.runId,
       coveredFiles: scip.coveredFiles,
       indexVersion: input.indexVersion,
     })
@@ -197,6 +200,16 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     const fileCount = scip.fileCount + parse.fileCount
     const functionCount = scip.functionCount + parse.functionCount
     const classCount = scip.classCount + parse.classCount
+    const totalEntities = scip.entityCount + parse.entityCount
+    const totalEdges = scip.edgeCount + parse.edgeCount
+
+    wfLog("INFO", `Entity/edge totals: ${totalEntities} entities (SCIP: ${scip.entityCount}, tree-sitter: ${parse.entityCount}), ${totalEdges} edges (SCIP: ${scip.edgeCount}, tree-sitter: ${parse.edgeCount}) | ${fileCount} files, ${functionCount} functions, ${classCount} classes`, {
+      ...ctx,
+      totalEntities, totalEdges, fileCount, functionCount, classCount,
+      scipEntities: scip.entityCount, treeSitterEntities: parse.entityCount,
+      scipEdges: scip.edgeCount, treeSitterEdges: parse.edgeCount,
+      scipCoveredFiles: scip.coveredFiles.length,
+    }, "Step 3/7")
 
     // Step 4: Finalize indexing (shadow cleanup + status update — no entity data)
     t0 = Date.now()
@@ -205,6 +218,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     await lightActivities.finalizeIndexing({
       orgId: input.orgId,
       repoId: input.repoId,
+      runId: input.runId,
       fileCount,
       functionCount,
       classCount,
@@ -213,7 +227,8 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     progress = 95
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "finalize", status: "completed" })
     stepDurations.finalize = Date.now() - t0
-    const result = { entitiesWritten: scip.entityCount + parse.entityCount, edgesWritten: scip.edgeCount + parse.edgeCount, fileCount, functionCount, classCount }
+    wfLog("INFO", `Step 4 complete: finalized (${formatMs(stepDurations.finalize)})`, { ...ctx, durationMs: stepDurations.finalize }, "Step 4/7")
+    const result = { entitiesWritten: totalEntities, edgesWritten: totalEdges, fileCount, functionCount, classCount }
 
     // Step 4b: Pre-compute blast radius (fan-in/fan-out for god function detection)
     t0 = Date.now()
@@ -222,6 +237,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     const blastRadius = await graphAnalysisActivities.precomputeBlastRadius({
       orgId: input.orgId,
       repoId: input.repoId,
+      runId: input.runId,
     })
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "blastRadius", status: "completed", meta: { updatedCount: blastRadius.updatedCount, highRiskCount: blastRadius.highRiskCount } })
     stepDurations.blastRadius = Date.now() - t0
@@ -234,6 +250,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     const temporal = await temporalAnalysisActivities.computeTemporalAnalysis({
       orgId: input.orgId,
       repoId: input.repoId,
+      runId: input.runId,
       workspacePath: workspace.indexDir,
     })
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "temporalAnalysis", status: "completed", meta: { coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated } })
@@ -300,6 +317,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
         args: [{
           orgId: input.orgId,
           repoId: input.repoId,
+          runId: input.runId,
           workspacePath: workspace.indexDir,
           languages: workspace.languages,
         }],

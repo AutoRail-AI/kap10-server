@@ -10,13 +10,11 @@ import { getContainer } from "@/lib/di/container"
 import { ENTRY_POINT_PATTERNS } from "@/lib/justification/dead-code-detector"
 import { computePageRank, EDGE_WEIGHTS } from "@/lib/justification/pagerank"
 import { DISCONNECTED_DEPTH } from "@/lib/justification/structural-fingerprint"
-import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
+import type { PipelineContext } from "@/lib/temporal/activities/pipeline-logs"
+import { pipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
-export interface GraphAnalysisInput {
-  orgId: string
-  repoId: string
-}
+export interface GraphAnalysisInput extends PipelineContext {}
 
 /** Extract the entity key from an ArangoDB `collection/key` reference, or return the value as-is. */
 const extractEntityId = (ref: string): string => ref.includes("/") ? ref.split("/")[1]! : ref
@@ -148,14 +146,16 @@ export async function precomputeBlastRadius(
     organizationId: input.orgId,
     repoId: input.repoId,
   })
-  const plog = createPipelineLogger(input.repoId, "graph-analysis")
+  const plog = pipelineLogger(input, "graph-analysis")
 
   const container = getContainer()
+  const activityStart = Date.now()
   heartbeat("fetching entities and edges for blast radius")
   plog.log("info", "Step 4b/7", "Loading entities and edges for graph analysis...")
 
   let allEntities: Awaited<ReturnType<typeof container.graphStore.getAllEntities>>
   let edges: Awaited<ReturnType<typeof container.graphStore.getAllEdges>>
+  const loadStart = Date.now()
   try {
     allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
     edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
@@ -165,6 +165,7 @@ export async function precomputeBlastRadius(
     plog.log("error", "Step 4b/7", `Graph analysis failed: ${msg}`)
     throw error
   }
+  const loadMs = Date.now() - loadStart
 
   if (allEntities.length === 0) {
     log.info("No entities found, skipping graph analysis")
@@ -172,7 +173,14 @@ export async function precomputeBlastRadius(
     return { updatedCount: 0, highRiskCount: 0 }
   }
 
-  plog.log("info", "Step 4b/7", `Loaded ${allEntities.length} entities and ${edges.length} edges`)
+  // Log entity kind distribution for observability
+  const kindDist: Record<string, number> = {}
+  for (const e of allEntities) { kindDist[e.kind] = (kindDist[e.kind] ?? 0) + 1 }
+  const edgeKindDist: Record<string, number> = {}
+  for (const e of edges) { edgeKindDist[e.kind] = (edgeKindDist[e.kind] ?? 0) + 1 }
+
+  log.info("Graph data loaded", { entities: allEntities.length, edges: edges.length, loadMs, kindDist, edgeKindDist })
+  plog.log("info", "Step 4b/7", `Loaded ${allEntities.length} entities and ${edges.length} edges (${loadMs}ms) | Kinds: ${Object.entries(kindDist).map(([k, v]) => `${k}:${v}`).join(", ")}`)
 
   // ── Blast Radius (callable entities only) ─────────────────────────────────
   const callableKinds = new Set(["function", "method"])
@@ -304,6 +312,7 @@ export async function precomputeBlastRadius(
   // ── Store all enriched entities ───────────────────────────────────────────
   heartbeat(`storing ${allEntities.length} entities with graph analysis metadata`)
 
+  const storeStart = Date.now()
   try {
     await container.graphStore.bulkUpsertEntities(input.orgId, allEntities)
   } catch (error: unknown) {
@@ -312,11 +321,19 @@ export async function precomputeBlastRadius(
     plog.log("error", "Step 4b/7", `Failed to store graph analysis: ${msg}`)
     throw error
   }
+  const storeMs = Date.now() - storeStart
 
   const communityCount = new Set(communityMap.values()).size
-  plog.log("info", "Step 4b/7", `Graph analysis complete — ${allEntities.length} entities updated, ${highRiskCount} high-risk, ${communityCount} communities`)
+  // Community size distribution for observability
+  const communitySize = new Map<number, number>()
+  communityMap.forEach((cid) => { communitySize.set(cid, (communitySize.get(cid) ?? 0) + 1) })
+  const avgCommunitySize = communityCount > 0 ? Math.round(allEntities.length / communityCount) : 0
+  const maxCommunitySize = Math.max(...communitySize.values(), 0)
 
-  log.info("Blast radius + PageRank + structural fingerprint pre-computation complete", {
+  const totalMs = Date.now() - activityStart
+  plog.log("info", "Step 4b/7", `Graph analysis complete — ${allEntities.length} entities, ${highRiskCount} high-risk, ${communityCount} communities, PageRank ${prResult.iterations} iters | Load: ${loadMs}ms, Store: ${storeMs}ms, Total: ${totalMs}ms`)
+
+  log.info("Graph analysis complete", {
     totalEntities: allEntities.length,
     totalCallable: callableEntities.length,
     highRiskCount,
@@ -325,6 +342,9 @@ export async function precomputeBlastRadius(
     entryPoints: entryPointIds.size,
     boundaryNodes: boundaryIds.size,
     communities: communityCount,
+    avgCommunitySize,
+    maxCommunitySize,
+    timing: { loadMs, storeMs, totalMs },
   })
 
   return { updatedCount: allEntities.length, highRiskCount }

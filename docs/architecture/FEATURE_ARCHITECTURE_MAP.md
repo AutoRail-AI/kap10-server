@@ -149,7 +149,8 @@ Each feature links to:
 |---|---|
 | **Architecture Doc** | [PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md](PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md) — blast radius design, [PHASE_7_PR_REVIEW_INTEGRATION.md](PHASE_7_PR_REVIEW_INTEGRATION.md) — PR impact |
 | **Design Decisions** | N-hop outbound traversal across ALL edge types (`calls` + `imports` + `extends` + `implements`). Transitive closure to API/UI boundary nodes. Business context enrichment from justifications. Hub nodes (≥50 callers) get special handling to prevent thundering herd. |
-| **Key Code** | `lib/mcp/tools/` (analyze_impact), `lib/adapters/arango-graph-store.ts` |
+| **UI Route** | `/repos/[repoId]/blueprint/impact` (previously `/impact`) |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/blueprint/impact/page.tsx`, `lib/mcp/tools/` (analyze_impact), `lib/adapters/arango-graph-store.ts` |
 | **Data Stores** | ArangoDB (multi-edge traversal), PostgreSQL (justification enrichment) |
 
 ### 2.9 Blueprint
@@ -325,7 +326,8 @@ Each feature links to:
 |---|---|
 | **Architecture Doc** | [PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md](PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md), [PHASE_4_BUSINESS_JUSTIFICATION_AND_TAXONOMY.md](PHASE_4_BUSINESS_JUSTIFICATION_AND_TAXONOMY.md) |
 | **Design Decisions** | Cosine similarity between justification embeddings across consecutive indexing runs. Threshold: similarity < 0.7 flags drift. Entities where taxonomy or feature_tag changed significantly. Cascade re-justification triggered when cosine distance > 0.3 (up to 2 hops, max 50 entities). |
-| **Key Code** | `lib/adapters/arango-graph-store.ts`, `lib/temporal/activities/adr-generation.ts` |
+| **UI Route** | `/repos/[repoId]/intelligence/drift` (previously `/drift`) |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/intelligence/drift/page.tsx`, `lib/adapters/arango-graph-store.ts`, `lib/temporal/activities/adr-generation.ts` |
 | **Data Stores** | ArangoDB (`drift_scores`, `justifications`), PostgreSQL (`unerr.justification_embeddings`) |
 
 ### 5.5 Circular Dependency Detection
@@ -361,7 +363,8 @@ Each feature links to:
 |---|---|
 | **Architecture Doc** | [PHASE_7_PR_REVIEW_INTEGRATION.md](PHASE_7_PR_REVIEW_INTEGRATION.md) — Auto-ADR, [PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md](PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md) |
 | **Design Decisions** | LLM-generated from pattern analysis. Input: detected patterns with high adherence + entity graph structure. Output: structured ADR (context, decision, consequences, evidence). Auto-ADR triggered when PR introduces significant new graph topology — committed as follow-up PR. |
-| **Key Code** | `lib/temporal/activities/adr-generation.ts`, `lib/review/adr-schema.ts`, `lib/review/comment-builder.ts` |
+| **UI Route** | `/repos/[repoId]/guardrails/decisions` (previously `/adrs`) |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/guardrails/decisions/page.tsx`, `lib/temporal/activities/adr-generation.ts`, `lib/review/adr-schema.ts`, `lib/review/comment-builder.ts` |
 | **Data Stores** | ArangoDB (`adrs`) |
 
 ### 5.9 Domain Glossary
@@ -370,7 +373,8 @@ Each feature links to:
 |---|---|
 | **Architecture Doc** | [PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md) |
 | **Design Decisions** | NLP extraction from entity names and docstrings. Frequency-weighted, deduplicated by stemming. |
-| **Key Code** | `lib/adapters/arango-graph-store.ts` |
+| **UI Route** | `/repos/[repoId]/intelligence/glossary` (previously `/glossary`) |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/intelligence/glossary/page.tsx`, `lib/adapters/arango-graph-store.ts` |
 | **Data Stores** | ArangoDB (`domain_ontologies`) |
 
 ---
@@ -384,7 +388,8 @@ Each feature links to:
 | **Architecture Doc** | [PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md](PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md) |
 | **Design Decisions** | **LLM involved once (synthesis), never at enforcement.** ast-grep detects patterns during indexing. Only patterns with adherence ≥ 0.8 get Semgrep rules. **Subgraph Pattern Mining**: Louvain community detection finds implicit topological conventions. Types: structural, naming, error_handling, import, testing. |
 | **Detection Pipeline** | `indexRepoWorkflow` completes → `detectPatternsWorkflow` → astGrepScan (heavy) → llmSynthesizeRules (light, adherence ≥ 0.8 only) → storePatterns (light) |
-| **Key Code** | `lib/temporal/activities/indexing-heavy.ts`, `lib/adapters/arango-graph-store.ts` |
+| **UI Route** | `/repos/[repoId]/blueprint/patterns` (previously `/patterns`) |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/blueprint/patterns/page.tsx`, `lib/temporal/activities/indexing-heavy.ts`, `lib/adapters/arango-graph-store.ts` |
 | **Data Stores** | ArangoDB (`patterns`, `mined_patterns`) |
 
 ### 6.2 Custom Rules
@@ -393,7 +398,7 @@ Each feature links to:
 |---|---|
 | **Architecture Doc** | [PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md](PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md) |
 | **Design Decisions** | Fields: `pattern` (ast-grep YAML), `semgrep_rule` (Semgrep YAML), `enforcement` (suggest/warn/block), `scope`, `type`, `priority`. **Hybrid Rule Evaluation (two-pass)**: Pass 1 = Semgrep structural match, Pass 2 = Phase 4 feature_area/business_value enrichment to reduce false positives. **Polyglot Semantic Mapping**: one rule, many languages via `LanguageImplementation` edges. |
-| **Key Code** | `lib/adapters/arango-graph-store.ts` |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/guardrails/page.tsx` (rules index), `lib/adapters/arango-graph-store.ts` |
 | **Data Stores** | ArangoDB (`rules` collection, indexed on `(org_id, repo_id, status, priority)`) |
 
 ### 6.3 Org-Wide Rules
@@ -411,7 +416,7 @@ Each feature links to:
 |---|---|
 | **Architecture Doc** | [PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md](PHASE_6_PATTERN_ENFORCEMENT_AND_RULES_ENGINE.md) |
 | **Design Decisions** | Natural language → LLM with few-shot examples → ast-grep + Semgrep YAML. Returns structured rule with test cases and suggested enforcement. |
-| **Key Code** | `lib/mcp/tools/` (draft_architecture_rule) |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/guardrails/new/page.tsx`, `lib/mcp/tools/` (draft_architecture_rule) |
 | **Data Stores** | ArangoDB (`rules` — on save) |
 
 ### 6.5 Pattern-to-Rule Promotion
@@ -460,7 +465,7 @@ Each feature links to:
 | | |
 |---|---|
 | **Architecture Doc** | [PHASE_7_PR_REVIEW_INTEGRATION.md](PHASE_7_PR_REVIEW_INTEGRATION.md) |
-| **Key Code** | `app/(dashboard)/repos/[repoId]/page.tsx`, `app/api/repos/[repoId]/events/route.ts` |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/guardrails/reviews/page.tsx`, `app/(dashboard)/repos/[repoId]/guardrails/reviews/[reviewId]/page.tsx`, `app/api/repos/[repoId]/events/route.ts` |
 | **Data Stores** | PostgreSQL (`unerr.pr_reviews` with `checks_passed/warned/failed` counters, joined with `pr_review_comments`) |
 
 ### 7.3 Inline Comments
@@ -507,6 +512,50 @@ Each feature links to:
 
 ## 9. Dashboard & Visualization
 
+### 9.0 Tab / URL Structure
+
+The repo dashboard is organised into **9 top-level tabs**. Three of those tabs own sub-tabs that live under a nested URL prefix.
+
+| Tab | URL | Sub-tabs |
+|-----|-----|----------|
+| **Overview** | `/repos/[repoId]` | — |
+| **Code** | `/repos/[repoId]/code` | — |
+| **Health** | `/repos/[repoId]/health` | — |
+| **Blueprint** | `/repos/[repoId]/blueprint` | Features · `/blueprint/entities` · `/blueprint/patterns` · `/blueprint/impact` |
+| **Guardrails** | `/repos/[repoId]/guardrails` | Rules (index) · `/guardrails/new` · `/guardrails/reviews` · `/guardrails/reviews/[reviewId]` · `/guardrails/decisions` |
+| **Intelligence** | `/repos/[repoId]/intelligence` | Domain (index) · `/intelligence/glossary` · `/intelligence/drift` |
+| **Activity** | `/repos/[repoId]/activity` | — (read-only history: Pipeline Runs / Index Events) |
+| **Controls** | `/repos/[repoId]/controls` | — (pipeline operations: Re-index, Regenerate Health, Stop, Retry, Resume) |
+| **Ledger** | `/repos/[repoId]/ledger` | — |
+
+Key page files:
+
+| Page | File |
+|------|------|
+| Overview (repo home) | `app/(dashboard)/repos/[repoId]/page.tsx` |
+| Code (annotated viewer) | `app/(dashboard)/repos/[repoId]/code/page.tsx` |
+| Health | `app/(dashboard)/repos/[repoId]/health/page.tsx` |
+| Blueprint — Entities | `app/(dashboard)/repos/[repoId]/blueprint/entities/page.tsx` |
+| Blueprint — Entity detail | `app/(dashboard)/repos/[repoId]/blueprint/entities/[entityId]/page.tsx` |
+| Blueprint — Patterns | `app/(dashboard)/repos/[repoId]/blueprint/patterns/page.tsx` |
+| Blueprint — Impact | `app/(dashboard)/repos/[repoId]/blueprint/impact/page.tsx` |
+| Guardrails (Rules index) | `app/(dashboard)/repos/[repoId]/guardrails/page.tsx` |
+| Guardrails — New rule | `app/(dashboard)/repos/[repoId]/guardrails/new/page.tsx` |
+| Guardrails — Reviews | `app/(dashboard)/repos/[repoId]/guardrails/reviews/page.tsx` |
+| Guardrails — Review detail | `app/(dashboard)/repos/[repoId]/guardrails/reviews/[reviewId]/page.tsx` |
+| Guardrails — Decisions (ADRs) | `app/(dashboard)/repos/[repoId]/guardrails/decisions/page.tsx` |
+| Intelligence (Domain index) | `app/(dashboard)/repos/[repoId]/intelligence/page.tsx` |
+| Intelligence — Glossary | `app/(dashboard)/repos/[repoId]/intelligence/glossary/page.tsx` |
+| Intelligence — Drift | `app/(dashboard)/repos/[repoId]/intelligence/drift/page.tsx` |
+| Activity | `app/(dashboard)/repos/[repoId]/activity/page.tsx` |
+| Activity — Run detail | `app/(dashboard)/repos/[repoId]/activity/[runId]/page.tsx` |
+| Controls | `app/(dashboard)/repos/[repoId]/controls/page.tsx` |
+| Ledger | `app/(dashboard)/repos/[repoId]/ledger/page.tsx` |
+
+> **API routes are separate and not affected by this structure.** All `/api/repos/[repoId]/...` paths remain unchanged.
+
+---
+
 ### 9.1 Annotated Code Viewer
 
 | | |
@@ -516,13 +565,13 @@ Each feature links to:
 | **Key Code** | `components/code/annotated-code-viewer.tsx`, `app/(dashboard)/repos/[repoId]/code/page.tsx`, `app/api/repos/[repoId]/entities/route.ts` (enrich param), `lib/utils/file-tree-builder.ts` (sortTree) |
 | **Data Stores** | ArangoDB (entity collections + `justifications` collection) |
 
-### 9.2 Pipeline Monitor & Unified Activity Tab
+### 9.2 Pipeline Monitor — Activity Tab (History) & Controls Tab (Operations)
 
 | | |
 |---|---|
-| **Architecture Doc** | [PHASE_1_GITHUB_CONNECT_AND_INDEXING.md](PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) — progress tracking via Temporal query, [PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md) — Phase 2.6 |
-| **Design Decisions** | **5 tabs consolidated into 1 "Activity" tab** (removed Timeline, Commits, History, Pipeline — all overlapped). Activity page has section switcher: Pipeline Runs / Index Events / Logs. Pipeline runs table with clickable run IDs that open detail page in new tab (`/repos/{repoId}/activity/{runId}`). Run detail page shows status, meta grid, per-step visualization, result metrics, and run-specific logs. SSE endpoint streams Temporal workflow status. **Run ID tracking**: Every pipeline execution gets a UUID (`PipelineRun` record in PostgreSQL). Per-step status tracked via `PipelineRun.steps` JSON column. Run-bound Redis log keys: `unerr:pipeline-logs:{repoId}:{runId}`. |
-| **Key Code** | `app/(dashboard)/repos/[repoId]/activity/page.tsx`, `app/(dashboard)/repos/[repoId]/activity/[runId]/page.tsx`, `components/repo/pipeline-history-table.tsx`, `components/repo/pipeline-log-viewer.tsx`, `app/api/repos/[repoId]/events/route.ts`, `app/api/repos/[repoId]/logs/route.ts`, `app/api/repos/[repoId]/runs/route.ts`, `app/api/repos/[repoId]/runs/[runId]/route.ts`, `lib/temporal/activities/pipeline-logs.ts`, `lib/temporal/activities/pipeline-run.ts` |
+| **Architecture Doc** | [PHASE_1_GITHUB_CONNECT_AND_INDEXING.md](PHASE_1_GITHUB_CONNECT_AND_INDEXING.md) — progress tracking via Temporal query, [PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md) — Phase 2.6 (Activity), Phase 9 (Controls) |
+| **Design Decisions** | Pipeline monitoring is split across two tabs. **Activity** is read-only history: Pipeline Runs table, Index Events table, and a "Manage pipeline →" link to Controls. **Controls** is the operations panel: pipeline status banner (SSE live updates via `useRepoEvents`), operations grid (Re-index, Regenerate Health, Stop, Retry, Resume from Phase), rate limit awareness on buttons. This separation keeps history browsing clean while giving pipeline operations a dedicated home. Pipeline runs table with clickable run IDs that open detail page in new tab (`/repos/{repoId}/activity/{runId}`). SSE endpoint streams Temporal workflow status. **Run ID tracking**: Every pipeline execution gets a UUID (`PipelineRun` record in PostgreSQL). Per-step status tracked via `PipelineRun.steps` JSON column. Run-bound Redis log keys: `unerr:pipeline-logs:{repoId}:{runId}`. |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/activity/page.tsx` (history), `app/(dashboard)/repos/[repoId]/controls/page.tsx` (operations), `app/(dashboard)/repos/[repoId]/activity/[runId]/page.tsx` (run detail), `components/repo/pipeline-history-table.tsx`, `components/repo/pipeline-log-viewer.tsx`, `hooks/use-repo-events.ts` (SSE hook), `app/api/repos/[repoId]/events/route.ts`, `app/api/repos/[repoId]/logs/route.ts`, `app/api/repos/[repoId]/runs/route.ts`, `app/api/repos/[repoId]/runs/[runId]/route.ts`, `lib/temporal/activities/pipeline-logs.ts`, `lib/temporal/activities/pipeline-run.ts` |
 | **Data Stores** | Temporal (workflow state + queries), PostgreSQL (`unerr.repos` — status, `unerr.pipeline_runs` — run history + per-step tracking), Redis (pipeline logs) |
 
 ### 9.3 Activity Feed
@@ -548,8 +597,8 @@ Each feature links to:
 | | |
 |---|---|
 | **Architecture Doc** | [PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md) |
-| **Design Decisions** | "Issues" tab renamed to **"Overview"** (Home icon) — serves as the primary repo landing page. Shows hero stats (health grade, entities, features, insights), top insights, domain intelligence + language distribution side-by-side, quick navigation links, and Issues as a subsection. Code explorer moved to dedicated Code tab with annotated viewer. |
-| **Key Code** | `app/(dashboard)/repos/[repoId]/page.tsx`, `app/api/repos/[repoId]/overview/route.ts`, `components/repo/repo-tabs.tsx`, `lib/adapters/arango-graph-store.ts` |
+| **Design Decisions** | **"Overview"** tab (Home icon) — serves as the primary repo landing page. Shows hero stats (health grade, entities, features, insights), top insights, domain intelligence + language distribution side-by-side, quick navigation links, and Issues as a subsection. Health grade card includes subtle "Manage pipeline →" link to Controls tab. Code explorer lives in the dedicated **Code** tab. Entity browsing moved to **Blueprint → Entities** (`/blueprint/entities`, `/blueprint/entities/[entityId]`). The 9-tab structure is: Overview, Code, Health, Blueprint (sub-tabs: Features/Entities/Patterns/Impact), Guardrails (sub-tabs: Rules/Reviews/Decisions), Intelligence (sub-tabs: Domain/Glossary/Drift), Activity, Controls, Ledger. See section 9.0 for the full URL map. |
+| **Key Code** | `app/(dashboard)/repos/[repoId]/page.tsx` (Overview), `app/(dashboard)/repos/[repoId]/blueprint/entities/page.tsx` (Entity browser), `app/(dashboard)/repos/[repoId]/blueprint/entities/[entityId]/page.tsx` (Entity detail), `app/api/repos/[repoId]/overview/route.ts`, `components/repo/repo-tabs.tsx`, `lib/adapters/arango-graph-store.ts` |
 | **Data Stores** | ArangoDB (entity collections + `justifications` + `health_reports` + `domain_ontology`) |
 
 ### 9.6 Context Seeding
@@ -567,9 +616,9 @@ Each feature links to:
 | | |
 |---|---|
 | **Architecture Doc** | [INDEXING_PIPELINE.md](INDEXING_PIPELINE.md) — TBI-H-04 |
-| **Design Decisions** | Generated on-demand (not stored) via `generateContextDocument()`. Compiles project stats, health report, features, ADRs, ontology, domain glossary, and ubiquitous language into structured markdown. Download via `GET /api/repos/{repoId}/export/context` with `Content-Disposition: attachment`. Available from overview page and celebration modal. |
+| **Design Decisions** | Generated on-demand via `generateContextDocument()`. Fetches all entities once (`getAllEntities`) to build an entity lookup map, then compiles 10 sections: executive summary (top 3 risks with entity names), "What Your AI Agent Can't See" (hub/god functions, cycles, taxonomy signal), severity-grouped health table with entity-level evidence, compact codebase anatomy, filtered/grouped feature map (noise features excluded, entry points resolved to names), team conventions, compressed ADRs (capped at 5, truncated), and merged domain vocabulary (programming noise filtered). Target output: ~150 lines for medium codebases. Download via `GET /api/repos/{repoId}/export/context` with `Content-Disposition: attachment`. Available from overview page and celebration modal. |
 | **Key Code** | `lib/justification/context-document-generator.ts`, `app/api/repos/[repoId]/export/context/route.ts`, `app/(dashboard)/repos/[repoId]/page.tsx`, `components/repo/repo-onboarding-console.tsx` |
-| **Data Stores** | ArangoDB (reads `features_agg`, `health_reports`, `adrs`, `domain_ontologies`) |
+| **Data Stores** | ArangoDB (reads `features_agg`, `health_reports`, `adrs`, `domain_ontologies`, all entity collections for name resolution) |
 
 ### 9.8 Human-in-the-Loop Corrections
 
@@ -679,6 +728,15 @@ Each feature links to:
 |---|---|
 | **Architecture Doc** | [PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md](PHASE_ADVANCED_CODE_INTELLIGENCE_DISPLAY.md), [PHASE_12_MULTIPLAYER_COLLABORATION_AND_COLLISION_DETECTION.md](PHASE_12_MULTIPLAYER_COLLABORATION_AND_COLLISION_DETECTION.md) |
 | **Design Decisions** | Multi-repo: cross-repo edge collection in ArangoDB. PII/Trust Boundary: taint analysis on call graph (Source → Sink validation). Cognitive Debt: rewind-to-commit ratio from ledger status transitions. |
+
+### 12.9 Immutable Source Artifacts & Multi-Branch Support
+
+| | |
+|---|---|
+| **Architecture Doc** | [PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md) |
+| **Design Decisions** | **Content-addressed tarballs in Supabase Storage** replace `git clone` on heavy workers. All ingestion paths (GitHub, CLI, future GitLab/Bitbucket) flow through a unified ingestion gateway that stores a `.tar.gz` keyed by commit SHA *before* the heavy pipeline starts. Workers download from internal storage (LAN speed), never from external Git hosts. Retries/resumes reuse the same artifact — byte-for-byte deterministic. **Multi-branch:** Branch variants are stored as separate artifacts (deduped by commit SHA). ArangoDB entities gain an optional `branch_ref` field. Default-branch queries are backward-compatible (null = main). **User workspaces** use synthetic SHAs and 24hr TTL. Daily eviction cron enforces retention policy. |
+| **Key Code** | `lib/temporal/activities/artifact-gateway.ts` (planned), `lib/temporal/activities/indexing-heavy.ts` (modified), `lib/temporal/workflows/index-repo.ts` (modified), `lib/ports/git-host.ts` (`fetchTarball` method) |
+| **Data Stores** | Supabase Storage (`source-artifacts` bucket), PostgreSQL (`unerr.source_artifacts`, `unerr.branch_refs`), ArangoDB (`branch_ref` + `commit_sha` fields on entities) |
 
 ---
 

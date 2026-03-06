@@ -14,6 +14,9 @@ export interface IWorkflowEngine {
   getWorkflowStatus(workflowId: string): Promise<WorkflowStatus>
   cancelWorkflow(workflowId: string): Promise<void>
 
+  /** Cancel ALL running workflows for a repo (uses Temporal visibility query). Returns count cancelled. */
+  cancelAllRepoWorkflows(orgId: string, repoId: string): Promise<number>
+
   /** Health check: can we reach Temporal? */
   healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }>
 }

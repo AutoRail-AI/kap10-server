@@ -1,6 +1,6 @@
 "use client"
 
-import { GitBranch, Info } from "lucide-react"
+import { ExternalLink, GitBranch, Info, RefreshCw } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
@@ -27,6 +27,9 @@ interface RepoOption {
   language: string | null
   private: boolean
   installationId: number
+  accountLogin: string
+  accountType: string
+  installationUrl: string
 }
 
 interface RepoWithBranch {
@@ -54,20 +57,25 @@ export function RepoPickerSheet({
     Map<number, { branches: string[]; selectedBranch: string; loading: boolean }>
   >(new Map())
 
-  useEffect(() => {
-    if (!open) return
+  const fetchRepos = useCallback((refresh = false) => {
     setLoading(true)
-    setStep(1)
-    setSelected(new Set())
-    setBranchState(new Map())
-    fetch("/api/repos/available")
+    const url = refresh ? "/api/repos/available?refresh=true" : "/api/repos/available"
+    fetch(url)
       .then((r) => r.json() as Promise<{ data?: { repos?: RepoOption[] } }>)
       .then((data) => {
         const list = data?.data?.repos ?? []
         setRepos(list)
       })
       .finally(() => setLoading(false))
-  }, [open])
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    setStep(1)
+    setSelected(new Set())
+    setBranchState(new Map())
+    fetchRepos()
+  }, [open, fetchRepos])
 
   const toggle = (id: number) => {
     setSelected((prev) => {
@@ -174,9 +182,23 @@ export function RepoPickerSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-[480px] sm:max-w-[480px] flex flex-col glass-panel border-border">
         <SheetHeader>
-          <SheetTitle className="font-grotesk text-foreground">
-            {step === 1 ? "Add repositories" : "Choose branches"}
-          </SheetTitle>
+          <div className="flex items-center justify-between">
+            <SheetTitle className="font-grotesk text-foreground">
+              {step === 1 ? "Add repositories" : "Choose branches"}
+            </SheetTitle>
+            {step === 1 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-8 w-8 p-0"
+                disabled={loading}
+                onClick={() => fetchRepos(true)}
+                title="Refresh repository list"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+              </Button>
+            )}
+          </div>
           <SheetDescription className="text-muted-foreground text-sm">
             {step === 1
               ? "Select repositories to connect and index."
@@ -192,30 +214,63 @@ export function RepoPickerSheet({
                   <Spinner className="h-6 w-6 text-primary" />
                 </div>
               ) : repos.length === 0 ? (
-                <p className="text-muted-foreground text-sm py-4 text-center">
-                  No repositories available to add.
-                </p>
+                <div className="py-4 text-center space-y-3">
+                  <p className="text-muted-foreground text-sm">
+                    No repositories available to add.
+                  </p>
+                  {repos.length === 0 && !loading && (
+                    <p className="text-xs text-muted-foreground">
+                      Try clicking refresh or manage access on GitHub to grant access to more repos.
+                    </p>
+                  )}
+                </div>
               ) : (
-                repos.map((r) => (
-                  <label
-                    key={r.id}
-                    className="flex items-center gap-3 rounded-md border border-border p-2 cursor-pointer hover:bg-muted/50"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selected.has(r.id)}
-                      onChange={() => toggle(r.id)}
-                      aria-label={`Select ${r.fullName}`}
-                      className="h-4 w-4 rounded border-border"
-                    />
-                    <span className="font-sans text-sm text-foreground truncate flex-1">
-                      {r.fullName}
-                    </span>
-                    {r.language && (
-                      <span className="text-muted-foreground text-xs">{r.language}</span>
-                    )}
-                  </label>
-                ))
+                (() => {
+                  const grouped = new Map<string, { repos: RepoOption[]; installationUrl: string }>()
+                  for (const r of repos) {
+                    const key = r.accountLogin
+                    if (!grouped.has(key)) {
+                      grouped.set(key, { repos: [], installationUrl: r.installationUrl })
+                    }
+                    grouped.get(key)!.repos.push(r)
+                  }
+                  return Array.from(grouped.entries()).map(([account, { repos: accountRepos, installationUrl }]) => (
+                    <div key={account} className="space-y-1.5">
+                      <div className="flex items-center justify-between px-1 pt-2">
+                        <span className="text-xs font-medium text-muted-foreground">{account}</span>
+                        <a
+                          href={installationUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          Manage access
+                          <ExternalLink className="h-3 w-3" />
+                        </a>
+                      </div>
+                      {accountRepos.map((r) => (
+                        <label
+                          key={r.id}
+                          className="flex items-center gap-3 rounded-md border border-border p-2 cursor-pointer hover:bg-muted/50"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected.has(r.id)}
+                            onChange={() => toggle(r.id)}
+                            aria-label={`Select ${r.fullName}`}
+                            className="h-4 w-4 rounded border-border"
+                          />
+                          <span className="font-sans text-sm text-foreground truncate flex-1">
+                            {r.fullName}
+                          </span>
+                          {r.language && (
+                            <span className="text-muted-foreground text-xs">{r.language}</span>
+                          )}
+                        </label>
+                      ))}
+                    </div>
+                  ))
+                })()
               )}
             </div>
           ) : (

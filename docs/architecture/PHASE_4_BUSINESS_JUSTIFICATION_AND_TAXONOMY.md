@@ -420,15 +420,55 @@ The justification pipeline supports **multiple LLM providers**, selected via the
 
 **Default Ollama models:** `qwen3:8b` (fast/standard tiers), `qwen3-coder` (premium tier). Override per-tier via `LLM_MODEL_FAST`, `LLM_MODEL_STANDARD`, `LLM_MODEL_PREMIUM` env vars.
 
-### Rate Limiting & Retry
+### Rate Limiting, Retry & Batch Processing Architecture
 
-Two layers protect against 429 "Resource exhausted" errors:
+Three distinct layers handle LLM reliability, each with a clear single responsibility:
 
-1. **Proactive rate limiter** (`lib/llm/rate-limiter.ts`): Sliding-window limiter tracks requests (RPM) and tokens (TPM) over 60s. `waitForSlot()` blocks until a slot is available. Configured via `LLM_RPM_LIMIT` (default: 15) and `LLM_TPM_LIMIT` (default: 1M). Set to 0 for unlimited (automatic for Ollama).
+**Layer 1 — Per-call rate limiting & retry** (provider infrastructure):
+- **Proactive rate limiter** (`lib/llm/rate-limiter.ts`): Sliding-window limiter tracks requests (RPM) and tokens (TPM) over 60s. `waitForSlot()` blocks until a slot is available. Configured via `LLM_RPM_LIMIT` (default: 120, tuned for Bedrock/Vertex) and `LLM_TPM_LIMIT` (default: auto-detect from `MODEL_TPM_LIMITS`). Set to 0 for unlimited.
+- **Retry with exponential backoff** (`BedrockProvider.retryWithBackoff()`): On 429 errors, retries up to `LLM_RETRY_MAX_ATTEMPTS` (default: 5) with exponential delay + jitter. Respects `retry-after` headers. Non-429 errors propagate immediately.
 
-2. **Retry with exponential backoff** (`VercelAIProvider.retryWithBackoff()`): On 429 errors, retries up to `LLM_RETRY_MAX_ATTEMPTS` (default: 5) with exponential delay + jitter. Respects `retry-after` headers when present. Non-429 errors propagate immediately.
+**Layer 2 — Batch orchestration** (`lib/llm/batch-processor.ts`, exposed via `ILLMProvider.generateBatchObjects()`):
+- **Item-count batch packing**: Splits items into groups of `LLM_MAX_ITEMS_PER_BATCH` (default: 8)
+- **Bounded concurrency**: Processes batches in parallel via `LLM_BATCH_CONCURRENCY` (default: 10) workers
+- **Missing-item re-batching**: Items not matched in a batch response are collected and re-batched in smaller groups (up to 2 rounds)
+- **Parse-failure splitting**: If a batch call fails (non-rate-limit), splits the batch in half and retries each half
+- **Fatal error abort**: On 401/403/405 errors, aborts after 5 consecutive fatals to fail fast on misconfigured endpoints
+- **Final single-item fallback**: Any remaining unmatched items are retried individually as last resort
 
-3. **Activity-level cooldown** (`justification.ts`): When a batch LLM call gets 429'd, the activity waits 30 seconds (with heartbeat) before retrying entities individually with 4-second delays between each call.
+**Layer 3 — Business logic** (`justification.ts`):
+- Groups entities by model tier, calls `generateBatchObjects()` per tier
+- Maps successful results to `JustificationDoc` format
+- Applies heuristic fallback (C-05) for entities that failed all retries but have high-confidence heuristic hints
+
+**Key design principle**: Business logic (justification.ts) never implements batching, retry, rate-limiting, or error recovery. It calls `container.llmProvider.generateBatchObjects()` and handles the results. All infrastructure concerns live in the LLM port layer.
+
+```
+justification.ts                    ILLMProvider port                    Provider internals
+─────────────────                   ──────────────────                   ─────────────────
+groupByTier()                       generateBatchObjects()               generateObject()
+  │                                   │                                    │
+  ├─ buildPrompt()                    ├─ batch-processor.ts                ├─ RateLimiter.waitForSlot()
+  ├─ buildSinglePrompt()             │  ├─ chunk into batches             ├─ RateLimiter.waitForTokenBudget()
+  ├─ matchResult()                   │  ├─ parallelMap(concurrency)       ├─ retryWithBackoff(fn)
+  └─ handle results/failures         │  ├─ re-batch missing items        │  ├─ exponential backoff + jitter
+                                     │  ├─ split on parse failure        │  └─ retry-after header
+                                     │  └─ final single-item fallback   └─ RateLimiter.recordUsage()
+                                     └─ return { results, failures }
+```
+
+**Environment variables (all optional, tuned for Bedrock/Vertex)**:
+
+| Variable | Default | Layer | Purpose |
+|----------|---------|-------|---------|
+| `LLM_RPM_LIMIT` | 120 | Per-call | Requests per minute sliding window |
+| `LLM_TPM_LIMIT` | auto-detect | Per-call | Tokens per minute sliding window |
+| `LLM_RETRY_MAX_ATTEMPTS` | 5 | Per-call | Max retries on 429 per LLM call |
+| `LLM_RETRY_BASE_DELAY_MS` | 1000 | Per-call | Base delay for exponential backoff |
+| `LLM_BATCH_CONCURRENCY` | 10 | Batch | Parallel LLM calls |
+| `LLM_MAX_ITEMS_PER_BATCH` | 8 | Batch | Entities per single LLM call |
+| `LLM_BATCH_MAX_INPUT_TOKENS` | 5000 | Batch | Token budget per batch (dynamic-batcher) |
+| `JUSTIFY_MAX_PARALLEL_CHUNKS` | 10 | Workflow | Activity-level parallelism in Temporal |
 
 ### LLM Model Routing
 

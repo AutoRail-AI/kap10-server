@@ -9,7 +9,7 @@ import type { ICacheStore } from "@/lib/ports/cache-store"
 import type { Definition, ICodeIntelligence, Reference } from "@/lib/ports/code-intelligence"
 import type { FileEntry, GitHubRepo, IGitHost, PullRequest } from "@/lib/ports/git-host"
 import type { IGraphStore } from "@/lib/ports/graph-store"
-import type { ILLMProvider } from "@/lib/ports/llm-provider"
+import type { BatchProcessingOptions, BatchProcessingResult, ILLMProvider } from "@/lib/ports/llm-provider"
 import type { CostBreakdown, IObservability, ModelUsageEntry } from "@/lib/ports/observability"
 import type { IPatternEngine, PatternMatch } from "@/lib/ports/pattern-engine"
 import type { ApiKeyRecord, DeletionLogRecord, GitHubInstallationRecord, IRelationalStore, PipelineRunRecord, RepoRecord, WorkspaceRecord } from "@/lib/ports/relational-store"
@@ -1118,6 +1118,21 @@ export class MockLLMProvider implements ILLMProvider {
   async embed(): Promise<number[][]> {
     return []
   }
+  async generateBatchObjects<TItem, TResult>(
+    params: BatchProcessingOptions<TItem, TResult>
+  ): Promise<BatchProcessingResult<TItem, TResult>> {
+    const results = new Map<TItem, TResult>()
+    for (const item of params.items) {
+      try {
+        const result = params.schema.parse({})
+        results.set(item, result)
+      } catch {
+        // Item fails parse — will appear in failures
+      }
+    }
+    const failures = params.items.filter((item) => !results.has(item))
+    return { results, failures }
+  }
 }
 
 export class InlineWorkflowEngine implements IWorkflowEngine {
@@ -1133,6 +1148,7 @@ export class InlineWorkflowEngine implements IWorkflowEngine {
     return { workflowId: "", status: "completed" }
   }
   async cancelWorkflow(): Promise<void> {}
+  async cancelAllRepoWorkflows(): Promise<number> { return 0 }
   async healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }> {
     return { status: "up", latencyMs: 0 }
   }
@@ -1288,6 +1304,17 @@ export class InMemoryVectorSearch implements IVectorSearch {
     let deleted = 0
     Array.from(this.store.entries()).forEach(([key, value]) => {
       if (value.metadata.repoId === repoId && !keySet.has(key)) {
+        this.store.delete(key)
+        deleted++
+      }
+    })
+    return deleted
+  }
+
+  async deleteAllEmbeddings(repoId: string): Promise<number> {
+    let deleted = 0
+    Array.from(this.store.entries()).forEach(([key, value]) => {
+      if (value.metadata.repoId === repoId) {
         this.store.delete(key)
         deleted++
       }

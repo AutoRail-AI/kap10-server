@@ -363,15 +363,15 @@ const tabs = [
 ]
 ```
 
+> **Note:** This 14-tab layout was later consolidated to 8 tabs in [Phase 8](#phase-8-tab-restructure--14--8-intent-based-tabs-march-2026).
+
 **File:** `app/(dashboard)/repos/[repoId]/activity/page.tsx` (rewritten)
 
-Unified activity hub with:
-1. **Pipeline controls** — Re-index, Stop, and Restart buttons with rate limiting and processing state
-2. **Pipeline status banner** — Shows when a pipeline is actively running
-3. **Section switcher** — Three sections: Pipeline Runs | Index Events | Logs
+Read-only activity history hub (pipeline controls moved to Controls tab in [Phase 9](#phase-9-controls-tab--pipeline-operations-panel-march-2026)):
+1. **Header** — Title + "Manage pipeline →" link to Controls tab
+2. **Pipeline status banner** — Read-only indicator when a pipeline is actively running
+3. **Index Events section** — Legacy `IndexEvent` table or `ActivityFeed` component
 4. **Pipeline Runs section** — `PipelineHistoryTable` with run ID, time, trigger, status, duration, files, entities, edges. Clicking a run ID opens the run detail page in a new tab.
-5. **Index Events section** — Legacy `IndexEvent` table or `ActivityFeed` component
-6. **Logs section** — `PipelineLogViewer` for live/archived logs
 
 **File:** `components/repo/pipeline-history-table.tsx` (modified)
 
@@ -604,10 +604,10 @@ During justification, each entity's reasoning is emitted to the pipeline log: `"
 
 ### 7C: UNERR_CONTEXT.md Export
 
-Compiles pipeline outputs (features, health report, ADRs, ontology, glossary, ubiquitous language) into a downloadable markdown file. Available from the overview page and celebration modal.
+Compiles pipeline outputs into a concise, actionable intelligence report (~150 lines). The generator fetches all entities once to build a lookup map, then produces 10 sections: executive summary (top 3 risks with resolved entity names and file locations), "What Your AI Agent Can't See" (hub functions, god functions, circular dependencies, taxonomy signal), severity-grouped health table with entity-level evidence, compact codebase anatomy, filtered feature map (noise features excluded, grouped by taxonomy tier, entry points resolved to human-readable names), team conventions, compressed ADRs, and merged domain vocabulary with programming noise filtered out. Available from the overview page and celebration modal.
 
 **Files:**
-- `lib/justification/context-document-generator.ts` — `generateContextDocument()` function
+- `lib/justification/context-document-generator.ts` — `generateContextDocument()` with 10 pure section-builder functions
 - `app/api/repos/[repoId]/export/context/route.ts` — GET endpoint with `Content-Disposition: attachment`
 - `app/(dashboard)/repos/[repoId]/page.tsx` — "Download UNERR_CONTEXT.md" button
 - `components/repo/repo-onboarding-console.tsx` — "Download Intelligence Report" in celebration modal
@@ -632,3 +632,300 @@ Inline correction editor in the annotated code viewer. Edit icon on taxonomy bad
 - `app/api/repos/[repoId]/entities/[entityId]/override/route.ts` — POST override API
 - `components/code/annotated-code-viewer.tsx` — edit icon, inline correction editor
 - `components/blueprint/blueprint-view.tsx` — `confidenceGlow()` function for ring/shadow effects
+
+---
+
+## Phase 8: Tab Restructure — 14 → 9 Intent-Based Tabs (March 2026)
+
+The 14-tab structure exposed database schema rather than user workflows. This created information overload and hid the platform's value. Consolidated to 9 intent-based tabs with sub-tab navigation for grouped content. (Originally 8 tabs; the 9th "Controls" tab was added in [Phase 9](#phase-9-controls-tab--pipeline-operations-panel-march-2026).)
+
+### Motivation
+
+Tabs like "Entities", "Patterns", "Rules", "Reviews", "ADRs", "Glossary", "Drift", "Impact", and "Ledger" mirrored internal data models. Users had to mentally map database concepts to their actual workflows. The restructure groups related pages under intent-driven categories:
+
+- **Blueprint** = "What does my codebase look like?" (features, entities, patterns, impact)
+- **Guardrails** = "How do I enforce quality?" (rules, PR reviews, architecture decisions)
+- **Intelligence** = "What does Unerr know about my domain?" (cruft detection, glossary, drift)
+
+### New Tab Architecture
+
+| Tab | URL | Sub-tabs | Absorbs |
+|-----|-----|----------|---------|
+| **Overview** | `/repos/[id]/` | — | — |
+| **Code** | `/repos/[id]/code` | — | — |
+| **Health** | `/repos/[id]/health` | — | — |
+| **Blueprint** | `/repos/[id]/blueprint` | Features · Entities · Patterns · Impact | Entities, Patterns, Impact |
+| **Guardrails** | `/repos/[id]/guardrails` | Rules · Reviews · Decisions | Rules, Reviews, ADRs |
+| **Intelligence** | `/repos/[id]/intelligence` | Domain · Glossary · Drift | Glossary, Drift |
+| **Activity** | `/repos/[id]/activity` | — | — (read-only history) |
+| **Controls** | `/repos/[id]/controls` | — | Pipeline operations extracted from Activity |
+| **Ledger** | `/repos/[id]/ledger` | — | — (standalone, separate plans) |
+
+### Shared Sub-Tab Navigation
+
+**File:** `components/repo/sub-tab-nav.tsx` (new)
+
+Client component using `usePathname()`. Renders horizontal pill row with active state detection. Reused by Blueprint, Guardrails, and Intelligence layouts.
+
+```typescript
+interface SubTab { label: string; href: string }
+interface SubTabNavProps { tabs: SubTab[]; basePath: string }
+```
+
+### URL Redirects (Zero Broken Links)
+
+All old URLs redirect to new locations via server-side `redirect()`:
+
+| Old URL | New URL |
+|---------|---------|
+| `/repos/[id]/entities` | `/repos/[id]/blueprint/entities` |
+| `/repos/[id]/entities/[entityId]` | `/repos/[id]/blueprint/entities/[entityId]` |
+| `/repos/[id]/patterns` | `/repos/[id]/blueprint/patterns` |
+| `/repos/[id]/impact` | `/repos/[id]/blueprint/impact` |
+| `/repos/[id]/rules` | `/repos/[id]/guardrails` |
+| `/repos/[id]/rules/new` | `/repos/[id]/guardrails/new` (preserves query string) |
+| `/repos/[id]/reviews` | `/repos/[id]/guardrails/reviews` |
+| `/repos/[id]/reviews/[reviewId]` | `/repos/[id]/guardrails/reviews/[reviewId]` |
+| `/repos/[id]/adrs` | `/repos/[id]/guardrails/decisions` |
+| `/repos/[id]/glossary` | `/repos/[id]/intelligence/glossary` |
+| `/repos/[id]/drift` | `/repos/[id]/intelligence/drift` |
+
+### Internal Link Updates
+
+| Component | Old Link | New Link |
+|-----------|----------|----------|
+| `issue-card.tsx` | `/entities/${id}` | `/blueprint/entities/${id}` |
+| `entity-browse-view.tsx` | `/entities/${id}` | `/blueprint/entities/${id}` |
+| `annotated-code-viewer.tsx` | `/entities/${id}` | `/blueprint/entities/${id}` |
+| `repo-detail-client.tsx` | `/entities/${id}` | `/blueprint/entities/${id}` |
+| `review-card.tsx` | `/reviews/${id}` | `/guardrails/reviews/${id}` |
+| `insight-card.tsx` | `/rules/new?...` | `/guardrails/new?...` |
+| Overview quick-nav | `/entities`, `/patterns`, `/rules`, `/adrs`, `/glossary` | `/blueprint/entities`, `/blueprint/patterns`, `/guardrails`, `/guardrails/decisions`, `/intelligence/glossary` |
+
+### New Files (17)
+
+```
+components/repo/sub-tab-nav.tsx                                          — Shared sub-navigation component
+app/(dashboard)/repos/[repoId]/blueprint/layout.tsx                      — Blueprint layout with sub-tabs
+app/(dashboard)/repos/[repoId]/blueprint/entities/page.tsx               — Entity browser (moved)
+app/(dashboard)/repos/[repoId]/blueprint/entities/[entityId]/page.tsx    — Entity detail (moved)
+app/(dashboard)/repos/[repoId]/blueprint/patterns/page.tsx               — Pattern library (moved)
+app/(dashboard)/repos/[repoId]/blueprint/impact/page.tsx                 — Impact analysis (moved)
+app/(dashboard)/repos/[repoId]/guardrails/layout.tsx                     — Guardrails layout with sub-tabs
+app/(dashboard)/repos/[repoId]/guardrails/page.tsx                       — Rules list (moved, default sub-tab)
+app/(dashboard)/repos/[repoId]/guardrails/new/page.tsx                   — Create rule form (moved)
+app/(dashboard)/repos/[repoId]/guardrails/reviews/page.tsx               — PR reviews list (moved)
+app/(dashboard)/repos/[repoId]/guardrails/reviews/[reviewId]/page.tsx    — Review detail (moved)
+app/(dashboard)/repos/[repoId]/guardrails/decisions/page.tsx             — ADR browser (moved, renamed)
+app/(dashboard)/repos/[repoId]/intelligence/layout.tsx                   — Intelligence layout with sub-tabs
+app/(dashboard)/repos/[repoId]/intelligence/glossary/page.tsx            — Glossary (moved)
+app/(dashboard)/repos/[repoId]/intelligence/drift/page.tsx               — Drift timeline (moved)
+```
+
+### Modified Files (10)
+
+```
+components/repo/repo-tabs.tsx          — 14 → 8 tabs, updated icon imports
+components/glossary/glossary-view.tsx   — Removed "All Domain Terms (N)" section
+components/issues/issue-card.tsx        — Entity links → /blueprint/entities/
+components/entity/entity-browse-view.tsx — Entity links → /blueprint/entities/
+components/code/annotated-code-viewer.tsx — Entity links → /blueprint/entities/
+components/repo/repo-detail-client.tsx  — Entity links → /blueprint/entities/
+components/repo/review-card.tsx         — Review links → /guardrails/reviews/
+components/health/insight-card.tsx      — Rule links → /guardrails/new
+app/(dashboard)/repos/[repoId]/page.tsx — Quick-nav updated + "View Full Report" link
+app/(dashboard)/repos/[repoId]/intelligence/page.tsx — Removed embedded glossary, header
+```
+
+### Redirect Files (12)
+
+```
+entities/page.tsx, entities/[entityId]/page.tsx, patterns/page.tsx, impact/page.tsx
+rules/page.tsx, rules/new/page.tsx, reviews/page.tsx, reviews/[reviewId]/page.tsx, adrs/page.tsx
+glossary/page.tsx, drift/page.tsx
+```
+
+All redirect files use Next.js `redirect()` — server-side 307 redirects. The `rules/new` redirect preserves query string parameters for the "Create Rule from Insight" flow.
+
+### Verification
+
+1. `pnpm build` succeeds
+2. 9 tabs visible: Overview, Code, Health, Blueprint, Guardrails, Intelligence, Activity, Controls, Ledger
+3. Blueprint sub-tabs: Features/Entities/Patterns/Impact all navigate correctly
+4. Guardrails sub-tabs: Rules/Reviews/Decisions work, Create Rule form pre-fills from query params
+5. Intelligence sub-tabs: Domain/Glossary/Drift all work
+6. All 12 old URLs redirect to new locations
+7. Entity links from issue cards, code viewer → `/blueprint/entities/`
+8. Review card links → `/guardrails/reviews/`
+9. "Create Rule" from insights → `/guardrails/new?...`
+
+---
+
+## Phase 9: Controls Tab — Pipeline Operations Panel (March 2026)
+
+Pipeline operations (Re-index, Stop, Retry, Resume) were previously embedded in the Activity tab header alongside history tables. This created two problems: (1) the Activity page mixed read-only history with mutable actions, and (2) operations like "Regenerate Health Report" had no home. Extracted all pipeline operations into a dedicated **Controls** tab.
+
+### 9A: Controls Page
+
+**File:** `app/(dashboard)/repos/[repoId]/controls/page.tsx` (new)
+
+Client component with SSE-driven live status. Three sections:
+
+1. **Pipeline Status Banner** — Contextual banner showing idle (green), processing (animated, primary), or failed (red) state. Uses `useRepoEvents` SSE hook for live updates during processing.
+
+2. **Operations Grid** — Card-based grid with 5 operations:
+
+| Operation | API | Visibility | Rate Limit |
+|-----------|-----|------------|------------|
+| **Re-index** | `POST /api/repos/{id}/reindex` | Always | 1/hr |
+| **Regenerate Health** | `POST /api/repos/{id}/health/regenerate` | Always | — |
+| **Stop Pipeline** | `POST /api/repos/{id}/stop` | Only when processing | — |
+| **Retry Pipeline** | `POST /api/repos/{id}/retry` | Only when failed | 3/hr |
+| **Resume from Phase** | `POST /api/repos/{id}/resume` | Only when failed | 3/hr |
+
+Resume offers a dropdown: Embedding, Ontology, Justification, Health Report.
+
+3. **Rate Limit Awareness** — Buttons show "Rate limited (N/hr)" with cooldown timers. Separate tracking for reindex (1/hr) and retry/resume (3/hr, shared).
+
+### 9B: Activity Page Simplification
+
+**File:** `app/(dashboard)/repos/[repoId]/activity/page.tsx` (modified)
+
+Removed: Re-index button, Stop button, Restart dropdown, `toast` import, `sonner` dependency, all handler functions (`handleReindex`, `handleStop`, `handleRestart`, `handleResume`), and related state (`reindexing`, `restarting`, `resuming`, `rateLimited`, `isFailed`).
+
+Added: "Manage pipeline →" link in header pointing to `/repos/{repoId}/controls` with `Settings2` icon.
+
+Retained: Read-only pipeline status banner, Index Events table, Pipeline Runs table, SSE status updates (for banner only).
+
+### 9C: Overview Page Health Link
+
+**File:** `app/(dashboard)/repos/[repoId]/page.tsx` (modified)
+
+Added subtle "Manage pipeline →" text link below the health grade badge in the hero stats row. Links to `/repos/{repoId}/controls`. Styled as `text-[10px] text-white/30 hover:text-electric-cyan` for discoverability without visual weight.
+
+### 9D: Tab Registration
+
+**File:** `components/repo/repo-tabs.tsx` (modified)
+
+Added 9th tab between Activity and Ledger:
+```typescript
+{ label: "Controls", href: "/controls", icon: Settings2 },
+```
+
+Final tab order: Overview, Code, Health, Blueprint, Guardrails, Intelligence, Activity, **Controls**, Ledger.
+
+### New Files (1)
+
+```
+app/(dashboard)/repos/[repoId]/controls/page.tsx  — Pipeline operations panel
+```
+
+### Modified Files (3)
+
+```
+components/repo/repo-tabs.tsx                       — 8 → 9 tabs, added Settings2 icon
+app/(dashboard)/repos/[repoId]/activity/page.tsx    — Removed controls, added link to Controls
+app/(dashboard)/repos/[repoId]/page.tsx             — "Manage pipeline →" link under health grade
+```
+
+### Verification
+
+1. `pnpm build` succeeds
+2. 9 tabs visible including Controls between Activity and Ledger
+3. Controls tab shows: status banner, Re-index, Regenerate Health
+4. When processing: Stop button appears, Re-index disabled
+5. When failed: Retry and Resume cards appear
+6. Activity tab has no control buttons — only history + "Manage pipeline →" link
+7. Rate limiting shows toast messages on 429
+8. SSE live status updates work on Controls page
+9. Overview health grade shows "Manage pipeline →" link
+
+---
+
+## Appendix: Persona-Driven Design Vision
+
+> **Context:** The AI coding landscape has created four distinct user personas, each experiencing specific pain points. Unerr's UI must immediately prove its value by addressing these nightmares the moment a repository finishes indexing.
+
+### The Problem
+
+Developers are shipping faster than ever with AI coding agents, but creating five times as many invisible problems:
+
+- AI agents can't see beyond their immediate context window — they change a utility function and break three downstream services
+- Every session starts from zero — developers waste 15 minutes re-explaining architecture to agents that suffer from "profound amnesia"
+- "Vibe coding" produces spaghetti — teams end up with six different ways of making an API call
+- Autopilot spirals destroy trust — agents hallucinate database schemas, and `git reset --hard` is the only recovery
+
+### Persona 1: The "Vibe Coder" (AI-First Developer)
+
+**The nightmare:** *"I let the agent run on autopilot for 20 minutes, it hallucinated a bunch of database tables, and I had to `git reset --hard` and lose everything."*
+
+**Core need:** A safety net for speed. Track AI's chaotic energy so the "autopilot spiral" never happens again.
+
+| Feature | Tab | Status |
+|---------|-----|--------|
+| Blast Radius Hotspots (file-first list with fan-out bars) | **Overview** + **Health** | Planned |
+| Copy Agent Fix Prompt (one-click pre-engineered prompt) | **Health** (InsightCards) | Implemented |
+| "Dodged a Bullet" Banner (dynamic circular dependency alerts) | **Overview** | Planned |
+| Prompt Ledger Timeline (which prompt modified which files) | **Ledger** | Implemented (basic) |
+| One-Click Rewind (revert + auto-draft prevention rule) | **Ledger** | Planned |
+
+### Persona 2: The Beginner (Newly Adopting Coding Agents)
+
+**The nightmare:** *"Cursor built my whole backend for me. I have a technical interview next week and I have absolutely no idea how the authentication middleware actually functions."*
+
+**Core need:** The UI must act as a senior mentor. Not just fix things — explain what the codebase does.
+
+| Feature | Tab | Status |
+|---------|-----|--------|
+| Plain-English Feature Swimlanes | **Blueprint** → Features | Implemented |
+| Annotated Code Viewer (business justifications on every entity) | **Code** | Implemented |
+| Domain Glossary (auto-generated definitions) | **Intelligence** → Glossary | Implemented |
+| Guardrails & Snippets ("How we do things here") | **Guardrails** → Rules | Implemented |
+| Rewind Safety Net | **Ledger** | Planned |
+
+### Persona 3: The Everyday Developer (AI Co-Pilot Veteran)
+
+**The nightmare:** *"I spend 15 minutes every session re-explaining my architecture. 'Remember, we use Zod for validation, not Joi.' The agent forgets everything."*
+
+**Core need:** Proof that the agent has persistent, infallible memory. Never write another `.cursorrules` file.
+
+| Feature | Tab | Status |
+|---------|-----|--------|
+| Domain Intelligence (auto-mapped domain terms) | **Intelligence** → Domain | Implemented |
+| Persistent Blueprint (context payload fed to agents via MCP) | **Blueprint** → Features | Implemented |
+| Drift Detection ("AI putting DB logic in UI components") | **Intelligence** → Drift | Implemented |
+| Context Pre-fetching (IDE sidebar, "Local Graph Synced <5ms") | VS Code / Cursor | Planned |
+
+### Persona 4: The Senior Engineer / Tech Lead
+
+**The nightmare:** *"My junior devs ship 10x faster but architecture is spaghetti. Six different ways of making an API call. I'm burning out doing PR reviews."*
+
+**Core need:** Automated governance. A control room proving the codebase isn't decaying under AI-generated code.
+
+| Feature | Tab | Status |
+|---------|-----|--------|
+| Auto-Generated Health Grade (A-F with specific reasons) | **Overview** (hero stats) | Implemented |
+| Prompt Ledger / Flight Recorder (which dev, which prompt, which flaw) | **Ledger** | Implemented (basic) |
+| Blast Radius on PRs ("Violates rule X, Fan-Out 43, here's the fix") | **Guardrails** → Reviews | Planned |
+| Automated Rules from Patterns (toggle for PR enforcement) | **Guardrails** → Rules | Planned |
+| Danger Zone Heatmap | **Health** | Planned |
+
+### Tab-to-Persona Mapping
+
+| Tab | Vibe Coder | Beginner | Everyday Dev | Tech Lead |
+|-----|:----------:|:--------:|:------------:|:---------:|
+| **Overview** | Hotspots, Banners | First impression | Quick stats | Health Grade |
+| **Code** | — | Annotated viewer | — | — |
+| **Health** | Fix prompts | — | — | Deep-dive violations |
+| **Blueprint** | — | Feature swimlanes | Persistent context | Architecture map |
+| **Guardrails** | — | Snippet library | — | Automated enforcement |
+| **Intelligence** | — | Glossary | Domain map, Drift | Drift alerts |
+| **Activity** | Pipeline status | — | — | — |
+| **Ledger** | Rewind | Safety net | Audit trail | Flight recorder |
+
+### UX Principles
+
+1. **Lead with Value, Not Data** — every tab answers a question the user is actually asking
+2. **One-Click Actions Over Reports** — every insight needs an action button (Copy Fix Prompt, Create Rule, Rewind)
+3. **Prove Understanding Immediately** — "how does it know this?" moment within 30 seconds of first page load
+4. **Don't Slow Teams Down** — governance must be invisible until needed (auto-generated rules, automated PR reviews, silent MCP context injection)

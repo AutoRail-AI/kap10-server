@@ -48,8 +48,8 @@ const embedActivities = proxyActivities<typeof embeddingActivities>({
 
 const logActivities = proxyActivities<typeof pipelineLogs>({
   taskQueue: "light-llm-queue",
-  startToCloseTimeout: "5s",
-  retry: { maximumAttempts: 1 },
+  startToCloseTimeout: "30s",
+  retry: { maximumAttempts: 2 },
 })
 
 const runActivities = proxyActivities<typeof pipelineRun>({
@@ -99,7 +99,8 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
   let progress = 0
   setHandler(getJustifyProgressQuery, () => progress)
 
-  wfLog("INFO", "Justification workflow started", ctx, "Start")
+  const workflowStart = Date.now()
+  wfLog("INFO", "━━━ JUSTIFICATION WORKFLOW STARTED ━━━", ctx, "Start")
 
   try {
     // TBI-F-01: Mark justification step as running
@@ -155,13 +156,15 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
     // earlier level, not just the immediately preceding one.
     let accumulatedChangedIds: string[] = []
 
+    const justifyLoopStart = Date.now()
     for (let i = 0; i < levelCount; i++) {
       // Fetch this level's entity IDs from Redis (data residency)
       const levelEntityIds = await activities.fetchTopologicalLevel(input, i)
       // C-02: Use accumulated changed IDs from ALL prior levels
       const previousLevelChangedIds = accumulatedChangedIds
+      const levelStart = Date.now()
 
-      wfLog("INFO", `Processing level ${i + 1}/${levelCount}`, { ...ctx, levelEntityCount: levelEntityIds.length }, `Step 5/10 (L${i + 1})`)
+      wfLog("INFO", `Processing level ${i + 1}/${levelCount}`, { ...ctx, levelEntityCount: levelEntityIds.length, accumulatedChangedIds: accumulatedChangedIds.length }, `Step 5/10 (L${i + 1})`)
 
       const levelChangedIds: string[] = []
 
@@ -192,6 +195,8 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
 
       // Store this level's changed IDs in Redis (kept for external queries)
       await activities.storeChangedEntityIds(input, i, levelChangedIds)
+      const levelMs = Date.now() - levelStart
+      wfLog("INFO", `Level ${i + 1}/${levelCount} complete`, { ...ctx, justified: levelChangedIds.length, levelMs }, `Step 5/10 (L${i + 1})`)
 
       // C-02: Accumulate this level's changed IDs for all future levels.
       // Cap at 5000 to prevent unbounded growth in workflow state for massive repos.
@@ -216,20 +221,31 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
 
     // Cleanup Redis cache for topological data
     await activities.cleanupJustificationCache(input, levelCount)
+    const justifyLoopMs = Date.now() - justifyLoopStart
+    wfLog("INFO", `Step 5 complete: ${totalJustified} entities justified across ${levelCount} levels`, { ...ctx, totalJustified, justifyLoopMs }, "Step 5/10")
 
     // Step 6: Bi-directional context propagation
+    const step6Start = Date.now()
     wfLog("INFO", "Step 6/10: Propagating context across entity hierarchy", ctx, "Step 6/10")
     await activities.propagateContextActivity(input)
+    const step6Ms = Date.now() - step6Start
+    wfLog("INFO", `Step 6 complete (${step6Ms}ms)`, ctx, "Step 6/10")
     progress = 78
 
     // Step 7: Store feature aggregations (fetches justifications from ArangoDB)
+    const step7Start = Date.now()
     wfLog("INFO", "Step 7/10: Storing feature aggregations", ctx, "Step 7/10")
     await activities.storeFeatureAggregations(input)
+    const step7Ms = Date.now() - step7Start
+    wfLog("INFO", `Step 7 complete (${step7Ms}ms)`, ctx, "Step 7/10")
     progress = 82
 
     // Step 8: Embed justifications (fetches justifications from ArangoDB)
+    const step8Start = Date.now()
     wfLog("INFO", "Step 8/10: Embedding justifications", ctx, "Step 8/10")
     const embeddingsStored = await activities.embedJustifications(input)
+    const step8Ms = Date.now() - step8Start
+    wfLog("INFO", `Step 8 complete: ${embeddingsStored} embeddings (${step8Ms}ms)`, { ...ctx, embeddingsStored, step8Ms }, "Step 8/10")
     progress = 90
 
     // Step 8b: L-07 Pass 2 — Re-embed entities with justification context
@@ -272,16 +288,18 @@ export async function justifyRepoWorkflow(input: JustifyRepoInput): Promise<{
     // TBI-F-01: Mark justification step complete with metrics
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "justification", status: "completed", meta: { entitiesJustified: totalJustified, embeddingsStored } })
 
+    const totalMs = Date.now() - workflowStart
+    const summary = `━━━ JUSTIFICATION COMPLETE ━━━ ${totalJustified} entities justified, ${embeddingsStored} embeddings in ${Math.round(totalMs / 1000)}s`
     await logActivities.appendPipelineLog({
       timestamp: new Date().toISOString(),
       level: "info",
       phase: "justifying",
       step: "Complete",
-      message: "Justification workflow complete",
-      meta: { entitiesJustified: totalJustified, embeddingsStored, repoId: input.repoId, ...(input.runId && { runId: input.runId }) },
+      message: summary,
+      meta: { entitiesJustified: totalJustified, embeddingsStored, totalMs, repoId: input.repoId, ...(input.runId && { runId: input.runId }) },
     })
     await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId, runId: input.runId })
-    console.log(`[${new Date().toISOString()}] [INFO ] [wf:justify-repo] [${input.orgId}/${input.repoId}] Justification workflow complete ${JSON.stringify({ entitiesJustified: totalJustified, embeddingsStored })}`)
+    console.log(`[${new Date().toISOString()}] [INFO ] [wf:justify-repo] [${input.orgId}/${input.repoId}] ${summary}`)
     return {
       entitiesJustified: totalJustified,
       embeddingsStored,

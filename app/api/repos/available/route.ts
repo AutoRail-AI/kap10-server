@@ -14,13 +14,25 @@ interface AvailableRepo {
   private: boolean
   installationId: number
   accountLogin: string
+  accountType: string
+  installationUrl: string
 }
 
-export const GET = withAuth(async () => {
+function buildInstallationUrl(accountLogin: string, accountType: string, installationId: number): string {
+  if (accountType === "Organization") {
+    return `https://github.com/organizations/${accountLogin}/settings/installations/${installationId}`
+  }
+  return `https://github.com/settings/installations/${installationId}`
+}
+
+export const GET = withAuth(async (req: Request) => {
   const orgId = await getActiveOrgId()
   if (!orgId) {
     return errorResponse("No organization", 400)
   }
+
+  const url = new URL(req.url)
+  const refresh = url.searchParams.get("refresh") === "true"
 
   const container = getContainer()
   const installations = await container.relationalStore.getInstallations(orgId)
@@ -35,10 +47,14 @@ export const GET = withAuth(async () => {
 
   for (const inst of installations) {
     const cacheKey = `${CACHE_KEY_PREFIX}${inst.installationId}`
-    const cached = await container.cacheStore.get<{ repos: AvailableRepo[] }>(cacheKey)
-    if (cached?.repos) {
-      allRepos.push(...cached.repos.filter((r) => !existingIds.has(r.id)))
-      continue
+    const instUrl = buildInstallationUrl(inst.accountLogin, inst.accountType, inst.installationId)
+
+    if (!refresh) {
+      const cached = await container.cacheStore.get<{ repos: AvailableRepo[] }>(cacheKey)
+      if (cached?.repos) {
+        allRepos.push(...cached.repos.filter((r) => !existingIds.has(r.id)))
+        continue
+      }
     }
 
     const repos = await container.gitHost.getInstallationRepos(inst.installationId)
@@ -50,6 +66,8 @@ export const GET = withAuth(async () => {
       private: r.private,
       installationId: inst.installationId,
       accountLogin: inst.accountLogin,
+      accountType: inst.accountType,
+      installationUrl: instUrl,
     }))
     await container.cacheStore.set(cacheKey, { repos: mapped }, CACHE_TTL_SECONDS)
     allRepos.push(...mapped.filter((r) => !existingIds.has(r.id)))

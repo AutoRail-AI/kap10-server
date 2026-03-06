@@ -1,6 +1,6 @@
 import { heartbeat } from "@temporalio/activity"
 import { execFile } from "node:child_process"
-import { statSync } from "node:fs"
+import { existsSync, rmSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
@@ -20,12 +20,11 @@ import type { ParsedEdge, ParsedEntity } from "@/lib/indexer/types"
 import { MAX_BODY_LINES } from "@/lib/indexer/types"
 import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 import { writeEntitiesToGraph } from "@/lib/temporal/activities/graph-writer"
-import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
+import type { PipelineContext } from "@/lib/temporal/activities/pipeline-logs"
+import { pipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
-export interface PrepareRepoIntelligenceSpaceInput {
-  orgId: string
-  repoId: string
+export interface PrepareRepoIntelligenceSpaceInput extends PipelineContext {
   installationId: number
   cloneUrl: string
   defaultBranch: string
@@ -44,28 +43,36 @@ export interface PrepareRepoIntelligenceSpaceResult {
 
 export async function prepareRepoIntelligenceSpace(input: PrepareRepoIntelligenceSpaceInput): Promise<PrepareRepoIntelligenceSpaceResult> {
   const log = logger.child({ service: "indexing-heavy", organizationId: input.orgId, repoId: input.repoId })
-  const plog = createPipelineLogger(input.repoId, "indexing")
-  log.info("Preparing repo index directory", { cloneUrl: input.cloneUrl, defaultBranch: input.defaultBranch, provider: input.provider ?? "github" })
-  plog.log("info", "Step 1/7", "Cloning repository and scanning index directory...")
+  const plog = pipelineLogger(input, "indexing")
+  const activityStart = Date.now()
+  const provider = input.provider ?? "github"
+  log.info("Preparing repo index directory", { cloneUrl: input.cloneUrl, defaultBranch: input.defaultBranch, provider })
+  plog.log("info", "Step 1/7", `Cloning repository (${provider}) and scanning index directory...`)
   const container = getContainer()
   const indexDir = `/data/repo-indices/${input.orgId}/${input.repoId}`
 
-  if (input.provider === "local_cli") {
-    // Local CLI upload: download zip from storage and extract
+  // Remove existing clone dir to ensure no stale files from previous index runs
+  if (existsSync(indexDir)) {
+    rmSync(indexDir, { recursive: true, force: true })
+    log.info("Removed stale clone dir for fresh clone", { indexDir })
+  }
+
+  const cloneStart = Date.now()
+  if (provider === "local_cli") {
     await prepareLocalCliIndexDir(container, indexDir, input.uploadPath!)
   } else {
-    // Default: GitHub clone
     await container.gitHost.cloneRepo(input.cloneUrl, indexDir, {
       ref: input.defaultBranch,
       installationId: input.installationId,
     })
   }
+  const cloneMs = Date.now() - cloneStart
+  log.info("Clone/extract complete", { provider, durationMs: cloneMs })
 
   heartbeat("index dir ready, reading HEAD SHA")
 
-  // Read the latest commit SHA from the index dir (only for git repos)
   let lastSha: string | undefined
-  if (input.provider !== "local_cli") {
+  if (provider !== "local_cli") {
     try {
       const { execFileSync } = require("node:child_process") as typeof import("node:child_process")
       lastSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: indexDir, encoding: "utf-8" }).trim()
@@ -76,21 +83,28 @@ export async function prepareRepoIntelligenceSpace(input: PrepareRepoIntelligenc
 
   heartbeat("scanning index dir")
 
-  // Scan files and detect languages
+  const scanStart = Date.now()
   const files = await scanIndexDir(indexDir)
-  const languages = detectLanguages(files).map((l) => l.language)
+  const languageStats = detectLanguages(files)
+  const languages = languageStats.map((l) => l.language)
+  const scanMs = Date.now() - scanStart
 
-  // Detect monorepo package roots
   const indexInfo = detectPackageRoots(indexDir)
   const packageRoots = indexInfo.roots
 
-  // A-05: Detect dominant language per package root for polyglot SCIP indexing
   const languagePerRoot = packageRoots.length > 1
     ? detectLanguagePerRoot(indexDir, packageRoots)
     : undefined
 
-  log.info("Repo index dir prepared", { indexDir, languages, rootCount: packageRoots.length, languagePerRoot, lastSha })
-  plog.log("info", "Step 1/7", `Index dir ready — detected languages: ${languages.join(", ") || "none"}`, { fileCount: files.length })
+  const totalMs = Date.now() - activityStart
+  log.info("Repo index dir prepared", {
+    indexDir, languages, lastSha,
+    fileCount: files.length,
+    rootCount: packageRoots.length,
+    languagePerRoot,
+    timing: { cloneMs, scanMs, totalMs },
+  })
+  plog.log("info", "Step 1/7", `Index dir ready — ${files.length} files, ${languages.length} languages [${languages.join(", ") || "none"}], ${packageRoots.length} roots | Clone: ${cloneMs}ms, Scan: ${scanMs}ms, Total: ${totalMs}ms`, { fileCount: files.length, languages, rootCount: packageRoots.length, cloneMs, scanMs, totalMs })
   return { indexDir, languages, packageRoots, languagePerRoot, lastSha }
 }
 
@@ -137,10 +151,8 @@ async function prepareLocalCliIndexDir(
   }
 }
 
-export interface RunSCIPInput {
+export interface RunSCIPInput extends PipelineContext {
   indexDir: string
-  orgId: string
-  repoId: string
   languages: string[]
   packageRoots: string[]
   indexVersion?: string
@@ -181,7 +193,7 @@ async function isSCIPBinaryAvailable(binary: string): Promise<boolean> {
  */
 export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> {
   const log = logger.child({ service: "indexing-heavy", organizationId: input.orgId, repoId: input.repoId })
-  const plog = createPipelineLogger(input.repoId, "indexing")
+  const plog = pipelineLogger(input, "indexing")
   log.info("Starting SCIP indexers", { languages: input.languages })
   plog.log("info", "Step 2/7", `Running SCIP indexers for: ${input.languages.join(", ")}`)
 
@@ -228,10 +240,14 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
 
   const isIncluded = loadIgnoreFilter(input.indexDir)
 
+  const activityStart = Date.now()
+  const pluginTimings: Record<string, { ms: number; entities: number; edges: number; files: number }> = {}
+
   log.info("SCIP plugins resolved", { pluginIds: plugins.map((p) => p.id), packageRoots: input.packageRoots })
   for (const plugin of plugins) {
     try {
       heartbeat(`running SCIP for ${plugin.id}`)
+      const pluginStart = Date.now()
       const result = await plugin.runSCIP({
         indexDir: input.indexDir,
         packageRoots: input.packageRoots,
@@ -239,12 +255,24 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
         repoId: input.repoId,
         isIncluded,
       })
-      log.info(`SCIP plugin ${plugin.id} result`, {
+      const pluginMs = Date.now() - pluginStart
+
+      // Count entity kinds for this plugin
+      const kindCounts: Record<string, number> = {}
+      for (const e of result.entities) {
+        kindCounts[e.kind] = (kindCounts[e.kind] ?? 0) + 1
+      }
+
+      pluginTimings[plugin.id] = { ms: pluginMs, entities: result.entities.length, edges: result.edges.length, files: result.coveredFiles.length }
+      log.info(`SCIP plugin ${plugin.id} complete`, {
         pluginId: plugin.id,
         entities: result.entities.length,
         edges: result.edges.length,
         coveredFiles: result.coveredFiles.length,
+        kindCounts,
+        durationMs: pluginMs,
       })
+      plog.log("info", "Step 2/7", `SCIP ${plugin.id}: ${result.entities.length} entities, ${result.edges.length} edges, ${result.coveredFiles.length} files (${pluginMs}ms)`, { pluginId: plugin.id, ...kindCounts })
       if (result.coveredFiles.length === 0) {
         plog.log("warn", "Step 2/7", `SCIP indexer for ${plugin.id} produced 0 covered files — project markers may be missing (tsconfig.json, go.mod, etc.)`)
       }
@@ -254,16 +282,20 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error)
       log.warn(`SCIP plugin ${plugin.id} failed`, { pluginId: plugin.id, errorMessage })
-      // K-03: Surface SCIP failures to pipeline log so users see them in the UI
       plog.log("warn", "Step 2/7", `SCIP indexer for ${plugin.id} failed: ${errorMessage}. Falling back to tree-sitter.`)
     }
   }
 
   heartbeat("filling source bodies for SCIP entities")
+  const fillStart = Date.now()
   fillBodiesFromSource(allEntities, input.indexDir)
+  const fillMs = Date.now() - fillStart
+  const bodiesFilled = allEntities.filter((e) => e.body).length
+  log.info("Source bodies filled", { totalEntities: allEntities.length, bodiesFilled, durationMs: fillMs })
 
   // Write directly to ArangoDB — no large payloads cross Temporal
   heartbeat("writing SCIP results to graph store")
+  const writeStart = Date.now()
   const container = getContainer()
   const writeResult = await writeEntitiesToGraph(
     container,
@@ -273,9 +305,15 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
     toEdgeDocs(allEdges, input.orgId, input.repoId),
     input.indexVersion,
   )
+  const writeMs = Date.now() - writeStart
 
-  log.info("SCIP indexing complete", { entityCount: writeResult.entitiesWritten, edgeCount: writeResult.edgesWritten, coveredFiles: allCoveredFiles.length })
-  plog.log("info", "Step 2/7", `SCIP complete — wrote ${writeResult.entitiesWritten} entities, ${writeResult.edgesWritten} edges (${writeResult.fileCount} files, ${writeResult.functionCount} functions, ${writeResult.classCount} classes)`)
+  const totalMs = Date.now() - activityStart
+  log.info("SCIP indexing complete", {
+    entityCount: writeResult.entitiesWritten, edgeCount: writeResult.edgesWritten,
+    coveredFiles: allCoveredFiles.length,
+    timing: { totalMs, fillMs, writeMs, plugins: pluginTimings },
+  })
+  plog.log("info", "Step 2/7", `SCIP complete — ${writeResult.entitiesWritten} entities, ${writeResult.edgesWritten} edges (${writeResult.fileCount} files, ${writeResult.functionCount} functions, ${writeResult.classCount} classes) | Fill: ${fillMs}ms, Write: ${writeMs}ms, Total: ${totalMs}ms`, { pluginTimings })
   return {
     entityCount: writeResult.entitiesWritten,
     edgeCount: writeResult.edgesWritten,
@@ -286,10 +324,8 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
   }
 }
 
-export interface ParseRestInput {
+export interface ParseRestInput extends PipelineContext {
   indexDir: string
-  orgId: string
-  repoId: string
   coveredFiles: string[]
   indexVersion?: string
 }
@@ -314,7 +350,8 @@ export interface ParseRestLightResult {
  */
 export async function parseRest(input: ParseRestInput): Promise<ParseRestLightResult> {
   const log = logger.child({ service: "indexing-heavy", organizationId: input.orgId, repoId: input.repoId })
-  const plog = createPipelineLogger(input.repoId, "indexing")
+  const plog = pipelineLogger(input, "indexing")
+  const activityStart = Date.now()
   log.info("Parsing uncovered files", { coveredFileCount: input.coveredFiles.length })
   plog.log("info", "Step 3/7", "Parsing remaining files with tree-sitter fallback...")
   await initializeRegistry()
@@ -333,34 +370,37 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestLightRe
 
   const uncoveredFiles = files.filter((f) => !coveredSet.has(f.relativePath))
   let processed = 0
+  let skippedOversized = 0
+  let skippedBinary = 0
+  let parseFailed = 0
 
   // K-05: Maximum file size for tree-sitter parsing (1 MB)
   const MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024
 
+  log.info("Tree-sitter parse plan", {
+    totalFiles: files.length,
+    coveredBySCIP: input.coveredFiles.length,
+    uncoveredFiles: uncoveredFiles.length,
+    fileEntitiesCreated: files.length,
+  })
+  plog.log("info", "Step 3/7", `${files.length} total files, ${input.coveredFiles.length} covered by SCIP, ${uncoveredFiles.length} need tree-sitter parsing`)
+
+  const parseStart = Date.now()
   for (const file of uncoveredFiles) {
     const plugin = getPluginForExtension(file.extension)
     if (!plugin) continue
 
     try {
-      // K-05: Skip files that exceed the size limit to prevent OOM
       const fileStat = statSync(file.absolutePath)
       if (fileStat.size > MAX_FILE_SIZE_BYTES) {
-        log.warn("Skipping oversized file", {
-          filePath: file.relativePath,
-          sizeBytes: fileStat.size,
-          maxBytes: MAX_FILE_SIZE_BYTES,
-        })
+        skippedOversized++
         continue
       }
 
-      // K-07: Encoding-aware file reading — detect Latin-1/CP-1252, skip binary files
       const fileResult = readFileWithEncoding(file.absolutePath)
       if (!fileResult) {
-        log.debug("Skipping binary file", { filePath: file.relativePath })
+        skippedBinary++
         continue
-      }
-      if (fileResult.encoding !== "utf-8") {
-        log.info("Non-UTF-8 file detected", { filePath: file.relativePath, encoding: fileResult.encoding })
       }
       const result = await plugin.parseWithTreeSitter({
         filePath: file.relativePath,
@@ -376,6 +416,7 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestLightRe
         allEdges.push({ from_id: fileId, to_id: entity.id, kind: "contains" })
       }
     } catch (error: unknown) {
+      parseFailed++
       log.warn(`Failed to parse ${file.relativePath}`, { filePath: file.relativePath, errorMessage: error instanceof Error ? error.message : String(error) })
     }
 
@@ -384,15 +425,24 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestLightRe
       heartbeat(`parsed ${processed}/${uncoveredFiles.length} files`)
     }
   }
+  const parseMs = Date.now() - parseStart
+
+  if (skippedOversized > 0 || skippedBinary > 0 || parseFailed > 0) {
+    log.info("Tree-sitter skip summary", { skippedOversized, skippedBinary, parseFailed, processed })
+    plog.log("info", "Step 3/7", `Parsed ${processed} files (skipped: ${skippedOversized} oversized, ${skippedBinary} binary, ${parseFailed} failed)`)
+  }
 
   // L-02: Resolve cross-file call edges using import metadata
   heartbeat("resolving cross-file call edges")
+  const crossFileStart = Date.now()
   const crossFileEdges = resolveCrossFileCalls(allEntities, allEdges, input.repoId)
   allEdges.push(...crossFileEdges)
-  log.info("Cross-file call edges resolved", { count: crossFileEdges.length })
+  const crossFileMs = Date.now() - crossFileStart
+  log.info("Cross-file call edges resolved", { count: crossFileEdges.length, durationMs: crossFileMs })
 
   // Write directly to ArangoDB — no large payloads cross Temporal
   heartbeat("writing parse results to graph store")
+  const writeStart = Date.now()
   const container = getContainer()
   const writeResult = await writeEntitiesToGraph(
     container,
@@ -402,9 +452,17 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestLightRe
     toEdgeDocs(allEdges, input.orgId, input.repoId),
     input.indexVersion,
   )
+  const writeMs = Date.now() - writeStart
 
-  log.info("File parsing complete", { entityCount: writeResult.entitiesWritten, edgeCount: writeResult.edgesWritten, uncoveredFiles: uncoveredFiles.length })
-  plog.log("info", "Step 3/7", `Parsing complete — wrote ${writeResult.entitiesWritten} entities from ${uncoveredFiles.length} uncovered files (${writeResult.fileCount} files, ${writeResult.functionCount} functions, ${writeResult.classCount} classes)`)
+  const totalMs = Date.now() - activityStart
+  log.info("File parsing complete", {
+    entityCount: writeResult.entitiesWritten, edgeCount: writeResult.edgesWritten,
+    uncoveredFiles: uncoveredFiles.length,
+    skippedOversized, skippedBinary, parseFailed,
+    crossFileEdges: crossFileEdges.length,
+    timing: { parseMs, crossFileMs, writeMs, totalMs },
+  })
+  plog.log("info", "Step 3/7", `Parsing complete — ${writeResult.entitiesWritten} entities, ${writeResult.edgesWritten} edges (${writeResult.fileCount} files, ${writeResult.functionCount} functions, ${writeResult.classCount} classes) | Parse: ${parseMs}ms, CrossFile: ${crossFileMs}ms, Write: ${writeMs}ms, Total: ${totalMs}ms`)
   return {
     entityCount: writeResult.entitiesWritten,
     edgeCount: writeResult.edgesWritten,

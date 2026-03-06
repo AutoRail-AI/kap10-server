@@ -46,6 +46,8 @@ export interface IVectorSearch {
   getEmbedding?(repoId: string, entityKey: string): Promise<number[] | null>
   /** Delete orphaned entity embeddings (entities removed from graph). Returns count deleted. */
   deleteOrphaned(repoId: string, currentEntityKeys: string[]): Promise<number>
+  /** Delete ALL entity embeddings for a repo (clean slate before re-index). Returns count deleted. */
+  deleteAllEmbeddings?(repoId: string): Promise<number>
 
   // ── Phase 4: Justification Embeddings (unerr.justification_embeddings) ──
 

@@ -227,7 +227,7 @@ export function EntityBrowseView({ repoId }: { repoId: string }) {
                 <TableRow
                   key={entity.id}
                   className="cursor-pointer hover:bg-white/[0.03]"
-                  onClick={() => router.push(`/repos/${repoId}/entities/${entity.id}`)}
+                  onClick={() => router.push(`/repos/${repoId}/blueprint/entities/${entity.id}`)}
                 >
                   <TableCell className="font-mono text-sm">{entity.name}</TableCell>
                   <TableCell>

@@ -62,7 +62,7 @@ export interface CleanupWorkspaceFilesystemInput {
 
 /**
  * K-01: Delete the cloned workspace directory from disk after indexing completes.
- * The workspace at /data/workspaces/{orgId}/{repoId} is only needed during
+ * The repo index directory at /data/repo-indices/{orgId}/{repoId} is only needed during
  * SCIP and tree-sitter parsing. Keeping it wastes disk on long-running workers.
  */
 export async function cleanupWorkspaceFilesystem(input: CleanupWorkspaceFilesystemInput): Promise<void> {

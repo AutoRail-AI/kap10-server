@@ -2618,19 +2618,27 @@ Full re-indexing now uses a **shadow index** approach: the pipeline writes to a 
 - `IGraphStore.deleteByIndexVersion()` cleans up old-version data after the swap
 - The dashboard remains fully functional during the entire reindex process
 
-### Activity Tab (Repo Detail) — Unified Pipeline & History
+### Activity Tab (Repo Detail) — Read-Only Pipeline History
 
 > **Update (Feb 2026):** The separate Pipeline, Timeline, Commits, and History tabs were consolidated into a single **Activity** tab. See [PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md](./PHASE_POST_ONBOARDING_WOW_EXPERIENCE.md) — Phase 2.6.
+> **Update (Mar 2026):** Pipeline controls (Re-index, Stop, Retry, Resume, Regenerate Health) extracted to a dedicated **Controls** tab. Activity is now read-only history. See Phase 9 in the same doc.
 
-All reindexing controls, pipeline run history, index events, and logs are consolidated into the **Activity** tab at `app/(dashboard)/repos/[repoId]/activity/page.tsx`:
+Pipeline run history and index events live in the **Activity** tab at `app/(dashboard)/repos/[repoId]/activity/page.tsx`:
 
-- **Controls:** Re-index button, Stop button, Restart button, rate-limit feedback, processing banner
-- **Section switcher:** Pipeline Runs | Index Events | Logs
+- **Header:** Title + "Manage pipeline →" link to Controls tab
+- **Pipeline status banner:** Read-only indicator when processing
 - **Pipeline Runs:** Table of `PipelineRun` records — Run ID (clickable → opens detail in new tab), When, Trigger, Status, Duration, Files, Entities, Edges
 - **Index Events:** Table of `IndexEventDoc` entries (from `getIndexEvents`) — Date, Type (Full/Incremental/Force), Duration, Files Changed, Entities Added/Updated/Deleted, Edges Repaired, SHA
-- **Logs:** Pipeline log viewer (Redis live → Supabase Storage archive), supports run-specific log binding via `runId`
 - **Run Detail Page:** `app/(dashboard)/repos/[repoId]/activity/[runId]/page.tsx` — status, meta grid, per-step visualization, result metrics, run-specific logs
 - **API:** `GET /api/repos/[repoId]/history/indexing` returns `IndexEventDoc[]` + `PipelineRun[]`
+
+### Controls Tab (Repo Detail) — Pipeline Operations
+
+All pipeline operations are consolidated in the **Controls** tab at `app/(dashboard)/repos/[repoId]/controls/page.tsx`:
+
+- **Pipeline status banner:** SSE-driven live status (idle/processing/failed) via `useRepoEvents` hook
+- **Operations grid:** Re-index (1/hr rate limit), Regenerate Health, Stop (when processing), Retry (3/hr, when failed), Resume from Phase (3/hr, when failed — dropdown: Embedding, Ontology, Justification, Health Report)
+- **Rate limit awareness:** Buttons show cooldown state with toast messages on 429
 
 ### Embedding OOM Prevention
 

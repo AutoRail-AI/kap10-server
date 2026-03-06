@@ -836,7 +836,11 @@ export class ArangoGraphStore implements IGraphStore {
   async getFilePaths(orgId: string, repoId: string): Promise<{ path: string }[]> {
     const db = await getDbAsync()
     const cursor = await db.query(
-      `FOR doc IN files FILTER doc.org_id == @orgId AND doc.repo_id == @repoId SORT doc.file_path ASC RETURN { path: doc.file_path }`,
+      `FOR doc IN files
+         FILTER doc.org_id == @orgId AND doc.repo_id == @repoId
+         COLLECT path = doc.file_path
+         SORT path ASC
+         RETURN { path }`,
       { orgId, repoId }
     )
     return cursor.all() as Promise<{ path: string }[]>

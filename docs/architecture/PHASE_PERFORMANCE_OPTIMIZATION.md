@@ -204,6 +204,53 @@ RETURN { files: f, functions: fn, classes: cl, interfaces: ifc, variables: v, la
 | Progressive backoff | Idle polling reduced 6x | Network reduction |
 | router.refresh() removal | 7 full RSC re-fetches | 100-300ms each |
 | ArangoDB query consolidation | 5 queries → 1 | 10-50ms per call |
+| Streaming gzip (graph export) | Event loop unblocked | 14 min → 3 min embedding |
+| Embedding concurrency tuning | 429 storms eliminated | 14 min → 3 min embedding |
+
+---
+
+## 11. Streaming Gzip for Graph Export
+
+**Problem:** Graph export compressed a ~60MB msgpack buffer using `gzipSync()` / `gzipAsync()` on the light-llm-queue worker. `gzipSync` blocked the event loop for seconds, freezing concurrent embedding batches (14 min instead of ~3 min). `gzipAsync` used the libuv thread pool but still allocated raw + gzip-internal-copy + compressed simultaneously (~123MB peak). Worker RSS hit 1023MB during export.
+
+**Solution:** `streamGzip()` utility (`lib/utils/stream-compress.ts`) pipes the raw buffer through `Readable.from(buffer).pipe(createGzip())` with async iteration (`for await`). Gzip processes in 16KB internal chunks, yielding to the event loop between each chunk. Compressed chunks (~3MB total) are collected in an array and concatenated at the end.
+
+```typescript
+const gzipStream = Readable.from(raw).pipe(createGzip({ level }))
+for await (const chunk of gzipStream) {
+  chunks.push(chunk as Buffer)
+}
+return { compressed: Buffer.concat(chunks), rawBytes }
+```
+
+**Key design choices:**
+- **Adaptive compression level:** Level 1 for buffers >10MB (3-5x faster, ~5% worse ratio on binary msgpack), level 6 for smaller buffers
+- **No temp files:** Compressed output collected in memory (only ~3MB vs 60MB raw)
+- **No manual buffer nulling:** Raw buffer goes out of scope naturally after `streamGzip()` returns
+
+**Impact:** Event loop stays responsive during compression. Embedding batches on the same worker are no longer blocked. Worker RSS stays well below 1GB.
+
+**Files:** `lib/utils/stream-compress.ts`, `lib/temporal/activities/graph-export.ts`, `lib/temporal/activities/graph-upload.ts`
+
+---
+
+## 12. Embedding Concurrency Tuning
+
+**Problem:** The embedding workflow ran 10 concurrent activity batches (`CONCURRENT_BATCHES = 10`), each with a semaphore of 50 (`EMBED_CONCURRENCY = 50`). Total: 500 simultaneous Vertex AI calls. The activities don't share rate-limit state (separate Temporal invocations), causing mass 429 throttling with exponential backoff storms. Observed: 14 min for what should take ~3 min.
+
+**Solution:** Rebalanced the concurrency matrix:
+
+| Setting | Before | After | Why |
+|---------|--------|-------|-----|
+| `CONCURRENT_BATCHES` (workflow) | 10 | **3** | Fewer parallel activities sharing Vertex AI quota |
+| `EMBED_CONCURRENCY` (adapter) | 50 | **100** | Each activity gets more headroom |
+| `FILES_PER_BATCH` (workflow) | 25 | **50** | Fewer total batches (66 vs 131), less Temporal overhead |
+
+**Net effect:** 3 × 100 = 300 concurrent calls (down from 500), but each batch processes 2x more files. Less 429 thrashing, better sustained throughput.
+
+**Impact:** Embedding time for ~3,000 files drops from ~14 min to ~3 min.
+
+**Files:** `lib/temporal/workflows/embed-repo.ts`, `lib/adapters/llamaindex-vector-search.ts`
 
 ---
 
@@ -216,6 +263,7 @@ RETURN { files: f, functions: fn, classes: cl, interfaces: ifc, variables: v, la
 | `hooks/use-visibility.ts` | Tab visibility detection |
 | `hooks/use-repo-events.ts` | SSE client hook for pipeline events |
 | `app/api/repos/[repoId]/events/route.ts` | SSE server endpoint |
+| `lib/utils/stream-compress.ts` | Streaming gzip utility for graph export |
 
 ## Environment Variables
 

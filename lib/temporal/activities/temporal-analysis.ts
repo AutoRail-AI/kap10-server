@@ -6,12 +6,11 @@
  */
 
 import { heartbeat } from "@temporalio/activity"
-import { createPipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
+import type { PipelineContext } from "@/lib/temporal/activities/pipeline-logs"
+import { pipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
-export interface TemporalAnalysisInput {
-  orgId: string
-  repoId: string
+export interface TemporalAnalysisInput extends PipelineContext {
   workspacePath: string
 }
 
@@ -39,17 +38,20 @@ export async function computeTemporalAnalysis(
     organizationId: input.orgId,
     repoId: input.repoId,
   })
-  const plog = createPipelineLogger(input.repoId, "temporal-analysis")
+  const plog = pipelineLogger(input, "temporal-analysis")
+
+  const activityStart = Date.now()
 
   try {
     // Step 1: Mine commit history
+    const mineStart = Date.now()
     log.info("Mining commit history (last 365 days, max 5000 commits)")
     plog.log("info", "Step 4c/7", "Mining git commit history (last 365 days)...")
     const commits = await mineCommitHistory(input.workspacePath, 365, 5000)
+    const mineMs = Date.now() - mineStart
     heartbeat(`Mined ${commits.length} commits`)
-    log.info(`Mined ${commits.length} commits`)
-
-    plog.log("info", "Step 4c/7", `Mined ${commits.length} commits`)
+    log.info("Commit history mined", { commits: commits.length, durationMs: mineMs })
+    plog.log("info", "Step 4c/7", `Mined ${commits.length} commits (${mineMs}ms)`)
 
     if (commits.length === 0) {
       log.info("No commits found, skipping temporal analysis")
@@ -58,11 +60,13 @@ export async function computeTemporalAnalysis(
     }
 
     // Step 2: Compute file-level co-change edges
+    const coChangeStart = Date.now()
     log.info("Computing co-change edges")
     plog.log("info", "Step 4c/7", "Computing co-change coupling edges...")
     const coChangeEdges = computeCoChangeEdges(commits, 3, 0.3)
+    const coChangeMs = Date.now() - coChangeStart
     heartbeat(`Computed ${coChangeEdges.length} co-change edges`)
-    log.info(`Found ${coChangeEdges.length} co-change edges`)
+    log.info("Co-change edges computed", { count: coChangeEdges.length, durationMs: coChangeMs })
 
     // Step 3: Fetch all entities to build entityFileMap
     log.info("Fetching entities for file-to-entity mapping")
@@ -171,12 +175,14 @@ export async function computeTemporalAnalysis(
     }
     heartbeat(`Updated ${entitiesUpdated} entities with temporal context`)
 
-    plog.log("info", "Step 4c/7", `Temporal analysis complete — ${coChangeEdgesStored} co-change edges, ${entitiesUpdated} entities enriched`)
+    const totalMs = Date.now() - activityStart
+    plog.log("info", "Step 4c/7", `Temporal analysis complete — ${coChangeEdgesStored} co-change edges, ${entitiesUpdated} entities enriched, ${uniqueFiles.size} files | Mine: ${mineMs}ms, CoChange: ${coChangeMs}ms, Total: ${totalMs}ms`)
 
     log.info("Temporal analysis complete", {
       coChangeEdgesStored,
       entitiesUpdated,
       filesAnalyzed: uniqueFiles.size,
+      timing: { mineMs, coChangeMs, totalMs },
     })
 
     return {

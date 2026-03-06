@@ -12,7 +12,7 @@
 
 import { AWS_REGION } from "@/lib/llm/config"
 import { RateLimiter } from "@/lib/llm/rate-limiter"
-import type { ILLMProvider } from "@/lib/ports/llm-provider"
+import type { BatchProcessingOptions, BatchProcessingResult, ILLMProvider } from "@/lib/ports/llm-provider"
 import type { OrgContext, TokenUsage } from "@/lib/ports/types"
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -169,6 +169,42 @@ export class BedrockProvider implements ILLMProvider {
   async embed(_params: { model: string; texts: string[] }): Promise<number[][]> {
     throw new Error(
       "BedrockProvider.embed() is not used. Embeddings are handled by LlamaIndexVectorSearch (local CPU model)."
+    )
+  }
+
+  async generateBatchObjects<TItem, TResult>(
+    params: BatchProcessingOptions<TItem, TResult>
+  ): Promise<BatchProcessingResult<TItem, TResult>> {
+    const { processBatch, getDefaultBatchConfig } = require("@/lib/llm/batch-processor") as typeof import("@/lib/llm/batch-processor")
+    const config = getDefaultBatchConfig()
+    if (params.maxConcurrency) config.maxConcurrency = params.maxConcurrency
+    if (params.maxItemsPerBatch) config.maxItemsPerBatch = params.maxItemsPerBatch
+
+    return processBatch(
+      config,
+      params,
+      async (prompt) => {
+        const result = await this.generateObject({
+          model: params.model,
+          schema: params.schema,
+          prompt,
+          system: params.system,
+          context: params.context,
+          temperature: params.temperature,
+        })
+        return result.object
+      },
+      async (prompt) => {
+        const result = await this.generateObject({
+          model: params.model,
+          schema: params.batchSchema,
+          prompt,
+          system: params.system,
+          context: params.context,
+          temperature: params.temperature,
+        })
+        return result.object
+      },
     )
   }
 }

@@ -11,7 +11,7 @@
  *      processAndEmbedBatch which fetches entities, builds docs, embeds,
  *      and stores — all inside the worker, never serializing large payloads
  *      through Temporal's data converter. Batches run in parallel (sliding
- *      window of CONCURRENT_BATCHES) to maximize Bedrock throughput.
+ *      window of CONCURRENT_BATCHES) to maximize Vertex AI throughput.
  *   4. Delete orphaned embeddings (DB-side comparison — no large arrays in workflow)
  *   5. Set repo status to "ready"
  *   6. Chain to ontology discovery workflow
@@ -34,8 +34,8 @@ const activities = proxyActivities<typeof embeddingActivities>({
 
 const logActivities = proxyActivities<typeof pipelineLogs>({
   taskQueue: "light-llm-queue",
-  startToCloseTimeout: "5s",
-  retry: { maximumAttempts: 1 },
+  startToCloseTimeout: "30s",
+  retry: { maximumAttempts: 2 },
 })
 
 const runActivities = proxyActivities<typeof pipelineRun>({
@@ -46,10 +46,14 @@ const runActivities = proxyActivities<typeof pipelineRun>({
 
 /**
  * Number of files to process per activity invocation. Vertex AI Gemini Embedding
- * supports large batches (up to 2048 texts/request), so we use bigger file
- * batches to reduce Temporal activity overhead while keeping memory bounded.
+ * supports large batches (up to 2048 texts/request via embedMany), so we use
+ * bigger file batches to reduce Temporal activity overhead.
+ *
+ * Tuned together with CONCURRENT_BATCHES:
+ *   3 concurrent batches × up to 2000 texts per embedMany call.
+ *   Each batch processes 50 files, fetches entities, embeds via embedMany, upserts.
  */
-const FILES_PER_BATCH = 25
+const FILES_PER_BATCH = 50
 
 export const getEmbedProgressQuery = defineQuery<number>("getEmbedProgress")
 
@@ -93,80 +97,124 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
   let progress = 0
   setHandler(getEmbedProgressQuery, () => progress)
 
-  wfLog("INFO", "Embedding workflow started", ctx, "Start")
+  const workflowStartMs = Date.now()
+  wfLog("INFO", "━━━ EMBEDDING WORKFLOW STARTED ━━━", {
+    ...ctx,
+    filesPerBatch: FILES_PER_BATCH,
+  }, "Start")
 
   try {
     // Step 1: Set status to "embedding"
-    wfLog("INFO", "Step 1/6: Setting status to embedding", ctx, "Step 1/6")
-    await activities.setEmbeddingStatus({ orgId: input.orgId, repoId: input.repoId })
+    wfLog("INFO", "Step 1/6: Setting repo status to 'embedding'", ctx, "Step 1/6")
+    await activities.setEmbeddingStatus({ orgId: input.orgId, repoId: input.repoId, runId: input.runId })
     progress = 5
 
     // Step 2: Fetch file paths (lightweight — only string[])
-    wfLog("INFO", "Step 2/6: Fetching file paths", ctx, "Step 2/6")
+    const step2Start = Date.now()
+    wfLog("INFO", "Step 2/6: Fetching file paths from graph store", ctx, "Step 2/6")
     const allFilePaths = await activities.fetchFilePaths({
       orgId: input.orgId,
       repoId: input.repoId,
+      runId: input.runId,
     })
     progress = 10
-    wfLog("INFO", "Step 2 complete: file paths fetched", { ...ctx, fileCount: allFilePaths.length }, "Step 2/6")
 
-    // Step 3: Process file batches — pagination style: embed, persist, move on.
-    // Each batch is fully self-contained: fetch → embed → store → discard.
-    // No data accumulates in the workflow between batches.
     const totalBatches = Math.max(1, Math.ceil(allFilePaths.length / FILES_PER_BATCH))
-    wfLog("INFO", `Step 3/6: Processing ${totalBatches} file batches (${FILES_PER_BATCH} files each)`, { ...ctx, totalBatches }, "Step 3/6")
+    const CONCURRENT_BATCHES = 3
+    const totalWindows = Math.ceil(totalBatches / CONCURRENT_BATCHES)
+
+    wfLog("INFO", `Step 2/6 complete: ${allFilePaths.length} files → ${totalBatches} batches (${FILES_PER_BATCH} files/batch, ${CONCURRENT_BATCHES} concurrent, ${totalWindows} windows)`, {
+      ...ctx,
+      fileCount: allFilePaths.length,
+      totalBatches,
+      concurrentBatches: CONCURRENT_BATCHES,
+      totalWindows,
+      step2Ms: Date.now() - step2Start,
+    }, "Step 2/6")
+
+    // Step 3: Process file batches — sliding window of CONCURRENT_BATCHES
+    wfLog("INFO", `Step 3/6: Starting batch embedding — ${totalBatches} batches across ${totalWindows} windows`, {
+      ...ctx,
+      totalBatches,
+      totalWindows,
+    }, "Step 3/6")
 
     let totalEmbeddingsStored = 0
 
-    // Sliding-window concurrency: process CONCURRENT_BATCHES in parallel.
-    // Each processAndEmbedBatch is independent (different files, no shared state),
-    // so parallel execution is safe and fully utilizes Vertex AI throughput.
-    const CONCURRENT_BATCHES = 10
-
     for (let windowStart = 0; windowStart < totalBatches; windowStart += CONCURRENT_BATCHES) {
       const windowEnd = Math.min(windowStart + CONCURRENT_BATCHES, totalBatches)
+      const windowNum = Math.floor(windowStart / CONCURRENT_BATCHES) + 1
+      const windowStartMs = Date.now()
+
+      wfLog("INFO", `Window ${windowNum}/${totalWindows}: launching batches ${windowStart + 1}-${windowEnd} (${windowEnd - windowStart} parallel activities)`, {
+        ...ctx,
+        window: windowNum,
+        batchRange: `${windowStart + 1}-${windowEnd}`,
+        parallelActivities: windowEnd - windowStart,
+        totalEmbeddingsSoFar: totalEmbeddingsStored,
+      }, "Step 3/6")
+
       const promises = []
       for (let i = windowStart; i < windowEnd; i++) {
         const start = i * FILES_PER_BATCH
         const batchPaths = allFilePaths.slice(start, start + FILES_PER_BATCH)
         promises.push(
           activities.processAndEmbedBatch(
-            { orgId: input.orgId, repoId: input.repoId },
+            { orgId: input.orgId, repoId: input.repoId, runId: input.runId },
             batchPaths,
             { index: i, total: totalBatches },
           )
         )
       }
       const results = await Promise.all(promises)
-      totalEmbeddingsStored += results.reduce((sum: number, r) => sum + r.embeddingsStored, 0)
+      const windowEmbeddings = results.reduce((sum: number, r) => sum + r.embeddingsStored, 0)
+      totalEmbeddingsStored += windowEmbeddings
 
-      // Progress: 10% (after file paths) → 85% (after all batches)
       progress = 10 + Math.round((windowEnd / totalBatches) * 75)
-      wfLog("INFO", `Batches ${windowStart + 1}-${windowEnd}/${totalBatches} complete`, {
+      const windowMs = Date.now() - windowStartMs
+
+      wfLog("INFO", `Window ${windowNum}/${totalWindows} complete: ${windowEmbeddings} embeddings stored (${results.map((r) => r.embeddingsStored).join(" + ")}) in ${Math.round(windowMs / 1000)}s | Total so far: ${totalEmbeddingsStored}`, {
         ...ctx,
-        windowEmbeddings: results.reduce((sum: number, r) => sum + r.embeddingsStored, 0),
+        window: windowNum,
+        windowEmbeddings,
+        perBatch: results.map((r) => r.embeddingsStored),
         totalSoFar: totalEmbeddingsStored,
+        windowMs,
+        progress,
       }, "Step 3/6")
     }
 
+    const step3Ms = Date.now() - step2Start
     progress = 85
-    wfLog("INFO", "Step 3 complete: all batches embedded", { ...ctx, totalEmbeddingsStored }, "Step 3/6")
+    wfLog("INFO", `Step 3/6 complete: all ${totalBatches} batches embedded → ${totalEmbeddingsStored} total embeddings in ${Math.round(step3Ms / 1000)}s`, {
+      ...ctx,
+      totalEmbeddingsStored,
+      totalBatches,
+      step3Ms,
+      avgEmbeddingsPerBatch: Math.round(totalEmbeddingsStored / totalBatches),
+    }, "Step 3/6")
 
-    // Step 4: Delete orphaned embeddings (DB-side — no large arrays passed through Temporal)
-    wfLog("INFO", "Step 4/6: Deleting orphaned embeddings", ctx, "Step 4/6")
+    // Step 4: Delete orphaned embeddings
+    const step4Start = Date.now()
+    wfLog("INFO", "Step 4/6: Cleaning up orphaned embeddings (entities removed from graph but still in pgvector)", ctx, "Step 4/6")
     const { deletedCount } = await activities.deleteOrphanedEmbeddingsFromGraph(
-      { orgId: input.orgId, repoId: input.repoId },
+      { orgId: input.orgId, repoId: input.repoId, runId: input.runId },
     )
+    const step4Ms = Date.now() - step4Start
     progress = 95
-    wfLog("INFO", "Step 4 complete: orphans deleted", { ...ctx, deletedCount }, "Step 4/6")
+    wfLog("INFO", `Step 4/6 complete: ${deletedCount} orphaned embeddings deleted in ${Math.round(step4Ms / 1000)}s`, {
+      ...ctx,
+      deletedCount,
+      step4Ms,
+    }, "Step 4/6")
 
     // Step 5: Set status to "ready"
-    wfLog("INFO", "Step 5/6: Setting status to ready", ctx, "Step 5/6")
-    await activities.setReadyStatus({ orgId: input.orgId, repoId: input.repoId, lastIndexedSha: input.lastIndexedSha })
+    wfLog("INFO", "Step 5/6: Setting repo status to 'ready'", ctx, "Step 5/6")
+    await activities.setReadyStatus({ orgId: input.orgId, repoId: input.repoId, runId: input.runId, lastIndexedSha: input.lastIndexedSha })
     progress = 98
 
-    // Step 6: Chain to ontology discovery + justification pipeline (Phase 4)
-    wfLog("INFO", "Step 6/6: Starting ontology discovery workflow", ctx, "Step 6/6")
+    // Step 6: Chain to ontology discovery
+    wfLog("INFO", "Step 6/6: Chaining to ontology discovery workflow", ctx, "Step 6/6")
     try {
       await startChild(discoverOntologyWorkflow, {
         workflowId: `ontology-${input.orgId}-${input.repoId}`,
@@ -174,6 +222,7 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
         args: [{ orgId: input.orgId, repoId: input.repoId, runId: input.runId }],
         parentClosePolicy: ParentClosePolicy.ABANDON,
       })
+      wfLog("INFO", "Step 6/6: Ontology discovery workflow started", ctx, "Step 6/6")
     } catch (childErr: unknown) {
       const msg = childErr instanceof Error ? childErr.message : String(childErr)
       if (msg.includes("already started") || msg.includes("already exists")) {
@@ -184,7 +233,7 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
     }
     progress = 100
 
-    // TBI-F-01: Mark embed step complete with metrics
+    // Mark embed step complete with metrics
     if (input.runId) {
       await runActivities.updatePipelineStep({
         runId: input.runId,
@@ -194,28 +243,42 @@ export async function embedRepoWorkflow(input: EmbedRepoInput): Promise<{
       })
     }
 
+    const totalWorkflowMs = Date.now() - workflowStartMs
+    const summary = `━━━ EMBEDDING COMPLETE ━━━ ${totalEmbeddingsStored} embeddings stored, ${deletedCount} orphans deleted in ${Math.round(totalWorkflowMs / 1000)}s (${allFilePaths.length} files, ${totalBatches} batches)`
+
     // Await final log calls so they complete before the workflow finishes.
-    // Fire-and-forget causes "Activity not found on completion" warnings.
     await logActivities.appendPipelineLog({
       timestamp: new Date().toISOString(),
       level: "info",
       phase: "embedding",
       step: "Complete",
-      message: "Embedding workflow complete",
-      meta: { embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount, repoId: input.repoId, ...(input.runId && { runId: input.runId }) },
+      message: summary,
+      meta: {
+        embeddingsStored: totalEmbeddingsStored,
+        orphansDeleted: deletedCount,
+        fileCount: allFilePaths.length,
+        totalBatches,
+        totalWorkflowMs,
+        repoId: input.repoId,
+        ...(input.runId && { runId: input.runId }),
+      },
     })
     await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId, runId: input.runId })
-    console.log(`[${new Date().toISOString()}] [INFO ] [wf:embed-repo] [${input.orgId}/${input.repoId}] Embedding workflow complete ${JSON.stringify({ embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount })}`)
+    console.log(`[${new Date().toISOString()}] [INFO ] [wf:embed-repo] [${input.orgId}/${input.repoId}] ${summary}`)
     return { embeddingsStored: totalEmbeddingsStored, orphansDeleted: deletedCount }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
-    wfLog("ERROR", "Embedding workflow failed", { ...ctx, errorMessage: message }, "Error")
+    const totalWorkflowMs = Date.now() - workflowStartMs
+    wfLog("ERROR", `━━━ EMBEDDING FAILED ━━━ after ${Math.round(totalWorkflowMs / 1000)}s: ${message}`, {
+      ...ctx,
+      errorMessage: message,
+      totalWorkflowMs,
+    }, "Error")
 
     if (input.runId) {
       runActivities.updatePipelineStep({ runId: input.runId, stepName: "embed", status: "failed" }).catch(() => {})
     }
 
-    // Best-effort archive on failure — don't block the error throw
     logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId, runId: input.runId }).catch(() => {})
     await activities.setEmbedFailedStatus(input.repoId, message)
     throw err

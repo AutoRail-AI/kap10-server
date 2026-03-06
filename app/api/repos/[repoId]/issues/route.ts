@@ -112,6 +112,7 @@ export const GET = withAuth(async (req: NextRequest) => {
       impact,
       howToFix,
       agentPrompt,
+      featureTag: risk.featureTag as string | undefined,
       priorityScore,
     }
   })

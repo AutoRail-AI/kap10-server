@@ -1,6 +1,6 @@
 "use client"
 
-import { Activity, AlertTriangle, Check, Clock, FileCode, GitFork, Layers, MessageSquare, Shield, Sparkles, Zap } from "lucide-react"
+import { Activity, AlertTriangle, Check, Clock, FileCode, GitFork, Layers, Shield, Sparkles, Zap } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import type { PipelineLogEntry } from "@/hooks/use-pipeline-logs"
 import type { PipelineStepRecord } from "@/lib/ports/types"
@@ -133,34 +133,6 @@ function extractMetaValue(logs: PipelineLogEntry[], key: string): number | null 
   return null
 }
 
-/** Get the most recent log message for display. */
-function getLastLogMessage(logs: PipelineLogEntry[]): { message: string; level: string; phase: string } | null {
-  if (logs.length === 0) return null
-  const last = logs[logs.length - 1]!
-  return { message: last.message, level: last.level, phase: last.phase }
-}
-
-// ── Stat Row Component ────────────────────────────────────────────────────────
-
-function StatRow({ icon, label, value, accent }: {
-  icon: React.ReactNode
-  label: string
-  value: string
-  accent?: boolean
-}) {
-  return (
-    <div className="flex items-center justify-between">
-      <div className="flex items-center gap-2">
-        {icon}
-        <span className="text-xs text-muted-foreground">{label}</span>
-      </div>
-      <span className={`text-xs font-medium font-mono tabular-nums ${accent ? "text-electric-cyan" : "text-foreground"}`}>
-        {value}
-      </span>
-    </div>
-  )
-}
-
 // ── Main Component ────────────────────────────────────────────────────────────
 
 export function WhatsHappeningPanel({ status, progress, logs, steps, indexingStartedAt, errorMessage }: WhatsHappeningPanelProps) {
@@ -217,207 +189,175 @@ export function WhatsHappeningPanel({ status, progress, logs, steps, indexingSta
   const coChangeEdges = extractMetaValue(logs, "coChangeEdges")
   const embeddingsStored = extractMetaValue(logs, "embeddingsStored")
 
-  // Last log for live activity feed
-  const lastLog = useMemo(() => getLastLogMessage(logs), [logs])
-
   // Step-level stats from pipeline run data
   const stepStats = useMemo(() => {
     if (!steps || steps.length === 0) return null
     const completed = steps.filter((s) => s.status === "completed" || s.status === "skipped").length
-    const failed = steps.filter((s) => s.status === "failed").length
-    const running = steps.filter((s) => s.status === "running").length
     const currentStep = steps.find((s) => s.status === "running")
-    return { completed, failed, running, total: steps.length, currentStep }
+    return { completed, total: steps.length, currentStep }
   }, [steps])
 
   return (
-    <div className="glass-card border-border rounded-lg border p-4 space-y-4">
-      <h3 className="font-grotesk text-xs font-semibold text-foreground uppercase tracking-wider">
-        What&apos;s Happening
-      </h3>
-
-      {/* Current Activity Description */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          {isError ? (
-            <AlertTriangle className="h-3.5 w-3.5 text-destructive shrink-0" />
-          ) : isActive ? (
-            <span className="relative flex h-3 w-3 shrink-0">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-electric-cyan/40" />
-              <span className="relative inline-flex rounded-full h-3 w-3 bg-electric-cyan/70" />
+    <div className="flex flex-col h-full rounded-lg border border-border bg-white/[0.015] overflow-hidden">
+      {/* Fixed header section */}
+      <div className="shrink-0 p-3 space-y-3">
+        {/* Title + Status */}
+        <div className="flex items-center justify-between">
+          <h3 className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+            What&apos;s Happening
+          </h3>
+          <div className="flex items-center gap-1.5">
+            {isError ? (
+              <AlertTriangle className="h-3 w-3 text-destructive" />
+            ) : isActive ? (
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-electric-cyan/40" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-electric-cyan/70" />
+              </span>
+            ) : (
+              <Check className="h-3 w-3 text-emerald-400" />
+            )}
+            <span className={`text-[11px] font-medium ${isError ? "text-destructive" : isActive ? "text-electric-cyan" : "text-emerald-400"}`}>
+              {PHASE_LABELS[status] ?? status}
             </span>
-          ) : (
-            <Check className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-          )}
-          <span className={`text-xs font-medium ${isError ? "text-destructive" : isActive ? "text-electric-cyan" : "text-emerald-400"}`}>
-            {PHASE_LABELS[status] ?? status}
-          </span>
+          </div>
         </div>
-        <p className="text-[11px] text-muted-foreground leading-relaxed pl-5">
+
+        {/* Description */}
+        <p className="text-[11px] text-muted-foreground/70 leading-relaxed">
           {STATUS_DESCRIPTIONS[status] ?? "Processing..."}
         </p>
-      </div>
 
-      {/* Current Step Indicator (from pipeline run data) */}
-      {stepStats?.currentStep && isActive && (
-        <div className="rounded-md bg-electric-cyan/5 border border-electric-cyan/10 px-3 py-2">
-          <div className="flex items-center gap-2">
+        {/* Current Step */}
+        {stepStats?.currentStep && isActive && (
+          <div className="flex items-center gap-2 rounded bg-electric-cyan/5 border border-electric-cyan/10 px-2.5 py-1.5">
             <Zap className="h-3 w-3 text-electric-cyan shrink-0" />
-            <span className="text-[11px] text-electric-cyan font-medium">
+            <span className="text-[11px] text-electric-cyan font-medium truncate">
               {stepStats.currentStep.label}
             </span>
-            <span className="text-[10px] text-muted-foreground ml-auto font-mono tabular-nums">
-              {stepStats.completed}/{stepStats.total} steps
+            <span className="text-[10px] text-muted-foreground ml-auto font-mono tabular-nums shrink-0">
+              {stepStats.completed}/{stepStats.total}
             </span>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Error Detail */}
-      {isError && errorMessage && (
-        <div className="rounded-md bg-destructive/5 border border-destructive/10 px-3 py-2">
-          <p className="text-[11px] text-destructive/80 leading-relaxed">
-            {errorMessage.length > 200 ? errorMessage.slice(0, 200) + "…" : errorMessage}
-          </p>
-        </div>
-      )}
-
-      {/* Stats Grid */}
-      <div className="space-y-2.5">
-        {pipelineStartTime && (
-          <StatRow
-            icon={<Clock className="h-3.5 w-3.5 text-muted-foreground" />}
-            label="Duration"
-            value={totalElapsed > 0 ? formatDuration(totalElapsed) : "--"}
-          />
-        )}
-        <StatRow
-          icon={<FileCode className="h-3.5 w-3.5 text-muted-foreground" />}
-          label="Files"
-          value={filesProcessed ?? "--"}
-        />
-        <StatRow
-          icon={<Layers className="h-3.5 w-3.5 text-muted-foreground" />}
-          label="Entities"
-          value={entitiesFound ?? "--"}
-        />
-        <StatRow
-          icon={<GitFork className="h-3.5 w-3.5 text-muted-foreground" />}
-          label="Relationships"
-          value={edgesCreated ?? "--"}
-        />
-        {embeddingsStored != null && (
-          <StatRow
-            icon={<Sparkles className="h-3.5 w-3.5 text-muted-foreground" />}
-            label="Embeddings"
-            value={embeddingsStored.toLocaleString()}
-          />
-        )}
-        {coChangeEdges != null && coChangeEdges > 0 && (
-          <StatRow
-            icon={<Activity className="h-3.5 w-3.5 text-muted-foreground" />}
-            label="Co-change Pairs"
-            value={coChangeEdges.toLocaleString()}
-          />
-        )}
-        {highRiskNodes != null && highRiskNodes > 0 && (
-          <StatRow
-            icon={<Shield className="h-3.5 w-3.5 text-muted-foreground" />}
-            label="High-risk Nodes"
-            value={highRiskNodes.toLocaleString()}
-          />
-        )}
-        {scipCoverage != null && (
-          <StatRow
-            icon={<Zap className="h-3.5 w-3.5 text-muted-foreground" />}
-            label="SCIP Coverage"
-            value={`${scipCoverage}%`}
-            accent
-          />
-        )}
-      </div>
-
-      {/* Progress bar */}
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between">
-          <span className="text-[10px] text-muted-foreground">Progress</span>
-          <span className="text-[10px] text-muted-foreground font-mono tabular-nums">{progress}%</span>
-        </div>
-        <div className="h-1.5 rounded-full bg-border overflow-hidden">
-          <div
-            className={`h-full rounded-full transition-all duration-500 ${
-              isError ? "bg-destructive" : "bg-electric-cyan"
-            }`}
-            style={{ width: `${Math.min(progress, 100)}%` }}
-          />
-        </div>
-      </div>
-
-      {/* Last Activity Message */}
-      {lastLog && (
-        <div className="border-t border-border pt-3 space-y-1.5">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk">
-            Latest Activity
-          </p>
-          <div className="flex items-start gap-2">
-            <MessageSquare className="h-3 w-3 text-white/30 mt-0.5 shrink-0" />
-            <p className="text-[11px] text-white/50 leading-relaxed line-clamp-2">
-              {lastLog.message}
+        {/* Error Detail */}
+        {isError && errorMessage && (
+          <div className="rounded bg-destructive/5 border border-destructive/10 px-2.5 py-1.5">
+            <p className="text-[10px] text-destructive/80 leading-relaxed line-clamp-2">
+              {errorMessage}
             </p>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Phase Timeline */}
+        {/* Compact Stats Grid — 2 columns */}
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+          {pipelineStartTime && (
+            <MetricItem icon={<Clock className="h-3 w-3" />} label="Duration" value={totalElapsed > 0 ? formatDuration(totalElapsed) : "--"} />
+          )}
+          <MetricItem icon={<FileCode className="h-3 w-3" />} label="Files" value={filesProcessed ?? "--"} />
+          <MetricItem icon={<Layers className="h-3 w-3" />} label="Entities" value={entitiesFound ?? "--"} />
+          <MetricItem icon={<GitFork className="h-3 w-3" />} label="Relations" value={edgesCreated ?? "--"} />
+          {embeddingsStored != null && (
+            <MetricItem icon={<Sparkles className="h-3 w-3" />} label="Embeddings" value={embeddingsStored.toLocaleString()} />
+          )}
+          {coChangeEdges != null && coChangeEdges > 0 && (
+            <MetricItem icon={<Activity className="h-3 w-3" />} label="Co-change" value={coChangeEdges.toLocaleString()} />
+          )}
+          {highRiskNodes != null && highRiskNodes > 0 && (
+            <MetricItem icon={<Shield className="h-3 w-3" />} label="High-risk" value={highRiskNodes.toLocaleString()} />
+          )}
+          {scipCoverage != null && (
+            <MetricItem icon={<Zap className="h-3 w-3" />} label="SCIP" value={`${scipCoverage}%`} accent />
+          )}
+        </div>
+
+        {/* Progress bar */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-muted-foreground/50">Progress</span>
+            <span className="text-[10px] text-muted-foreground/50 font-mono tabular-nums">{progress}%</span>
+          </div>
+          <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${
+                isError ? "bg-destructive" : "bg-electric-cyan"
+              }`}
+              style={{ width: `${Math.min(progress, 100)}%` }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Scrollable Phase Timeline */}
       {phaseTimings.length > 0 && (
-        <div className="space-y-2 border-t border-border pt-3">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk">
+        <div className="flex-1 min-h-0 flex flex-col border-t border-white/[0.06]">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/25 px-3 pt-2.5 pb-1.5 shrink-0">
             Phase Timeline
           </p>
-          <div className="space-y-1.5">
-            {phaseTimings.map((pt) => {
-              const isCompleted = pt.completedAt !== null
-              const isCurrent = !isCompleted && isActive
-              const duration = isCompleted
-                ? pt.durationMs!
-                : isCurrent && currentPhaseDuration
-                  ? currentPhaseDuration
-                  : null
+          <div className="flex-1 min-h-0 overflow-y-auto px-3 pb-3">
+            <div className="space-y-0.5">
+              {phaseTimings.map((pt) => {
+                const isCompleted = pt.completedAt !== null
+                const isCurrent = !isCompleted && isActive
+                const duration = isCompleted
+                  ? pt.durationMs!
+                  : isCurrent && currentPhaseDuration
+                    ? currentPhaseDuration
+                    : null
 
-              return (
-                <div
-                  key={pt.phase}
-                  className="flex items-center justify-between"
-                >
-                  <div className="flex items-center gap-2">
-                    {isCompleted ? (
-                      <Check className="h-3 w-3 text-emerald-400" />
-                    ) : isCurrent ? (
-                      <span className="h-2 w-2 rounded-full bg-electric-cyan animate-pulse" />
-                    ) : (
-                      <span className="h-2 w-2 rounded-full bg-white/20" />
-                    )}
-                    <span
-                      className={`text-xs ${
-                        isCurrent
-                          ? "text-electric-cyan font-medium"
-                          : isCompleted
-                            ? "text-white/60"
-                            : "text-white/30"
-                      }`}
-                    >
-                      {pt.label}
+                return (
+                  <div
+                    key={pt.phase}
+                    className="flex items-center justify-between py-1"
+                  >
+                    <div className="flex items-center gap-2">
+                      {isCompleted ? (
+                        <Check className="h-3 w-3 text-emerald-400/70 shrink-0" />
+                      ) : isCurrent ? (
+                        <span className="h-2 w-2 rounded-full bg-electric-cyan animate-pulse shrink-0 ml-0.5 mr-0.5" />
+                      ) : (
+                        <span className="h-2 w-2 rounded-full bg-white/10 shrink-0 ml-0.5 mr-0.5" />
+                      )}
+                      <span
+                        className={`text-[11px] ${
+                          isCurrent
+                            ? "text-electric-cyan font-medium"
+                            : isCompleted
+                              ? "text-white/40"
+                              : "text-white/20"
+                        }`}
+                      >
+                        {pt.label}
+                      </span>
+                    </div>
+                    <span className="font-mono text-[10px] text-white/25 tabular-nums">
+                      {duration !== null ? formatDuration(duration) : ""}
                     </span>
                   </div>
-                  <span className="font-mono text-[10px] text-white/40 tabular-nums">
-                    {duration !== null ? formatDuration(duration) : ""}
-                  </span>
-                </div>
-              )
-            })}
+                )
+              })}
+            </div>
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function MetricItem({ icon, label, value, accent }: {
+  icon: React.ReactNode
+  label: string
+  value: string
+  accent?: boolean
+}) {
+  return (
+    <div className="flex items-center gap-1.5 py-0.5">
+      <span className="text-muted-foreground/40">{icon}</span>
+      <span className="text-[10px] text-muted-foreground/50">{label}</span>
+      <span className={`text-[11px] font-mono tabular-nums ml-auto ${accent ? "text-electric-cyan" : "text-foreground/80"}`}>
+        {value}
+      </span>
     </div>
   )
 }

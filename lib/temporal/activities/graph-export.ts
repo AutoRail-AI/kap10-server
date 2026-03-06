@@ -14,6 +14,7 @@ import { getContainer } from "@/lib/di/container"
 import { compactEdge, compactEntity } from "@/lib/use-cases/graph-compactor"
 import type { CompactEdge, CompactEntity } from "@/lib/use-cases/graph-compactor"
 import { computeChecksum, serializeSnapshot, serializeSnapshotChunked } from "@/lib/use-cases/graph-serializer"
+import { streamGzip } from "@/lib/utils/stream-compress"
 import { logger } from "@/lib/utils/logger"
 
 export interface GraphExportInput {
@@ -67,7 +68,7 @@ export async function exportAndUploadGraph(input: GraphExportInput): Promise<{
   const entityCount = entities.length
   const edgeCount = edges.length
   const CHUNK_THRESHOLD = 5000
-  const buffer = entityCount > CHUNK_THRESHOLD
+  const serialized = entityCount > CHUNK_THRESHOLD
     ? serializeSnapshotChunked({
         repoId: input.repoId,
         orgId: input.orgId,
@@ -87,23 +88,35 @@ export async function exportAndUploadGraph(input: GraphExportInput): Promise<{
         rules,
         patterns,
       })
-  const checksum = computeChecksum(buffer)
-  heartbeat(`Serialized: ${buffer.length} bytes, ${entityCount} entities, ${edgeCount} edges`)
+  heartbeat(`Serialized: ${serialized.length} bytes, ${entityCount} entities, ${edgeCount} edges`)
 
-  // Free compacted data — only the buffer is needed now
+  // Free compacted data — only the serialized buffer is needed now
   entities.length = 0
   edges.length = 0
   if (global.gc) global.gc()
 
-  // Step 3: Upload buffer directly to Supabase Storage (never leaves the worker)
+  // Step 3: Stream-compress via async gzip (event loop stays responsive)
+  heartbeat(`Compressing ${serialized.length} bytes...`)
+  const { compressed, rawBytes } = await streamGzip(serialized)
+  // `serialized` is now eligible for GC — only `compressed` (small) remains
+  if (global.gc) global.gc()
+
+  const checksum = computeChecksum(compressed)
+  log.info("Graph snapshot compressed", {
+    rawBytes,
+    compressedBytes: compressed.length,
+    ratio: `${Math.round((1 - compressed.length / rawBytes) * 100)}%`,
+  })
+
+  // Step 4: Upload compressed buffer to Supabase Storage (never leaves the worker)
   const { supabase } = require("@/lib/db") as typeof import("@/lib/db")
   const bucketName = process.env.GRAPH_SNAPSHOT_BUCKET ?? "graph-snapshots"
-  const storagePath = `${input.orgId}/${input.repoId}.msgpack`
+  const storagePath = `${input.orgId}/${input.repoId}.msgpack.gz`
 
   const { error: uploadError } = await supabase.storage
     .from(bucketName)
-    .upload(storagePath, buffer, {
-      contentType: "application/x-msgpack",
+    .upload(storagePath, compressed, {
+      contentType: "application/gzip",
       upsert: true,
     })
 
@@ -111,8 +124,8 @@ export async function exportAndUploadGraph(input: GraphExportInput): Promise<{
     throw new Error(`Storage upload failed: ${uploadError.message}`)
   }
 
-  const sizeBytes = buffer.length
-  heartbeat(`Uploaded ${sizeBytes} bytes to ${storagePath}`)
+  const sizeBytes = compressed.length
+  heartbeat(`Uploaded ${sizeBytes} bytes (compressed) to ${storagePath}`)
 
   // Step 4: Upsert snapshot metadata via Prisma
   const prisma = getPrisma()
@@ -184,14 +197,19 @@ async function queryCompactGraphInternal(input: GraphExportInput): Promise<{
   const container = getContainer()
   const { orgId, repoId } = input
 
-  // Fetch all file paths, then entities per file
+  // Fetch all file paths, then entities per file (with cross-file dedup)
   const filePaths = await container.graphStore.getFilePaths(orgId, repoId)
   const entities: CompactEntity[] = []
+  const entityKeySet = new Set<string>()
 
   for (let fi = 0; fi < filePaths.length; fi++) {
     const fileEntities = await container.graphStore.getEntitiesByFile(orgId, repoId, filePaths[fi]!.path)
     for (const entity of fileEntities) {
-      entities.push(compactEntity(entity))
+      const compacted = compactEntity(entity)
+      if (!entityKeySet.has(compacted.key)) {
+        entityKeySet.add(compacted.key)
+        entities.push(compacted)
+      }
     }
     // K-13: Granular heartbeats every 50 files
     if ((fi + 1) % 50 === 0 || fi === filePaths.length - 1) {
@@ -199,14 +217,18 @@ async function queryCompactGraphInternal(input: GraphExportInput): Promise<{
     }
   }
 
-  // Also add file entities themselves
+  // Also add file entities themselves (dedup against any file entities already in the set)
   for (const { path } of filePaths) {
-    entities.push({
-      key: path.replace(/[^a-zA-Z0-9]/g, "_"),
-      kind: "file",
-      name: path.split("/").pop() ?? path,
-      file_path: path,
-    })
+    const fileKey = path.replace(/[^a-zA-Z0-9]/g, "_")
+    if (!entityKeySet.has(fileKey)) {
+      entityKeySet.add(fileKey)
+      entities.push({
+        key: fileKey,
+        kind: "file",
+        name: path.split("/").pop() ?? path,
+        file_path: path,
+      })
+    }
   }
 
   // E-01: Batch edge fetching — single getAllEdges call instead of N getCalleesOf calls

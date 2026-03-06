@@ -10,6 +10,7 @@
 import { heartbeat } from "@temporalio/activity"
 import { getPrisma } from "@/lib/db/prisma"
 import { getContainer } from "@/lib/di/container"
+import { streamGzip } from "@/lib/utils/stream-compress"
 import { logger } from "@/lib/utils/logger"
 
 export interface UploadInput {
@@ -33,13 +34,23 @@ export async function uploadToStorage(input: UploadInput): Promise<{
   const { supabase } = require("@/lib/db") as typeof import("@/lib/db")
 
   const bucketName = process.env.GRAPH_SNAPSHOT_BUCKET ?? "graph-snapshots"
-  const storagePath = `${input.orgId}/${input.repoId}.msgpack`
+  const storagePath = `${input.orgId}/${input.repoId}.msgpack.gz`
 
-  // Upload to Supabase Storage (upsert mode)
+  // Stream-compress via async gzip (event loop stays responsive)
+  const { compressed, rawBytes } = await streamGzip(input.buffer)
+  // input.buffer is now eligible for GC — only `compressed` (small) remains
+  if (global.gc) global.gc()
+
+  log.info("Compressing graph snapshot", {
+    rawBytes,
+    compressedBytes: compressed.length,
+  })
+
+  // Upload compressed to Supabase Storage (upsert mode)
   const { error: uploadError } = await supabase.storage
     .from(bucketName)
-    .upload(storagePath, input.buffer, {
-      contentType: "application/x-msgpack",
+    .upload(storagePath, compressed, {
+      contentType: "application/gzip",
       upsert: true,
     })
 
@@ -47,7 +58,8 @@ export async function uploadToStorage(input: UploadInput): Promise<{
     throw new Error(`Storage upload failed: ${uploadError.message}`)
   }
 
-  heartbeat(`Uploaded ${input.buffer.length} bytes to ${storagePath}`)
+  const sizeBytes = compressed.length
+  heartbeat(`Uploaded ${sizeBytes} bytes (compressed) to ${storagePath}`)
 
   // Upsert snapshot metadata via Prisma
   const prisma = getPrisma()
@@ -60,7 +72,7 @@ export async function uploadToStorage(input: UploadInput): Promise<{
       status: "available",
       checksum: input.checksum,
       storagePath,
-      sizeBytes: input.buffer.length,
+      sizeBytes,
       entityCount: input.entityCount,
       edgeCount: input.edgeCount,
       generatedAt: new Date(),
@@ -69,14 +81,14 @@ export async function uploadToStorage(input: UploadInput): Promise<{
       status: "available",
       checksum: input.checksum,
       storagePath,
-      sizeBytes: input.buffer.length,
+      sizeBytes,
       entityCount: input.entityCount,
       edgeCount: input.edgeCount,
       generatedAt: new Date(),
     },
   })
 
-  return { storagePath, sizeBytes: input.buffer.length }
+  return { storagePath, sizeBytes }
 }
 
 /**

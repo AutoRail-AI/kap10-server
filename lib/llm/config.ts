@@ -127,11 +127,36 @@ export function getProviderTpmLimit(): number {
 
 /**
  * Max parallel justification chunks.
- * Bedrock has generous throughput — default to 5.
+ * Bedrock has generous throughput — default to 10.
  * Override via JUSTIFY_MAX_PARALLEL_CHUNKS env var.
  */
 export function getMaxParallelChunks(): number {
   const envOverride = process.env.JUSTIFY_MAX_PARALLEL_CHUNKS
   if (envOverride) return parseInt(envOverride, 10)
-  return 5
+  return 10
+}
+
+// ── Batch Processing Configuration ──────────────────────────────────────────
+//
+// Defaults tuned for AWS Bedrock & Google Vertex AI.
+// When switching providers or models, adjust these env vars:
+//
+//   LLM_BATCH_CONCURRENCY      — parallel LLM calls (default: 10)
+//   LLM_MAX_ITEMS_PER_BATCH    — entities per LLM call (default: 8)
+//   LLM_BATCH_MAX_INPUT_TOKENS — token budget per batch (default: 5000)
+//
+// Per-call retry is configured separately in the provider:
+//   LLM_RETRY_MAX_ATTEMPTS     — retries per LLM call (default: 5)
+//   LLM_RETRY_BASE_DELAY_MS    — base delay for exponential backoff (default: 1000)
+
+export function getBatchConcurrency(): number {
+  return parseInt(process.env.LLM_BATCH_CONCURRENCY ?? "10", 10)
+}
+
+export function getMaxItemsPerBatch(): number {
+  return parseInt(process.env.LLM_MAX_ITEMS_PER_BATCH ?? "8", 10)
+}
+
+export function getBatchMaxInputTokens(): number {
+  return parseInt(process.env.LLM_BATCH_MAX_INPUT_TOKENS ?? "5000", 10)
 }

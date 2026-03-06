@@ -49,13 +49,6 @@ export function GlossaryView({ repoId }: { repoId: string }) {
       .sort((a, b) => a.term.localeCompare(b.term))
   }, [ontology, filter])
 
-  const domainTerms = useMemo(() => {
-    if (!ontology?.terms) return []
-    return [...ontology.terms].sort((a, b) => b.frequency - a.frequency)
-  }, [ontology])
-
-  const maxFreq = domainTerms.length > 0 ? domainTerms[0]!.frequency : 1
-
   const scrollToTerm = (term: string) => {
     setFilter(term)
     tableRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -168,37 +161,6 @@ export function GlossaryView({ repoId }: { repoId: string }) {
         </div>
       ) : null}
 
-      {/* All Domain Terms */}
-      {domainTerms.length > 0 && (
-        <div className="space-y-3">
-          <h3 className="font-grotesk text-sm font-semibold text-foreground">
-            All Domain Terms ({domainTerms.length})
-          </h3>
-          <div className="flex flex-wrap gap-2">
-            {domainTerms.map((t) => {
-              const hasDefinition = ontology.ubiquitous_language
-                ? t.term in ontology.ubiquitous_language
-                : false
-              return (
-                <button
-                  key={t.term}
-                  className={`inline-block px-2.5 py-1 rounded text-xs border transition-colors ${
-                    hasDefinition
-                      ? "bg-primary/10 text-primary border-primary/20 hover:bg-primary/20 cursor-pointer"
-                      : "bg-white/5 text-foreground border-white/10"
-                  }`}
-                  style={{ opacity: 0.4 + 0.6 * (t.frequency / maxFreq) }}
-                  onClick={() => hasDefinition && scrollToTerm(t.term)}
-                  title={`Frequency: ${t.frequency}${hasDefinition ? " (click to see definition)" : ""}`}
-                >
-                  {t.term}
-                  <span className="ml-1 text-[10px] text-muted-foreground">{t.frequency}</span>
-                </button>
-              )
-            })}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

@@ -2,19 +2,14 @@
 
 import {
   Activity,
-  BookOpen,
   Brain,
   Code,
-  Fingerprint,
-  GitPullRequest,
   HeartPulse,
   History,
   Home,
-  Layers,
   LayoutGrid,
+  Settings2,
   Shield,
-  TrendingDown,
-  Zap,
 } from "lucide-react"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
@@ -22,18 +17,13 @@ import { usePathname } from "next/navigation"
 const tabs = [
   { label: "Overview", href: "", icon: Home },
   { label: "Code", href: "/code", icon: Code },
-  { label: "Entities", href: "/entities", icon: Layers },
-  { label: "Blueprint", href: "/blueprint", icon: LayoutGrid },
-  { label: "Patterns", href: "/patterns", icon: Fingerprint },
-  { label: "Rules", href: "/rules", icon: Shield },
-  { label: "Reviews", href: "/reviews", icon: GitPullRequest },
   { label: "Health", href: "/health", icon: HeartPulse },
-  { label: "Impact", href: "/impact", icon: Zap },
-  { label: "Drift", href: "/drift", icon: TrendingDown },
+  { label: "Blueprint", href: "/blueprint", icon: LayoutGrid },
+  { label: "Guardrails", href: "/guardrails", icon: Shield },
   { label: "Intelligence", href: "/intelligence", icon: Brain },
-  { label: "ADRs", href: "/adrs", icon: BookOpen },
-  { label: "Ledger", href: "/ledger", icon: History },
   { label: "Activity", href: "/activity", icon: Activity },
+  { label: "Controls", href: "/controls", icon: Settings2 },
+  { label: "Ledger", href: "/ledger", icon: History },
 ] as const
 
 export function RepoTabs({ repoId }: { repoId: string }) {

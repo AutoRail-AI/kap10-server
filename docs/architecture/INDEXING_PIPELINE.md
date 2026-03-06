@@ -24,6 +24,7 @@
 14. [Stage 9: Graph Snapshot Export](#14-stage-9-graph-snapshot-export)
 15. [Stage 10: Pattern Detection & Convention Discovery](#15-stage-10-pattern-detection--convention-discovery)
 16. [Incremental Indexing (Push Webhooks)](#16-incremental-indexing)
+16b. [Repo Deletion Workflow](#16b-repo-deletion-workflow)
 17. [Token Limits & Batch Sizes](#17-token-limits--batch-sizes)
 18. [Data Model: What Gets Stored Where](#18-data-model)
 19. [Feature Dependency Map](#19-feature-dependency-map)
@@ -61,10 +62,11 @@ TRIGGER (GitHub install / manual reindex / push webhook / CLI upload)
   v
 indexRepoWorkflow (heavy-compute-queue)
   |
-  |-- [1] prepareRepoIntelligenceSpace .. Clone repo, scan files, detect languages
-  |-- [2] runSCIP ....................... Precise cross-file code intelligence
-  |-- [3] parseRest ..................... Tree-sitter fallback + cross-file call resolution
-  |-- [4] finalizeIndexing .............. Shadow swap, stale entity cleanup
+  |-- [1]  prepareRepoIntelligenceSpace . Fresh clone (rm stale dir), scan files, detect languages
+  |-- [1b] wipeRepoGraphData ........... Clean slate: ArangoDB, Redis, pgvector, Storage, filesystem
+  |-- [2]  runSCIP ..................... Precise cross-file code intelligence
+  |-- [3]  parseRest ................... Tree-sitter fallback + cross-file call resolution
+  |-- [4]  finalizeIndexing ............ Shadow swap, stale entity cleanup
   |-- [4b] precomputeBlastRadius ....... PageRank, communities, structural fingerprint, confidence
   |-- [4c] computeTemporalAnalysis ..... Git co-change mining, temporal context per entity
   |
@@ -165,7 +167,7 @@ Generates a `runId` (UUID) and `indexVersion` (UUID for shadow re-indexing). If 
 
 ### What Happens
 
-1. **Shallow-clone the repository** to `/data/repo-indices/{orgId}/{repoId}` using `container.gitHost.cloneRepo()` with `--depth 1 --single-branch` — fetches only the latest commit. For CLI uploads, downloads the zip from Supabase Storage and extracts it.
+1. **Fresh clone** — removes the existing clone directory (`/data/repo-indices/{orgId}/{repoId}`) if present, then shallow-clones the repository using `container.gitHost.cloneRepo()` with `--depth 1 --single-branch` — fetches only the latest commit. The rm-before-clone ensures deleted files from the repo don't persist across re-index runs. For CLI uploads, downloads the zip from Supabase Storage and extracts it.
 
 2. **Get the commit SHA** via `git rev-parse HEAD`. This SHA becomes the repo's `lastIndexedSha` — used for incremental indexing SHA gap detection.
 
@@ -207,6 +209,26 @@ Only this small payload crosses the Temporal boundary. The actual intelligence s
 - Languages detected correctly (check `detectLanguages()` output against actual file extensions)
 - Pipeline step `prepare_intel_space` shows `completed` in `PipelineRun`
 
+### Stage 1b: Wipe Repo Data (Clean Slate)
+
+**Activity:** `wipeRepoGraphData` | **Queue:** light-llm | **Source:** `lib/temporal/activities/indexing-light.ts`
+
+Runs immediately after Stage 1 to ensure a clean slate before writing new index data. Prevents duplicate entities from accumulating across re-index runs.
+
+**What gets cleaned:**
+
+| Store | What | How |
+|-------|------|-----|
+| **ArangoDB** | All entities + edges for this repo | `graphStore.deleteRepoData()` across all 22 doc + 8 edge collections |
+| **Redis** | Entity profiles, topo levels, pipeline logs, retry/resume keys | Fixed key deletion + `invalidateByPrefix()` + `SCAN`-based pipeline log cleanup |
+| **pgvector** | Entity embeddings + justification embeddings | `vectorSearch.deleteAllEmbeddings()` + `deleteJustificationEmbeddings()` |
+| **Supabase Storage** | Graph snapshots + pipeline log archives | Removes `{orgId}/{repoId}.msgpack.gz` and all files under `pipeline-logs/{orgId}/{repoId}/` |
+| **Filesystem** | Clone directory | `rmSync` on `/data/repo-indices/{orgId}/{repoId}` (also done in Stage 1 before clone) |
+
+All cleanup steps are **non-fatal** — failures are logged but don't abort the pipeline. The PostgreSQL repo record is preserved (this is a re-index, not a delete).
+
+**Note:** The full `deleteRepoData` activity (used by the delete-repo workflow) performs the same cleanup plus deleting the PostgreSQL repo record via CASCADE.
+
 **Completion: ~97%**
 
 ---
@@ -246,10 +268,35 @@ SCIP (Sourcegraph Code Intelligence Protocol) is a compiler-grade code analysis 
    All 10 language plugins now have SCIP wiring. If the binary is not installed on the worker, the pipeline falls back to tree-sitter transparently — the binary pre-check surfaces missing binaries as pipeline log warnings.
 
 3. **Parse the SCIP output** (protobuf binary) into `ParsedEntity[]` and `ParsedEdge[]`:
+
    - **Ignore filtering** — the `isIncluded` filter (from `loadIgnoreFilter()`) is created once in `runSCIP` and threaded through `SCIPOptions` → language plugin → `parseSCIPOutput()`. This filters out dependency type definitions (e.g., `node_modules/.pnpm/@types/*/...`) that SCIP resolves but that inflate entity counts and drop coverage metrics. Without this filter, ~2,400 ghost file entities from `node_modules` type definitions can drop SCIP coverage from ~87% to 47%.
-   - **Two-pass decoder** — Pass 1 builds per-file entity index (definitions), skipping documents whose path fails the ignore filter. Pass 2 classifies edges as `calls` (function/method targets) or `references` (class/variable/module targets) using containment-based lookup with binary search on entity start lines. Deduplicates edges. Pass 2 also skips ignored documents.
-   - Entities: functions, classes, interfaces, types, variables — with precise `start_line`, `end_line`, `signature`, `documentation`
-   - Edges: `calls`, `references`, `imports`, `extends`, `implements`
+
+   - **External symbol allowlisting** — `resolveProjectPackageNames()` reads the language-appropriate manifest file (walking up to 10 directories from the `.scip` file) to discover the project's own package name(s). Every SCIP symbol is checked via `isExternalSymbol(symbol, projectPackageNames)`: the SCIP symbol format is `"scheme manager pkg-name pkg-version descriptor..."` and if `pkg-name` is not in the project's own set, the symbol is skipped entirely. This prevents stdlib, standard library types, and all third-party dependency symbols from becoming entities or edges — a much cleaner upstream filter than relying on downstream dedup.
+
+     Supported manifests by language:
+
+     | Language | Manifest | Name extraction |
+     |----------|----------|-----------------|
+     | TypeScript/JS | `package.json` | `"name"` field |
+     | Python | `pyproject.toml` / `setup.cfg` | `[project].name` / `[metadata].name` |
+     | Go | `go.mod` | `module` line |
+     | Rust | `Cargo.toml` | `[package].name` |
+     | Java | `pom.xml` / `build.gradle` | `<artifactId>` / `rootProject.name` |
+     | PHP | `composer.json` | `"name"` field |
+     | Ruby | `*.gemspec` / `Gemfile` | `.name` / dir name fallback |
+     | C# | `*.csproj` | `<AssemblyName>` / `<RootNamespace>` |
+     | C/C++ | `CMakeLists.txt` | `project()` name |
+
+   - **Module/namespace entity skip** — Pass 1 explicitly skips entities where `kind === "module"` or `kind === "namespace"`. These are import references, not code definitions — they pollute entity counts, community detection, and embeddings.
+
+   - **Empty-name guard** — `parseSCIPSymbol()` guards all five descriptor suffix cases (`().`, `()`, `#`, `.`, `/`) against empty name strings, returning `null` instead of creating ghost entities.
+
+   - **Two-pass decoder** — Pass 1 builds per-file entity index (definitions), skipping documents whose path fails the ignore filter and external symbol check. Pass 2 classifies edges as `calls` (function/method targets) or `references` (class/variable/module targets) using containment-based lookup with binary search on entity start lines. Deduplicates edges via `edgeDedup` Set keyed on `"${refId}\0${defEntityId}"`. Pass 2 also skips ignored documents and external symbols.
+
+   - **Diagnostic logging** — at startup: document count split (project vs external/skipped), total occurrences, project package names. At completion: entity/edge/file counts plus count of external symbol occurrences skipped.
+
+   - Entities: functions, classes, variables — with precise `start_line`, `end_line`, `signature`
+   - Edges: `calls`, `references`
 
 4. **Fill bodies from source** via `fillBodiesFromSource()`:
    - Reads source files via encoding-aware `readFileWithEncoding()` and slices relevant lines (capped at `MAX_BODY_LINES = 3000`)
@@ -608,7 +655,7 @@ Two-pass embedding solves the ordering problem where first-time embeddings had n
 
 2. **Fetch all file paths** from ArangoDB `files` collection.
 
-3. **Process in batches of 25 files** (`FILES_PER_BATCH = 25`), with **10 batches running concurrently** (`CONCURRENT_BATCHES = 10`):
+3. **Process in batches of 50 files** (`FILES_PER_BATCH = 50`), with **3 batches running concurrently** (`CONCURRENT_BATCHES = 3`):
 
    a. Fetch entities per file via `graphStore.getEntitiesByFile()`
 
@@ -626,7 +673,7 @@ Two-pass embedding solves the ordering problem where first-time embeddings had n
 
    d. **Body truncation** via AST summarization — `summarizeBody()` (`lib/justification/ast-summarizer.ts`) replaces naive `.slice()`. Extracts 6 anchor categories (decision points, external calls, mutations, errors, returns, assertions) verbatim; compresses non-anchor lines into structural tokens: `[IMPORTS: N lines]`, `[SETUP: N variables]`, `[LOOP: for over items]`, `[TRY_CATCH]`, `[LOG]`, `[... N lines ...]`. Body capped at 10,000 characters (Gemini supports 8,192 tokens ≈ ~32k chars).
 
-   e. **Embed via Vertex AI** — `gemini-embedding-001` model (768 dimensions). Each text is embedded as a separate API request (`gemini-embedding-001` accepts 1 text per request on Vertex AI). Requests are parallelized with a **semaphore-based concurrency limiter** (`EMBED_CONCURRENCY = 50`) with exponential backoff on 429/RESOURCE_EXHAUSTED errors (1s → 2s → 4s → 8s → 16s, up to 5 retries). This achieves ~250 embeddings/sec vs ~2/sec sequential.
+   e. **Embed via Vertex AI** — `gemini-embedding-001` model (768 dimensions). Each text is embedded as a separate API request (`gemini-embedding-001` accepts 1 text per request on Vertex AI). Requests are parallelized with a **semaphore-based concurrency limiter** (`EMBED_CONCURRENCY = 100`) with exponential backoff on 429/RESOURCE_EXHAUSTED errors (1s → 2s → 4s → 8s → 16s, up to 5 retries). Total concurrent Vertex AI calls = `CONCURRENT_BATCHES × EMBED_CONCURRENCY` = 3 × 100 = 300 (tuned to stay under Vertex AI TPM quota while maximizing throughput).
 
    f. **Upsert to pgvector** in sub-batches of 100 with conflict-based deduplication.
 
@@ -637,18 +684,21 @@ Two-pass embedding solves the ordering problem where first-time embeddings had n
 #### Throughput Architecture
 
 ```
-Workflow level:  31 batches (25 files each) → 10 concurrent activities
+Workflow level:  66 batches (50 files each) → 3 concurrent activities
                  ↓
-Activity level:  ~50 entities per batch → 100-doc embed sub-batches
+Activity level:  ~100 entities per batch → 100-doc embed sub-batches
                  ↓
-Adapter level:   50-concurrent semaphore → individual Vertex AI embed() calls
+Adapter level:   100-concurrent semaphore → individual Vertex AI embed() calls
                  ↓
-                 Result: ~250 embeddings/sec → 2000 entities in ~8s
+                 Total: 3 × 100 = 300 concurrent Vertex AI calls
+                 Result: ~500 embeddings/sec → 2000 entities in ~4s
 ```
+
+**Why 3 concurrent batches (not 10):** Each `processAndEmbedBatch` activity creates its own semaphore with `EMBED_CONCURRENCY = 100`. The activities don't share rate-limit state since they're separate Temporal invocations on the same worker. With 10 batches × 100 = 1,000 concurrent calls, mass 429 throttling cascades into exponential backoff storms — observed at 14 min for what should take ~3 min. Reducing to 3 × 100 = 300 concurrent calls stays within Vertex AI quota while each batch processes 2x more files (50 vs 25), reducing total Temporal round-trips from 131 to 66.
 
 **Why this approach vs batch API:** Vertex AI's asynchronous Batch Prediction API does not yet support `gemini-embedding-001` (only `text-embedding-005`). When batch API support ships (announced "coming soon" with 50% cost discount), it will be worth switching for repos >10K entities. For current scale (hundreds to low thousands of entities), concurrent real-time calls with semaphore throttling achieves sub-minute embedding times.
 
-**Rate limit resilience:** Vertex AI quotas for `gemini-embedding-001` are token-based (~5M TPM default, scalable to 20M TPM). At 50 concurrent requests averaging 500 tokens each, throughput is ~1.5M TPM — well within default quota. The semaphore + exponential backoff pattern self-throttles if quota is reached.
+**Rate limit resilience:** Vertex AI quotas for `gemini-embedding-001` are token-based (~5M TPM default, scalable to 20M TPM). At 300 concurrent requests averaging 500 tokens each, throughput is ~3M TPM — within default quota with headroom. The semaphore + exponential backoff pattern self-throttles if quota is reached.
 
 #### Pass 2: Synthesis Embedding (runs after justification in Stage 7)
 
@@ -668,8 +718,8 @@ Triggered by `reEmbedWithJustifications` activity as Step 8b in `justify-repo` w
 ### Implementation Details
 
 - **Embedding vector validation** — `Number.isFinite()` check on every vector. NaN/Infinity vectors logged and skipped.
-- **Vertex AI resilience** — Each embed call retries up to 5× with exponential backoff (1s/2s/4s/8s/16s) on 429 or RESOURCE_EXHAUSTED errors. Semaphore limits in-flight requests to 50 to prevent quota exhaustion.
-- **Concurrent embedding** — `gemini-embedding-001` on Vertex AI accepts 1 text per request. A semaphore-based concurrency limiter (`createSemaphore(50)`) fires 50 requests in parallel, achieving ~250 embeddings/sec throughput. No external dependency — semaphore is implemented inline (~15 lines).
+- **Vertex AI resilience** — Each embed call retries up to 5× with exponential backoff (1s/2s/4s/8s/16s) on 429 or RESOURCE_EXHAUSTED errors. Semaphore limits in-flight requests to 100 per activity to prevent quota exhaustion.
+- **Concurrent embedding** — `gemini-embedding-001` on Vertex AI accepts 1 text per request. A semaphore-based concurrency limiter (`createSemaphore(100)`) fires 100 requests in parallel per activity, achieving ~500 embeddings/sec throughput across 3 concurrent activities. No external dependency — semaphore is implemented inline (~15 lines).
 - **Search fusion** — in `hybrid-search.ts`, all three legs (semantic, keyword, justification) use entity ID as `entityKey` for consistent RRF merging. Semantic search strips `::code` suffix before RRF. Both variants for same entity contribute to fused score. `SearchResult` type carries `id` field (ArangoDB `_key`) alongside `name`.
 - **Adaptive RRF k-parameter** — `computeAdaptiveK()` dynamically adjusts k from inter-source Jaccard similarity of top-10 result sets. High overlap → lower k (amplify consensus). Low overlap → higher k (smooth noise). Range: `[0.5*baseK, 2.0*baseK]`.
 - **Cross-encoder reranking** — Cohere Rerank 3.5 on AWS Bedrock re-scores top 30 RRF candidates via `rerank()` from AI SDK. Exact matches (score=1.0) are pinned and excluded from reranking. Falls back to RRF order on reranker failure (3s timeout).
@@ -821,9 +871,16 @@ For each topological level, processing bottom-up:
 | 3-20 callers | `standard` | Normal functions |
 | < 3 callers | `fast` | Leaf functions |
 
-**d. Dynamic Batching**
+**d. Dynamic Batching (via LLM Port Layer)**
 
-`createBatches()` uses greedy bin-packing with dual constraints (input token budget + output token budget). Oversized entities go solo. Max 15 entities per batch.
+Batching is handled by `ILLMProvider.generateBatchObjects()`, not by business logic. The provider delegates to `lib/llm/batch-processor.ts` which:
+- Packs items into groups of `LLM_MAX_ITEMS_PER_BATCH` (default: 8)
+- Processes batches with `LLM_BATCH_CONCURRENCY` (default: 10) parallel workers
+- Re-batches missing items in smaller groups (up to 2 rounds)
+- Splits batches in half on parse failures
+- Falls back to single-item calls as last resort
+
+Token-budgeted packing for edge cases is still available via `createBatches()` in `dynamic-batcher.ts` (`LLM_BATCH_MAX_INPUT_TOKENS`, default: 5000).
 
 **e. Signal-Aware Prompt Construction**
 
@@ -866,9 +923,13 @@ Additional prompt inputs: callee justifications (for bottom-up context), ontolog
 
 Entities with `heuristicHint.confidence >= 0.9` and 0 inbound callers skip LLM entirely. Canned justification with `model_tier: "heuristic"`. Saves 20-40% of LLM calls for pure-utility entities.
 
-**g. LLM Call with Retry**
+**g. LLM Call (Three-Layer Architecture)**
 
-`llmProvider.generateObject()` with `JustificationResultSchema`, `temperature: 0.1`. Retry strategy: rate limit → exponential backoff (2s → 8s → 30s). Batch failure → individual fallback. Individual failure → fallback justification (`taxonomy: UTILITY, confidence: 0.3`).
+Business logic calls `container.llmProvider.generateBatchObjects()` per model tier, providing prompt builders and a `matchResult` function. All retry, rate-limiting, and error recovery are handled by the LLM port layer:
+
+- **Per-call**: `RateLimiter` (RPM/TPM sliding window) + `retryWithBackoff` (exponential backoff + jitter on 429)
+- **Batch-level**: `batch-processor.ts` handles concurrency, missing-item re-batching, parse-failure splitting, fatal error abort (401/403/405)
+- **Business fallback**: Failed items get heuristic fallback (if confidence >= 0.85) or fallback justification (`taxonomy: UTILITY, confidence: 0.3`)
 
 **h. Quality Scoring (Balanced)**
 
@@ -1026,7 +1087,11 @@ Analyzes codebase for architectural patterns with high adherence rates. Features
 ## 14. Stage 9: Graph Snapshot Export
 
 **Workflow:** `syncLocalGraphWorkflow` | **Queue:** light-llm
-**Source:** `lib/temporal/workflows/sync-local-graph.ts`, `lib/temporal/activities/graph-export.ts`, `lib/temporal/activities/graph-upload.ts`
+**Source:** `lib/temporal/workflows/sync-local-graph.ts`, `lib/temporal/activities/graph-export.ts`
+
+**Design constraint:** The entire query→serialize→compress→upload pipeline runs inside a **single activity** (`exportAndUploadGraph`) so the large buffer (often 50-60MB raw) **never crosses Temporal's 4MB gRPC boundary**. Only lightweight metadata (path, size, checksum, counts) is returned to the workflow.
+
+> **Note:** `graph-upload.ts` contains legacy split activities (`uploadToStorage`, `updateSnapshotStatus`, `notifyConnectedClients`) from the original multi-activity design. These are **deprecated** — `exportAndUploadGraph` subsumes all of them. The legacy activities are retained only for backward compatibility with in-flight workflows.
 
 ### Input
 
@@ -1035,19 +1100,23 @@ Analyzes codebase for architectural patterns with high adherence rates. Features
 
 ### What Happens
 
-1. **Query and compact** all entities + edges from ArangoDB:
+1. **Query and compact** all entities + edges from ArangoDB (`queryCompactGraphInternal`):
+   - Fetches file paths, then entities per file with **cross-file deduplication** via `entityKeySet` Set — prevents duplicate entities when the same entity appears in multiple file-entity queries
+   - Adds file entities separately with another dedup check against the same `entityKeySet`
    - Compacts each entity to minimal fields: `key`, `kind`, `name`, `file_path`, `signature`, `language`
-   - Fetches all edges in a single `getAllEdges()` call with in-memory dedup, paginated at 20,000 edges per page (safety cap at 200,000)
+   - Fetches all edges in a single `getAllEdges()` call with **in-memory dedup** (`edgeSet` keyed on `"${fromKey}-${kind}-${toKey}"`), paginated at 20,000 edges per page (safety cap at 200,000)
    - Fetches active rules (max 200) and confirmed patterns (evidence capped at 5 exemplars per pattern)
    - Granular heartbeats every 50 files
 
-2. **Serialize** via `serializeSnapshotChunked()` — processes entities in batches of 1,000, frees each chunk after serialization. Repos with >5,000 entities automatically use chunked mode. Output: msgpack binary + SHA-256 checksum (5-20x smaller than JSON).
+2. **Serialize** via `serializeSnapshotChunked()` — processes entities in batches of 1,000, frees each chunk after serialization. Repos with >5,000 entities automatically use chunked mode. Output: msgpack binary + SHA-256 checksum (5-20x smaller than JSON). After serialization, the compacted arrays are freed (`entities.length = 0`) and GC is triggered.
 
-3. **Upload** to Supabase Storage bucket `graph-snapshots` at path `{orgId}/{repoId}.msgpack`.
+3. **Stream-compress** via `streamGzip()` (`lib/utils/stream-compress.ts`) — the serialized msgpack buffer (typically ~60MB) is piped through `Readable.from(buffer).pipe(createGzip())` with async iteration. Gzip processes in 16KB internal chunks, yielding to the event loop between each chunk so embedding batches running concurrently on the same worker are never blocked. Adaptive compression level: level 1 for buffers >10MB (3-5x faster, ~5% worse ratio on binary msgpack), level 6 for smaller buffers. Typical compression ratio: ~95% (60MB → 3.2MB).
 
-4. **Record metadata** in PostgreSQL: `status: "available"`, `checksum`, `sizeBytes`, `entityCount`, `edgeCount`, `generatedAt`.
+4. **Upload** compressed snapshot to Supabase Storage bucket `graph-snapshots` at path `{orgId}/{repoId}.msgpack.gz`.
 
-5. **Notify clients** via Redis key `graph-sync:{orgId}:{repoId}` (TTL 1 hour).
+5. **Record metadata** in PostgreSQL via Prisma upsert (keyed on `repoId`): `status: "available"`, `checksum`, `sizeBytes`, `entityCount`, `edgeCount`, `generatedAt`.
+
+6. **Notify clients** via Redis key `graph-sync:{orgId}:{repoId}` (TTL 1 hour).
 
 ### Output
 
@@ -1176,6 +1245,37 @@ The workflow waits **60 seconds** for additional `pushSignal` signals before pro
 
 ---
 
+## 16b. Repo Deletion Workflow
+
+**Workflow:** `deleteRepoWorkflow` | **Queue:** light-llm-queue | **Timeout:** 5 minutes | **Retries:** 3
+**Source:** `lib/temporal/workflows/delete-repo.ts`, `lib/temporal/activities/indexing-light.ts` (`deleteRepoData`)
+**Workflow ID:** `delete-{orgId}-{repoId}`
+
+### What Happens
+
+Triggered via the repo settings UI or API. Delegates to the `deleteRepoData` activity which performs a complete 5-step teardown:
+
+| Step | Store | What | How |
+|------|-------|------|-----|
+| 1 | **ArangoDB** | All entities + edges across 22 doc + 8 edge collections | `graphStore.deleteRepoData(orgId, repoId)` |
+| 2 | **Redis** | Entity profiles, topo levels, pipeline logs, sync/retry/resume keys | Fixed key deletion + `invalidateByPrefix()` for key families + `SCAN`-based pipeline log cleanup |
+| 3 | **Supabase Storage** | Graph snapshot (`{orgId}/{repoId}.msgpack.gz`) + pipeline log archives | `storage.remove()` on snapshot file + recursive listing/deletion under `pipeline-logs/{orgId}/{repoId}/` |
+| 4 | **Filesystem** | Clone directory `/data/repo-indices/{orgId}/{repoId}` | `rmSync` (recursive, force) |
+| 5 | **PostgreSQL** | Repo record + all dependent data | `relationalStore.deleteRepo(repoId)` — CASCADE FKs auto-remove: `pipeline_runs`, `api_keys`, `entity_embeddings`, `justification_embeddings`, `rule_embeddings`, `ledger_snapshots`, `workspaces`, `graph_snapshot_meta` |
+
+All steps except the final PostgreSQL delete are **non-fatal** — failures are logged but don't abort the workflow. The PostgreSQL CASCADE delete is the authoritative final step.
+
+### Distinction from `wipeRepoGraphData`
+
+| | `wipeRepoGraphData` (re-index) | `deleteRepoData` (delete) |
+|---|---|---|
+| **Purpose** | Clean slate before re-index | Permanent repo removal |
+| **Stores cleaned** | ArangoDB, Redis, pgvector, Storage, Filesystem | Same + PostgreSQL repo record |
+| **Preserves repo record** | Yes | No (CASCADE delete) |
+| **Called from** | `indexRepoWorkflow` Step 1b | `deleteRepoWorkflow` |
+
+---
+
 ## 17. Token Limits & Batch Sizes
 
 ### Entity Extraction Limits
@@ -1243,9 +1343,9 @@ Token estimation: **~3.5 chars per token** (conservative for code).
 | Stage | Batch Size | Where |
 |-------|-----------|-------|
 | ArangoDB bulk upsert | **1,000 entities** | `arango-graph-store.ts` |
-| Embedding file batches | **25 files per batch** (10 concurrent) | `embed-repo.ts` |
+| Embedding file batches | **50 files per batch** (3 concurrent) | `embed-repo.ts` |
 | Embedding pgvector upsert | **100 vectors per sub-batch** | `embedding.ts` |
-| Embedding API concurrency | **50 parallel requests** (semaphore) | `llamaindex-vector-search.ts` |
+| Embedding API concurrency | **100 parallel requests** per activity (semaphore) | `llamaindex-vector-search.ts` |
 | Justification parallel chunks | **100 entities per chunk** | `justify-repo.ts` |
 | Justification embedding chunks | **20 per chunk** | `justification.ts` |
 | Ontology refinement frequency | **Every 20 levels** | `justify-repo.ts` |
@@ -1536,6 +1636,22 @@ All file filtering throughout the entire pipeline is centralized in **`lib/index
 | `packages/cli/src/commands/push.ts` | `createIgnoreFilter` | Zip archive creation |
 | `packages/cli/src/commands/watch.ts` | `createIgnoreFilter` | Chokidar file watcher |
 | `packages/cli/src/commands/setup.ts` | `createIgnoreFilter` | Onboarding zip upload |
+
+### 20.13 RepoId Namespace Isolation
+
+Every data artifact in the system is scoped to a `repoId`, ensuring zero cross-repo data leakage:
+
+| Store | Isolation mechanism |
+|-------|-------------------|
+| **ArangoDB** | `repo_id` field on every entity and edge document; all queries filter by `repo_id`; `deleteRepoData` sweeps all 30 collections |
+| **Entity hashing** | `entityHash(repoId, file_path, kind, name, signature)` — `repoId` is part of the SHA-256 input, so identical code in two repos produces different entity keys |
+| **Redis** | All cache keys namespaced: `profile:{orgId}:{repoId}:*`, `topo:{orgId}:{repoId}:*`, `graph-sync:{orgId}:{repoId}`, etc. |
+| **pgvector** | `repo_id` column on `entity_embeddings` and `justification_embeddings`; `deleteAllEmbeddings(repoId)` and `deleteOrphaned(repoId)` filter by it |
+| **Supabase Storage** | Path-based isolation: `{orgId}/{repoId}.msgpack.gz` for snapshots, `{orgId}/{repoId}/` prefix for pipeline logs |
+| **Filesystem** | Clone directory: `/data/repo-indices/{orgId}/{repoId}` |
+| **PostgreSQL** | `repo_id` FK on `pipeline_runs`, `api_keys`, `entity_embeddings`, `workspaces`, `graph_snapshot_meta`, etc. — CASCADE delete ensures no orphans |
+
+The `wipeRepoGraphData` activity (pre-reindex) and `deleteRepoData` activity (repo deletion) both traverse all stores using this namespace pattern, ensuring complete cleanup.
 
 ---
 

@@ -296,7 +296,7 @@ export default async function RepoLayout({
       <Suspense fallback={<Skeleton className="h-[180px] w-full" />}>
         <RepoHeader repoId={repoId} />
       </Suspense>
-      <div className="flex-1 overflow-y-auto p-6">{children}</div>
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 py-6">{children}</div>
     </div>
   )
 }

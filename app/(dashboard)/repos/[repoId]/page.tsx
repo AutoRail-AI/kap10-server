@@ -1,7 +1,6 @@
 import {
   BookOpen,
   BookText,
-
   FileDown,
   Fingerprint,
   HeartPulse,
@@ -44,17 +43,16 @@ function computeGrade(risks: Array<{ severity: string }>): string {
   return "A"
 }
 
-/* ─── Overview Stats (async, loaded in Suspense) ─────── */
+/* ─── Hero Stats Row (async, loaded in Suspense) ───── */
 
-async function OverviewStats({ repoId }: { repoId: string }) {
+async function HeroStats({ repoId }: { repoId: string }) {
   const orgId = await getActiveOrgId()
   const container = getContainer()
 
-  const [projectStats, healthReport, features, ontology] = await Promise.all([
+  const [projectStats, healthReport, features] = await Promise.all([
     container.graphStore.getProjectStats(orgId, repoId).catch(() => null),
     container.graphStore.getHealthReport(orgId, repoId).catch(() => null),
     container.graphStore.getFeatureAggregations(orgId, repoId).catch(() => []),
-    container.graphStore.getDomainOntology(orgId, repoId).catch(() => null),
   ])
 
   const totalEntities =
@@ -64,12 +62,109 @@ async function OverviewStats({ repoId }: { repoId: string }) {
     (projectStats?.variables ?? 0)
   const grade = healthReport ? computeGrade(healthReport.risks) : null
 
-  const topLanguages = projectStats?.languages
-    ? Object.entries(projectStats.languages)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 6)
-    : []
-  const totalLangFiles = topLanguages.reduce((s: number, [, c]) => s + c, 0)
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/* Health Grade */}
+      <div className="rounded-lg border border-white/10 bg-white/2 p-4">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk mb-2">
+          Health Grade
+        </p>
+        {grade ? (
+          <>
+            <div
+              className={`inline-flex items-center justify-center w-10 h-10 rounded-lg border text-xl font-bold font-grotesk ${GRADE_COLORS[grade] ?? ""}`}
+            >
+              {grade}
+            </div>
+            <Link
+              href={`/repos/${repoId}/controls`}
+              className="text-[10px] text-white/30 hover:text-electric-cyan mt-1 inline-block transition-colors"
+            >
+              Manage pipeline &rarr;
+            </Link>
+          </>
+        ) : (
+          <p className="text-xl font-semibold text-muted-foreground">&mdash;</p>
+        )}
+      </div>
+
+      {/* Entities */}
+      <div className="rounded-lg border border-white/10 bg-white/2 p-4">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk mb-2">
+          Entities Analyzed
+        </p>
+        <p className="text-xl font-bold font-mono text-foreground tabular-nums">
+          {totalEntities.toLocaleString()}
+        </p>
+        <p className="text-[10px] text-white/30 mt-0.5">
+          functions, classes, methods
+        </p>
+      </div>
+
+      {/* Features */}
+      <div className="rounded-lg border border-white/10 bg-white/2 p-4">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk mb-2">
+          Features Discovered
+        </p>
+        <p className="text-xl font-bold font-mono text-foreground tabular-nums">
+          {features.length}
+        </p>
+        <Link
+          href={`/repos/${repoId}/blueprint`}
+          className="text-[10px] text-electric-cyan hover:underline mt-0.5 inline-block"
+        >
+          View Blueprint &rarr;
+        </Link>
+      </div>
+
+      {/* Insights */}
+      <div className="rounded-lg border border-white/10 bg-white/2 p-4">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk mb-2">
+          Insights Found
+        </p>
+        <p className="text-xl font-bold font-mono text-foreground tabular-nums">
+          {healthReport?.risks.length ?? 0}
+        </p>
+        {healthReport && healthReport.risks.length > 0 && (
+          <div className="flex gap-1.5 mt-1">
+            {healthReport.risks.filter((r) => r.severity === "high").length >
+              0 && (
+              <span className="text-[10px] text-red-400">
+                {
+                  healthReport.risks.filter((r) => r.severity === "high")
+                    .length
+                }{" "}
+                high
+              </span>
+            )}
+            {healthReport.risks.filter((r) => r.severity === "medium")
+              .length > 0 && (
+              <span className="text-[10px] text-amber-400">
+                {
+                  healthReport.risks.filter((r) => r.severity === "medium")
+                    .length
+                }{" "}
+                med
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* ─── Codebase Intelligence (domain, languages, nav) ─ */
+
+async function CodebaseIntelligence({ repoId }: { repoId: string }) {
+  const orgId = await getActiveOrgId()
+  const container = getContainer()
+
+  const [projectStats, healthReport, ontology] = await Promise.all([
+    container.graphStore.getProjectStats(orgId, repoId).catch(() => null),
+    container.graphStore.getHealthReport(orgId, repoId).catch(() => null),
+    container.graphStore.getDomainOntology(orgId, repoId).catch(() => null),
+  ])
 
   const topInsights = healthReport
     ? [...healthReport.risks]
@@ -80,6 +175,13 @@ async function OverviewStats({ repoId }: { repoId: string }) {
         .slice(0, 3)
     : []
 
+  const topLanguages = projectStats?.languages
+    ? Object.entries(projectStats.languages)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+    : []
+  const totalLangFiles = topLanguages.reduce((s: number, [, c]) => s + c, 0)
+
   const domainTerms = ontology?.terms
     ? [...ontology.terms]
         .sort((a, b) => b.frequency - a.frequency)
@@ -87,90 +189,13 @@ async function OverviewStats({ repoId }: { repoId: string }) {
     : []
   const maxFreq = domainTerms.length > 0 ? domainTerms[0]!.frequency : 1
 
+  const hasDomainContent =
+    ontology || domainTerms.length > 0 || topLanguages.length > 0 || topInsights.length > 0
+
+  if (!hasDomainContent) return null
+
   return (
     <div className="space-y-5">
-      {/* Hero Stats */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {/* Health Grade */}
-        <div className="rounded-lg border border-white/10 bg-white/2 p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk mb-2">
-            Health Grade
-          </p>
-          {grade ? (
-            <div
-              className={`inline-flex items-center justify-center w-10 h-10 rounded-lg border text-xl font-bold font-grotesk ${GRADE_COLORS[grade] ?? ""}`}
-            >
-              {grade}
-            </div>
-          ) : (
-            <p className="text-xl font-semibold text-muted-foreground">&mdash;</p>
-          )}
-        </div>
-
-        {/* Entities */}
-        <div className="rounded-lg border border-white/10 bg-white/2 p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk mb-2">
-            Entities Analyzed
-          </p>
-          <p className="text-xl font-bold font-mono text-foreground tabular-nums">
-            {totalEntities.toLocaleString()}
-          </p>
-          <p className="text-[10px] text-white/30 mt-0.5">
-            functions, classes, methods
-          </p>
-        </div>
-
-        {/* Features */}
-        <div className="rounded-lg border border-white/10 bg-white/2 p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk mb-2">
-            Features Discovered
-          </p>
-          <p className="text-xl font-bold font-mono text-foreground tabular-nums">
-            {features.length}
-          </p>
-          <Link
-            href={`/repos/${repoId}/blueprint`}
-            className="text-[10px] text-electric-cyan hover:underline mt-0.5 inline-block"
-          >
-            View Blueprint &rarr;
-          </Link>
-        </div>
-
-        {/* Insights */}
-        <div className="rounded-lg border border-white/10 bg-white/2 p-4">
-          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40 font-grotesk mb-2">
-            Insights Found
-          </p>
-          <p className="text-xl font-bold font-mono text-foreground tabular-nums">
-            {healthReport?.risks.length ?? 0}
-          </p>
-          {healthReport && healthReport.risks.length > 0 && (
-            <div className="flex gap-1.5 mt-1">
-              {healthReport.risks.filter((r) => r.severity === "high").length >
-                0 && (
-                <span className="text-[10px] text-red-400">
-                  {
-                    healthReport.risks.filter((r) => r.severity === "high")
-                      .length
-                  }{" "}
-                  high
-                </span>
-              )}
-              {healthReport.risks.filter((r) => r.severity === "medium")
-                .length > 0 && (
-                <span className="text-[10px] text-amber-400">
-                  {
-                    healthReport.risks.filter((r) => r.severity === "medium")
-                      .length
-                  }{" "}
-                  med
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
       {/* Top Insights */}
       {topInsights.length > 0 && (
         <div className="rounded-lg border border-white/10 bg-white/2 p-4 space-y-3">
@@ -211,7 +236,7 @@ async function OverviewStats({ repoId }: { repoId: string }) {
         </div>
       )}
 
-      {/* Domain Intelligence + Language Distribution (side by side on wide screens) */}
+      {/* Domain Intelligence + Language Distribution */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {/* Domain Intelligence */}
         {(ontology || domainTerms.length > 0) && (
@@ -324,23 +349,23 @@ async function OverviewStats({ repoId }: { repoId: string }) {
           },
           {
             label: "Entities",
-            href: `/repos/${repoId}/entities`,
+            href: `/repos/${repoId}/blueprint/entities`,
             icon: Layers,
           },
           {
             label: "Patterns",
-            href: `/repos/${repoId}/patterns`,
+            href: `/repos/${repoId}/blueprint/patterns`,
             icon: Fingerprint,
           },
           {
             label: "Rules",
-            href: `/repos/${repoId}/rules`,
+            href: `/repos/${repoId}/guardrails`,
             icon: Shield,
           },
-          { label: "ADRs", href: `/repos/${repoId}/adrs`, icon: BookOpen },
+          { label: "Decisions", href: `/repos/${repoId}/guardrails/decisions`, icon: BookOpen },
           {
             label: "Glossary",
-            href: `/repos/${repoId}/glossary`,
+            href: `/repos/${repoId}/intelligence/glossary`,
             icon: BookText,
           },
         ].map((nav) => {
@@ -382,14 +407,16 @@ async function RepoContent({ repoId }: { repoId: string }) {
 
   if (isProcessing || isError) {
     return (
-      <RepoOnboardingConsole
-        repoId={repoId}
-        initialStatus={repo.status}
-        initialProgress={repo.indexProgress ?? 0}
-        repoName={repo.name}
-        fullName={repo.fullName}
-        errorMessage={repo.errorMessage}
-      />
+      <div className="-my-6">
+        <RepoOnboardingConsole
+          repoId={repoId}
+          initialStatus={repo.status}
+          initialProgress={repo.indexProgress ?? 0}
+          repoName={repo.name}
+          fullName={repo.fullName}
+          errorMessage={repo.errorMessage}
+        />
+      </div>
     )
   }
 
@@ -407,7 +434,7 @@ async function RepoContent({ repoId }: { repoId: string }) {
         </div>
       </div>
 
-      {/* Codebase insights (async, loads in parallel) */}
+      {/* 1. Hero Stats */}
       <Suspense
         fallback={
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -417,22 +444,37 @@ async function RepoContent({ repoId }: { repoId: string }) {
           </div>
         }
       >
-        <OverviewStats repoId={repoId} />
+        <HeroStats repoId={repoId} />
       </Suspense>
 
-      {/* Issues subsection */}
+      {/* 2. Issues — primary content */}
       <div className="space-y-3 pt-2">
-        <div className="space-y-1">
-          <h2 className="font-grotesk text-base font-semibold text-foreground">
-            Issues
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Prioritized issues with reasoning, impact analysis, and agent-ready
-            fix prompts.
-          </p>
+        <div className="flex items-center justify-between">
+          <div className="space-y-1">
+            <h2 className="font-grotesk text-base font-semibold text-foreground">
+              Issues
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Prioritized issues with reasoning, impact analysis, and agent-ready
+              fix prompts.
+            </p>
+          </div>
+          <Link
+            href={`/repos/${repoId}/health`}
+            className="text-xs text-electric-cyan hover:underline"
+          >
+            View Full Report &rarr;
+          </Link>
         </div>
         <IssuesView repoId={repoId} />
       </div>
+
+      {/* 3. Codebase Intelligence — below issues */}
+      <Suspense
+        fallback={<Skeleton className="h-[200px] w-full rounded-lg" />}
+      >
+        <CodebaseIntelligence repoId={repoId} />
+      </Suspense>
     </>
   )
 }

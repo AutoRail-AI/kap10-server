@@ -271,7 +271,7 @@ function EntityAnnotationCard({
             L:{entity.line}
           </span>
           <Link
-            href={`/repos/${repoId}/entities/${entity.id}`}
+            href={`/repos/${repoId}/blueprint/entities/${entity.id}`}
             className="flex items-center gap-1 text-[9px] text-white/20 hover:text-[#00E5FF]/70 transition-colors"
           >
             <ExternalLink className="h-2.5 w-2.5" />

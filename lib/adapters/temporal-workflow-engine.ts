@@ -70,6 +70,30 @@ export class TemporalWorkflowEngine implements IWorkflowEngine {
     await handle.cancel()
   }
 
+  async cancelAllRepoWorkflows(orgId: string, repoId: string): Promise<number> {
+    const client = await getClient()
+    const prefixes = [
+      "index", "reindex", "embed", "ontology", "justify",
+      "health", "detect-patterns", "sync", "delete",
+    ]
+    const clauses = prefixes
+      .map((p) => `WorkflowId LIKE '${p}-${orgId}-${repoId}%'`)
+      .join(" OR ")
+    const query = `(${clauses}) AND ExecutionStatus = "Running"`
+
+    let cancelled = 0
+    for await (const workflow of client.workflow.list({ query })) {
+      try {
+        const handle = client.workflow.getHandle(workflow.workflowId, workflow.runId)
+        await handle.cancel()
+        cancelled++
+      } catch {
+        // workflow may have completed between list and cancel
+      }
+    }
+    return cancelled
+  }
+
   async healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }> {
     const start = Date.now()
     try {

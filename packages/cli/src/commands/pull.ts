@@ -10,6 +10,7 @@ import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { gunzipSync } from "node:zlib"
 import { getCredentials } from "./auth.js"
 
 const UNERR_DIR = join(homedir(), ".unerr")
@@ -44,7 +45,12 @@ export function getSnapshotBuffer(repoId: string): Buffer | null {
   const manifest = getManifest(repoId)
   if (!manifest) return null
   if (!existsSync(manifest.snapshotPath)) return null
-  return readFileSync(manifest.snapshotPath)
+  const raw = readFileSync(manifest.snapshotPath)
+  // Decompress if gzipped (new format), pass through if raw msgpack (legacy)
+  if (manifest.snapshotPath.endsWith(".gz")) {
+    return gunzipSync(raw)
+  }
+  return raw
 }
 
 export function registerPullCommand(program: Command): void {
@@ -122,20 +128,21 @@ export function registerPullCommand(program: Command): void {
         process.exit(1)
       }
 
-      // Step 4: Save snapshot
+      // Step 4: Save snapshot (compressed)
       mkdirSync(SNAPSHOTS_DIR, { recursive: true })
       mkdirSync(MANIFESTS_DIR, { recursive: true })
 
-      const snapshotPath = join(SNAPSHOTS_DIR, `${repoId}.msgpack`)
+      const snapshotPath = join(SNAPSHOTS_DIR, `${repoId}.msgpack.gz`)
       writeFileSync(snapshotPath, buffer)
 
-      // Step 5: Detect v2 envelope (rules/patterns)
+      // Step 5: Detect v2 envelope (rules/patterns) — decompress first
       let ruleCount = 0
       let patternCount = 0
       let snapshotVersion = 1
       try {
+        const decompressed = gunzipSync(buffer)
         const { unpack } = await import("msgpackr")
-        const envelope = unpack(buffer) as { version?: number; rules?: unknown[]; patterns?: unknown[] }
+        const envelope = unpack(decompressed) as { version?: number; rules?: unknown[]; patterns?: unknown[] }
         snapshotVersion = envelope.version ?? 1
         ruleCount = envelope.rules?.length ?? 0
         patternCount = envelope.patterns?.length ?? 0

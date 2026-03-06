@@ -19,6 +19,7 @@ import {
   TrendingDown,
   Unplug,
 } from "lucide-react"
+import Link from "next/link"
 import { useState } from "react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
@@ -66,6 +67,30 @@ export interface IssueCardProps {
   impact: string
   howToFix: string
   agentPrompt: string
+  featureTag?: string
+  repoId?: string
+}
+
+/** Group entities by file path */
+function groupByFile(entities: IssueEntity[]): Map<string, IssueEntity[]> {
+  const map = new Map<string, IssueEntity[]>()
+  for (const ent of entities) {
+    const key = ent.filePath || "unknown"
+    const arr = map.get(key)
+    if (arr) {
+      arr.push(ent)
+    } else {
+      map.set(key, [ent])
+    }
+  }
+  return map
+}
+
+/** Extract line number from detail string (e.g. "L:42" or "line 42") */
+function extractLine(detail?: string): string | null {
+  if (!detail) return null
+  const m = detail.match(/(?:L:|line\s*)(\d+)/i)
+  return m?.[1] ?? null
 }
 
 export function IssueCard({
@@ -78,12 +103,21 @@ export function IssueCard({
   impact,
   howToFix,
   agentPrompt,
+  featureTag,
+  repoId,
 }: IssueCardProps) {
-  const [entitiesExpanded, setEntitiesExpanded] = useState(false)
+  const [showAllEntities, setShowAllEntities] = useState(false)
   const [fixExpanded, setFixExpanded] = useState(false)
   const [copied, setCopied] = useState(false)
 
   const IconComponent = ICON_MAP[icon] ?? AlertTriangle
+  const grouped = groupByFile(entities)
+  const fileEntries = Array.from(grouped.entries())
+
+  // Show first 3 entities by default (count across files)
+  const INITIAL_VISIBLE = 3
+  let visibleCount = 0
+  const hasMore = entities.length > INITIAL_VISIBLE
 
   async function handleCopyPrompt() {
     try {
@@ -103,7 +137,7 @@ export function IssueCard({
         <div className="flex items-center gap-2.5">
           <IconComponent className="h-4 w-4 text-muted-foreground shrink-0" />
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h4 className="font-grotesk text-sm font-semibold text-foreground">
                 {title}
               </h4>
@@ -113,6 +147,11 @@ export function IssueCard({
               >
                 {severity}
               </Badge>
+              {featureTag && (
+                <span className="inline-flex items-center rounded-md border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                  {featureTag}
+                </span>
+              )}
             </div>
             {affectedCount > 0 && (
               <p className="text-[10px] text-muted-foreground mt-0.5">
@@ -143,50 +182,94 @@ export function IssueCard({
         </p>
       </div>
 
-      {/* Expandable entity list */}
+      {/* Entity list — first 3 always visible, grouped by file */}
       {entities.length > 0 && (
-        <div>
-          <button
-            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-            onClick={() => setEntitiesExpanded(!entitiesExpanded)}
-          >
-            {entitiesExpanded ? (
-              <ChevronDown className="h-3 w-3" />
-            ) : (
-              <ChevronRight className="h-3 w-3" />
-            )}
-            {entitiesExpanded ? "Hide" : "Show"} entities ({entities.length})
-          </button>
-          {entitiesExpanded && (
-            <div className="mt-2 space-y-1 max-h-[300px] overflow-y-auto">
-              {entities.slice(0, 20).map((ent) => (
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-white/40">
+            Affected entities
+          </p>
+          <div className="space-y-1">
+            {fileEntries.map(([filePath, fileEnts]) => {
+              if (!showAllEntities && visibleCount >= INITIAL_VISIBLE) return null
+              const remainingSlots = showAllEntities
+                ? fileEnts.length
+                : Math.max(0, INITIAL_VISIBLE - visibleCount)
+              const entsToShow = showAllEntities
+                ? fileEnts.slice(0, 20)
+                : fileEnts.slice(0, remainingSlots)
+              visibleCount += entsToShow.length
+
+              return (
                 <div
-                  key={ent.id}
-                  className="flex items-center justify-between gap-2 px-2 py-1 rounded text-xs bg-muted/10"
+                  key={filePath}
+                  className="rounded-md bg-muted/10 border-l-2 border-white/10 pl-2.5 pr-2 py-1.5"
                 >
-                  <div className="min-w-0 flex-1">
-                    <span className="font-medium text-foreground font-mono text-[11px]">
-                      {ent.name}
+                  {/* File path header */}
+                  <div className="flex items-center gap-1.5 mb-1">
+                    <span className="text-[10px] text-muted-foreground">
+                      {repoId ? (
+                        <Link
+                          href={`/repos/${repoId}/code?file=${encodeURIComponent(filePath)}`}
+                          className="font-mono hover:text-foreground hover:underline transition-colors"
+                        >
+                          {filePath}
+                        </Link>
+                      ) : (
+                        <span className="font-mono">{filePath}</span>
+                      )}
                     </span>
-                    {ent.filePath && (
-                      <span className="text-muted-foreground ml-2 truncate text-[10px]">
-                        {ent.filePath}
+                    {fileEnts.length > 1 && (
+                      <span className="text-[10px] text-white/20">
+                        ({fileEnts.length})
                       </span>
                     )}
                   </div>
-                  {ent.detail && (
-                    <span className="text-muted-foreground shrink-0 text-[10px]">
-                      {ent.detail}
-                    </span>
-                  )}
+                  {/* Entities in this file */}
+                  {entsToShow.map((ent) => {
+                    const line = extractLine(ent.detail)
+                    return (
+                      <div
+                        key={ent.id}
+                        className="flex items-center gap-2 pl-2 py-0.5 text-xs"
+                      >
+                        {repoId ? (
+                          <Link
+                            href={`/repos/${repoId}/blueprint/entities/${ent.id}`}
+                            className="font-mono text-[11px] font-medium text-foreground hover:text-primary hover:underline transition-colors"
+                          >
+                            {ent.name}
+                          </Link>
+                        ) : (
+                          <span className="font-mono text-[11px] font-medium text-foreground">
+                            {ent.name}
+                          </span>
+                        )}
+                        {line && (
+                          <span className="font-mono text-[10px] text-white/30 bg-white/5 px-1 rounded">
+                            L:{line}
+                          </span>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
-              ))}
-              {entities.length > 20 && (
-                <p className="text-[10px] text-muted-foreground px-2">
-                  ...and {entities.length - 20} more
-                </p>
+              )
+            })}
+          </div>
+          {hasMore && (
+            <button
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setShowAllEntities(!showAllEntities)}
+            >
+              {showAllEntities ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
               )}
-            </div>
+              {showAllEntities
+                ? "Show less"
+                : `Show ${entities.length - INITIAL_VISIBLE} more`}
+            </button>
           )}
         </div>
       )}
@@ -212,19 +295,23 @@ export function IssueCard({
       </div>
 
       {/* Copy Agent Prompt */}
-      <Button
-        size="sm"
-        variant="outline"
-        className="h-7 text-xs gap-1.5"
-        onClick={handleCopyPrompt}
-      >
-        {copied ? (
-          <Check className="h-3 w-3 text-emerald-400" />
-        ) : (
-          <Copy className="h-3 w-3" />
-        )}
-        {copied ? "Copied!" : "Copy Agent Prompt"}
-      </Button>
+      <div>
+        <Button
+          size="sm"
+          className="h-7 text-xs gap-1.5 bg-rail-fade hover:opacity-90"
+          onClick={handleCopyPrompt}
+        >
+          {copied ? (
+            <Check className="h-3 w-3 text-emerald-400" />
+          ) : (
+            <Copy className="h-3 w-3" />
+          )}
+          {copied ? "Copied!" : "Copy Agent Prompt"}
+        </Button>
+        <p className="text-[10px] text-white/30 mt-1">
+          Paste into Claude, Cursor, or Copilot
+        </p>
+      </div>
     </div>
   )
 }

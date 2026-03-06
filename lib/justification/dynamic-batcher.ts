@@ -40,9 +40,9 @@ export interface BatcherConfig {
 }
 
 const DEFAULT_CONFIG: BatcherConfig = {
-  maxInputTokens: 7000,
+  maxInputTokens: parseInt(process.env.LLM_BATCH_MAX_INPUT_TOKENS ?? "5000", 10),
   maxOutputTokens: 8192,
-  maxEntitiesPerBatch: 15,
+  maxEntitiesPerBatch: parseInt(process.env.LLM_MAX_ITEMS_PER_BATCH ?? "8", 10),
   systemPromptTokens: 500,
   outputTokensPerEntity: 200,
   safetyMargin: 0.85,
@@ -102,7 +102,7 @@ export function getBatcherConfigForModel(modelName: string): BatcherConfig {
   return {
     maxInputTokens: Math.floor(limits.contextWindow * 0.7),
     maxOutputTokens: limits.maxOutput,
-    maxEntitiesPerBatch: 15,
+    maxEntitiesPerBatch: parseInt(process.env.LLM_MAX_ITEMS_PER_BATCH ?? "8", 10),
     systemPromptTokens: 500,
     outputTokensPerEntity: 200,
     safetyMargin,

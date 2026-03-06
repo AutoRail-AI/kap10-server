@@ -30,6 +30,18 @@ export interface PipelineLogEntry {
   meta?: Record<string, unknown>
 }
 
+/** Shared context that every pipeline activity should accept. */
+export interface PipelineContext {
+  orgId: string
+  repoId: string
+  runId?: string
+}
+
+/** Create a pipeline logger from any activity context — runId is extracted automatically. */
+export function pipelineLogger(ctx: PipelineContext, phase: PipelineLogEntry["phase"]) {
+  return createPipelineLogger(ctx.repoId, phase, ctx.runId)
+}
+
 const REDIS_KEY_PREFIX = "unerr:pipeline-logs:"
 const TTL_LIVE = 24 * 60 * 60 // 24 hours
 const TTL_AFTER_ARCHIVE = 60 * 60 // 1 hour
