@@ -13,6 +13,7 @@
 #   Temporal gRPC  → localhost:7233
 #   Temporal UI    → localhost:8080
 #   PostgreSQL     → localhost:5432   (Temporal persistence only)
+#   Gitea          → localhost:7100   (internal git server API)
 
 services:
   # ── Infrastructure (always started) ────────────────────────────────
@@ -108,26 +109,28 @@ services:
   # Headless mode: no SSH, no UI. Only REST API on internal network.
   # Workers share the data volume for zero-network-hop git operations.
   gitea:
-    image: gitea/gitea:1.22-rootless
+    image: gitea/gitea:1.25.4-rootless
     container_name: unerr-gitea
     environment:
       # Headless: disable SSH, disable UI registration
       GITEA__server__DISABLE_SSH: "true"
       GITEA__server__LFS_START_SERVER: "false"
       GITEA__service__DISABLE_REGISTRATION: "true"
-      GITEA__service__REQUIRE_SIGNIN_VIEW: "true"
+      GITEA__service__REQUIRE_SIGNIN_VIEW: "false"
       # SQLite for simplicity (no separate DB needed)
+      # Rootless image runs as UID 1000 — paths must be under /var/lib/gitea
       GITEA__database__DB_TYPE: sqlite3
-      GITEA__database__PATH: /data/gitea/gitea.db
+      GITEA__database__PATH: /var/lib/gitea/data/gitea.db
       # Internal API access
       GITEA__security__INSTALL_LOCK: "true"
       GITEA__api__ENABLE_SWAGGER: "false"
       # Repository root on shared volume
-      GITEA__repository__ROOT: /data/repos
+      GITEA__repository__ROOT: /var/lib/gitea/git/repositories
     volumes:
-      - gitea_data:/data
+      - gitea_data:/var/lib/gitea
+      - gitea_config:/etc/gitea
     ports:
-      - "3001:3000"
+      - "7100:3000"
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/v1/version" ]
@@ -186,6 +189,7 @@ services:
       - TEMPORAL_ADDRESS=localhost:7233
       - TASK_QUEUE=heavy-compute-queue
       - NODE_OPTIONS=--max-old-space-size=6144
+      - GITSERVER_DATA_DIR=/var/lib/gitea/git/repositories
     env_file:
       - path: .env
         required: false
@@ -193,7 +197,7 @@ services:
         required: false
     volumes:
       - repo-indices:/data/repo-indices
-      - gitea_data:/data
+      - gitea_data:/var/lib/gitea
     depends_on:
       gitea:
         condition: service_healthy
@@ -289,3 +293,4 @@ volumes:
   postgresql_data:
   repo-indices:
   gitea_data:
+  gitea_config:

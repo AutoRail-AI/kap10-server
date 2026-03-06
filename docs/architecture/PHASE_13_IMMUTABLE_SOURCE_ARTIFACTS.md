@@ -452,15 +452,14 @@ Timeline for User Alice:
 
 ```sql
 CREATE TABLE unerr.workspace_syncs (
-  id               TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
-  repo_id          TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
-  user_id          TEXT NOT NULL,
-  workspace_ref    TEXT NOT NULL,
-  last_synced_sha  TEXT NOT NULL,
-  merkle_root_hash TEXT NOT NULL,
-  base_branch      TEXT NOT NULL DEFAULT 'main',
-  synced_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE(repo_id, user_id)
+  id              TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id          TEXT NOT NULL,
+  repo_id         TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
+  user_id         TEXT NOT NULL,
+  commit_sha      TEXT NOT NULL,
+  base_sha        TEXT,
+  file_count      INTEGER NOT NULL DEFAULT 0,
+  synced_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
 
@@ -476,13 +475,15 @@ When a push webhook arrives for a non-default branch:
 
 ```sql
 CREATE TABLE unerr.branch_refs (
-  id          TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
-  repo_id     TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
-  branch_name TEXT NOT NULL,
-  commit_sha  TEXT NOT NULL,
-  indexed_at  TIMESTAMPTZ,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  id               TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id           TEXT NOT NULL,
+  repo_id          TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
+  branch_name      TEXT NOT NULL,
+  head_sha         TEXT NOT NULL,
+  last_indexed_sha TEXT,
+  last_indexed_at  TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(repo_id, branch_name)
 );
 ```
@@ -815,28 +816,23 @@ With worktrees:    1 bare clone + 14 worktrees = 50 MB shared objects + 14 * 50 
 
 **New table: `unerr.scip_indexes`**
 
+> **V1 simplification:** The schema is leaner than originally designed. Fields like `scope`, `indexer_version`, `document_count`, `symbol_count`, `index_duration_ms`, and `incremental_base` were dropped. Instead, `indexer_root` distinguishes sub-projects (monorepo roots), and `language_stats` (JSON) captures per-language metadata.
+
 ```sql
 CREATE TABLE unerr.scip_indexes (
   id              TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id          TEXT NOT NULL,
   repo_id         TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
   commit_sha      TEXT NOT NULL,
-  ref             TEXT NOT NULL,
-  scope           TEXT NOT NULL DEFAULT 'primary',
+  indexer_root    TEXT NOT NULL DEFAULT '.',
   storage_path    TEXT NOT NULL,
-  indexer         TEXT NOT NULL DEFAULT 'scip-typescript',
-  indexer_version TEXT,
-  size_bytes      BIGINT NOT NULL,
-  document_count  INTEGER,
-  symbol_count    INTEGER,
-  index_duration_ms INTEGER,
-  incremental_base TEXT,
+  size_bytes      INTEGER NOT NULL DEFAULT 0,
+  language_stats  JSONB NOT NULL DEFAULT '{}',
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE(repo_id, commit_sha, scope)
+  UNIQUE(repo_id, commit_sha, indexer_root)
 );
 
-CREATE INDEX idx_scip_indexes_repo ON unerr.scip_indexes(repo_id);
-CREATE INDEX idx_scip_indexes_scope ON unerr.scip_indexes(repo_id, scope);
+CREATE INDEX idx_scip_indexes_repo ON unerr.scip_indexes(org_id, repo_id);
 ```
 
 **New table: `unerr.nearest_indexed_commits`**
@@ -844,46 +840,57 @@ CREATE INDEX idx_scip_indexes_scope ON unerr.scip_indexes(repo_id, scope);
 ```sql
 CREATE TABLE unerr.nearest_indexed_commits (
   id          TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id      TEXT NOT NULL,
   repo_id     TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
-  commit_sha  TEXT NOT NULL,
+  query_sha   TEXT NOT NULL,
   nearest_sha TEXT NOT NULL,
-  distance    INTEGER NOT NULL,
+  distance    INTEGER NOT NULL DEFAULT 0,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE(repo_id, commit_sha)
+  UNIQUE(repo_id, query_sha)
 );
 
-CREATE INDEX idx_nearest_commits_repo ON unerr.nearest_indexed_commits(repo_id);
+CREATE INDEX idx_nearest_commits_repo ON unerr.nearest_indexed_commits(org_id, repo_id);
 ```
 
 **New table: `unerr.branch_refs`**
 
+> **V1 refinement:** Tracks both `head_sha` (latest push) and `last_indexed_sha` (latest successful index) separately, enabling accurate staleness detection.
+
 ```sql
 CREATE TABLE unerr.branch_refs (
-  id          TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
-  repo_id     TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
-  branch_name TEXT NOT NULL,
-  commit_sha  TEXT NOT NULL,
-  indexed_at  TIMESTAMPTZ,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  id               TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id           TEXT NOT NULL,
+  repo_id          TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
+  branch_name      TEXT NOT NULL,
+  head_sha         TEXT NOT NULL,
+  last_indexed_sha TEXT,
+  last_indexed_at  TIMESTAMPTZ,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(repo_id, branch_name)
 );
+
+CREATE INDEX idx_branch_refs_repo ON unerr.branch_refs(org_id, repo_id);
 ```
 
 **New table: `unerr.workspace_syncs`**
 
+> **V1 simplification:** The Merkle-tree wire format from §5.2 was replaced by isomorphic-git's native `statusMatrix` — there is no `merkle_root_hash` or `workspace_ref` column. Instead, each sync creates a new row (no unique constraint on `user_id`) enabling sync history tracking. `file_count` records the number of files in the workspace at sync time.
+
 ```sql
 CREATE TABLE unerr.workspace_syncs (
-  id               TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
-  repo_id          TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
-  user_id          TEXT NOT NULL,
-  workspace_ref    TEXT NOT NULL,
-  last_synced_sha  TEXT NOT NULL,
-  merkle_root_hash TEXT NOT NULL,
-  base_branch      TEXT NOT NULL DEFAULT 'main',
-  synced_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE(repo_id, user_id)
+  id              TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id          TEXT NOT NULL,
+  repo_id         TEXT NOT NULL REFERENCES unerr.repos(id) ON DELETE CASCADE,
+  user_id         TEXT NOT NULL,
+  commit_sha      TEXT NOT NULL,
+  base_sha        TEXT,
+  file_count      INTEGER NOT NULL DEFAULT 0,
+  synced_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX idx_workspace_syncs_repo ON unerr.workspace_syncs(org_id, repo_id, user_id);
+CREATE INDEX idx_workspace_syncs_latest ON unerr.workspace_syncs(repo_id, user_id, synced_at DESC);
 ```
 
 **Modified table: `unerr.repos`**

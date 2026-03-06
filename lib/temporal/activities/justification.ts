@@ -209,20 +209,27 @@ export async function performTopologicalSort(
 
   log.info("Topological sort complete", { levelCount: levels.length, sortMs, maxLevelSize, avgLevelSize })
 
-  // Store each level in Redis — data residency pattern
+  // Store each level in Redis — data residency pattern.
+  // If Redis is unavailable, fetchTopologicalLevel will self-heal by re-computing from ArangoDB.
   const TTL = 7200 // 2 hours
   const baseKey = `topo:${input.orgId}:${input.repoId}`
   const storeStart = Date.now()
-  for (let i = 0; i < levels.length; i++) {
-    heartbeat(`storing topo level ${i + 1}/${levels.length} in cache`)
-    await container.cacheStore.set(`${baseKey}:level:${i}`, levels[i], TTL)
+  let redisStoreOk = true
+  try {
+    for (let i = 0; i < levels.length; i++) {
+      heartbeat(`storing topo level ${i + 1}/${levels.length} in cache`)
+      await container.cacheStore.set(`${baseKey}:level:${i}`, levels[i], TTL)
+    }
+    await container.cacheStore.set(`${baseKey}:meta`, { levelCount: levels.length }, TTL)
+  } catch {
+    redisStoreOk = false
+    log.warn("Failed to store topological levels in Redis — fetchTopologicalLevel will self-heal on demand", { levelCount: levels.length })
   }
-  await container.cacheStore.set(`${baseKey}:meta`, { levelCount: levels.length }, TTL)
   const storeMs = Date.now() - storeStart
 
   const totalMs = Date.now() - activityStart
-  log.info("Topological sort stored in Redis", { timing: { fetchMs, sortMs, storeMs, totalMs } })
-  plog.log("info", "Step 4/10", `Topological sort: ${levels.length} levels (max: ${maxLevelSize}, avg: ${avgLevelSize}) | Fetch: ${fetchMs}ms, Sort: ${sortMs}ms, Store: ${storeMs}ms, Total: ${totalMs}ms`)
+  log.info("Topological sort complete", { timing: { fetchMs, sortMs, storeMs, totalMs }, redisStoreOk })
+  plog.log("info", "Step 4/10", `Topological sort: ${levels.length} levels (max: ${maxLevelSize}, avg: ${avgLevelSize}) | Fetch: ${fetchMs}ms, Sort: ${sortMs}ms, Store: ${storeMs}ms, Total: ${totalMs}ms${redisStoreOk ? "" : " [Redis store failed — will self-heal]"}`)
 
   return { levelCount: levels.length }
 }
@@ -230,62 +237,115 @@ export async function performTopologicalSort(
 /**
  * Fetch a single topological level's entity IDs from Redis.
  * Returns only the IDs for the requested level — keeps payloads small.
+ *
+ * Self-healing: if the Redis key expired (2h TTL) or Redis is unavailable,
+ * re-computes the full topological sort from ArangoDB and re-stores all levels.
+ * This prevents workflow failure for large repos that exceed the TTL window.
  */
 export async function fetchTopologicalLevel(
   input: JustificationInput,
   levelIndex: number
 ): Promise<string[]> {
+  const log = logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
   const container = getContainer()
   const baseKey = `topo:${input.orgId}:${input.repoId}`
-  const level = await container.cacheStore.get<string[]>(`${baseKey}:level:${levelIndex}`)
-  if (!level) {
-    throw new Error(`Topological level ${levelIndex} not found in cache (key: ${baseKey}:level:${levelIndex}). Cache may have expired.`)
+
+  // Fast path: cache hit
+  try {
+    const level = await container.cacheStore.get<string[]>(`${baseKey}:level:${levelIndex}`)
+    if (level) return level
+  } catch {
+    log.warn("Redis read failed for topological level, will re-compute", { levelIndex })
   }
-  return level
+
+  // Slow path: cache miss — re-compute from ArangoDB (self-healing)
+  log.warn("Topological level cache miss, re-computing from ArangoDB", { levelIndex, key: `${baseKey}:level:${levelIndex}` })
+  heartbeat(`re-computing topological sort (cache miss at level ${levelIndex})`)
+
+  const allEntities = await container.graphStore.getAllEntities(input.orgId, input.repoId)
+  const edges = await container.graphStore.getAllEdges(input.orgId, input.repoId)
+  const entities = allEntities.filter((e) => e.kind !== "file" && e.kind !== "directory")
+  const levels = topologicalSortEntityIds(entities, edges)
+
+  // Re-store all levels in Redis with fresh TTL
+  const TTL = 7200
+  try {
+    for (let i = 0; i < levels.length; i++) {
+      await container.cacheStore.set(`${baseKey}:level:${i}`, levels[i], TTL)
+    }
+    await container.cacheStore.set(`${baseKey}:meta`, { levelCount: levels.length }, TTL)
+  } catch {
+    log.warn("Failed to re-store topological levels in Redis (continuing with in-memory data)")
+  }
+
+  log.info("Topological sort re-computed from ArangoDB", { levelCount: levels.length, requestedLevel: levelIndex })
+
+  if (levelIndex >= levels.length) {
+    throw new Error(`Topological level ${levelIndex} out of range (${levels.length} levels). Graph may have changed since sort was initiated.`)
+  }
+  return levels[levelIndex]!
 }
 
 /**
  * Store changed entity IDs from a justification level into Redis.
- * This avoids returning large changedEntityIds arrays through Temporal.
+ * Best-effort: the workflow tracks changed IDs in-memory (C-02 accumulation),
+ * so Redis storage is for external queries only — failure is non-fatal.
  */
 export async function storeChangedEntityIds(
   input: JustificationInput,
   levelIndex: number,
   changedEntityIds: string[]
 ): Promise<void> {
-  const container = getContainer()
-  const key = `justify-changed:${input.orgId}:${input.repoId}:level:${levelIndex}`
-  await container.cacheStore.set(key, changedEntityIds, 7200)
+  try {
+    const container = getContainer()
+    const key = `justify-changed:${input.orgId}:${input.repoId}:level:${levelIndex}`
+    await container.cacheStore.set(key, changedEntityIds, 7200)
+  } catch {
+    logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
+      .warn("Failed to store changed entity IDs in Redis (non-fatal)", { levelIndex, count: changedEntityIds.length })
+  }
 }
 
 /**
  * Fetch changed entity IDs from the previous level (for cascading staleness).
- * Returns empty array if no previous level or cache expired.
+ * Returns empty array if no previous level, cache expired, or Redis unavailable.
+ * Graceful degradation: empty array means all entities at this level get justified
+ * (loses the staleness optimization but maintains correctness).
  */
 export async function fetchPreviousLevelChangedIds(
   input: JustificationInput,
   levelIndex: number
 ): Promise<string[]> {
   if (levelIndex <= 0) return []
-  const container = getContainer()
-  const key = `justify-changed:${input.orgId}:${input.repoId}:level:${levelIndex - 1}`
-  return (await container.cacheStore.get<string[]>(key)) ?? []
+  try {
+    const container = getContainer()
+    const key = `justify-changed:${input.orgId}:${input.repoId}:level:${levelIndex - 1}`
+    return (await container.cacheStore.get<string[]>(key)) ?? []
+  } catch {
+    return []
+  }
 }
 
 /**
  * Clean up all topological sort and changed-entity Redis keys after workflow completes.
+ * Best-effort: keys have a 2h TTL anyway, so failure just means they expire naturally.
  */
 export async function cleanupJustificationCache(
   input: JustificationInput,
   levelCount: number
 ): Promise<void> {
-  const container = getContainer()
-  const baseKey = `topo:${input.orgId}:${input.repoId}`
-  for (let i = 0; i < levelCount; i++) {
-    await container.cacheStore.invalidate(`${baseKey}:level:${i}`)
-    await container.cacheStore.invalidate(`justify-changed:${input.orgId}:${input.repoId}:level:${i}`)
+  try {
+    const container = getContainer()
+    const baseKey = `topo:${input.orgId}:${input.repoId}`
+    for (let i = 0; i < levelCount; i++) {
+      await container.cacheStore.invalidate(`${baseKey}:level:${i}`)
+      await container.cacheStore.invalidate(`justify-changed:${input.orgId}:${input.repoId}:level:${i}`)
+    }
+    await container.cacheStore.invalidate(`${baseKey}:meta`)
+  } catch {
+    logger.child({ service: "justification", organizationId: input.orgId, repoId: input.repoId })
+      .warn("Failed to clean up justification cache (keys will expire via TTL)", { levelCount })
   }
-  await container.cacheStore.invalidate(`${baseKey}:meta`)
 }
 
 /**

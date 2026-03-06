@@ -89,6 +89,12 @@ export interface IndexRepoInput {
   runId?: string
   /** Phase 13: Entity scope (default "primary") */
   scope?: string
+  /**
+   * Resumable pipeline: skip all steps before this one.
+   * Steps that already have checkpoints from a previous run are skipped automatically.
+   * The workflow reads their outputDigest from the checkpoint instead of re-computing.
+   */
+  resumeFromStep?: string
 }
 
 /** Workflow-safe log helper (Temporal sandbox — no require/import of Node modules) */
@@ -144,13 +150,58 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
       repoId: input.repoId,
       workflowId: wfInfo.workflowId,
       temporalRunId: wfInfo.runId,
-      triggerType: "initial",
+      triggerType: input.resumeFromStep ? "resume" : "initial",
       pipelineType: "full",
       indexVersion: input.indexVersion,
     })
   }
 
-  wfLog("INFO", "Indexing workflow started", { ...ctx, provider: input.provider, defaultBranch: input.defaultBranch, scope }, "Start")
+  // ── Resumable pipeline: load checkpoints from previous run ──────────────
+  // On resume, completed steps are skipped and their outputDigest is used
+  // as input for downstream steps. This avoids re-running SCIP/tree-sitter
+  // after a transient LLM failure in the justify step.
+  const checkpointMap = new Map<string, import("@/lib/ports/types").PipelineCheckpoint>()
+  if (input.runId && input.resumeFromStep) {
+    const checkpoints = await runActivities.loadPipelineCheckpoints({ runId: input.runId })
+    for (const cp of checkpoints) {
+      if (cp.status === "completed") {
+        checkpointMap.set(cp.stepName, cp)
+      }
+    }
+  }
+
+  /** Check if a step should run. Skips if already checkpointed as completed. */
+  function shouldRunStep(stepName: string): boolean {
+    if (checkpointMap.has(stepName)) {
+      wfLog("INFO", `Skipping step ${stepName} (checkpoint: completed)`, ctx, stepName)
+      return false
+    }
+    return true
+  }
+
+  /** Retrieve outputDigest from a completed checkpoint. */
+  function getCheckpointDigest(stepName: string): Record<string, unknown> | undefined {
+    return checkpointMap.get(stepName)?.outputDigest
+  }
+
+  /** Save a checkpoint after a step completes. Best-effort, non-blocking. */
+  function saveCheckpoint(stepName: string, outputDigest?: Record<string, unknown>): void {
+    if (!input.runId) return
+    runActivities.savePipelineCheckpoint({
+      runId: input.runId,
+      checkpoint: {
+        stepName: stepName as import("@/lib/ports/types").PipelineStepName,
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        outputDigest,
+      },
+    }).catch(() => {})  // Non-blocking — checkpoint failure doesn't kill the pipeline
+  }
+
+  wfLog("INFO", "Indexing workflow started", {
+    ...ctx, provider: input.provider, defaultBranch: input.defaultBranch, scope,
+    resumeFromStep: input.resumeFromStep, skippedSteps: Array.from(checkpointMap.keys()),
+  }, "Start")
 
   const pipelineStart = Date.now()
 
@@ -189,6 +240,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     }
 
     stepDurations.ingest = Date.now() - t0
+    saveCheckpoint("clone", { commitSha, ref })
 
     // ── Step 1: Create worktree (or legacy clone) and scan ──────────────
     t0 = Date.now()
@@ -221,52 +273,88 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     const resolvedSha = workspace.lastSha ?? commitSha ?? null
 
     // Step 1b: Wipe existing graph data so reindex is a clean replace
-    t0 = Date.now()
-    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "wipe", status: "running" })
-    wfLog("INFO", "Step 1b: Wiping existing graph data", ctx, "Step 1b")
-    await lightActivities.wipeRepoGraphData({ orgId: input.orgId, repoId: input.repoId })
-    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "wipe", status: "completed" })
-    stepDurations.wipe = Date.now() - t0
-    wfLog("INFO", `Step 1b complete: graph data cleared (${formatMs(stepDurations.wipe)})`, { ...ctx, durationMs: stepDurations.wipe }, "Step 1b")
+    // On resume, skip wipe — SCIP/parse data is already in ArangoDB from the previous run
+    if (shouldRunStep("wipe")) {
+      t0 = Date.now()
+      if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "wipe", status: "running" })
+      wfLog("INFO", "Step 1b: Wiping existing graph data", ctx, "Step 1b")
+      await lightActivities.wipeRepoGraphData({ orgId: input.orgId, repoId: input.repoId })
+      if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "wipe", status: "completed" })
+      stepDurations.wipe = Date.now() - t0
+      wfLog("INFO", `Step 1b complete: graph data cleared (${formatMs(stepDurations.wipe)})`, { ...ctx, durationMs: stepDurations.wipe }, "Step 1b")
+      saveCheckpoint("wipe")
+    }
 
     // Step 2: Run SCIP indexers (writes entities/edges directly to ArangoDB)
-    t0 = Date.now()
-    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "scip", status: "running" })
-    wfLog("INFO", "Step 2/7: Running SCIP indexers", ctx, "Step 2/7")
-    const scip = await heavyActivities.runSCIP({
-      indexDir: workspace.indexDir,
-      orgId: input.orgId,
-      repoId: input.repoId,
-      runId: input.runId,
-      languages: workspace.languages,
-      packageRoots: workspace.packageRoots,
-      indexVersion: input.indexVersion,
-      scope,
-      commitSha: resolvedSha,
-    })
-    progress = 50
-    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "scip", status: "completed" })
-    stepDurations.scip = Date.now() - t0
-    wfLog("INFO", `Step 2 complete: SCIP done (${formatMs(stepDurations.scip)})`, { ...ctx, entities: scip.entityCount, edges: scip.edgeCount, coveredFiles: scip.coveredFiles.length, durationMs: stepDurations.scip }, "Step 2/7")
+    // On resume, skip SCIP — entities are already in ArangoDB from the previous run
+    let scip: { entityCount: number; edgeCount: number; coveredFiles: string[]; fileCount: number; functionCount: number; classCount: number }
+    if (shouldRunStep("scip")) {
+      t0 = Date.now()
+      if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "scip", status: "running" })
+      wfLog("INFO", "Step 2/7: Running SCIP indexers", ctx, "Step 2/7")
+      scip = await heavyActivities.runSCIP({
+        indexDir: workspace.indexDir,
+        orgId: input.orgId,
+        repoId: input.repoId,
+        runId: input.runId,
+        languages: workspace.languages,
+        packageRoots: workspace.packageRoots,
+        indexVersion: input.indexVersion,
+        scope,
+        commitSha: resolvedSha,
+      })
+      progress = 50
+      if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "scip", status: "completed" })
+      stepDurations.scip = Date.now() - t0
+      wfLog("INFO", `Step 2 complete: SCIP done (${formatMs(stepDurations.scip)})`, { ...ctx, entities: scip.entityCount, edges: scip.edgeCount, coveredFiles: scip.coveredFiles.length, durationMs: stepDurations.scip }, "Step 2/7")
+      saveCheckpoint("scip", { entityCount: scip.entityCount, edgeCount: scip.edgeCount, coveredFileCount: scip.coveredFiles.length, fileCount: scip.fileCount, functionCount: scip.functionCount, classCount: scip.classCount })
+    } else {
+      // Reconstruct lightweight counts from checkpoint digest — no re-processing needed
+      const digest = getCheckpointDigest("scip")
+      scip = {
+        entityCount: (digest?.entityCount as number) ?? 0,
+        edgeCount: (digest?.edgeCount as number) ?? 0,
+        coveredFiles: [], // Not stored in digest; parse step will also be skipped on resume
+        fileCount: (digest?.fileCount as number) ?? 0,
+        functionCount: (digest?.functionCount as number) ?? 0,
+        classCount: (digest?.classCount as number) ?? 0,
+      }
+      progress = 50
+    }
 
     // Step 3: Parse remaining files (writes entities/edges directly to ArangoDB)
-    t0 = Date.now()
-    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "parse", status: "running" })
-    wfLog("INFO", "Step 3/7: Parsing remaining files", ctx, "Step 3/7")
-    const parse = await heavyActivities.parseRest({
-      indexDir: workspace.indexDir,
-      orgId: input.orgId,
-      repoId: input.repoId,
-      runId: input.runId,
-      coveredFiles: scip.coveredFiles,
-      indexVersion: input.indexVersion,
-      scope,
-      commitSha: resolvedSha,
-    })
-    progress = 75
-    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "parse", status: "completed" })
-    stepDurations.parse = Date.now() - t0
-    wfLog("INFO", `Step 3 complete: parsing done (${formatMs(stepDurations.parse)})`, { ...ctx, extraEntities: parse.entityCount, extraEdges: parse.edgeCount, durationMs: stepDurations.parse }, "Step 3/7")
+    // On resume, skip parse — entities are already in ArangoDB from the previous run
+    let parse: { entityCount: number; edgeCount: number; fileCount: number; functionCount: number; classCount: number }
+    if (shouldRunStep("parse")) {
+      t0 = Date.now()
+      if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "parse", status: "running" })
+      wfLog("INFO", "Step 3/7: Parsing remaining files", ctx, "Step 3/7")
+      parse = await heavyActivities.parseRest({
+        indexDir: workspace.indexDir,
+        orgId: input.orgId,
+        repoId: input.repoId,
+        runId: input.runId,
+        coveredFiles: scip.coveredFiles,
+        indexVersion: input.indexVersion,
+        scope,
+        commitSha: resolvedSha,
+      })
+      progress = 75
+      if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "parse", status: "completed" })
+      stepDurations.parse = Date.now() - t0
+      wfLog("INFO", `Step 3 complete: parsing done (${formatMs(stepDurations.parse)})`, { ...ctx, extraEntities: parse.entityCount, extraEdges: parse.edgeCount, durationMs: stepDurations.parse }, "Step 3/7")
+    } else {
+      // Reconstruct lightweight counts from checkpoint digest
+      const digest = getCheckpointDigest("parse") ?? getCheckpointDigest("finalize")
+      parse = {
+        entityCount: (digest?.entityCount as number) ?? 0,
+        edgeCount: (digest?.edgeCount as number) ?? 0,
+        fileCount: (digest?.fileCount as number) ?? 0,
+        functionCount: (digest?.functionCount as number) ?? 0,
+        classCount: (digest?.classCount as number) ?? 0,
+      }
+      progress = 75
+    }
 
     // Aggregate per-kind counts
     const fileCount = scip.fileCount + parse.fileCount
@@ -301,34 +389,88 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "finalize", status: "completed" })
     stepDurations.finalize = Date.now() - t0
     wfLog("INFO", `Step 4 complete: finalized (${formatMs(stepDurations.finalize)})`, { ...ctx, durationMs: stepDurations.finalize }, "Step 4/7")
+    saveCheckpoint("finalize", { fileCount, functionCount, classCount, totalEntities, totalEdges })
     const result = { entitiesWritten: totalEntities, edgesWritten: totalEdges, fileCount, functionCount, classCount }
 
     // Step 4b: Pre-compute blast radius
-    t0 = Date.now()
-    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "blastRadius", status: "running" })
-    wfLog("INFO", "Step 4b: Pre-computing blast radius", ctx, "Step 4b")
-    const blastRadius = await graphAnalysisActivities.precomputeBlastRadius({
-      orgId: input.orgId,
-      repoId: input.repoId,
-      runId: input.runId,
-    })
-    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "blastRadius", status: "completed", meta: { updatedCount: blastRadius.updatedCount, highRiskCount: blastRadius.highRiskCount } })
-    stepDurations.blastRadius = Date.now() - t0
-    wfLog("INFO", `Step 4b complete: blast radius computed (${formatMs(stepDurations.blastRadius)})`, { ...ctx, updated: blastRadius.updatedCount, highRisk: blastRadius.highRiskCount, durationMs: stepDurations.blastRadius }, "Step 4b")
+    let blastRadius: { updatedCount: number; highRiskCount: number }
+    if (shouldRunStep("blastRadius")) {
+      t0 = Date.now()
+      if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "blastRadius", status: "running" })
+      wfLog("INFO", "Step 4b: Pre-computing blast radius", ctx, "Step 4b")
+      blastRadius = await graphAnalysisActivities.precomputeBlastRadius({
+        orgId: input.orgId,
+        repoId: input.repoId,
+        runId: input.runId,
+      })
+      if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "blastRadius", status: "completed", meta: { updatedCount: blastRadius.updatedCount, highRiskCount: blastRadius.highRiskCount } })
+      stepDurations.blastRadius = Date.now() - t0
+      wfLog("INFO", `Step 4b complete: blast radius computed (${formatMs(stepDurations.blastRadius)})`, { ...ctx, updated: blastRadius.updatedCount, highRisk: blastRadius.highRiskCount, durationMs: stepDurations.blastRadius }, "Step 4b")
+      saveCheckpoint("blastRadius", { updatedCount: blastRadius.updatedCount, highRiskCount: blastRadius.highRiskCount })
+    } else {
+      const digest = getCheckpointDigest("blastRadius")
+      blastRadius = {
+        updatedCount: (digest?.updatedCount as number) ?? 0,
+        highRiskCount: (digest?.highRiskCount as number) ?? 0,
+      }
+    }
 
     // Step 4c: Temporal analysis
-    t0 = Date.now()
-    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "temporalAnalysis", status: "running" })
-    wfLog("INFO", "Step 4c: Mining temporal intent vectors", ctx, "Step 4c")
-    const temporal = await temporalAnalysisActivities.computeTemporalAnalysis({
-      orgId: input.orgId,
-      repoId: input.repoId,
-      runId: input.runId,
-      workspacePath: workspace.indexDir,
-    })
-    if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "temporalAnalysis", status: "completed", meta: { coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated } })
-    stepDurations.temporalAnalysis = Date.now() - t0
-    wfLog("INFO", `Step 4c complete: temporal analysis done (${formatMs(stepDurations.temporalAnalysis)})`, { ...ctx, coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated, durationMs: stepDurations.temporalAnalysis }, "Step 4c")
+    let temporal: { coChangeEdgesStored: number; entitiesUpdated: number }
+    if (shouldRunStep("temporalAnalysis")) {
+      t0 = Date.now()
+      if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "temporalAnalysis", status: "running" })
+      wfLog("INFO", "Step 4c: Mining temporal intent vectors", ctx, "Step 4c")
+      temporal = await temporalAnalysisActivities.computeTemporalAnalysis({
+        orgId: input.orgId,
+        repoId: input.repoId,
+        runId: input.runId,
+        workspacePath: workspace.indexDir,
+      })
+      if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "temporalAnalysis", status: "completed", meta: { coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated } })
+      stepDurations.temporalAnalysis = Date.now() - t0
+      wfLog("INFO", `Step 4c complete: temporal analysis done (${formatMs(stepDurations.temporalAnalysis)})`, { ...ctx, coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated, durationMs: stepDurations.temporalAnalysis }, "Step 4c")
+      saveCheckpoint("temporalAnalysis", { coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated })
+    } else {
+      const digest = getCheckpointDigest("temporalAnalysis")
+      temporal = {
+        coChangeEdgesStored: (digest?.coChangeEdges as number) ?? 0,
+        entitiesUpdated: (digest?.entitiesUpdated as number) ?? 0,
+      }
+    }
+
+    // ── Compute signal quality metrics early ─────────────────────────────
+    // Used by both the quality report and the completion summary.
+    const totalFilesDiscovered = fileCount
+    const scipCoveragePercent = totalFilesDiscovered > 0
+      ? Math.min(100, Math.round((scip.coveredFiles.length / totalFilesDiscovered) * 100))
+      : 0
+    const treeSitterOnlyPercent = 100 - scipCoveragePercent
+
+    // ── Persist signal quality report ────────────────────────────────────
+    // This powers the pipeline transparency UI — users see SCIP coverage,
+    // entity counts, risk levels, and step durations at a glance.
+    try {
+      await lightActivities.persistSignalQuality({
+        orgId: input.orgId, repoId: input.repoId, runId: input.runId,
+        report: {
+          repo_id: input.repoId,
+          org_id: input.orgId,
+          computed_at: new Date().toISOString(),
+          scip_coverage_percent: scipCoveragePercent,
+          tree_sitter_percent: treeSitterOnlyPercent,
+          entity_count: totalEntities,
+          edge_count: totalEdges,
+          high_risk_count: blastRadius.highRiskCount,
+          co_change_edges: temporal.coChangeEdgesStored,
+          step_durations: { ...stepDurations },
+          total_duration_ms: Date.now() - pipelineStart,
+        },
+      })
+    } catch {
+      // Best-effort — signal quality is informational, not critical
+      wfLog("WARN", "Failed to persist signal quality report", ctx, "Quality")
+    }
 
     // Step 5: Fire-and-forget embed workflow
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "embed", status: "running" })
@@ -401,12 +543,6 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
 
     progress = 100
     const totalDurationMs = Date.now() - pipelineStart
-
-    const totalFilesDiscovered = fileCount
-    const scipCoveragePercent = totalFilesDiscovered > 0
-      ? Math.min(100, Math.round((scip.coveredFiles.length / totalFilesDiscovered) * 100))
-      : 0
-    const treeSitterOnlyPercent = 100 - scipCoveragePercent
 
     const completionSummary = {
       fileCount, functionCount, classCount,

@@ -20,6 +20,7 @@ import type { ParsedEdge, ParsedEntity } from "@/lib/indexer/types"
 import { MAX_BODY_LINES } from "@/lib/indexer/types"
 import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
 import { writeEntitiesToGraph } from "@/lib/temporal/activities/graph-writer"
+import { throwClassifiedError } from "@/lib/temporal/activities/pipeline-error"
 import type { PipelineContext } from "@/lib/temporal/activities/pipeline-logs"
 import { pipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
@@ -71,10 +72,15 @@ export async function prepareRepoIntelligenceSpace(input: PrepareRepoIntelligenc
     log.info("Creating worktree from bare clone", { commitSha: input.commitSha, ref })
     plog.log("info", "Step 1/7", `Creating worktree at ${input.commitSha.slice(0, 8)}...`)
 
+    let handle: Awaited<ReturnType<typeof container.internalGitServer.createWorktree>>
     const worktreeStart = Date.now()
-    const handle = await container.internalGitServer.createWorktree(
-      input.orgId, input.repoId, input.commitSha
-    )
+    try {
+      handle = await container.internalGitServer.createWorktree(
+        input.orgId, input.repoId, input.commitSha
+      )
+    } catch (err: unknown) {
+      throwClassifiedError(err, "createWorktree")
+    }
     const worktreeMs = Date.now() - worktreeStart
     log.info("Worktree created", { path: handle.path, commitSha: handle.commitSha, durationMs: worktreeMs })
 
@@ -114,15 +120,19 @@ export async function prepareRepoIntelligenceSpace(input: PrepareRepoIntelligenc
   }
 
   const cloneStart = Date.now()
-  if (provider === "local_cli" && input.uploadPath) {
-    await prepareLocalCliIndexDir(container, indexDir, input.uploadPath)
-  } else if (input.cloneUrl) {
-    await container.gitHost.cloneRepo(input.cloneUrl, indexDir, {
-      ref: input.defaultBranch,
-      installationId: input.installationId ?? 0,
-    })
-  } else {
-    throw new Error("[prepareRepoIntelligenceSpace] Neither commitSha nor cloneUrl provided")
+  try {
+    if (provider === "local_cli" && input.uploadPath) {
+      await prepareLocalCliIndexDir(container, indexDir, input.uploadPath)
+    } else if (input.cloneUrl) {
+      await container.gitHost.cloneRepo(input.cloneUrl, indexDir, {
+        ref: input.defaultBranch,
+        installationId: input.installationId ?? 0,
+      })
+    } else {
+      throw new Error("[prepareRepoIntelligenceSpace] Neither commitSha nor cloneUrl provided")
+    }
+  } catch (err: unknown) {
+    throwClassifiedError(err, "cloneRepo")
   }
   const cloneMs = Date.now() - cloneStart
 

@@ -8,7 +8,7 @@
  */
 
 import { getContainer } from "@/lib/di/container"
-import type { PipelineStepName, PipelineStepRecord } from "@/lib/ports/types"
+import type { PipelineCheckpoint, PipelineStepName, PipelineStepRecord } from "@/lib/ports/types"
 import { logger } from "@/lib/utils/logger"
 
 const INITIAL_STEPS: PipelineStepRecord[] = [
@@ -176,5 +176,94 @@ export async function completePipelineRun(input: CompletePipelineRunInput): Prom
       status: input.status,
       errorMessage: error instanceof Error ? error.message : String(error),
     })
+  }
+}
+
+// ── Pipeline Checkpoint Activities ──────────────────────────────────────────
+// Enables resumable pipelines: checkpoints are derived from the existing
+// pipeline_run.steps JSON array. Each completed step with its meta serves
+// as a checkpoint — no separate storage needed.
+
+export interface SaveCheckpointInput {
+  runId: string
+  checkpoint: PipelineCheckpoint
+}
+
+/**
+ * Save a checkpoint after a pipeline step completes successfully.
+ * Stores the outputDigest in the step's meta field within the existing steps JSON.
+ * Best-effort — failure does not block the pipeline.
+ */
+export async function savePipelineCheckpoint(input: SaveCheckpointInput): Promise<void> {
+  const log = logger.child({ service: "pipeline-run", runId: input.runId })
+  try {
+    const container = getContainer()
+    const run = await container.relationalStore.getPipelineRun(input.runId)
+    if (!run) {
+      log.warn("Cannot save checkpoint: pipeline run not found", { stepName: input.checkpoint.stepName })
+      return
+    }
+
+    // Store outputDigest in the step's meta — the step status is already updated by updatePipelineStep
+    if (input.checkpoint.outputDigest) {
+      const steps = [...run.steps]
+      const step = steps.find((s) => s.name === input.checkpoint.stepName)
+      if (step) {
+        step.meta = { ...(step.meta ?? {}), outputDigest: input.checkpoint.outputDigest }
+        await container.relationalStore.updatePipelineRun(input.runId, { steps })
+      }
+    }
+
+    log.info("Pipeline checkpoint saved", {
+      stepName: input.checkpoint.stepName,
+      status: input.checkpoint.status,
+      hasOutputDigest: !!input.checkpoint.outputDigest,
+    })
+  } catch (error: unknown) {
+    // Best-effort — don't fail the pipeline over checkpoint persistence
+    log.warn("Failed to save pipeline checkpoint", {
+      stepName: input.checkpoint.stepName,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+export interface LoadCheckpointsInput {
+  runId: string
+}
+
+/**
+ * Load all checkpoints for a pipeline run.
+ * Derives checkpoints from the steps array — completed steps are checkpoints.
+ * Used by the workflow on resume to determine which steps to skip.
+ * Returns empty array if no checkpoints found (first run or tracking failure).
+ */
+export async function loadPipelineCheckpoints(input: LoadCheckpointsInput): Promise<PipelineCheckpoint[]> {
+  const log = logger.child({ service: "pipeline-run", runId: input.runId })
+  try {
+    const container = getContainer()
+    const run = await container.relationalStore.getPipelineRun(input.runId)
+    if (!run) {
+      log.warn("Cannot load checkpoints: pipeline run not found")
+      return []
+    }
+
+    // Derive checkpoints from completed steps
+    const checkpoints: PipelineCheckpoint[] = run.steps
+      .filter((s) => s.status === "completed")
+      .map((s) => ({
+        stepName: s.name as PipelineStepName,
+        status: "completed" as const,
+        completedAt: s.completedAt ?? new Date().toISOString(),
+        outputDigest: (s.meta as Record<string, unknown> | undefined)?.outputDigest as Record<string, unknown> | undefined,
+      }))
+
+    log.info("Pipeline checkpoints loaded", { count: checkpoints.length, steps: checkpoints.map((c) => c.stepName) })
+    return checkpoints
+  } catch (error: unknown) {
+    log.warn("Failed to load pipeline checkpoints", {
+      errorMessage: error instanceof Error ? error.message : String(error),
+    })
+    return []
   }
 }

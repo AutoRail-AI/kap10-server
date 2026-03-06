@@ -499,6 +499,45 @@ export interface PipelineStepRecord {
   meta?: Record<string, unknown>
 }
 
+/**
+ * Checkpoint data saved after each pipeline step completes.
+ * Enables resumable pipelines — on resume, completed steps are skipped
+ * and downstream steps receive the checkpoint's outputDigest.
+ */
+export interface PipelineCheckpoint {
+  stepName: PipelineStepName
+  status: "completed" | "failed" | "skipped"
+  completedAt: string
+  /** Lightweight outputs needed by downstream steps (e.g., entity counts, coveredFiles count) */
+  outputDigest?: Record<string, unknown>
+}
+
+/**
+ * Signal quality report persisted after indexing completes.
+ * Powers pipeline transparency UI — users see the quality of their intelligence.
+ */
+export interface SignalQualityReport {
+  repo_id: string
+  org_id: string
+  computed_at: string
+  /** Percentage of files covered by SCIP (high-fidelity cross-file resolution) */
+  scip_coverage_percent: number
+  /** Percentage of files covered by tree-sitter fallback only */
+  tree_sitter_percent: number
+  /** Total entities extracted */
+  entity_count: number
+  /** Total edges (calls, imports, contains) */
+  edge_count: number
+  /** Entities with risk_level="high" (fan-in or fan-out >= 10) */
+  high_risk_count: number
+  /** Co-change edges from temporal analysis */
+  co_change_edges: number
+  /** Per-step wall-clock durations in ms */
+  step_durations: Record<string, number>
+  /** Total pipeline duration in ms */
+  total_duration_ms: number
+}
+
 export interface DriftAlert {
   entityKey: string
   entityName: string

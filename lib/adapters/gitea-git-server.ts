@@ -28,6 +28,10 @@ const GIT_TIMEOUT_MS = 120_000
 const GITEA_API_TIMEOUT_MS = 30_000
 /** Directory where ephemeral worktrees are created */
 const WORKTREE_BASE_DIR = "/tmp/unerr-worktrees"
+/** Max time to wait for Gitea's async mirror clone to complete */
+const MIRROR_READY_TIMEOUT_MS = 180_000 // 3 minutes
+/** Interval between mirror readiness checks */
+const MIRROR_POLL_INTERVAL_MS = 2_000 // 2 seconds
 
 const log = logger.child({ service: "gitea-git-server" })
 
@@ -162,7 +166,12 @@ export class GiteaGitServerAdapter implements IInternalGitServer {
       throw new Error(`[GiteaGitServer] Failed to create mirror: ${resp.status} ${body}`)
     }
 
-    log.info("Created mirror clone in Gitea", { orgId, repoId })
+    log.info("Created mirror clone in Gitea — waiting for async clone to complete", { orgId, repoId })
+
+    // Gitea's /repos/migrate returns immediately (201) but runs `git clone --mirror`
+    // asynchronously in the background. We must wait for it to finish before returning,
+    // otherwise downstream callers (syncFromRemote → resolveRef) will get 404 on HEAD.
+    await this.waitForMirrorReady(orgId, repoId)
 
     // Auto-create internal webhook for push events → /api/webhooks/gitea
     await this.ensureWebhook(orgId, repoId)
@@ -179,8 +188,22 @@ export class GiteaGitServerAdapter implements IInternalGitServer {
       throw new Error(`[GiteaGitServer] Mirror sync failed: ${resp.status} ${body}`)
     }
 
-    // After sync, resolve HEAD to get the current commit SHA
-    return this.resolveRef(orgId, repoId, "HEAD")
+    // mirror-sync is also async — give Gitea a moment, then resolve HEAD.
+    // If HEAD fails (e.g. fetch still running), retry a few times with backoff.
+    let lastError: Error | null = null
+    for (let attempt = 0; attempt < 5; attempt++) {
+      if (attempt > 0) {
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000))
+      }
+      try {
+        return await this.resolveRef(orgId, repoId, "HEAD")
+      } catch (error: unknown) {
+        lastError = error instanceof Error ? error : new Error(String(error))
+        log.debug("resolveRef retry after mirror-sync", { orgId, repoId, attempt, error: lastError.message })
+      }
+    }
+
+    throw lastError!
   }
 
   async createWorktree(orgId: string, repoId: string, ref: string): Promise<WorktreeHandle> {
@@ -397,6 +420,42 @@ export class GiteaGitServerAdapter implements IInternalGitServer {
       const msg = error instanceof Error ? error.message : String(error)
       log.warn("Gitea webhook setup failed (non-fatal)", { orgId, repoId, error: msg })
     }
+  }
+
+  /**
+   * Wait for Gitea's async mirror clone to finish.
+   * Polls the repo API until `empty` becomes false (meaning refs exist).
+   * Throws after MIRROR_READY_TIMEOUT_MS if the clone never completes.
+   */
+  private async waitForMirrorReady(orgId: string, repoId: string): Promise<void> {
+    const deadline = Date.now() + MIRROR_READY_TIMEOUT_MS
+    let lastStatus = "unknown"
+
+    while (Date.now() < deadline) {
+      try {
+        const resp = await giteaFetch(`/repos/${orgId}/${repoId}`)
+        if (resp.ok) {
+          const repo = (await resp.json()) as { empty?: boolean; mirror?: boolean; status?: string; [key: string]: unknown }
+
+          if (repo.empty === false) {
+            log.info("Mirror clone ready", { orgId, repoId, waitedMs: MIRROR_READY_TIMEOUT_MS - (deadline - Date.now()) })
+            return
+          }
+          lastStatus = repo.empty === true ? "empty (clone in progress)" : `status=${String(repo.status)}`
+        } else {
+          lastStatus = `HTTP ${resp.status}`
+        }
+      } catch (error: unknown) {
+        lastStatus = error instanceof Error ? error.message : String(error)
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, MIRROR_POLL_INTERVAL_MS))
+    }
+
+    throw new Error(
+      `[GiteaGitServer] Mirror clone did not complete within ${MIRROR_READY_TIMEOUT_MS / 1000}s ` +
+      `for ${orgId}/${repoId} (last status: ${lastStatus})`
+    )
   }
 
   private async ensureGiteaOrg(orgId: string): Promise<void> {

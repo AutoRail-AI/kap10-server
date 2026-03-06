@@ -8,11 +8,12 @@ import { errorResponse, successResponse } from "@/lib/utils/api-response"
 import { logger } from "@/lib/utils/logger"
 
 const RESUMABLE_STATUSES = ["error", "ready", "embed_failed", "justify_failed"]
-const VALID_PHASES = ["embedding", "ontology", "justification", "graph_sync", "health_report"] as const
+const VALID_PHASES = ["indexing", "embedding", "ontology", "justification", "graph_sync", "health_report"] as const
 type ResumePhase = (typeof VALID_PHASES)[number]
 
 /** Maps resume phase → Temporal workflow function name */
 const PHASE_WORKFLOW: Record<ResumePhase, string> = {
+  indexing: "indexRepoWorkflow",
   embedding: "embedRepoWorkflow",
   ontology: "discoverOntologyWorkflow",
   justification: "justifyRepoWorkflow",
@@ -22,6 +23,7 @@ const PHASE_WORKFLOW: Record<ResumePhase, string> = {
 
 /** Maps resume phase → workflow ID prefix */
 const PHASE_WORKFLOW_PREFIX: Record<ResumePhase, string> = {
+  indexing: "index",
   embedding: "embed",
   ontology: "ontology",
   justification: "justify",
@@ -31,11 +33,22 @@ const PHASE_WORKFLOW_PREFIX: Record<ResumePhase, string> = {
 
 /** Maps resume phase → repo status to set */
 const PHASE_STATUS: Record<ResumePhase, string> = {
+  indexing: "indexing",
   embedding: "embedding",
   ontology: "embedding",   // ontology is part of the embedding→ontology→justify chain
   justification: "justifying",
   graph_sync: "ready",     // graph sync runs in background, repo is usable
   health_report: "ready",  // health report runs in background, repo is usable
+}
+
+/** Maps resume phase → Temporal task queue */
+const PHASE_QUEUE: Record<ResumePhase, "heavy-compute-queue" | "light-llm-queue"> = {
+  indexing: "heavy-compute-queue",
+  embedding: "light-llm-queue",
+  ontology: "light-llm-queue",
+  justification: "light-llm-queue",
+  graph_sync: "light-llm-queue",
+  health_report: "light-llm-queue",
 }
 
 export const POST = withAuth(async (req: NextRequest, { userId }) => {
@@ -103,11 +116,30 @@ export const POST = withAuth(async (req: NextRequest, { userId }) => {
       pipelineType: phase,
     })
 
+    const body2 = body as { phase?: string; resumeFromStep?: string }
+    let workflowArgs: unknown[]
+    if (phase === "indexing") {
+      // Derive installationId and cloneUrl the same way reindex/retry routes do
+      const installation = await container.relationalStore.getInstallation(orgId)
+      const installationId = installation ? Number(installation.installationId) : undefined
+      const cloneUrl = repo.fullName ? `https://github.com/${repo.fullName}.git` : undefined
+      workflowArgs = [{
+        orgId, repoId, runId,
+        provider: repo.provider ?? "github",
+        defaultBranch: repo.defaultBranch ?? "main",
+        installationId,
+        cloneUrl,
+        resumeFromStep: body2.resumeFromStep,
+      }]
+    } else {
+      workflowArgs = [{ orgId, repoId, runId }]
+    }
+
     await container.workflowEngine.startWorkflow({
       workflowId,
       workflowFn: PHASE_WORKFLOW[phase],
-      args: [{ orgId, repoId, runId }],
-      taskQueue: "light-llm-queue",
+      args: workflowArgs,
+      taskQueue: PHASE_QUEUE[phase],
     })
 
     const newStatus = PHASE_STATUS[phase]

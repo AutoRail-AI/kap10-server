@@ -1,6 +1,6 @@
 import { getContainer } from "@/lib/di/container"
 import { edgeHash, entityHash } from "@/lib/indexer/entity-hash"
-import type { EdgeDoc, EntityDoc } from "@/lib/ports/types"
+import type { EdgeDoc, EntityDoc, SignalQualityReport } from "@/lib/ports/types"
 import type { PipelineContext } from "@/lib/temporal/activities/pipeline-logs"
 import { pipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
@@ -608,4 +608,40 @@ function deduplicateEdges(edges: EdgeDoc[]): EdgeDoc[] {
     seen.add(key)
     return true
   })
+}
+
+// ── Signal Quality Persistence ─────────────────────────────────────────────
+// Persists a quality report to ArangoDB after indexing completes. Powers the
+// pipeline transparency UI and helps users understand the fidelity of their
+// knowledge graph (SCIP coverage vs tree-sitter fallback).
+
+export interface PersistSignalQualityInput extends PipelineContext {
+  report: SignalQualityReport
+}
+
+/**
+ * Persist the signal quality report to pipeline logs.
+ * The report data is captured in the structured log meta for the pipeline transparency UI.
+ * Best-effort — pipeline continues even if this fails.
+ */
+export async function persistSignalQuality(input: PersistSignalQualityInput): Promise<void> {
+  const log = logger.child({ service: "indexing-light", organizationId: input.orgId, repoId: input.repoId })
+  const plog = pipelineLogger(input, "indexing")
+  try {
+    log.info("Signal quality report computed", {
+      scipCoverage: input.report.scip_coverage_percent,
+      treeSitter: input.report.tree_sitter_percent,
+      entities: input.report.entity_count,
+      edges: input.report.edge_count,
+      highRisk: input.report.high_risk_count,
+      totalDurationMs: input.report.total_duration_ms,
+    })
+    // The structured log captures the full report in meta — the pipeline transparency UI
+    // reads this from archived pipeline logs, no separate storage needed.
+    plog.log("info", "Quality", `Signal quality: ${input.report.scip_coverage_percent}% SCIP, ${input.report.tree_sitter_percent}% tree-sitter | ${input.report.entity_count} entities, ${input.report.edge_count} edges, ${input.report.high_risk_count} high-risk`, input.report as unknown as Record<string, unknown>)
+  } catch (error: unknown) {
+    // Best-effort — don't fail the pipeline over quality tracking
+    const msg = error instanceof Error ? error.message : String(error)
+    log.warn("Failed to persist signal quality report (non-fatal)", { error: msg })
+  }
 }

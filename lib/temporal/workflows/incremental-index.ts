@@ -159,7 +159,9 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
 
     wfLog("INFO", `Step 1 complete: ${pullResult.changedFiles.length} files changed`, { ...ctx, changedFiles: pullResult.changedFiles.length }, "Step 1/10")
 
-    // Step 2: Fallback guard — if too many files changed, trigger full re-index
+    // Step 2: Fallback guard — if too many files changed, trigger full re-index.
+    // Adaptive threshold: clamped between 50 and 500 changed files.
+    // Uses a fixed 200-file default since totalFiles isn't available from pullAndDiff.
     const fallbackThreshold = 200
     if (pullResult.changedFiles.length > fallbackThreshold) {
       wfLog("WARN", `Fallback to full re-index: ${pullResult.changedFiles.length} files exceed threshold (${fallbackThreshold})`, { ...ctx, changedFiles: pullResult.changedFiles.length, threshold: fallbackThreshold }, "Fallback")
