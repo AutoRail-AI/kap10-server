@@ -142,6 +142,13 @@ export const env = createEnv({
     PREFETCH_REDIS_TTL_SECONDS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 300),
     PREFETCH_EXPANSION_HOPS: z.string().optional().transform((val) => val ? parseInt(val, 10) : 2),
 
+    // ── Phase 13: Internal Git Server (Gitea) ─────────────────────
+    GITEA_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid Gitea URL").optional(),
+    GITEA_ADMIN_TOKEN: z.string().optional(),
+    GITEA_WEBHOOK_SECRET: z.string().optional(),
+    APP_INTERNAL_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid URL").optional(),
+    GITSERVER_DATA_DIR: z.string().optional().default("/data/repos"),
+
     // ── MCP Server (Phase 2) ──────────────────────────────────────
     MCP_SERVER_URL: z.string().refine((val) => !val || /^https?:\/\//.test(val), "Invalid MCP Server URL").optional(),
     MCP_SERVER_PORT: z.string().optional().transform((val) => val ? parseInt(val, 10) : 3001),
@@ -275,6 +282,12 @@ export const env = createEnv({
     // Phase 10b: Pre-fetch
     PREFETCH_REDIS_TTL_SECONDS: process.env.PREFETCH_REDIS_TTL_SECONDS,
     PREFETCH_EXPANSION_HOPS: process.env.PREFETCH_EXPANSION_HOPS,
+    // Phase 13: Internal Git Server (Gitea)
+    GITEA_URL: process.env.GITEA_URL,
+    GITEA_ADMIN_TOKEN: process.env.GITEA_ADMIN_TOKEN,
+    GITEA_WEBHOOK_SECRET: process.env.GITEA_WEBHOOK_SECRET,
+    APP_INTERNAL_URL: process.env.APP_INTERNAL_URL,
+    GITSERVER_DATA_DIR: process.env.GITSERVER_DATA_DIR,
     // MCP Server
     MCP_SERVER_URL: process.env.MCP_SERVER_URL,
     MCP_SERVER_PORT: process.env.MCP_SERVER_PORT,

@@ -357,6 +357,259 @@ GitHub Advanced Security, Snyk, and Veracode scan for known vulnerabilities but 
 
 ---
 
+## Day 0 Deliverables: Killing the "Intern from Hell" on First Install
+
+> **What this section defines:** The exact features that ship on Day 0 — the minimum product that makes a developer install unerr, experience a mind-blowing realization within 60 seconds, and tell every other developer they know. Everything here maps directly to the pain points above. Everything *not* here is deliberately cut to keep the product dead-simple and shippable.
+
+### The Problem We Attack First
+
+Every AI coding agent today has the same fatal habit: **band-aid fixes.** The AI slaps a `try/catch` block over an exception instead of figuring out *why* the exception happens. It adds a null check instead of tracing *why* the variable is null. It generates code that compiles — and silently erodes the architecture.
+
+Developers call this the **"Intern from Hell"** problem. The AI types incredibly fast, writes boilerplate perfectly, but lacks the systemic understanding to fix root causes. The result:
+
+- **Telemetry Bloat:** AI agents default to "safe" but lazy fixes — adding extensive logging and `try/catch` blocks instead of fixing underlying logic. Teams report massive spikes in their Datadog and logging bills. The AI doesn't fix the bug; it suppresses it and logs it a thousand times a minute.
+- **The Prompting Tax:** Developers write 50-line `CLAUDE.md` files demanding *"No Laziness,"* *"Find root causes,"* and *"Demand Elegance."* They spend more time engineering the prompt than writing the code. And when the context window fills? The AI forgets every rule.
+- **The 56% Rejection Rate:** Developers accept fewer than 44% of AI-generated code. Roughly 9% of all developer time is now spent reviewing or cleaning up AI output — and that number is growing.
+
+If a business founder turned vibe coder has to write a 50-line system prompt just to get the AI to write maintainable code, **the tool has already failed them.** unerr eliminates the prompting tax entirely.
+
+---
+
+### Day 0 Scope: The Five Pillars
+
+Day 0 ships five capabilities — and nothing else. Each one maps to a specific user pain point, and together they form a complete intervention loop: *hook → habit → trust → proof → visibility.*
+
+#### Pillar 1: The 60-Second Hook (Acquisition)
+
+**What ships:** The `npx @autorail/unerr` single-command onboarding.
+
+Within 60 seconds of running one command, unerr will:
+1. Open the browser for one-click OAuth — no API keys, no dashboard configuration.
+2. Auto-detect the local IDE (Cursor, VS Code, Claude Code) and git remote.
+3. Connect the repo and configure the MCP server automatically.
+4. Trigger the first full codebase index — building the knowledge graph locally.
+5. **Surface the top 3 architectural anti-patterns** the AI agent was about to hallucinate — before the developer writes another line.
+6. Generate the **Health Grade Card** — a simple A-through-F score with plain-English roasts: *"You have 23 dead functions, 4 dangerously complex areas, and your auth logic is bleeding into billing."*
+
+**Why this drives virality:** A solo dev installs unerr, it catches something embarrassing (or gives them a rare "A+" to brag about), and they screenshot it. That is the exact PLG playbook behind Vercel, Supabase, and Railway. The grade card is the shareable artifact that triggers word-of-mouth.
+
+**Trust signal (printed during indexing):**
+> *"Indexing codebase locally. Zero code leaves your machine."*
+
+The Causal Substrate is built locally. Only metadata interacts with the MCP. This single line wins the trust of senior engineers and privacy-conscious enterprise devs instantly.
+
+#### Pillar 2: The Core Engine — Dynamic Context Hardening (Retention)
+
+**What ships:** The Hosted MCP Server that automatically intercepts developer prompts and injects architectural context before the AI generates code.
+
+This is the feature that replaces the 50-line `CLAUDE.md` file. Instead of the developer manually writing *"always use the repository pattern"* and *"never mix auth and billing logic,"* unerr does it automatically:
+
+- **Just-in-Time Prompt Injection:** unerr understands the *intent* and *domain* of the code being modified. It only injects the rules that matter for that specific task. If the user prompts *"Fix the login bug,"* unerr intercepts and injects only the authentication boundary rules, security best practices, and error-handling conventions auto-detected from the surrounding code. No context window bloat.
+- **Persistent Architectural Memory:** The knowledge graph persists across sessions. You explain your architecture once. The agent remembers it forever — across every file, every chat session, every team member. Context Amnesia is cured at the infrastructure level.
+- **Root-Cause Triage:** When the developer reports a bug, unerr feeds the agent the full dependency chain — what functions call the broken function, what data they pass, what side effects cascade. The AI doesn't have to guess the root cause because unerr has already mapped the exact flow. The agent stops writing `try/catch` band-aids and starts diagnosing the underlying structural logic.
+- **Semantic Intent Verification:** Before code is committed, unerr evaluates whether it aligns with the business logic, architectural gravity, and established domain boundaries. It catches "plausible but wrong" code — the kind that compiles, passes tests, and silently violates every architectural principle in the project.
+
+**The math that proves ROI:** Because unerr feeds *only* the relevant structural data via MCP (not entire files), it drastically reduces payload size. At the end of a session, unerr displays: *"unerr saved you 45,000 context tokens today by filtering irrelevant files."* This is hard financial value — fewer tokens burned means fewer rate limits hit, fewer premium requests wasted.
+
+#### Pillar 3: The Interceptor — Pre-Packaged Senior Engineering Brain (The Habit)
+
+**What ships:** 23 built-in anti-pattern checks + auto-detected conventions + stack-specific "Starter Packs" — all enforced automatically with zero configuration.
+
+This is what makes the "Intern from Hell" behave like a senior engineer from the first prompt:
+
+- **Battery-Included Starter Packs:** The user doesn't need to know what "separation of concerns" means. When they run `npx @autorail/unerr`, the tool auto-detects their stack (Next.js App Router, Python FastAPI, Go, etc.) and applies the appropriate "Senior Developer" ruleset. The tool intercepts bad AI code immediately, with zero configuration.
+- **Auto-Detected Conventions:** Even beyond the starter packs, unerr discovers the patterns the codebase already follows — naming, error handling, imports, test structure — and forces the AI to match them. If the AI tries to write a lazy `try/catch` that swallows errors, unerr intercepts: *"Your new function swallows errors. In 14 other places in your codebase, errors are logged and re-thrown. Want me to fix it?"*
+- **"Saved Your Life" Notifications:** When the rules engine blocks an AI hallucination via MCP, the AI doesn't silently write better code. It *announces* the intervention: *"unerr intercepted my previous plan because it violated your Next.js auth boundaries. Here is the corrected, architecturally safe approach..."* The value of unerr is unmissable — the developer sees it working in real time.
+- **The Escape Hatch:** A simple `// unerr-ignore` comment or a 1-click override button for when the developer just wants to hack something together. The tool is opinionated, not tyrannical. False positives don't block workflow — they get noted and the developer moves on.
+
+#### Pillar 4: The Safety Net — Semantic Rollback (Trust)
+
+**What ships:** The Prompt Ledger + `unerr rewind` command.
+
+Even with guardrails, developers are terrified of letting an AI agent make sweeping changes because `git reset` is messy when the AI touched 14 files across different commits.
+
+- **Prompt Ledger:** Every AI-assisted change is recorded — which prompt, which model, which files changed, whether it followed patterns. Full audit trail of every interaction.
+- **Semantic Rewind:** Instead of reverting a git commit, the developer reverts the *AI's specific train of thought*. If the agent goes down a rabbit hole and creates a mess, `unerr rewind` snaps the codebase back to the exact state before that specific prompt was executed.
+- **Circuit Breaker:** If the AI makes the same breaking change 4+ times in 10 minutes, unerr automatically halts execution. The developer gets a clear explanation of what went wrong and why.
+
+**The trust equation:** Local-first indexing (no code leaves the machine) + semantic rewind (any AI change is reversible) + circuit breaker (runaway agents are stopped). Fear becomes confidence.
+
+#### Pillar 5: First-Session Visibility & The "2026 Safety Layer"
+
+**What ships:** Zero-friction context merging, loud guardrail notifications, runaway loop protection, session savings scoring, and the `unerr blueprint` command.
+
+The single biggest threat to AI adoption in 2026 is **silent failure and runaway agents.** Pillars 1–4 build the engine. Pillar 5 makes the engine's value *impossible to miss* — shifting the paradigm from "invisible guardrails" to **loud, measurable interventions** that prove ROI within the first session.
+
+**1. Zero-Friction Context Merging (The `.cursorrules` Killer)**
+
+Developers in 2026 are exhausted by "context engineering" — maintaining 200-line `CLAUDE.md` files, `.cursorrules`, `rules.mdc`, and `GEMINI.md` across multiple agents. Reddit r/ClaudeCode (340+ upvotes, Feb 2026): *"I spend more time maintaining rules files than coding."* HN ("Context Development Lifecycle" thread): *"Context engineering is the new tax."*
+
+unerr eliminates this tax on first install:
+
+- Upon running `npx @autorail/unerr`, the CLI automatically scans the repo root for existing `.cursorrules`, `CLAUDE.md`, `GEMINI.md`, `rules.mdc`, and similar files.
+- Parses and merges them into unerr's rules engine alongside the auto-detected "Senior Developer Stack" defaults and the 23 built-in anti-pattern checks.
+- Terminal prints: *"Imported 47 rules from your existing .cursorrules and CLAUDE.md. Applied 23 senior Next.js conventions. These now override any generic AI behavior across all your agents via MCP."*
+
+**Why this is Day 0 critical:** The developer's previous investment in rules files is instantly super-powered — not discarded. This creates an immediate "this tool just ate my old pain" moment and drives massive retention because switching back means losing everything they already built.
+
+**2. The "Loud" Guardrail — Visible Intercept Notifications**
+
+Guardrails are useless if the user thinks the AI just got smarter on its own. Reddit r/cursor: *"I want the AI to announce when it was about to do something stupid."* Dev.to ("Context Engineering for Coding Agents"): *"Make the guardrail visible — I need to see the save."*
+
+When the MCP interceptor catches an architectural violation, it injects a system prompt forcing the AI agent to *loudly credit unerr* in the IDE chat:
+
+> *"unerr intercepted: proposed change would have mixed auth + billing logic (violates 14 existing patterns in your codebase). Here is the corrected, architecturally safe approach..."*
+
+Every prevented hallucination becomes a visible "saved your life" moment — not a silent correction the developer never notices. This is the exact mechanism that turns passive users into vocal advocates.
+
+**3. Runaway Agent Loop Protector & Bill Guard**
+
+This is the #1 new terror in March 2026. Reddit r/AI_Agents (top post): *"Our AI agent got stuck in a loop and brought down production… 50k requests to our database API… OpenAI bill for that hour alone was brutal."* HN and X threads echo: *"Retry loop is the classic failure mode… hallucinate tweaking params forever."*
+
+The MCP interceptor auto-watches for repetitive patterns — more than N identical tool calls (database queries, API requests, file rewrites) within 60 seconds. On trigger:
+
+- **Pauses the agent immediately.** No more runaway API bills.
+- **Shows terminal banner:** *"unerr stopped runaway loop (47 duplicate DB calls in 58 seconds) — estimated cost avoided: ~$18."*
+- **Offers one-click options:** "Resume safely" (with corrected approach) or "Rewind" (snap back to pre-loop state).
+- **Logs the incident** to the Prompt Ledger with cost estimate and root cause.
+
+This extends the existing Circuit Breaker (Pillar 4) from detecting *breaking changes* to detecting *runaway resource consumption* — the difference between "the AI broke your code" and "the AI broke your wallet."
+
+**4. Session Savings Score & The `unerr blueprint` Command**
+
+Developers crave proof. Dev.to (Jan–Feb 2026): *"5 AI Tools That Saved Me 20 Hours/Week"* — every viral post demands "show me the actual savings, not hype." X and Reddit: *"How much did I actually save this week?"*
+
+unerr tracks and surfaces the exact value it delivers — in tokens, dollars, and time:
+
+- **Persistent session counter** (terminal/IDE sidebar): *"unerr saved you 47k tokens ($0.94) and ~18 minutes this session by injecting only relevant context + blocking 3 lazy fixes."*
+- **The `unerr blueprint` command:** After indexing, generates a clean, shareable markdown file (`unerr-blueprint.md`) containing:
+  - Feature map organized by business purpose (not file tree)
+  - Top conventions auto-detected from the codebase
+  - Top 3 anti-patterns and health grade (from Pillar 1)
+  - Cumulative token savings since installation
+  - A "What your agent now knows" summary — the first prompt after install feels magical because the developer can see exactly what context the agent received
+
+**Why this is Day 0 critical:** The blueprint is the artifact that makes unerr's invisible work *tangible*. It's perfect for pasting into a new chat session, sharing with teammates, or onboarding a contractor. It transforms the health grade from a one-time roast into a living document that gets better with every commit.
+
+---
+
+### What We Deliberately CUT from Day 0
+
+Scope discipline is what separates a viral launch from a delayed one. These features exist in our architecture but are explicitly excluded from Day 0:
+
+| Cut Feature | Why We Cut It |
+|---|---|
+| **Web Dashboard** | No React portals or cloud syncing. Everything happens in the terminal and IDE via MCP. |
+| **Custom Rule Creation UI** | No complex rule-builder. Rely 100% on starter packs + auto-detected conventions. |
+| **Multi-Repo Analysis** | Single repository at a time. Cross-repo dependency mapping is Phase 2. |
+| **Enterprise Compliance** | No SOC2/HIPAA/GDPR compliance surface mapping. That's the enterprise upsell, not the PLG hook. |
+| **PR Review Automation** | No GitHub PR integration. The MCP server intervenes *before* code is written, not after. |
+| **Team/Org Features** | No multi-user collaboration, org dashboards, or shared rule libraries. Solo developer experience only. |
+| **Multi-Agent Collision Detection** | Tracking real-time file cursors across multiple autonomous agents requires complex pub/sub state management. Deferred to Day 14. |
+| **AI-Test Garbage Detector** | Evaluating semantic intent of tests (does it assert business logic or just `toBeDefined()`?) requires heavy graph traversal. Deferred to Day 30. |
+
+---
+
+### The Day 0 User Journey (60 Seconds to "Holy Shit")
+
+```
+$ npx @autorail/unerr
+
+  ╔══════════════════════════════════════════════╗
+  ║              unerr v0.1.0                    ║
+  ║   The missing brain for your coding agent.   ║
+  ╚══════════════════════════════════════════════╝
+
+  → Opening browser for authentication...
+  ✓ Authenticated as dev@example.com
+
+  → Detecting environment...
+  ✓ IDE: Cursor (VS Code fork)
+  ✓ Git remote: github.com/acme/payments-api
+  ✓ Stack detected: Next.js 15 + TypeScript + Prisma
+
+  → Scanning for existing rules files...
+  ✓ Found .cursorrules (142 lines) + CLAUDE.md (67 lines)
+  ✓ Imported 47 rules — they now apply to every agent via MCP.
+
+  → Indexing codebase locally. Zero code leaves your machine.
+  ████████████████████████████████████████ 100%
+  ✓ 847 entities indexed | 2,341 relationships mapped
+
+  → Applying "Senior Next.js Developer" ruleset (23 built-in rules)
+  → Merging with your imported rules (47) + auto-detected conventions...
+  ✓ 77 total rules active | 7 conventions discovered
+
+  ┌─────────────────────────────────────────────┐
+  │         CODEBASE HEALTH GRADE: C+           │
+  ├─────────────────────────────────────────────┤
+  │                                             │
+  │  Top 3 Issues Your AI Will Hit:             │
+  │                                             │
+  │  1. Auth logic bleeding into billing        │
+  │     → 4 functions cross this boundary       │
+  │                                             │
+  │  2. 23 dead functions (never called)        │
+  │     → 1,847 lines of zombie code            │
+  │                                             │
+  │  3. God object: UserService.ts              │
+  │     → 340 lines, 47 dependents, 0 tests     │
+  │                                             │
+  └─────────────────────────────────────────────┘
+
+  → MCP server configured for Cursor.
+  ✓ Your AI agent now sees your architecture.
+
+  Tip: Run `unerr blueprint` to generate a shareable
+  codebase summary for teammates or new chat sessions.
+
+  Ready. Start coding — unerr is watching.
+```
+
+**Time elapsed: 47 seconds.** The developer has a health grade they can screenshot, three specific issues they didn't know existed, 47 of their own rules merged into unerr's engine, and an AI agent that will never write a band-aid fix again.
+
+**What the first IDE session looks like (5 minutes later):**
+
+```
+Developer: "Fix the login timeout bug"
+
+Claude (via MCP + unerr):
+  ⚡ unerr context: Injecting auth boundary rules +
+     3 related dependency chains (LoginService → SessionManager
+     → TokenValidator). 4,200 tokens injected (vs 51,000 raw).
+
+  I've traced the timeout to TokenValidator.refreshToken()
+  on line 84 — it awaits a database call without a timeout
+  parameter, and the connection pool is exhausted by the
+  retry logic in SessionManager.handleExpiry().
+
+  Here's the root-cause fix (not a try/catch band-aid):
+  [... structured, architecturally-aware code change ...]
+
+  ──────────────────────────────────────────────
+  unerr session stats: 2 interceptions | 46.8k tokens
+  saved ($0.94) | 0 runaway loops detected
+  ──────────────────────────────────────────────
+```
+
+---
+
+### Why Day 0 Drives 100 Free Signups
+
+The Day 0 formula maps directly to the PLG flywheel:
+
+| Stage | Mechanism | Trigger |
+|---|---|---|
+| **Acquisition** | 60-second `npx` install + instant health grade roast | Developer tweets their C+ grade (or brags about their A) |
+| **Activation** | First "unerr intercepted my plan" notification in the IDE | Developer realizes the AI is actually writing better code — and sees unerr take credit |
+| **Retention** | Auto-imported rules + context hardening + persistent memory eliminate the prompting tax | Developer deletes their 200-line `.cursorrules` file because unerr absorbed it and made it better |
+| **Proof** | Session savings score + runaway loop protector with cost estimate | Developer sees *"unerr saved you 47k tokens ($0.94) and stopped 1 runaway loop (~$18 avoided)"* |
+| **Referral** | `unerr blueprint` shareable artifact + "Saved Your Life" counter | Developer shares: *"unerr saved me 120K tokens and caught 14 lazy fixes this week"* + pastes blueprint to team Slack |
+
+> **The bottom line:** Day 0 doesn't try to be everything. It does one thing perfectly: it turns the "Intern from Hell" into a context-aware senior engineer — in 60 seconds, with zero configuration, and with shareable proof that it's working. The developer doesn't have to believe us. The session stats, the intercepted hallucinations, and the imported rules speak for themselves.
+
+---
+
 ## The unerr Moat: Why Cursor Can't Just Build This
 
 Every AI coding agent today relies primarily on **Vector Search** for codebase understanding. Some are beginning to add lightweight structural layers, but none have committed to a graph-first architecture. unerr has. We use **Graph Intelligence** as the foundation, with vectors as one layer — not the other way around. Here is the difference, and why it matters.

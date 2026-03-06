@@ -18,6 +18,7 @@ import type {
   DomainOntologyDoc,
   DriftScoreDoc,
   EdgeDoc,
+  EntityDelta,
   EntityDoc,
   FeatureAggregation,
   FeatureDoc,
@@ -192,6 +193,19 @@ export class ArangoGraphStore implements IGraphStore {
           } catch {
             // index exists
           }
+        }
+      }
+
+      // Phase 13: Compound index (repo_id, scope) for scope-filtered queries
+      for (const scopedColl of ["files", "functions", "classes", "interfaces", "variables"] as const) {
+        try {
+          await db.collection(scopedColl).ensureIndex({
+            type: "persistent",
+            fields: ["repo_id", "scope"],
+            name: `idx_${scopedColl}_repo_scope`,
+          })
+        } catch {
+          // index exists
         }
       }
 
@@ -420,7 +434,7 @@ export class ArangoGraphStore implements IGraphStore {
           FILTER e.org_id == @orgId AND ${filter} IN @possibleIds
           LIMIT 500
           LET doc = DOCUMENT(${direction === "inbound" ? "e._from" : "e._to"})
-          FILTER doc != null
+          FILTER doc != null AND doc.kind != "tombstone"
           RETURN doc
         `,
         { orgId, possibleIds }
@@ -432,7 +446,7 @@ export class ArangoGraphStore implements IGraphStore {
       })
     }
 
-    // Multi-hop traversal
+    // Multi-hop traversal — PRUNE on tombstones to avoid traversing dead branches (D-08)
     const traverseDir = direction === "inbound" ? "INBOUND" : "OUTBOUND"
     const cursor = await db.query(
       `
@@ -440,7 +454,8 @@ export class ArangoGraphStore implements IGraphStore {
         LET startDoc = DOCUMENT(startId)
         FILTER startDoc != null AND startDoc.org_id == @orgId
         FOR v, e IN 1..@maxDepth ${traverseDir} startDoc calls
-          FILTER v.org_id == @orgId
+          PRUNE v.kind == "tombstone"
+          FILTER v.org_id == @orgId AND v.kind != "tombstone"
           LIMIT 500
           RETURN DISTINCT v
       `,
@@ -465,13 +480,15 @@ export class ArangoGraphStore implements IGraphStore {
     const possibleIds = ENTITY_COLLECTIONS_FOR_FILE.map((c) => `${c}/${entityId}`)
     const clampedDepth = Math.min(Math.max(maxDepth, 1), 10)
 
+    // D-08: PRUNE on tombstones to avoid traversing dead branches
     const cursor = await db.query(
       `
       FOR startId IN @possibleIds
         LET startDoc = DOCUMENT(startId)
         FILTER startDoc != null AND startDoc.org_id == @orgId
         FOR v, e, p IN 1..@maxDepth INBOUND startDoc calls
-          FILTER v.org_id == @orgId
+          PRUNE v.kind == "tombstone"
+          FILTER v.org_id == @orgId AND v.kind != "tombstone"
           LIMIT 500
           RETURN DISTINCT v
       `,
@@ -1379,6 +1396,7 @@ export class ArangoGraphStore implements IGraphStore {
 
     const orgFilter = opts?.crossRepo ? "" : "AND v.repo_id == startDoc.repo_id"
 
+    // D-08: PRUNE on tombstones to avoid traversing dead branches in deep traversals
     const cursor = await db.query(
       `
       FOR startId IN @possibleIds
@@ -1386,13 +1404,15 @@ export class ArangoGraphStore implements IGraphStore {
         FILTER startDoc != null AND startDoc.org_id == @orgId
         LET vertices = (
           FOR v, e IN 1..@maxDepth ANY startDoc calls, imports, extends, implements
-            FILTER v.org_id == @orgId ${orgFilter}
+            PRUNE v.kind == "tombstone"
+            FILTER v.org_id == @orgId ${orgFilter} AND v.kind != "tombstone"
             LIMIT 200
             RETURN DISTINCT v
         )
         LET edges = (
           FOR v, e IN 1..@maxDepth ANY startDoc calls, imports, extends, implements
-            FILTER v.org_id == @orgId ${orgFilter}
+            PRUNE v.kind == "tombstone"
+            FILTER v.org_id == @orgId ${orgFilter} AND v.kind != "tombstone"
             LIMIT 500
             RETURN DISTINCT e
         )
@@ -1440,6 +1460,7 @@ export class ArangoGraphStore implements IGraphStore {
         ALL_ENTITY_COLLECTIONS.map((c) => `${c}/${eid}`)
       )
 
+      // D-08: PRUNE on tombstones in batch subgraph traversals
       const cursor = await db.query(
         `
         FOR entityGroup IN @entityPossibleIds
@@ -1453,13 +1474,15 @@ export class ArangoGraphStore implements IGraphStore {
           LET entityKey = startDoc._key
           LET vertices = (
             FOR v, e IN 1..@maxDepth ANY startDoc calls, imports, extends, implements
-              FILTER v.org_id == @orgId AND v.repo_id == startDoc.repo_id
+              PRUNE v.kind == "tombstone"
+              FILTER v.org_id == @orgId AND v.repo_id == startDoc.repo_id AND v.kind != "tombstone"
               LIMIT 200
               RETURN DISTINCT v
           )
           LET edges = (
             FOR v, e IN 1..@maxDepth ANY startDoc calls, imports, extends, implements
-              FILTER v.org_id == @orgId AND v.repo_id == startDoc.repo_id
+              PRUNE v.kind == "tombstone"
+              FILTER v.org_id == @orgId AND v.repo_id == startDoc.repo_id AND v.kind != "tombstone"
               LIMIT 500
               RETURN DISTINCT e
           )
@@ -2371,5 +2394,310 @@ export class ArangoGraphStore implements IGraphStore {
         errorMessage: error instanceof Error ? error.message : String(error),
       })
     }
+  }
+
+  // ── Phase 13 D-04: Scope-aware queries ─────────────────────────
+
+  /**
+   * Query entities for a repo with scope-first filtering and primary fallback.
+   *
+   * Algorithm:
+   * 1. Fetch all scoped entities matching the filter
+   * 2. If scope != "primary", also fetch primary entities
+   * 3. Fetch tombstones for this scope (D-07)
+   * 4. Merge: scoped entities override primary; tombstoned primary keys excluded
+   *
+   * The fallback logic lives here in the adapter, not in AQL, to keep queries
+   * simple and enable future caching at the application layer.
+   */
+  async queryEntitiesWithScope(
+    orgId: string,
+    repoId: string,
+    scope: string,
+    opts?: { kind?: string; filePath?: string; limit?: number },
+  ): Promise<EntityDoc[]> {
+    const db = await getDbAsync()
+    const limit = Math.min(opts?.limit ?? 10000, 50000)
+
+    // Determine which collections to query
+    const collections = opts?.kind
+      ? [KIND_TO_COLLECTION[opts.kind] ?? "functions"]
+      : [...ALL_ENTITY_COLLECTIONS]
+
+    // Build dynamic AQL filter clause
+    const buildFilter = (scopeVal: string) => {
+      const parts = ["doc.org_id == @orgId", "doc.repo_id == @repoId", "doc.scope == @scope"]
+      if (opts?.filePath) parts.push("doc.file_path == @filePath")
+      if (opts?.kind) parts.push("doc.kind == @kind")
+      // Exclude tombstones from entity results
+      parts.push('doc.kind != "tombstone"')
+      return parts.join(" AND ")
+    }
+
+    const bindVars: Record<string, unknown> = {
+      orgId,
+      repoId,
+      scope,
+      ...(opts?.filePath && { filePath: opts.filePath }),
+      ...(opts?.kind && { kind: opts.kind }),
+    }
+
+    // Step 1: Fetch scoped entities
+    const scopedEntities: EntityDoc[] = []
+    for (const collName of collections) {
+      const cursor = await db.query(
+        `FOR doc IN @@coll FILTER ${buildFilter(scope)} LIMIT @lim RETURN doc`,
+        { ...bindVars, "@coll": collName, lim: limit },
+      )
+      const docs = await cursor.all()
+      for (const d of docs) {
+        const { _key, _id, ...rest } = d as { _key: string; _id: string; [k: string]: unknown }
+        scopedEntities.push({ id: _key, ...rest } as EntityDoc)
+      }
+    }
+
+    // If querying primary scope, no fallback needed
+    if (scope === "primary") {
+      return scopedEntities.slice(0, limit)
+    }
+
+    // Step 2: Fetch primary entities as fallback
+    const primaryEntities: EntityDoc[] = []
+    const primaryBindVars = { ...bindVars, scope: "primary" }
+    for (const collName of collections) {
+      const cursor = await db.query(
+        `FOR doc IN @@coll FILTER ${buildFilter("primary")} LIMIT @lim RETURN doc`,
+        { ...primaryBindVars, "@coll": collName, lim: limit },
+      )
+      const docs = await cursor.all()
+      for (const d of docs) {
+        const { _key, _id, ...rest } = d as { _key: string; _id: string; [k: string]: unknown }
+        primaryEntities.push({ id: _key, ...rest } as EntityDoc)
+      }
+    }
+
+    // Step 3: Fetch tombstones for this scope (D-07)
+    // Tombstones are stored in entity collections with kind="tombstone"
+    const tombstonedKeys = new Set<string>()
+    for (const collName of collections) {
+      const cursor = await db.query(
+        `FOR doc IN @@coll
+           FILTER doc.org_id == @orgId AND doc.repo_id == @repoId
+             AND doc.scope == @scope AND doc.kind == "tombstone"
+           RETURN doc.original_key`,
+        { "@coll": collName, orgId, repoId, scope },
+      )
+      const keys = await cursor.all()
+      for (const k of keys) {
+        if (typeof k === "string") tombstonedKeys.add(k)
+      }
+    }
+
+    // Step 4: Merge — scoped entities override primary; exclude tombstoned keys
+    const scopedIds = new Set(scopedEntities.map((e) => e.id))
+    const merged: EntityDoc[] = [...scopedEntities]
+
+    for (const pe of primaryEntities) {
+      // Skip if overridden by a scoped entity with the same ID
+      if (scopedIds.has(pe.id)) continue
+      // Skip if tombstoned on this scope
+      if (tombstonedKeys.has(pe.id)) continue
+      merged.push(pe)
+    }
+
+    return merged.slice(0, limit)
+  }
+
+  // ── Phase 13 D-06: Atomic branch delta application ─────────────
+
+  /**
+   * Apply a branch delta: insert/update scoped entities, create tombstones
+   * for entities deleted on the branch, and update edges.
+   *
+   * Not a true ArangoDB transaction (multi-collection transactions are expensive
+   * and have size limits). Instead, we batch in chunks of 5000 with idempotent
+   * upserts. Safe to retry — duplicate tombstones and entity upserts are no-ops.
+   */
+  async applyBranchDelta(
+    orgId: string,
+    repoId: string,
+    scope: string,
+    delta: EntityDelta,
+  ): Promise<{ entitiesWritten: number; tombstonesCreated: number; edgesWritten: number }> {
+    const db = await getDbAsync()
+    let entitiesWritten = 0
+    let tombstonesCreated = 0
+    let edgesWritten = 0
+
+    // Step 1: Delete stale entities for this scope before writing new ones.
+    // This ensures we don't accumulate orphaned scope entities from previous runs.
+    // We do NOT delete tombstones here — they'll be recreated below.
+    for (const collName of ALL_ENTITY_COLLECTIONS) {
+      try {
+        await db.query(
+          `FOR doc IN @@coll
+             FILTER doc.org_id == @orgId AND doc.repo_id == @repoId
+               AND doc.scope == @scope AND doc.kind != "tombstone"
+             REMOVE doc IN @@coll`,
+          { "@coll": collName, orgId, repoId, scope },
+        )
+      } catch {
+        // Collection may not exist yet — safe to ignore
+      }
+    }
+
+    // Also clean stale tombstones for this scope
+    for (const collName of ALL_ENTITY_COLLECTIONS) {
+      try {
+        await db.query(
+          `FOR doc IN @@coll
+             FILTER doc.org_id == @orgId AND doc.repo_id == @repoId
+               AND doc.scope == @scope AND doc.kind == "tombstone"
+             REMOVE doc IN @@coll`,
+          { "@coll": collName, orgId, repoId, scope },
+        )
+      } catch {
+        // safe to ignore
+      }
+    }
+
+    // Step 2: Write added + modified entities (all scoped)
+    const entitiesToWrite = [...delta.added, ...delta.modified].map((e) => ({
+      ...e,
+      scope,
+      org_id: e.org_id ?? orgId,
+      repo_id: e.repo_id ?? repoId,
+    }))
+
+    if (entitiesToWrite.length > 0) {
+      // Group by collection (same logic as bulkUpsertEntities)
+      const byKind = new Map<string, EntityDoc[]>()
+      for (const e of entitiesToWrite) {
+        const coll = KIND_TO_COLLECTION[e.kind] ?? "functions"
+        if (!byKind.has(coll)) byKind.set(coll, [])
+        byKind.get(coll)!.push(e)
+      }
+
+      for (const [collName, list] of Array.from(byKind.entries())) {
+        const col = db.collection(collName)
+        for (let i = 0; i < list.length; i += BATCH_SIZE) {
+          const batch = list.slice(i, i + BATCH_SIZE).map((e) => {
+            const { id, ...rest } = e
+            return { _key: id, ...rest }
+          })
+          await col.import(batch, { onDuplicate: "update" })
+          entitiesWritten += batch.length
+        }
+      }
+    }
+
+    // Step 3: Create tombstone documents for deleted entities (D-07)
+    // Tombstones are stored in the "files" collection (arbitrary choice —
+    // we just need them queryable by repo_id + scope + kind="tombstone")
+    if (delta.deletedKeys.length > 0) {
+      const tombstones = delta.deletedKeys.map((key) => ({
+        _key: `tombstone-${scope.replace(/[^a-zA-Z0-9]/g, "_")}-${key}`,
+        kind: "tombstone" as const,
+        original_key: key,
+        org_id: orgId,
+        repo_id: repoId,
+        scope,
+        name: `tombstone:${key}`,
+        file_path: "",
+      }))
+
+      const col = db.collection("files")
+      for (let i = 0; i < tombstones.length; i += BATCH_SIZE) {
+        const batch = tombstones.slice(i, i + BATCH_SIZE)
+        await col.import(batch, { onDuplicate: "update" })
+        tombstonesCreated += batch.length
+      }
+    }
+
+    // Step 4: Write added edges (scoped)
+    const edgesToWrite = [...delta.addedEdges, ...delta.modifiedEdges].map((e) => ({
+      ...e,
+      scope,
+      org_id: e.org_id ?? orgId,
+      repo_id: e.repo_id ?? repoId,
+    }))
+
+    if (edgesToWrite.length > 0) {
+      const byKind = new Map<string, EdgeDoc[]>()
+      for (const e of edgesToWrite) {
+        const coll = EDGE_COLLECTIONS.includes(e.kind as (typeof EDGE_COLLECTIONS)[number]) ? e.kind : "calls"
+        if (!byKind.has(coll)) byKind.set(coll, [])
+        byKind.get(coll)!.push(e)
+      }
+
+      for (const [collName, list] of Array.from(byKind.entries())) {
+        const col = db.collection(collName)
+        for (let i = 0; i < list.length; i += BATCH_SIZE) {
+          const batch = list.slice(i, i + BATCH_SIZE).map((e) => ({
+            _key: (e as EdgeDoc & { _key?: string })._key,
+            _from: qualifyVertexHandle(e._from),
+            _to: qualifyVertexHandle(e._to),
+            org_id: e.org_id,
+            repo_id: e.repo_id,
+            kind: e.kind,
+            scope,
+          }))
+          await col.import(batch, { onDuplicate: "update" })
+          edgesWritten += batch.length
+        }
+      }
+    }
+
+    arangoLog.info("Branch delta applied", {
+      orgId, repoId, scope, entitiesWritten, tombstonesCreated, edgesWritten,
+    })
+
+    return { entitiesWritten, tombstonesCreated, edgesWritten }
+  }
+
+  /**
+   * Delete all entities and edges for a specific scope.
+   * Used during branch eviction or scope cleanup.
+   */
+  async deleteScopedEntities(orgId: string, repoId: string, scope: string): Promise<number> {
+    const db = await getDbAsync()
+    let totalRemoved = 0
+
+    // Delete scoped entities (including tombstones) from all entity collections
+    for (const collName of ALL_ENTITY_COLLECTIONS) {
+      try {
+        const cursor = await db.query(
+          `FOR doc IN @@coll
+             FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.scope == @scope
+             REMOVE doc IN @@coll
+             RETURN 1`,
+          { "@coll": collName, orgId, repoId, scope },
+        )
+        const removed = await cursor.all()
+        totalRemoved += removed.length
+      } catch {
+        // collection may not exist
+      }
+    }
+
+    // Delete scoped edges from all edge collections
+    for (const edgeName of EDGE_COLLECTIONS) {
+      try {
+        const cursor = await db.query(
+          `FOR doc IN @@coll
+             FILTER doc.org_id == @orgId AND doc.repo_id == @repoId AND doc.scope == @scope
+             REMOVE doc IN @@coll
+             RETURN 1`,
+          { "@coll": edgeName, orgId, repoId, scope },
+        )
+        const removed = await cursor.all()
+        totalRemoved += removed.length
+      } catch {
+        // collection may not exist
+      }
+    }
+
+    arangoLog.info("Scoped entities deleted", { orgId, repoId, scope, totalRemoved })
+    return totalRemoved
   }
 }

@@ -118,10 +118,12 @@ export const POST = withAuth(async (req: NextRequest) => {
         args: [{
           orgId,
           repoId: repo.id,
+          provider: "github",
           installationId,
           cloneUrl: `https://github.com/${fullName}.git`,
           defaultBranch: repo.defaultBranch ?? "main",
           runId,
+          scope: "primary",
         }],
         taskQueue: "heavy-compute-queue",
       })

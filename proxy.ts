@@ -13,6 +13,7 @@ export async function proxy(request: NextRequest) {
     "/api/webhooks",
     "/api/health",
     "/api/cli",
+    "/api/git",
   ]
 
   const isPublicPath = publicPaths.some((p) => path.startsWith(p))

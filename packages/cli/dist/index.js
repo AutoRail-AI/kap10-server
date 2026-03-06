@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import {
+  createIgnoreFilter,
   deviceAuthFlow,
   getCredentials,
   registerAuthCommand,
   saveCredentials
-} from "./chunk-T6GFTYJX.js";
+} from "./chunk-SJO3YGSB.js";
 import {
   __require
 } from "./chunk-3RG5ZIWI.js";
@@ -16,7 +17,7 @@ import { Command } from "commander";
 import * as fs from "fs";
 import * as path from "path";
 function loadConfig() {
-  const configPath = path.join(process.cwd(), ".kap10", "config.json");
+  const configPath = path.join(process.cwd(), ".unerr", "config.json");
   if (!fs.existsSync(configPath)) return null;
   return JSON.parse(fs.readFileSync(configPath, "utf-8"));
 }
@@ -25,12 +26,12 @@ function registerBranchesCommand(program2) {
     try {
       const config = loadConfig();
       if (!config) {
-        console.error("Not initialized. Run: kap10 init");
+        console.error("Not initialized. Run: unerr init");
         process.exit(1);
       }
       const creds = getCredentials();
       if (!creds?.apiKey) {
-        console.error("Not authenticated. Run: kap10 auth login");
+        console.error("Not authenticated. Run: unerr auth login");
         process.exit(1);
       }
       const res = await fetch(
@@ -78,7 +79,7 @@ function registerBranchesCommand(program2) {
 import * as fs2 from "fs";
 import * as path2 from "path";
 function loadConfig2() {
-  const configPath = path2.join(process.cwd(), ".kap10", "config.json");
+  const configPath = path2.join(process.cwd(), ".unerr", "config.json");
   if (!fs2.existsSync(configPath)) return null;
   return JSON.parse(fs2.readFileSync(configPath, "utf-8"));
 }
@@ -87,12 +88,12 @@ function registerCircuitResetCommand(program2) {
     try {
       const config = loadConfig2();
       if (!config) {
-        console.error("Not initialized. Run: kap10 init");
+        console.error("Not initialized. Run: unerr init");
         process.exit(1);
       }
       const creds = getCredentials();
       if (!creds?.apiKey) {
-        console.error("Not authenticated. Run: kap10 auth login");
+        console.error("Not authenticated. Run: unerr auth login");
         process.exit(1);
       }
       const res = await fetch(
@@ -122,15 +123,15 @@ function registerCircuitResetCommand(program2) {
 
 // src/commands/config-verify.ts
 import * as fs3 from "fs";
-import * as path3 from "path";
 import * as os from "os";
+import * as path3 from "path";
 var IDE_CONFIG_PATHS = {
   "vscode": path3.join(os.homedir(), ".vscode", "settings.json"),
   "cursor": path3.join(os.homedir(), ".cursor", "mcp.json"),
   "windsurf": path3.join(os.homedir(), ".windsurf", "mcp.json")
 };
 function loadConfig3() {
-  const configPath = path3.join(process.cwd(), ".kap10", "config.json");
+  const configPath = path3.join(process.cwd(), ".unerr", "config.json");
   if (!fs3.existsSync(configPath)) return null;
   return JSON.parse(fs3.readFileSync(configPath, "utf-8"));
 }
@@ -146,13 +147,13 @@ function checkIdeConfig(ideName, configPath, serverUrl) {
       issues.push(`${ideName}: No mcpServers section found`);
       return { found: true, configured: false, issues };
     }
-    const kap10Server = config.mcpServers["kap10"];
-    if (!kap10Server) {
-      issues.push(`${ideName}: No kap10 MCP server configured`);
+    const unerrServer = config.mcpServers["unerr"];
+    if (!unerrServer) {
+      issues.push(`${ideName}: No unerr MCP server configured`);
       return { found: true, configured: false, issues };
     }
-    if (kap10Server.url && !kap10Server.url.includes(serverUrl.replace(/^https?:\/\//, ""))) {
-      issues.push(`${ideName}: kap10 server URL mismatch (expected: ${serverUrl})`);
+    if (unerrServer.url && !unerrServer.url.includes(serverUrl.replace(/^https?:\/\//, ""))) {
+      issues.push(`${ideName}: unerr server URL mismatch (expected: ${serverUrl})`);
     }
     return { found: true, configured: true, issues };
   } catch {
@@ -172,9 +173,9 @@ function repairIdeConfig(ideName, configPath, serverUrl, apiKey) {
       config = JSON.parse(raw);
     }
     if (!config.mcpServers) config.mcpServers = {};
-    config.mcpServers["kap10"] = {
+    config.mcpServers["unerr"] = {
       url: `${serverUrl}/api/mcp/sse`,
-      env: apiKey ? { KAP10_API_KEY: apiKey } : {}
+      env: apiKey ? { UNERR_API_KEY: apiKey } : {}
     };
     fs3.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
     return true;
@@ -183,10 +184,10 @@ function repairIdeConfig(ideName, configPath, serverUrl, apiKey) {
   }
 }
 function registerConfigVerifyCommand(program2) {
-  const configCmd = program2.command("config").description("Manage kap10 configuration");
+  const configCmd = program2.command("config").description("Manage unerr configuration");
   configCmd.command("verify").description("Check and optionally repair MCP configuration for IDEs").option("--silent", "Only output errors").option("--repair", "Automatically repair misconfigured IDEs").option("--ide <ide>", "Check specific IDE (vscode, cursor, windsurf)").action(async (opts) => {
-    const kap10Config = loadConfig3();
-    const serverUrl = kap10Config?.serverUrl ?? process.env.KAP10_SERVER_URL ?? "http://localhost:3000";
+    const unerrConfig = loadConfig3();
+    const serverUrl = unerrConfig?.serverUrl ?? process.env.UNERR_SERVER_URL ?? "http://localhost:3000";
     const idesToCheck = opts.ide ? { [opts.ide]: IDE_CONFIG_PATHS[opts.ide] ?? "" } : IDE_CONFIG_PATHS;
     let allGood = true;
     for (const [ideName, configPath] of Object.entries(idesToCheck)) {
@@ -230,16 +231,16 @@ function registerConfigVerifyCommand(program2) {
       fs3.mkdirSync(hooksDir, { recursive: true });
     }
     const hookScript = `#!/bin/sh
-# kap10 auto-verify MCP config
-if command -v kap10 &> /dev/null; then
-  kap10 config verify --silent 2>/dev/null || true
+# unerr auto-verify MCP config
+if command -v unerr &> /dev/null; then
+  unerr config verify --silent 2>/dev/null || true
 fi
 `;
     for (const hookName of ["post-checkout", "post-merge"]) {
       const hookPath = path3.join(hooksDir, hookName);
       if (fs3.existsSync(hookPath)) {
         const existing = fs3.readFileSync(hookPath, "utf-8");
-        if (existing.includes("kap10 config verify")) {
+        if (existing.includes("unerr config verify")) {
           console.log(`  \u2713 ${hookName}: already installed`);
           continue;
         }
@@ -254,9 +255,9 @@ fi
 }
 
 // src/commands/connect.ts
-import { existsSync as existsSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync2, mkdirSync as mkdirSync2 } from "fs";
-import { join as join4 } from "path";
 import { execSync } from "child_process";
+import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync4, writeFileSync as writeFileSync2 } from "fs";
+import { join as join4 } from "path";
 function detectGitContext() {
   try {
     const { execSync: execSync2 } = __require("child_process");
@@ -310,7 +311,7 @@ function writeMcpConfig(ide, serverUrl, apiKey, repoName) {
       }
     }
     const mcpServers = config.mcpServers ?? {};
-    mcpServers["kap10"] = {
+    mcpServers["unerr"] = {
       url: `${serverUrl}/mcp`,
       headers: {
         Authorization: `Bearer ${apiKey}`
@@ -331,7 +332,7 @@ function writeMcpConfig(ide, serverUrl, apiKey, repoName) {
       }
     }
     const mcpServers = settings["mcp.servers"] ?? {};
-    mcpServers["kap10"] = {
+    mcpServers["unerr"] = {
       url: `${serverUrl}/mcp`,
       headers: {
         Authorization: `Bearer ${apiKey}`
@@ -343,13 +344,13 @@ function writeMcpConfig(ide, serverUrl, apiKey, repoName) {
   }
   console.log("");
   console.log("  For Claude Code, run:");
-  console.log(`  claude mcp add kap10 --transport http "${serverUrl}/mcp" \\`);
+  console.log(`  claude mcp add unerr --transport http "${serverUrl}/mcp" \\`);
   console.log(`    --header "Authorization: Bearer ${apiKey}"`);
   console.log("");
   console.log(`  MCP configured for ${repoName}.`);
 }
 function registerConnectCommand(program2) {
-  program2.command("connect").description("Connect current repo to kap10 MCP (auth + detect + configure)").option("--server <url>", "Server URL", "https://app.kap10.dev").option("--key <apiKey>", "API key (skip browser login)").option("--ide <type>", "IDE type: cursor, vscode, claude-code").option("--ephemeral", "Create an ephemeral sandbox (expires in 4 hours)").action(
+  program2.command("connect").description("Connect current repo to unerr MCP (auth + detect + configure)").option("--server <url>", "Server URL", "https://app.unerr.dev").option("--key <apiKey>", "API key (skip browser login)").option("--ide <type>", "IDE type: cursor, vscode, claude-code").option("--ephemeral", "Create an ephemeral sandbox (expires in 4 hours)").action(
     async (opts) => {
       let creds = getCredentials();
       if (!creds || opts.key) {
@@ -381,18 +382,18 @@ function registerConnectCommand(program2) {
       }
       const serverUrl = creds.serverUrl;
       console.log("Detecting git context...");
-      const git = detectGitContext();
-      if (!git) {
+      const git2 = detectGitContext();
+      if (!git2) {
         console.log("");
         console.log(
           "No git repository detected. Run this command from inside a git repo."
         );
         process.exit(1);
       }
-      console.log(`  Repository: ${git.fullName}`);
-      console.log(`  Branch: ${git.branch}`);
+      console.log(`  Repository: ${git2.fullName}`);
+      console.log(`  Branch: ${git2.branch}`);
       console.log("");
-      console.log("Checking kap10...");
+      console.log("Checking unerr...");
       if (opts.ephemeral) {
         try {
           const initRes = await fetch(`${serverUrl}/api/cli/init`, {
@@ -402,15 +403,15 @@ function registerConnectCommand(program2) {
               Authorization: `Bearer ${creds.apiKey}`
             },
             body: JSON.stringify({
-              name: git.repo,
-              fullName: git.fullName,
-              branch: git.branch,
+              name: git2.repo,
+              fullName: git2.fullName,
+              branch: git2.branch,
               ephemeral: true
             })
           });
           if (initRes.ok) {
             console.log(
-              "  Ephemeral sandbox created (expires in 4 hours). Use `kap10 promote` to make permanent."
+              "  Ephemeral sandbox created (expires in 4 hours). Use `unerr promote` to make permanent."
             );
           } else {
             const body = await initRes.json();
@@ -425,7 +426,7 @@ function registerConnectCommand(program2) {
       } else {
         try {
           const contextRes = await fetch(
-            `${serverUrl}/api/cli/context?remote=${encodeURIComponent(git.remote)}`,
+            `${serverUrl}/api/cli/context?remote=${encodeURIComponent(git2.remote)}`,
             {
               headers: {
                 Authorization: `Bearer ${creds.apiKey}`
@@ -442,7 +443,7 @@ function registerConnectCommand(program2) {
             }
           } else if (contextRes.status === 404) {
             console.log(
-              "  This repo isn't on kap10 yet."
+              "  This repo isn't on unerr yet."
             );
             console.log(
               "  Add it via the dashboard or connect GitHub at:"
@@ -465,7 +466,7 @@ function registerConnectCommand(program2) {
       console.log(
         `Configuring MCP${ide !== "unknown" ? ` for ${ide}` : ""}...`
       );
-      writeMcpConfig(ide, serverUrl, creds.apiKey, git.fullName);
+      writeMcpConfig(ide, serverUrl, creds.apiKey, git2.fullName);
       try {
         const gitDir = execSync("git rev-parse --git-dir", {
           encoding: "utf-8",
@@ -474,7 +475,7 @@ function registerConnectCommand(program2) {
         const hooksDir = join4(gitDir, "hooks");
         mkdirSync2(hooksDir, { recursive: true });
         const hookScript = `#!/bin/sh
-kap10 config verify --silent 2>/dev/null || true
+unerr config verify --silent 2>/dev/null || true
 `;
         for (const hook of ["post-checkout", "post-merge"]) {
           const hookPath = join4(hooksDir, hook);
@@ -493,16 +494,16 @@ kap10 config verify --silent 2>/dev/null || true
 import * as fs4 from "fs";
 import * as path4 from "path";
 function registerInitCommand(program2) {
-  program2.command("init").description("Register this local repository with kap10 server").option("--server <url>", "Server URL", process.env.KAP10_SERVER_URL ?? "http://localhost:3000").option("--branch <branch>", "Default branch", "main").option("--ephemeral", "Create an ephemeral sandbox (expires in 4 hours)").action(async (opts) => {
+  program2.command("init").description("Register this local repository with unerr server").option("--server <url>", "Server URL", process.env.UNERR_SERVER_URL ?? "http://localhost:3000").option("--branch <branch>", "Default branch", "main").option("--ephemeral", "Create an ephemeral sandbox (expires in 4 hours)").action(async (opts) => {
     try {
       const creds = getCredentials();
       if (!creds?.apiKey) {
-        console.error("Not authenticated. Run: kap10 auth login");
+        console.error("Not authenticated. Run: unerr auth login");
         process.exit(1);
       }
       const cwd = process.cwd();
       const repoName = path4.basename(cwd);
-      console.log(`Registering ${repoName} with kap10 server...`);
+      console.log(`Registering ${repoName} with unerr server...`);
       const res = await fetch(`${opts.server}/api/cli/init`, {
         method: "POST",
         headers: {
@@ -522,9 +523,9 @@ function registerInitCommand(program2) {
         process.exit(1);
       }
       const result = await res.json();
-      const kap10Dir = path4.join(cwd, ".kap10");
-      if (!fs4.existsSync(kap10Dir)) {
-        fs4.mkdirSync(kap10Dir, { recursive: true });
+      const unerrDir = path4.join(cwd, ".unerr");
+      if (!fs4.existsSync(unerrDir)) {
+        fs4.mkdirSync(unerrDir, { recursive: true });
       }
       const config = {
         repoId: result.repoId,
@@ -533,22 +534,22 @@ function registerInitCommand(program2) {
         branch: opts.branch
       };
       fs4.writeFileSync(
-        path4.join(kap10Dir, "config.json"),
+        path4.join(unerrDir, "config.json"),
         JSON.stringify(config, null, 2) + "\n"
       );
       const gitignorePath = path4.join(cwd, ".gitignore");
       if (fs4.existsSync(gitignorePath)) {
         const content = fs4.readFileSync(gitignorePath, "utf-8");
-        if (!content.includes(".kap10")) {
-          fs4.appendFileSync(gitignorePath, "\n# kap10 local config\n.kap10/\n");
+        if (!content.includes(".unerr")) {
+          fs4.appendFileSync(gitignorePath, "\n# unerr local config\n.unerr/\n");
         }
       } else {
-        fs4.writeFileSync(gitignorePath, "# kap10 local config\n.kap10/\n");
+        fs4.writeFileSync(gitignorePath, "# unerr local config\n.unerr/\n");
       }
       console.log(`Registered repo: ${repoName} (${result.repoId})`);
-      console.log(`  Config: .kap10/config.json`);
+      console.log(`  Config: .unerr/config.json`);
       if (opts.ephemeral) {
-        console.log(`  Ephemeral sandbox created (expires in 4 hours). Use \`kap10 promote\` to make permanent.`);
+        console.log(`  Ephemeral sandbox created (expires in 4 hours). Use \`unerr promote\` to make permanent.`);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -562,7 +563,7 @@ function registerInitCommand(program2) {
 import * as fs5 from "fs";
 import * as path5 from "path";
 function loadConfig4() {
-  const configPath = path5.join(process.cwd(), ".kap10", "config.json");
+  const configPath = path5.join(process.cwd(), ".unerr", "config.json");
   if (!fs5.existsSync(configPath)) return null;
   return JSON.parse(fs5.readFileSync(configPath, "utf-8"));
 }
@@ -571,12 +572,12 @@ function registerMarkWorkingCommand(program2) {
     try {
       const config = loadConfig4();
       if (!config) {
-        console.error("Not initialized. Run: kap10 init");
+        console.error("Not initialized. Run: unerr init");
         process.exit(1);
       }
       const creds = getCredentials();
       if (!creds?.apiKey) {
-        console.error("Not authenticated. Run: kap10 auth login");
+        console.error("Not authenticated. Run: unerr auth login");
         process.exit(1);
       }
       const res = await fetch(
@@ -610,7 +611,7 @@ function registerMarkWorkingCommand(program2) {
 import * as fs6 from "fs";
 import * as path6 from "path";
 function loadConfig5() {
-  const configPath = path6.join(process.cwd(), ".kap10", "config.json");
+  const configPath = path6.join(process.cwd(), ".unerr", "config.json");
   if (!fs6.existsSync(configPath)) return null;
   return JSON.parse(fs6.readFileSync(configPath, "utf-8"));
 }
@@ -618,13 +619,13 @@ function registerPromoteCommand(program2) {
   program2.command("promote").description("Convert ephemeral sandbox to permanent repository").action(async () => {
     const creds = getCredentials();
     if (!creds) {
-      console.error("Not authenticated. Run `kap10 auth login` first.");
+      console.error("Not authenticated. Run `unerr auth login` first.");
       process.exit(1);
     }
     const config = loadConfig5();
     if (!config?.repoId) {
       console.error(
-        "No repo configured. Run `kap10 init` or `kap10 connect` first."
+        "No repo configured. Run `unerr init` or `unerr connect` first."
       );
       process.exit(1);
     }
@@ -658,17 +659,116 @@ function registerPromoteCommand(program2) {
   });
 }
 
+// src/commands/pull.ts
+import { createHash } from "crypto";
+import { existsSync as existsSync8, mkdirSync as mkdirSync4, readFileSync as readFileSync8, writeFileSync as writeFileSync4 } from "fs";
+import { homedir as homedir2 } from "os";
+import { join as join8 } from "path";
+import { gunzipSync } from "zlib";
+var UNERR_DIR = join8(homedir2(), ".unerr");
+var SNAPSHOTS_DIR = join8(UNERR_DIR, "snapshots");
+var MANIFESTS_DIR = join8(UNERR_DIR, "manifests");
+function getManifest(repoId) {
+  const path11 = join8(MANIFESTS_DIR, `${repoId}.json`);
+  if (!existsSync8(path11)) return null;
+  try {
+    return JSON.parse(readFileSync8(path11, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+function registerPullCommand(program2) {
+  program2.command("pull").description("Download graph snapshot for a repo").requiredOption("--repo <repoId>", "Repository ID").option("--force", "Force re-download even if up to date").action(async (opts) => {
+    const creds = getCredentials();
+    if (!creds) {
+      console.error("Not authenticated. Run: unerr auth login");
+      process.exit(1);
+    }
+    const { repo: repoId, force } = opts;
+    if (!force) {
+      const existing = getManifest(repoId);
+      if (existing) {
+        console.log(`Existing snapshot found (${existing.checksum.slice(0, 8)}...)`);
+      }
+    }
+    console.log("Fetching download URL...");
+    const metaRes = await fetch(`${creds.serverUrl}/api/graph-snapshots/${repoId}/download`, {
+      headers: { Authorization: `Bearer ${creds.apiKey}` }
+    });
+    if (!metaRes.ok) {
+      const body = await metaRes.json().catch(() => ({}));
+      console.error(`Failed to get download URL: ${body.error ?? metaRes.statusText}`);
+      process.exit(1);
+    }
+    const meta = await metaRes.json();
+    const { url, checksum, entityCount, edgeCount, sizeBytes, generatedAt } = meta.data;
+    if (!force) {
+      const existing = getManifest(repoId);
+      if (existing && existing.checksum === checksum) {
+        console.log("Snapshot is already up to date.");
+        return;
+      }
+    }
+    console.log(`Downloading snapshot (${(sizeBytes / 1024).toFixed(1)} KB)...`);
+    const downloadRes = await fetch(url);
+    if (!downloadRes.ok) {
+      console.error("Download failed");
+      process.exit(1);
+    }
+    const buffer = Buffer.from(await downloadRes.arrayBuffer());
+    console.log("Verifying checksum...");
+    const computedChecksum = createHash("sha256").update(buffer).digest("hex");
+    if (computedChecksum !== checksum) {
+      console.error(`Checksum mismatch! Expected ${checksum.slice(0, 8)}..., got ${computedChecksum.slice(0, 8)}...`);
+      process.exit(1);
+    }
+    mkdirSync4(SNAPSHOTS_DIR, { recursive: true });
+    mkdirSync4(MANIFESTS_DIR, { recursive: true });
+    const snapshotPath = join8(SNAPSHOTS_DIR, `${repoId}.msgpack.gz`);
+    writeFileSync4(snapshotPath, buffer);
+    let ruleCount = 0;
+    let patternCount = 0;
+    let snapshotVersion = 1;
+    try {
+      const decompressed = gunzipSync(buffer);
+      const { unpack } = await import("msgpackr");
+      const envelope = unpack(decompressed);
+      snapshotVersion = envelope.version ?? 1;
+      ruleCount = envelope.rules?.length ?? 0;
+      patternCount = envelope.patterns?.length ?? 0;
+    } catch {
+    }
+    const manifest = {
+      repoId,
+      checksum,
+      sizeBytes: buffer.length,
+      entityCount,
+      edgeCount,
+      ruleCount,
+      patternCount,
+      snapshotVersion,
+      generatedAt,
+      pulledAt: (/* @__PURE__ */ new Date()).toISOString(),
+      snapshotPath
+    };
+    writeFileSync4(join8(MANIFESTS_DIR, `${repoId}.json`), JSON.stringify(manifest, null, 2));
+    const v2Info = snapshotVersion >= 2 ? `, ${ruleCount} rules, ${patternCount} patterns` : "";
+    console.log(`Done! ${entityCount} entities, ${edgeCount} edges${v2Info}`);
+    console.log(`Saved to ${snapshotPath}`);
+  });
+}
+
 // src/commands/push.ts
 import * as fs7 from "fs";
 import * as path7 from "path";
 function loadConfig6() {
-  const configPath = path7.join(process.cwd(), ".kap10", "config.json");
+  const configPath = path7.join(process.cwd(), ".unerr", "config.json");
   if (!fs7.existsSync(configPath)) return null;
   const raw = fs7.readFileSync(configPath, "utf-8");
   return JSON.parse(raw);
 }
 function registerPushCommand(program2) {
-  program2.command("push").description("Upload local repository for indexing").option("--local-parse", "Use local AST extraction (requires kap10-parse binary)").action(async (opts) => {
+  program2.command("push").description("Upload local repository for indexing").option("--local-parse", "Use local AST extraction (requires unerr-parse binary)").action(async (_opts) => {
     try {
       let walkDir2 = function(dir, relativeTo) {
         const entries = fs7.readdirSync(dir, { withFileTypes: true });
@@ -686,12 +786,12 @@ function registerPushCommand(program2) {
       var walkDir = walkDir2;
       const config = loadConfig6();
       if (!config) {
-        console.error("Not initialized. Run: kap10 init");
+        console.error("Not initialized. Run: unerr init");
         process.exit(1);
       }
       const creds = getCredentials();
       if (!creds?.apiKey) {
-        console.error("Not authenticated. Run: kap10 auth login");
+        console.error("Not authenticated. Run: unerr auth login");
         process.exit(1);
       }
       console.log("Preparing upload...");
@@ -713,13 +813,7 @@ function registerPushCommand(program2) {
       }
       const { uploadUrl, uploadPath } = await uploadRes.json();
       const archiver = (await import("archiver")).default;
-      const ignore = (await import("ignore")).default;
-      const gitignorePath = path7.join(process.cwd(), ".gitignore");
-      const ig = ignore();
-      ig.add([".git", ".kap10", "node_modules"]);
-      if (fs7.existsSync(gitignorePath)) {
-        ig.add(fs7.readFileSync(gitignorePath, "utf-8"));
-      }
+      const ig = await createIgnoreFilter(process.cwd());
       const archive = archiver("zip", { zlib: { level: 6 } });
       const chunks = [];
       archive.on("data", (chunk) => chunks.push(chunk));
@@ -764,108 +858,11 @@ function registerPushCommand(program2) {
   });
 }
 
-// src/commands/pull.ts
-import { createHash } from "crypto";
-import { writeFileSync as writeFileSync4, mkdirSync as mkdirSync4, readFileSync as readFileSync9, existsSync as existsSync9 } from "fs";
-import { homedir as homedir2 } from "os";
-import { join as join9 } from "path";
-var KAP10_DIR = join9(homedir2(), ".kap10");
-var SNAPSHOTS_DIR = join9(KAP10_DIR, "snapshots");
-var MANIFESTS_DIR = join9(KAP10_DIR, "manifests");
-function getManifest(repoId) {
-  const path11 = join9(MANIFESTS_DIR, `${repoId}.json`);
-  if (!existsSync9(path11)) return null;
-  try {
-    return JSON.parse(readFileSync9(path11, "utf-8"));
-  } catch {
-    return null;
-  }
-}
-function registerPullCommand(program2) {
-  program2.command("pull").description("Download graph snapshot for a repo").requiredOption("--repo <repoId>", "Repository ID").option("--force", "Force re-download even if up to date").action(async (opts) => {
-    const creds = getCredentials();
-    if (!creds) {
-      console.error("Not authenticated. Run: kap10 auth login");
-      process.exit(1);
-    }
-    const { repo: repoId, force } = opts;
-    if (!force) {
-      const existing = getManifest(repoId);
-      if (existing) {
-        console.log(`Existing snapshot found (${existing.checksum.slice(0, 8)}...)`);
-      }
-    }
-    console.log("Fetching download URL...");
-    const metaRes = await fetch(`${creds.serverUrl}/api/graph-snapshots/${repoId}/download`, {
-      headers: { Authorization: `Bearer ${creds.apiKey}` }
-    });
-    if (!metaRes.ok) {
-      const body = await metaRes.json().catch(() => ({}));
-      console.error(`Failed to get download URL: ${body.error ?? metaRes.statusText}`);
-      process.exit(1);
-    }
-    const meta = await metaRes.json();
-    const { url, checksum, entityCount, edgeCount, sizeBytes, generatedAt } = meta.data;
-    if (!force) {
-      const existing = getManifest(repoId);
-      if (existing && existing.checksum === checksum) {
-        console.log("Snapshot is already up to date.");
-        return;
-      }
-    }
-    console.log(`Downloading snapshot (${(sizeBytes / 1024).toFixed(1)} KB)...`);
-    const downloadRes = await fetch(url);
-    if (!downloadRes.ok) {
-      console.error("Download failed");
-      process.exit(1);
-    }
-    const buffer = Buffer.from(await downloadRes.arrayBuffer());
-    console.log("Verifying checksum...");
-    const computedChecksum = createHash("sha256").update(buffer).digest("hex");
-    if (computedChecksum !== checksum) {
-      console.error(`Checksum mismatch! Expected ${checksum.slice(0, 8)}..., got ${computedChecksum.slice(0, 8)}...`);
-      process.exit(1);
-    }
-    mkdirSync4(SNAPSHOTS_DIR, { recursive: true });
-    mkdirSync4(MANIFESTS_DIR, { recursive: true });
-    const snapshotPath = join9(SNAPSHOTS_DIR, `${repoId}.msgpack`);
-    writeFileSync4(snapshotPath, buffer);
-    let ruleCount = 0;
-    let patternCount = 0;
-    let snapshotVersion = 1;
-    try {
-      const { unpack } = await import("msgpackr");
-      const envelope = unpack(buffer);
-      snapshotVersion = envelope.version ?? 1;
-      ruleCount = envelope.rules?.length ?? 0;
-      patternCount = envelope.patterns?.length ?? 0;
-    } catch {
-    }
-    const manifest = {
-      repoId,
-      checksum,
-      sizeBytes: buffer.length,
-      entityCount,
-      edgeCount,
-      ruleCount,
-      patternCount,
-      snapshotVersion,
-      generatedAt,
-      pulledAt: (/* @__PURE__ */ new Date()).toISOString(),
-      snapshotPath
-    };
-    writeFileSync4(join9(MANIFESTS_DIR, `${repoId}.json`), JSON.stringify(manifest, null, 2));
-    const v2Info = snapshotVersion >= 2 ? `, ${ruleCount} rules, ${patternCount} patterns` : "";
-    console.log(`Done! ${entityCount} entities, ${edgeCount} edges${v2Info}`);
-    console.log(`Saved to ${snapshotPath}`);
-  });
-}
-
 // src/commands/rewind.ts
 import * as fs8 from "fs";
 import * as path8 from "path";
 function loadConfig7() {
-  const configPath = path8.join(process.cwd(), ".kap10", "config.json");
+  const configPath = path8.join(process.cwd(), ".unerr", "config.json");
   if (!fs8.existsSync(configPath)) return null;
   return JSON.parse(fs8.readFileSync(configPath, "utf-8"));
 }
@@ -874,12 +871,12 @@ function registerRewindCommand(program2) {
     try {
       const config = loadConfig7();
       if (!config) {
-        console.error("Not initialized. Run: kap10 init");
+        console.error("Not initialized. Run: unerr init");
         process.exit(1);
       }
       const creds = getCredentials();
       if (!creds?.apiKey) {
-        console.error("Not authenticated. Run: kap10 auth login");
+        console.error("Not authenticated. Run: unerr auth login");
         process.exit(1);
       }
       const res = await fetch(`${config.serverUrl}/api/mcp`, {
@@ -930,9 +927,10 @@ function registerRewindCommand(program2) {
 }
 
 // src/commands/serve.ts
-import { readFileSync as readFileSync11, existsSync as existsSync11, readdirSync as readdirSync2 } from "fs";
+import { existsSync as existsSync11, readdirSync as readdirSync2, readFileSync as readFileSync11 } from "fs";
 import { homedir as homedir3 } from "os";
 import { join as join11 } from "path";
+import { gunzipSync as gunzipSync2 } from "zlib";
 
 // src/auto-sync.ts
 var DEFAULT_TTL_HOURS = 24;
@@ -949,14 +947,14 @@ function getStalenessInfo(repoId) {
 }
 
 // src/commands/serve.ts
-var KAP10_DIR2 = join11(homedir3(), ".kap10");
-var SNAPSHOTS_DIR2 = join11(KAP10_DIR2, "snapshots");
-var MANIFESTS_DIR2 = join11(KAP10_DIR2, "manifests");
+var UNERR_DIR2 = join11(homedir3(), ".unerr");
+var SNAPSHOTS_DIR2 = join11(UNERR_DIR2, "snapshots");
+var MANIFESTS_DIR2 = join11(UNERR_DIR2, "manifests");
 function registerServeCommand(program2) {
   program2.command("serve").description("Start local MCP server").option("--repo <repoId>", "Specific repo to serve (default: all pulled repos)").option("--prefetch", "Enable predictive context pre-fetching (default: false)").option("--no-prefetch", "Disable predictive context pre-fetching").action(async (opts) => {
     const creds = getCredentials();
     if (!creds) {
-      console.error("Not authenticated. Run: kap10 auth login");
+      console.error("Not authenticated. Run: unerr auth login");
       process.exit(1);
     }
     let repoIds = [];
@@ -968,13 +966,13 @@ function registerServeCommand(program2) {
       }
     }
     if (repoIds.length === 0) {
-      console.error("No snapshots found. Run: kap10 pull --repo <repoId>");
+      console.error("No snapshots found. Run: unerr pull --repo <repoId>");
       process.exit(1);
     }
     for (const repoId of repoIds) {
       const info = getStalenessInfo(repoId);
       if (info.isStale) {
-        console.warn(`Warning: Snapshot for ${repoId} is ${info.ageHours}h old (stale). Run: kap10 pull --repo ${repoId}`);
+        console.warn(`Warning: Snapshot for ${repoId} is ${info.ageHours}h old (stale). Run: unerr pull --repo ${repoId}`);
       }
     }
     console.log("Initializing CozoDB...");
@@ -996,14 +994,18 @@ function registerServeCommand(program2) {
         console.warn(`No manifest for ${repoId}, skipping`);
         continue;
       }
-      const snapshotPath = join11(SNAPSHOTS_DIR2, `${repoId}.msgpack`);
+      let snapshotPath = join11(SNAPSHOTS_DIR2, `${repoId}.msgpack.gz`);
+      if (!existsSync11(snapshotPath)) {
+        snapshotPath = join11(SNAPSHOTS_DIR2, `${repoId}.msgpack`);
+      }
       if (!existsSync11(snapshotPath)) {
         console.warn(`Snapshot file not found for ${repoId}, skipping`);
         continue;
       }
       console.log(`Loading snapshot for ${repoId}...`);
       const { unpack } = await import("msgpackr");
-      const buffer = readFileSync11(snapshotPath);
+      const raw = readFileSync11(snapshotPath);
+      const buffer = snapshotPath.endsWith(".gz") ? gunzipSync2(raw) : raw;
       const envelope = unpack(buffer);
       localGraph.loadSnapshot(envelope);
       console.log(`Loaded ${manifest.entityCount} entities, ${manifest.edgeCount} edges`);
@@ -1035,7 +1037,7 @@ function registerServeCommand(program2) {
     const { Server } = await import("@modelcontextprotocol/sdk/server/index.js");
     const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
     const server = new Server(
-      { name: "kap10-local", version: "0.1.0" },
+      { name: "unerr-local", version: "0.1.0" },
       { capabilities: { tools: {} } }
     );
     const toolDefinitions = [
@@ -1088,29 +1090,245 @@ function registerServeCommand(program2) {
       });
     }
     const ruleInfo = localGraph.hasRules() ? ` (${localGraph.getRules().length} rules loaded)` : "";
-    console.error(`kap10 MCP server running on stdio \u2014 13 tools (9 local, 4 cloud)${ruleInfo}`);
+    console.error(`unerr MCP server running on stdio \u2014 13 tools (9 local, 4 cloud)${ruleInfo}`);
+  });
+}
+
+// src/commands/sync.ts
+import { createHash as createHash2 } from "crypto";
+import { existsSync as existsSync12, mkdirSync as mkdirSync5, readFileSync as readFileSync12 } from "fs";
+import { join as join12, relative as relative2 } from "path";
+import git from "isomorphic-git";
+import fs9 from "fs";
+var _httpClient = null;
+function getHttpClient() {
+  if (!_httpClient) {
+    _httpClient = __require("isomorphic-git/http/node");
+  }
+  return _httpClient;
+}
+function loadProjectConfig(cwd) {
+  const configPath = join12(cwd, ".unerr", "config.json");
+  if (!existsSync12(configPath)) return null;
+  try {
+    return JSON.parse(readFileSync12(configPath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+function deriveKeyId(apiKey) {
+  return createHash2("sha256").update(apiKey).digest("hex").slice(0, 12);
+}
+async function collectSyncFiles(cwd) {
+  const ignore = await createIgnoreFilter(cwd);
+  const files = [];
+  function walk(dir) {
+    const entries = fs9.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = join12(dir, entry.name);
+      const relPath = relative2(cwd, fullPath);
+      if (entry.name === ".unerr" || entry.name === ".git") continue;
+      if (ignore.ignores(relPath)) continue;
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile()) {
+        files.push(relPath);
+      }
+    }
+  }
+  walk(cwd);
+  return files;
+}
+async function ensureGitDir(cwd, serverUrl, orgId, repoId) {
+  const gitdir = join12(cwd, ".unerr", "git");
+  if (!existsSync12(join12(gitdir, "HEAD"))) {
+    mkdirSync5(gitdir, { recursive: true });
+    await git.init({ fs: fs9, dir: cwd, gitdir });
+    const remoteUrl = `${serverUrl}/api/git/${orgId}/${repoId}`;
+    await git.addRemote({ fs: fs9, dir: cwd, gitdir, remote: "origin", url: remoteUrl });
+  }
+  return gitdir;
+}
+async function runSync(cwd, gitdir, apiKey, keyId, verbose) {
+  const files = await collectSyncFiles(cwd);
+  if (files.length === 0) {
+    if (verbose) console.log("  No files to sync");
+    return false;
+  }
+  if (verbose) console.log(`  Staging ${files.length} files...`);
+  for (const filepath of files) {
+    try {
+      await git.add({ fs: fs9, dir: cwd, gitdir, filepath });
+    } catch {
+    }
+  }
+  const matrix = await git.statusMatrix({ fs: fs9, dir: cwd, gitdir });
+  const changed = matrix.filter(([, head, workdir, stage]) => {
+    return head !== workdir || head !== stage;
+  });
+  if (changed.length === 0) {
+    if (verbose) console.log("  No changes detected");
+    return false;
+  }
+  for (const [filepath, head, ,] of changed) {
+    try {
+      if (head === 0) {
+      } else {
+        const fullPath = join12(cwd, filepath);
+        if (existsSync12(fullPath)) {
+          await git.add({ fs: fs9, dir: cwd, gitdir, filepath });
+        } else {
+          await git.remove({ fs: fs9, dir: cwd, gitdir, filepath });
+        }
+      }
+    } catch {
+    }
+  }
+  const timestamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const sha = await git.commit({
+    fs: fs9,
+    dir: cwd,
+    gitdir,
+    message: `workspace sync ${timestamp}`,
+    author: { name: "unerr-cli", email: "cli@unerr.dev" }
+  });
+  if (verbose) console.log(`  Committed ${sha.slice(0, 8)} (${changed.length} changes)`);
+  const ref = `refs/unerr/ws/${keyId}`;
+  try {
+    const pushResult = await git.push({
+      fs: fs9,
+      http: getHttpClient(),
+      dir: cwd,
+      gitdir,
+      remote: "origin",
+      ref: `HEAD:${ref}`,
+      force: true,
+      onAuth: () => ({ username: "x-token", password: apiKey })
+    });
+    if (pushResult.ok) {
+      console.log(`  Pushed ${sha.slice(0, 8)} \u2192 ${ref} (${changed.length} files changed)`);
+    } else {
+      const errors = pushResult.refs ? Object.entries(pushResult.refs).filter(([, v]) => v && typeof v === "object" && "error" in v) : [];
+      if (errors.length > 0) {
+        console.error("  Push failed:", JSON.stringify(errors));
+        return false;
+      }
+      console.log(`  Pushed ${sha.slice(0, 8)} \u2192 ${ref}`);
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes("401") || msg.includes("Unauthorized")) {
+      console.error("  Authentication failed. Run `unerr auth login` to re-authenticate.");
+    } else {
+      console.error(`  Push failed: ${msg}`);
+    }
+    return false;
+  }
+  return true;
+}
+function registerSyncCommand(program2) {
+  program2.command("sync").description("Sync workspace to unerr server").option("-w, --watch", "Watch for changes and sync continuously").option("-v, --verbose", "Show detailed output").action(async (opts) => {
+    const cwd = process.cwd();
+    const config = loadProjectConfig(cwd);
+    if (!config) {
+      console.error("No .unerr/config.json found. Run `unerr init` first.");
+      process.exit(1);
+    }
+    const creds = getCredentials();
+    if (!creds) {
+      console.error("Not authenticated. Run `unerr auth login` first.");
+      process.exit(1);
+    }
+    const serverUrl = config.serverUrl || creds.serverUrl;
+    const apiKey = creds.apiKey;
+    const keyId = deriveKeyId(apiKey);
+    const gitdir = await ensureGitDir(cwd, serverUrl, config.orgId, config.repoId);
+    if (opts.watch) {
+      await runWatchMode(cwd, gitdir, apiKey, keyId, opts.verbose ?? false);
+    } else {
+      console.log("Syncing workspace...");
+      const pushed = await runSync(cwd, gitdir, apiKey, keyId, opts.verbose ?? false);
+      if (!pushed) {
+        console.log("Workspace is up to date.");
+      }
+    }
+  });
+}
+async function runWatchMode(cwd, gitdir, apiKey, keyId, verbose) {
+  const chokidar = await import("chokidar");
+  const ignore = await createIgnoreFilter(cwd);
+  console.log("Watching for changes... (Ctrl+C to stop)");
+  await runSync(cwd, gitdir, apiKey, keyId, verbose);
+  let debounceTimer = null;
+  let syncInProgress = false;
+  let pendingSync = false;
+  const triggerSync = () => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(async () => {
+      if (syncInProgress) {
+        pendingSync = true;
+        return;
+      }
+      syncInProgress = true;
+      try {
+        await runSync(cwd, gitdir, apiKey, keyId, verbose);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error(`  Sync error: ${msg}`);
+      } finally {
+        syncInProgress = false;
+        if (pendingSync) {
+          pendingSync = false;
+          triggerSync();
+        }
+      }
+    }, 2e3);
+  };
+  const watcher = chokidar.watch(cwd, {
+    ignored: (filePath) => {
+      const rel = relative2(cwd, filePath);
+      if (!rel || rel === ".") return false;
+      if (rel.startsWith(".unerr") || rel.startsWith(".git")) return true;
+      return ignore.ignores(rel);
+    },
+    persistent: true,
+    ignoreInitial: true,
+    awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 }
+  });
+  watcher.on("add", triggerSync);
+  watcher.on("change", triggerSync);
+  watcher.on("unlink", triggerSync);
+  const shutdown = () => {
+    console.log("\nStopping watch mode...");
+    if (debounceTimer) clearTimeout(debounceTimer);
+    watcher.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  await new Promise(() => {
   });
 }
 
 // src/commands/timeline.ts
-import * as fs9 from "fs";
+import * as fs10 from "fs";
 import * as path9 from "path";
 function loadConfig8() {
-  const configPath = path9.join(process.cwd(), ".kap10", "config.json");
-  if (!fs9.existsSync(configPath)) return null;
-  return JSON.parse(fs9.readFileSync(configPath, "utf-8"));
+  const configPath = path9.join(process.cwd(), ".unerr", "config.json");
+  if (!fs10.existsSync(configPath)) return null;
+  return JSON.parse(fs10.readFileSync(configPath, "utf-8"));
 }
 function registerTimelineCommand(program2) {
   program2.command("timeline").description("Show the prompt ledger timeline").option("--branch <branch>", "Filter by branch").option("--status <status>", "Filter by status (pending|working|broken|committed|reverted)").option("--limit <n>", "Number of entries to show", "20").action(async (opts) => {
     try {
       const config = loadConfig8();
       if (!config) {
-        console.error("Not initialized. Run: kap10 init");
+        console.error("Not initialized. Run: unerr init");
         process.exit(1);
       }
       const creds = getCredentials();
       if (!creds?.apiKey) {
-        console.error("Not authenticated. Run: kap10 auth login");
+        console.error("Not authenticated. Run: unerr auth login");
         process.exit(1);
       }
       const params = new URLSearchParams();
@@ -1160,23 +1378,23 @@ function registerTimelineCommand(program2) {
 }
 
 // src/commands/watch.ts
-import * as fs10 from "fs";
+import * as fs11 from "fs";
 import * as path10 from "path";
 function loadConfig9() {
-  const configPath = path10.join(process.cwd(), ".kap10", "config.json");
-  if (!fs10.existsSync(configPath)) return null;
-  return JSON.parse(fs10.readFileSync(configPath, "utf-8"));
+  const configPath = path10.join(process.cwd(), ".unerr", "config.json");
+  if (!fs11.existsSync(configPath)) return null;
+  return JSON.parse(fs11.readFileSync(configPath, "utf-8"));
 }
 function registerWatchCommand(program2) {
-  program2.command("watch").description("Watch for file changes and sync to kap10 server").option("--debounce <ms>", "Debounce interval in ms", "2000").action(async (opts) => {
+  program2.command("watch").description("Watch for file changes and sync to unerr server").option("--debounce <ms>", "Debounce interval in ms", "2000").action(async (opts) => {
     const config = loadConfig9();
     if (!config) {
-      console.error("Not initialized. Run: kap10 init");
+      console.error("Not initialized. Run: unerr init");
       process.exit(1);
     }
     const creds = getCredentials();
     if (!creds?.apiKey) {
-      console.error("Not authenticated. Run: kap10 auth login");
+      console.error("Not authenticated. Run: unerr auth login");
       process.exit(1);
     }
     const debounceMs = parseInt(opts.debounce, 10);
@@ -1185,13 +1403,7 @@ function registerWatchCommand(program2) {
     console.log(`Watching for changes (debounce: ${debounceMs}ms)...`);
     console.log("Press Ctrl+C to stop.\n");
     const chokidar = await import("chokidar");
-    const ignore = (await import("ignore")).default;
-    const ig = ignore();
-    ig.add([".git", ".kap10", "node_modules"]);
-    const gitignorePath = path10.join(process.cwd(), ".gitignore");
-    if (fs10.existsSync(gitignorePath)) {
-      ig.add(fs10.readFileSync(gitignorePath, "utf-8"));
-    }
+    const ig = await createIgnoreFilter(process.cwd());
     const watcher = chokidar.watch(process.cwd(), {
       ignored: (filePath) => {
         const rel = path10.relative(process.cwd(), filePath);
@@ -1258,28 +1470,28 @@ function registerWatchCommand(program2) {
     });
     const configCheckInterval = setInterval(async () => {
       try {
-        const configPath = path10.join(process.cwd(), ".kap10", "config.json");
-        if (!fs10.existsSync(configPath)) return;
-        const kap10Config = JSON.parse(
-          fs10.readFileSync(configPath, "utf-8")
+        const configPath = path10.join(process.cwd(), ".unerr", "config.json");
+        if (!fs11.existsSync(configPath)) return;
+        const unerrConfig = JSON.parse(
+          fs11.readFileSync(configPath, "utf-8")
         );
-        const serverUrl = kap10Config.serverUrl ?? "http://localhost:3000";
+        const serverUrl = unerrConfig.serverUrl ?? "http://localhost:3000";
         const cwd = process.cwd();
         const ideConfigs = [
           { name: "cursor", path: path10.join(cwd, ".cursor", "mcp.json"), key: "mcpServers" },
           { name: "vscode", path: path10.join(cwd, ".vscode", "settings.json"), key: "mcp.servers" }
         ];
         for (const ide of ideConfigs) {
-          if (!fs10.existsSync(ide.path)) continue;
+          if (!fs11.existsSync(ide.path)) continue;
           try {
-            const raw = fs10.readFileSync(ide.path, "utf-8");
+            const raw = fs11.readFileSync(ide.path, "utf-8");
             const parsed = JSON.parse(raw);
             const servers = ide.key === "mcpServers" ? parsed.mcpServers : parsed["mcp.servers"];
-            if (servers && !servers["kap10"]) {
+            if (servers && !servers["unerr"]) {
               console.log(
                 `[config] MCP config drift detected in ${ide.name}, auto-repairing...`
               );
-              servers["kap10"] = {
+              servers["unerr"] = {
                 url: `${serverUrl}/mcp`,
                 headers: {
                   Authorization: `Bearer ${creds.apiKey}`
@@ -1290,7 +1502,7 @@ function registerWatchCommand(program2) {
               } else {
                 parsed["mcp.servers"] = servers;
               }
-              fs10.writeFileSync(ide.path, JSON.stringify(parsed, null, 2));
+              fs11.writeFileSync(ide.path, JSON.stringify(parsed, null, 2));
               console.log(`[config] Repaired ${ide.name} MCP config.`);
             }
           } catch {
@@ -1310,8 +1522,8 @@ function registerWatchCommand(program2) {
 
 // src/index.ts
 var program = new Command();
-program.name("kap10").description("Code intelligence for AI agents").version("0.1.0").option("--server <url>", "Server URL").option("--key <apiKey>", "API key (skip browser login)").option("--ide <type>", "IDE type: cursor, vscode, claude-code, windsurf").action(async (opts) => {
-  const { runSetup } = await import("./setup-3X7FHAI2.js");
+program.name("unerr").description("Code intelligence for AI agents").version("0.1.0").option("--server <url>", "Server URL").option("--key <apiKey>", "API key (skip browser login)").option("--ide <type>", "IDE type: cursor, vscode, claude-code, windsurf").action(async (opts) => {
+  const { runSetup } = await import("./setup-ZWBTQDXA.js");
   await runSetup({ server: opts.server, key: opts.key, ide: opts.ide });
 });
 registerAuthCommand(program);
@@ -1326,6 +1538,7 @@ registerPushCommand(program);
 registerPullCommand(program);
 registerRewindCommand(program);
 registerServeCommand(program);
+registerSyncCommand(program);
 registerTimelineCommand(program);
 registerWatchCommand(program);
 program.parse();

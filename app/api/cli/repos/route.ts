@@ -147,10 +147,12 @@ export async function POST(request: Request) {
         args: [{
           orgId,
           repoId: repo.id,
+          provider: "github",
           installationId,
           cloneUrl: `https://github.com/${fullName}.git`,
           defaultBranch: repo.defaultBranch ?? "main",
           runId,
+          scope: "primary",
         }],
         taskQueue: "heavy-compute-queue",
       })

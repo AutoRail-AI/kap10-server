@@ -56,11 +56,11 @@ Phase 2 has five actor journeys. Two actors exist: the **human user** (configure
 Incoming request: Authorization: Bearer {token}
   │
   ├── token starts with "unerr_sk_"?
-  │     YES → Mode B (API Key): SHA-256 lookup in unerr.api_keys
+  │     YES → Mode B (API Key): HMAC-SHA256 hash lookup in unerr.api_keys
   │     Resolves: orgId, repoId, scopes from API key record
   │
-  └── NO → Mode A (OAuth JWT): validate JWT signature, check exp/aud/scope
-           Resolves: userId, orgId, repoId from JWT claims
+  └── NO → Mode A (OAuth JWT): validate HMAC-SHA256 JWT signature, check exp/aud/scope
+           Resolves: userId, orgId, scopes from JWT claims
            User must have active org membership + repo access
 ```
 
@@ -698,7 +698,7 @@ When tripped, `sync_local_diff` skips overlay writes for the flagged entity and 
 | Secret scrubber regex cache | 5 MB | Compiled regex patterns, entropy lookup tables |
 | Headroom | 189 MB | GC overhead, spike handling |
 | OAuth endpoint overhead | 5 MB | DCR client cache, PKCE code verifier store, JWT signing |
-| **Total per container** | **256 MB** | Supports ~500 concurrent active sessions per container |
+| **Total per container** | **~70 MB baseline** | Fits well within 512 MB Fly.io container budget |
 
 ---
 
@@ -741,9 +741,10 @@ Seam 2: search_code tool — keyword only
   Phase 3: Hybrid search = keyword (ArangoDB) + semantic (PGVectorStore) + reciprocal rank fusion
 
 Seam 3: MCP tool set expansion
-  Phase 2: 9 read-only tools
+  Phase 2: 10 core tools (search_code, get_function, get_class, get_file, file_context,
+           get_callers, get_callees, get_imports, get_project_stats, sync_local_diff)
   Phase 3: +2 tools (semantic_search, find_similar)
-  Phase 4: +3 tools (explain_function, justify_change, impact_analysis)
+  Phase 4: +4 tools (get_business_context, search_by_purpose, analyze_impact, get_blueprint)
 
 Seam 4: ILLMProvider activation
   Phase 2: ILLMProvider still a stub (not needed for keyword search + graph traversal)
@@ -763,19 +764,36 @@ Seam 5: IVectorSearch activation
 4. **Do NOT allow write operations** to the committed graph via MCP tools. `sync_local_diff` writes to the workspace overlay only. The committed graph is modified only by Temporal indexing workflows.
 5. **Do NOT build billing/metering** for MCP usage. Usage tracking (`last_used_at`, `toolCallCount`) is logged, but billing integration is Phase 5+.
 
+### Phase 13 Evolution: Branch-Aware MCP Tools
+
+Phase 13 ([PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](./PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md)) adds an optional `scope` parameter to all MCP tools that query the knowledge graph:
+
+```typescript
+// Added to all graph-querying MCP tool input schemas
+scope: z.string().optional().describe(
+  'Branch or workspace scope to query. Examples: "primary" (default branch), ' +
+  '"branch:feature/auth", "workspace:user-001". Defaults to "primary" if omitted.'
+)
+```
+
+**Resolution logic (application layer, not AQL):**
+1. Query the specified scope first
+2. If no result found and scope !== "primary", fall back to "primary" scope
+3. Exclude tombstone documents from fallback results
+
+**Affected tools:** `searchNodes`, `getFileDependencies`, `getSemanticContext`, `get_function`, `get_class`, `get_callers`, `get_callees`, `analyze_impact`, `get_conventions`, `suggest_approach`, `find_similar`, `get_blueprint`.
+
+**The `sync_local_diff` tool is superseded** by `unerr sync` CLI command in Phase 13. Instead of the agent syncing diffs via MCP, the CLI maintains a persistent workspace ref on the internal gitserver. The agent queries the user's workspace scope directly via the `scope` parameter.
+
 ---
 
-# Part 2: Implementation & Tracing Tracker
+# Part 2: Implementation Status & Testing
 
-> **Status Key:** `[ ]` = Not started | `[~]` = In progress | `[x]` = Complete | `[!]` = Blocked
->
-> **Each item includes:** Testing criteria, estimated complexity (S/M/L), dependencies, and a notes field for tracing.
+> **All 50 Phase 2 implementation items are complete.** The checklist details have been merged into the architectural prose above. This section serves as a compact reference for the testing strategy and file index.
 
----
+## 2.1 Testing Strategy
 
-## 2.1 Infrastructure Layer
-
-### MCP Server Deployment
+Phase 2 tests are organized in three tiers. All tests use the DI container with in-memory fakes (`lib/di/fakes.ts`) unless explicitly requiring Docker infrastructure.
 
 - [x] **P2-INFRA-01: Create MCP server entry point and project structure** — M
   - Create `mcp-server/` directory at project root (separate from Next.js app)
@@ -791,22 +809,22 @@ Seam 5: IVectorSearch activation
   - Notes: _____
 
 - [x] **P2-INFRA-02: Create `Dockerfile.mcp-server`** — M
-  - Base image: Node.js 20 Alpine (lightweight — no SCIP/Go/Python needed)
+  - Base image: `node:22-bookworm-slim` (not Alpine — bookworm-slim for better native module compatibility)
   - Install: `pnpm` via Corepack
-  - Multi-stage build: install deps → build TypeScript → slim runtime image
-  - Entrypoint: `node dist/mcp-server/index.js`
-  - Health check: `curl -f http://localhost:3001/health`
+  - Single-stage build: copy source → install deps → generate Prisma client
+  - Entrypoint: `pnpm mcp:server` (runs `ts-node` / `tsx` — no pre-compilation step)
+  - Health check: `curl -f http://localhost:8787/health`
   - **Test:** `docker build -f Dockerfile.mcp-server .` succeeds. Container starts and serves requests.
   - **Depends on:** P2-INFRA-01
   - **Files:** `Dockerfile.mcp-server`
-  - **Acceptance:** Image size < 200 MB. Health check passes. Container runs in < 2s.
-  - Notes: _____
+  - **Acceptance:** Container runs, health check passes.
+  - Notes: Uses `pnpm mcp:server` not compiled JS. Port is 8787 not 3001.
 
 - [x] **P2-INFRA-03: Fly.io deployment configuration** — M
   - `fly.toml` in project root:
     - App name: `unerr-mcp`
     - Region: same as Supabase/ArangoDB (minimize latency)
-    - Internal port: 3001
+    - Internal port: 8787
     - Min machines: 1, max machines: 10
     - Auto-scale based on connection count
     - Health check: HTTP GET `/health`, interval 10s, timeout 2s
@@ -1104,7 +1122,8 @@ Seam 5: IVectorSearch activation
   - Notes: _____
 
 - [x] **P2-API-13: Implement `sync_local_diff` tool** — L
-  - Input: `{ diff: string, branch?: string (default "main") }`
+  - Input: `{ diff: string, branch?: string (default "main"), prompt?: string, agent_model?: string, agent_tool?: string, mcp_tools_called?: string[], validation_result?: { tests_pass?: boolean, lint_pass?: boolean } }`
+  - The `prompt`, `agent_model`, `agent_tool`, `mcp_tools_called`, and `validation_result` fields are Phase 5.5 ledger extensions — sync still works without them.
   - Validates diff size (max 50 KB, excluding lockfiles — see lockfile exclusion below), parses unified diff format
   - **Concurrency lock:** Before executing, acquires a Redis distributed lock: `unerr:lock:workspace:{userId}:{repoId}:{branch}` (TTL: 30 s, retry: 3 attempts with 200 ms backoff). This prevents race conditions when the same agent fires parallel `sync_local_diff` calls (e.g., pre-flight + post-flight overlapping). If the lock cannot be acquired after retries, the tool returns a structured error: `"Workspace sync already in progress. Please wait and retry."` The lock is released in a `finally` block to ensure cleanup on failure.
   - Creates or updates workspace in Supabase (UPSERT by user+repo+branch)
@@ -1113,18 +1132,19 @@ Seam 5: IVectorSearch activation
   - Reads current entities from ArangoDB → applies diff transformations (line shifts, body updates)
   - Writes workspace overlay entities to ArangoDB (prefixed keys)
   - **Lockfile exclusion:** Before diff size validation, strips hunks from known lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `Gemfile.lock`, `poetry.lock`, `Cargo.lock`, `go.sum`, `composer.lock`) and build directories (`node_modules/`, `dist/`, `.next/`, `build/`). These hunks are silently dropped — they contain no meaningful code structure for the knowledge graph.
+  - **Phase 5.5 ledger append (best-effort):** If `prompt` is provided, a ledger entry is appended to the ArangoDB graph. If `validation_result.tests_pass && validation_result.lint_pass`, the entry is auto-marked as `"working"` and a snapshot is created. Ledger failures do not break sync — wrapped in try-catch.
   - **Test:** Sync a diff that adds a new function → subsequent `search_code` finds it in overlay. Sync a diff that modifies a function signature → `get_function` returns updated signature. Concurrent sync calls → second call waits or returns retry message. Cold-start after TTL expiry → overlay rebuilt correctly. Diff with 200 KB lockfile + 10 KB code changes → lockfile stripped, code changes applied.
   - **Depends on:** P2-ADAPT-05, P2-ADAPT-06
   - **Files:** `lib/mcp/tools/sync.ts`, `lib/mcp/workspace.ts`, `lib/mcp/tools/diff-filter.ts`
   - **Acceptance:** Overlay reflects diff. TTL set (12 h sliding). Subsequent tool calls use overlay. Expired overlays cleaned up. Concurrent calls serialized via Redis lock. Lockfile hunks excluded from diff size calculation.
-  - Notes: _____
+  - Notes: Input schema extended for Phase 5.5 ledger tracking. Lock implemented via `cacheStore.setIfNotExists()` (not a RedisDistributedLock class).
 
 ### Dashboard API Routes
 
 - [x] **P2-API-14: `POST /api/api-keys` — Create API key** — M
   - Body: `{ repoId: string, name: string }`
-  - Generates cryptographically random key with `unerr_sk_` prefix
-  - Stores SHA-256 hash + key prefix in Supabase
+  - Generates cryptographically random key with `unerr_sk_` prefix (32 random bytes, base64url encoded)
+  - Stores HMAC-SHA256 hash + display prefix (`unerr_sk_{4 chars}****`) in Supabase
   - Returns raw key ONCE in response (never stored or retrievable again)
   - Validates: user is org admin, repo belongs to org, repo status is "ready"
   - Enforces limit: max 10 API keys per repo

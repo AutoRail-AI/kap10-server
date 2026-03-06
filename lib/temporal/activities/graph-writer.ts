@@ -45,6 +45,8 @@ export async function writeEntitiesToGraph(
   rawEntities: EntityDoc[],
   rawEdges: EdgeDoc[],
   indexVersion?: string,
+  /** Phase 13: scope + commit_sha stamped on every entity/edge */
+  scopeInfo?: { scope: string; commitSha: string | null },
 ): Promise<WriteResult> {
   await container.graphStore.bootstrapGraphSchema()
 
@@ -59,6 +61,12 @@ export async function writeEntitiesToGraph(
 
   let allEntities = deduplicateEntities([...entities, ...fileEntities])
   let allEdges = deduplicateEdges([...edges, ...containsEdges])
+
+  // Phase 13: Stamp scope + commit_sha on every entity and edge
+  if (scopeInfo) {
+    allEntities = allEntities.map((e) => ({ ...e, scope: scopeInfo.scope, commit_sha: scopeInfo.commitSha }))
+    allEdges = allEdges.map((e) => ({ ...e, scope: scopeInfo.scope, commit_sha: scopeInfo.commitSha }))
+  }
 
   if (indexVersion) {
     allEntities = allEntities.map((e) => ({ ...e, index_version: indexVersion }))

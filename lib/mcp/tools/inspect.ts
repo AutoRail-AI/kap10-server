@@ -4,6 +4,7 @@
 
 import type { Container } from "@/lib/di/container"
 import { resolveEntityWithOverlay } from "./dirty-buffer"
+import { isPrimaryScope, resolveScope } from "./scope-resolver"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
 
@@ -28,12 +29,16 @@ export const GET_FUNCTION_SCHEMA = {
         type: "number",
         description: "Line number (use with file for positional lookup)",
       },
+      scope: {
+        type: "string",
+        description: "Entity scope: 'primary' (default), 'branch:{name}', or 'workspace:{keyId}'",
+      },
     },
   },
 }
 
 export async function handleGetFunction(
-  args: { name?: string; file?: string; line?: number },
+  args: { name?: string; file?: string; line?: number; scope?: string },
   ctx: McpAuthContext,
   container: Container
 ) {
@@ -42,6 +47,7 @@ export async function handleGetFunction(
     return formatToolError("No repository context. This API key is not scoped to a repository.")
   }
 
+  const scope = resolveScope(args, ctx)
   let entity = null
 
   // P5.6-ADV-05: Check dirty buffer overlay first for name-based lookups
@@ -82,32 +88,36 @@ export async function handleGetFunction(
   }
 
   if (args.name) {
-    // Search by name
-    const results = await container.graphStore.searchEntities(
-      ctx.orgId,
-      repoId,
-      args.name,
-      5
-    )
-    const match = results.find(
-      (r) => r.name === args.name && (r.kind === "function" || r.kind === "method")
-    ) ?? results[0]
-    if (match) {
-      // Get full entity by searching in the file
-      const fileEntities = await container.graphStore.getEntitiesByFile(
-        ctx.orgId,
-        repoId,
-        match.file_path
+    // Search by name — use scope-aware query for non-primary scopes
+    if (!isPrimaryScope(scope)) {
+      const scopedResults = await container.graphStore.queryEntitiesWithScope(
+        ctx.orgId, repoId, scope, { limit: 50 }
       )
-      entity = fileEntities.find((e) => e.name === args.name) ?? null
+      const match = scopedResults.find(
+        (r) => r.name === args.name && (r.kind === "function" || r.kind === "method")
+      ) ?? scopedResults.find((r) => r.name === args.name)
+      entity = match ?? null
+    } else {
+      const results = await container.graphStore.searchEntities(
+        ctx.orgId, repoId, args.name, 5
+      )
+      const match = results.find(
+        (r) => r.name === args.name && (r.kind === "function" || r.kind === "method")
+      ) ?? results[0]
+      if (match) {
+        const fileEntities = await container.graphStore.getEntitiesByFile(
+          ctx.orgId, repoId, match.file_path
+        )
+        entity = fileEntities.find((e) => e.name === args.name) ?? null
+      }
     }
   } else if (args.file && args.line !== undefined) {
-    // Search by file + line
-    const entities = await container.graphStore.getEntitiesByFile(
-      ctx.orgId,
-      repoId,
-      args.file
-    )
+    // Search by file + line — use scope-aware query for non-primary scopes
+    const entities = !isPrimaryScope(scope)
+      ? await container.graphStore.queryEntitiesWithScope(
+          ctx.orgId, repoId, scope, { filePath: args.file }
+        )
+      : await container.graphStore.getEntitiesByFile(ctx.orgId, repoId, args.file)
     entity = entities.find(
       (e) =>
         (e.kind === "function" || e.kind === "method") &&
@@ -206,13 +216,17 @@ export const GET_CLASS_SCHEMA = {
         type: "string",
         description: "Class name to look up",
       },
+      scope: {
+        type: "string",
+        description: "Entity scope: 'primary' (default), 'branch:{name}', or 'workspace:{keyId}'",
+      },
     },
     required: ["name"],
   },
 }
 
 export async function handleGetClass(
-  args: { name: string },
+  args: { name: string; scope?: string },
   ctx: McpAuthContext,
   container: Container
 ) {
@@ -220,6 +234,8 @@ export async function handleGetClass(
   if (!repoId) {
     return formatToolError("No repository context. This API key is not scoped to a repository.")
   }
+
+  const scope = resolveScope(args, ctx)
 
   if (!args.name) {
     return formatToolError("name parameter is required")
@@ -261,27 +277,32 @@ export async function handleGetClass(
     // Overlay is best-effort, fall through to committed entities
   }
 
-  // Search for the class
-  const results = await container.graphStore.searchEntities(
-    ctx.orgId,
-    repoId,
-    args.name,
-    5
-  )
-  const match = results.find(
-    (r) => r.name === args.name && (r.kind === "class" || r.kind === "struct")
-  )
+  // Search for the class — scope-aware for non-primary scopes
+  let match
+  if (!isPrimaryScope(scope)) {
+    const scopedResults = await container.graphStore.queryEntitiesWithScope(
+      ctx.orgId, repoId, scope, { limit: 50 }
+    )
+    match = scopedResults.find(
+      (r) => r.name === args.name && (r.kind === "class" || r.kind === "struct")
+    )
+  } else {
+    const results = await container.graphStore.searchEntities(ctx.orgId, repoId, args.name, 5)
+    match = results.find(
+      (r) => r.name === args.name && (r.kind === "class" || r.kind === "struct")
+    )
+  }
 
   if (!match) {
     return formatToolError(`Class "${args.name}" not found in this repository`)
   }
 
   // Get entities in the same file to find methods
-  const fileEntities = await container.graphStore.getEntitiesByFile(
-    ctx.orgId,
-    repoId,
-    match.file_path
-  )
+  const fileEntities = !isPrimaryScope(scope)
+    ? await container.graphStore.queryEntitiesWithScope(
+        ctx.orgId, repoId, scope, { filePath: match.file_path }
+      )
+    : await container.graphStore.getEntitiesByFile(ctx.orgId, repoId, match.file_path)
 
   const classEntity = fileEntities.find((e) => e.name === args.name)
   if (!classEntity) {
@@ -368,13 +389,17 @@ export const GET_FILE_SCHEMA = {
         type: "string",
         description: "File path (repo-root-relative, e.g., src/auth/login.ts)",
       },
+      scope: {
+        type: "string",
+        description: "Entity scope: 'primary' (default), 'branch:{name}', or 'workspace:{keyId}'",
+      },
     },
     required: ["path"],
   },
 }
 
 export async function handleGetFile(
-  args: { path: string },
+  args: { path: string; scope?: string },
   ctx: McpAuthContext,
   container: Container
 ) {
@@ -383,15 +408,17 @@ export async function handleGetFile(
     return formatToolError("No repository context. This API key is not scoped to a repository.")
   }
 
+  const scope = resolveScope(args, ctx)
+
   if (!args.path) {
     return formatToolError("path parameter is required")
   }
 
-  const entities = await container.graphStore.getEntitiesByFile(
-    ctx.orgId,
-    repoId,
-    args.path
-  )
+  const entities = !isPrimaryScope(scope)
+    ? await container.graphStore.queryEntitiesWithScope(
+        ctx.orgId, repoId, scope, { filePath: args.path }
+      )
+    : await container.graphStore.getEntitiesByFile(ctx.orgId, repoId, args.path)
 
   if (entities.length === 0) {
     return formatToolError(`File "${args.path}" not found or contains no indexed entities`)

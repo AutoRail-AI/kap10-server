@@ -1,25 +1,108 @@
 /**
- * unerr push — .gitignore-aware zip upload + trigger indexing.
+ * unerr push — Bootstrap a local repository for indexing via isomorphic-git.
+ *
+ * Phase 13 (E-01): Replaces the old zip-upload flow with a proper Git-based
+ * initial push. Uses the same isomorphic-git infrastructure as `unerr sync`.
+ *
+ * Flow:
+ *   1. Collect all tracked files (respects .gitignore + .unerrignore)
+ *   2. Initialize .unerr/git if needed, set remote to API proxy
+ *   3. Stage all files → commit → push to refs/heads/main
+ *   4. Call POST /api/repos to trigger indexing
+ *
+ * After the initial push, subsequent updates should use `unerr sync`.
  */
+
 import { Command } from "commander"
-import * as fs from "node:fs"
-import * as path from "node:path"
+import { createHash } from "node:crypto"
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs"
+import { join, relative } from "node:path"
+import git from "isomorphic-git"
+import fs from "node:fs"
+
+import type { HttpClient } from "isomorphic-git"
+
 import { getCredentials } from "./auth.js"
 import { createIgnoreFilter } from "../ignore.js"
 
-function loadConfig(): { repoId: string; serverUrl: string; orgId: string } | null {
-  const configPath = path.join(process.cwd(), ".unerr", "config.json")
-  if (!fs.existsSync(configPath)) return null
-  const raw = fs.readFileSync(configPath, "utf-8")
-  return JSON.parse(raw) as { repoId: string; serverUrl: string; orgId: string }
+/** Lazy-load isomorphic-git's Node HTTP client. */
+let _httpClient: HttpClient | null = null
+function getHttpClient(): HttpClient {
+  if (!_httpClient) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    _httpClient = require("isomorphic-git/http/node") as HttpClient
+  }
+  return _httpClient
+}
+
+interface ProjectConfig {
+  repoId: string
+  serverUrl: string
+  orgId: string
+  branch?: string
+}
+
+function loadConfig(): ProjectConfig | null {
+  const configPath = join(process.cwd(), ".unerr", "config.json")
+  if (!existsSync(configPath)) return null
+  try {
+    return JSON.parse(readFileSync(configPath, "utf-8")) as ProjectConfig
+  } catch {
+    return null
+  }
+}
+
+/** Derive a stable short ID from the API key. */
+function deriveKeyId(apiKey: string): string {
+  return createHash("sha256").update(apiKey).digest("hex").slice(0, 12)
+}
+
+/** Collect all files that should be pushed (respects ignore rules). */
+async function collectPushFiles(cwd: string): Promise<string[]> {
+  const ignore = await createIgnoreFilter(cwd)
+  const files: string[] = []
+
+  function walk(dir: string): void {
+    const entries = readdirSync(dir, { withFileTypes: true })
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name)
+      const relPath = relative(cwd, fullPath)
+
+      if (entry.name === ".unerr" || entry.name === ".git") continue
+      if (ignore.ignores(relPath)) continue
+
+      if (entry.isDirectory()) {
+        walk(fullPath)
+      } else if (entry.isFile()) {
+        files.push(relPath)
+      }
+    }
+  }
+
+  walk(cwd)
+  return files
+}
+
+/** Initialize the .unerr/git directory for isomorphic-git. */
+async function ensureGitDir(cwd: string, serverUrl: string, orgId: string, repoId: string): Promise<string> {
+  const gitdir = join(cwd, ".unerr", "git")
+
+  if (!existsSync(join(gitdir, "HEAD"))) {
+    mkdirSync(gitdir, { recursive: true })
+    await git.init({ fs, dir: cwd, gitdir })
+
+    const remoteUrl = `${serverUrl}/api/git/${orgId}/${repoId}`
+    await git.addRemote({ fs, dir: cwd, gitdir, remote: "origin", url: remoteUrl })
+  }
+
+  return gitdir
 }
 
 export function registerPushCommand(program: Command): void {
   program
     .command("push")
-    .description("Upload local repository for indexing")
-    .option("--local-parse", "Use local AST extraction (requires unerr-parse binary)")
-    .action(async (_opts: { localParse?: boolean }) => {
+    .description("Upload local repository for indexing (initial bootstrap)")
+    .action(async () => {
       try {
         const config = loadConfig()
         if (!config) {
@@ -33,100 +116,67 @@ export function registerPushCommand(program: Command): void {
           process.exit(1)
         }
 
-        console.log("Preparing upload...")
+        const cwd = process.cwd()
+        const keyId = deriveKeyId(creds.apiKey)
+        const ref = `refs/unerr/ws/${keyId}`
 
-        // Phase 1: Request upload URL
-        const uploadRes = await fetch(`${config.serverUrl}/api/cli/index`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${creds.apiKey}`,
-          },
-          body: JSON.stringify({
-            phase: "request_upload",
-            repoId: config.repoId,
-          }),
-        })
-
-        if (!uploadRes.ok) {
-          const body = (await uploadRes.json()) as { error?: string }
-          console.error(`Upload request failed: ${body.error ?? uploadRes.statusText}`)
+        console.log("Collecting files...")
+        const files = await collectPushFiles(cwd)
+        if (files.length === 0) {
+          console.error("No files found to push. Check your .gitignore and .unerrignore.")
           process.exit(1)
         }
+        console.log(`Found ${files.length} files`)
 
-        const { uploadUrl, uploadPath } = (await uploadRes.json()) as {
-          uploadUrl: string
-          uploadPath: string
+        // Initialize git dir and stage all files
+        const gitdir = await ensureGitDir(cwd, config.serverUrl, config.orgId, config.repoId)
+
+        console.log("Staging files...")
+        for (const file of files) {
+          await git.add({ fs, dir: cwd, gitdir, filepath: file })
         }
 
-        // Create ignore-aware zip using archiver
-        const archiver = (await import("archiver")).default
-        const ig = await createIgnoreFilter(process.cwd())
+        // Create the initial commit
+        const commitSha = await git.commit({
+          fs,
+          dir: cwd,
+          gitdir,
+          message: `Initial push via unerr push (${files.length} files)`,
+          author: {
+            name: "unerr",
+            email: "cli@unerr.io",
+          },
+        })
+        console.log(`Committed ${commitSha.slice(0, 8)} (${files.length} files)`)
 
-        // Create zip buffer
-        const archive = archiver("zip", { zlib: { level: 6 } })
-        const chunks: Buffer[] = []
-
-        archive.on("data", (chunk: Buffer) => chunks.push(chunk))
-
-        // Walk directory and add non-ignored files
-        function walkDir(dir: string, relativeTo: string) {
-          const entries = fs.readdirSync(dir, { withFileTypes: true })
-          for (const entry of entries) {
-            const fullPath = path.join(dir, entry.name)
-            const relPath = path.relative(relativeTo, fullPath)
-            if (ig.ignores(relPath)) continue
-            if (entry.isDirectory()) {
-              walkDir(fullPath, relativeTo)
-            } else if (entry.isFile()) {
-              archive.file(fullPath, { name: relPath })
+        // Push to the API proxy
+        console.log("Pushing to server...")
+        const http = getHttpClient()
+        await git.push({
+          fs,
+          http,
+          dir: cwd,
+          gitdir,
+          remote: "origin",
+          ref: "HEAD",
+          remoteRef: ref,
+          force: true,
+          onAuth: () => ({ username: "x-token", password: creds.apiKey }),
+          onProgress: (progress) => {
+            if (progress.phase === "Counting objects") {
+              process.stdout.write(`\r  ${progress.phase}: ${progress.loaded}`)
+            } else if (progress.phase === "Compressing objects") {
+              process.stdout.write(`\r  ${progress.phase}: ${progress.loaded}/${progress.total ?? "?"}`)
+            } else if (progress.phase) {
+              process.stdout.write(`\r  ${progress.phase}`)
             }
-          }
-        }
-
-        walkDir(process.cwd(), process.cwd())
-        await archive.finalize()
-
-        // Wait for all chunks
-        await new Promise<void>((resolve) => archive.on("end", resolve))
-        const zipBuffer = Buffer.concat(chunks)
-
-        console.log(`Uploading ${(zipBuffer.length / 1024 / 1024).toFixed(1)}MB...`)
-
-        // Upload zip
-        const putRes = await fetch(uploadUrl, {
-          method: "PUT",
-          headers: { "Content-Type": "application/zip" },
-          body: zipBuffer,
-        })
-
-        if (!putRes.ok) {
-          console.error(`Upload failed: ${putRes.statusText}`)
-          process.exit(1)
-        }
-
-        // Phase 2: Trigger indexing
-        const triggerRes = await fetch(`${config.serverUrl}/api/cli/index`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${creds.apiKey}`,
           },
-          body: JSON.stringify({
-            phase: "trigger_index",
-            repoId: config.repoId,
-            uploadPath,
-          }),
         })
+        process.stdout.write("\n")
 
-        if (!triggerRes.ok) {
-          const body = (await triggerRes.json()) as { error?: string }
-          console.error(`Index trigger failed: ${body.error ?? triggerRes.statusText}`)
-          process.exit(1)
-        }
-
-        const triggerResult = (await triggerRes.json()) as { workflowId: string }
-        console.log(`Indexing started (workflow: ${triggerResult.workflowId})`)
+        console.log("Push complete. Indexing will begin automatically.")
+        console.log("\nFor ongoing sync, use: unerr sync")
+        console.log("For continuous mode, use: unerr sync --watch")
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error)
         console.error(`Error: ${message}`)

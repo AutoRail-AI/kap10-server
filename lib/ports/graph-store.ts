@@ -1,4 +1,4 @@
-import type { ADRDoc, BlueprintData, BoundedContextFinding, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, EntityWarningDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, PatternFilter, ProjectStats, RuleDoc, RuleExceptionDoc, RuleFilter, RuleHealthDoc, SearchResult, SnippetDoc, SnippetFilter, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "./types"
+import type { ADRDoc, BlueprintData, BoundedContextFinding, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDelta, EntityDoc, EntityWarningDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, PatternFilter, ProjectStats, RuleDoc, RuleExceptionDoc, RuleFilter, RuleHealthDoc, SearchResult, SnippetDoc, SnippetFilter, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "./types"
 
 export interface IGraphStore {
   bootstrapGraphSchema(): Promise<void>
@@ -210,6 +210,29 @@ export interface IGraphStore {
   getEntityWarnings(orgId: string, entityId: string): Promise<EntityWarningDoc[]>
   /** Get all warnings for a repo */
   getEntityWarningsByRepo(orgId: string, repoId: string): Promise<EntityWarningDoc[]>
+
+  // Phase 13 D-04: Scope-aware queries with primary fallback
+  /** Query entities for a repo+scope, falling back to primary for unmatched keys.
+   *  Tombstoned entities are automatically excluded from the primary fallback. */
+  queryEntitiesWithScope(
+    orgId: string,
+    repoId: string,
+    scope: string,
+    opts?: { kind?: string; filePath?: string; limit?: number }
+  ): Promise<EntityDoc[]>
+
+  // Phase 13 D-06: Atomic branch delta application
+  /** Apply a branch delta: insert/update scoped entities, create tombstones for deleted entities.
+   *  Batched in chunks of 5000 docs. Idempotent — safe to retry. */
+  applyBranchDelta(
+    orgId: string,
+    repoId: string,
+    scope: string,
+    delta: EntityDelta,
+  ): Promise<{ entitiesWritten: number; tombstonesCreated: number; edgesWritten: number }>
+
+  /** Delete all entities and edges for a specific scope (used during scope cleanup/eviction) */
+  deleteScopedEntities(orgId: string, repoId: string, scope: string): Promise<number>
 
   // D-03: Close rewind → rule tracing loop
   /** Mark a ledger entry as having generated a rule (sets rule_generated=true and links rule_id) */

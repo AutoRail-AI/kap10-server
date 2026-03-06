@@ -19,7 +19,7 @@ const LOCK_RETRY_DELAY = 200 // ms
 export const SYNC_LOCAL_DIFF_SCHEMA = {
   name: "sync_local_diff",
   description:
-    "Sync your local uncommitted changes to the cloud knowledge graph. Provide the output of `git diff` and the tool will update entity information (function signatures, new functions, etc.) so subsequent tool calls reflect your latest code. Lockfiles and build artifacts are automatically excluded. Optionally records prompt metadata in the ledger for timeline tracking.",
+    "[DEPRECATED — use `unerr sync` CLI instead] Sync your local uncommitted changes to the cloud knowledge graph. Provide the output of `git diff` and the tool will update entity information (function signatures, new functions, etc.) so subsequent tool calls reflect your latest code. Lockfiles and build artifacts are automatically excluded. Optionally records prompt metadata in the ledger for timeline tracking. NOTE: This tool is superseded by the `unerr sync` command which provides real-time workspace tracking via Git.",
   inputSchema: {
     type: "object" as const,
     properties: {

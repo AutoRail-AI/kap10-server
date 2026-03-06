@@ -21,6 +21,31 @@
 
 ---
 
+### Phase 13 Prerequisite: Workspace Scoping
+
+Phase 12's collision detection is significantly enhanced by Phase 13's workspace tracking ([PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](./PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md)):
+
+**Before Phase 13:** Collision detection relies on `sync_local_diff` MCP tool calls — the AI agent must explicitly sync diffs before collision can be detected. If the agent doesn't call `sync_local_diff`, collisions are invisible.
+
+**After Phase 13:** Each user has a persistent workspace ref (`refs/unerr/users/{userId}/workspace`) on the internal gitserver, continuously synced via `unerr sync`. The collision detector can compare **scoped entities** across workspaces:
+
+- When User A syncs changes to `authenticate()`, their workspace creates a scoped entity: `scope = "workspace:user-A"`
+- When User B also modifies `authenticate()`, their sync creates: `scope = "workspace:user-B"`
+- The collision detector queries all scoped entities for the same `(repo_id, name, file_path)` across different workspace scopes
+- Collisions are detected at the **entity level** (not just "same file") with full knowledge of what changed
+
+**Impact on `entity_activity` collection:** The `branch` field in activity records now maps to the workspace scope (e.g., `"workspace:user-A"`), enabling scope-aware collision queries:
+
+```aql
+FOR a IN entity_activity
+  FILTER a.repoId == @repoId AND a.entityKey == @entityKey
+  FILTER a.branch != @currentScope  // exclude current user's own workspace
+  FILTER a.timestamp > DATE_SUBTRACT(DATE_NOW(), 30, "minute")
+  RETURN a
+```
+
+---
+
 ## Part 1: Architectural Deep Dive
 
 ### 1. Core User Flows

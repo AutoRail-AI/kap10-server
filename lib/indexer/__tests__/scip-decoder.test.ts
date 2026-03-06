@@ -4,6 +4,8 @@
  * Since we can't easily generate real .scip files in tests,
  * we test the exported parseSCIPSymbol function and verify
  * the decoder handles edge cases gracefully.
+ *
+ * @vitest-environment node
  */
 import { mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"

@@ -59,6 +59,30 @@ export class SupabaseStorageAdapter implements IStorageProvider {
     if (error) throw new Error(`Storage delete error: ${error.message}`)
   }
 
+  async listFiles(bucket: string, prefix: string): Promise<string[]> {
+    const client = getClient()
+    const paths: string[] = []
+
+    // Supabase Storage list() returns objects at one folder level.
+    // We split the prefix into folder + search to list within the right directory.
+    const lastSlash = prefix.lastIndexOf("/")
+    const folder = lastSlash >= 0 ? prefix.slice(0, lastSlash) : ""
+    const search = lastSlash >= 0 ? prefix.slice(lastSlash + 1) : prefix
+
+    const { data, error } = await client.storage
+      .from(bucket)
+      .list(folder, { search, limit: 10000 })
+
+    if (error) throw new Error(`Storage list error: ${error.message}`)
+    if (data) {
+      for (const item of data) {
+        paths.push(folder ? `${folder}/${item.name}` : item.name)
+      }
+    }
+
+    return paths
+  }
+
   async healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }> {
     const start = Date.now()
     try {

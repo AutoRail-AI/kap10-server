@@ -13,6 +13,7 @@ import type { BatchProcessingOptions, BatchProcessingResult, ILLMProvider } from
 import type { CostBreakdown, IObservability, ModelUsageEntry } from "@/lib/ports/observability"
 import type { IPatternEngine, PatternMatch } from "@/lib/ports/pattern-engine"
 import type { ApiKeyRecord, DeletionLogRecord, GitHubInstallationRecord, IRelationalStore, PipelineRunRecord, RepoRecord, WorkspaceRecord } from "@/lib/ports/relational-store"
+import type { IInternalGitServer, GitChangedFile, WorktreeHandle } from "@/lib/ports/internal-git-server"
 import type { IStorageProvider } from "@/lib/ports/storage-provider"
 import type { ADRDoc, BlueprintData, DomainOntologyDoc, DriftScoreDoc, EdgeDoc, EntityDoc, FeatureAggregation, FeatureDoc, HealthReportDoc, ImpactReportDoc, ImpactResult, ImportChain, IndexEventDoc, JustificationDoc, LedgerEntry, LedgerEntryStatus, LedgerSummary, LedgerTimelineQuery, MinedPatternDoc, PaginatedResult, PatternDoc, PipelineStepRecord, ProjectStats, PrReviewCommentRecord, PrReviewRecord, ReviewConfig, RuleDoc, RuleExceptionDoc, RuleHealthDoc, SearchResult, SnippetDoc, SubgraphResult, TokenUsageEntry, TokenUsageSummary, WorkingSnapshot } from "@/lib/ports/types"
 import { DEFAULT_REVIEW_CONFIG, validateLedgerTransition } from "@/lib/ports/types"
@@ -705,6 +706,56 @@ export class InMemoryGraphStore implements IGraphStore {
       ;(entry as unknown as Record<string, unknown>).rule_generated = true
       ;(entry as unknown as Record<string, unknown>).rule_id = ruleId
     }
+  }
+
+  // Phase 13 D-04: Scope-aware queries (fake — returns all entities for repo, ignores scope)
+  async queryEntitiesWithScope(
+    _orgId: string,
+    _repoId: string,
+    _scope: string,
+    _opts?: { kind?: string; filePath?: string; limit?: number },
+  ): Promise<import("@/lib/ports/types").EntityDoc[]> {
+    const limit = _opts?.limit ?? 10000
+    const results: import("@/lib/ports/types").EntityDoc[] = []
+    for (const e of this.entities.values()) {
+      if (e.repo_id !== _repoId) continue
+      if (_opts?.kind && e.kind !== _opts.kind) continue
+      if (_opts?.filePath && e.file_path !== _opts.filePath) continue
+      results.push(e)
+      if (results.length >= limit) break
+    }
+    return results
+  }
+
+  // Phase 13 D-06: Branch delta application (fake — stores entities in map)
+  async applyBranchDelta(
+    orgId: string,
+    repoId: string,
+    scope: string,
+    delta: import("@/lib/ports/types").EntityDelta,
+  ): Promise<{ entitiesWritten: number; tombstonesCreated: number; edgesWritten: number }> {
+    const toWrite = [...delta.added, ...delta.modified]
+    for (const e of toWrite) {
+      const entity = { ...e, scope, org_id: e.org_id ?? orgId, repo_id: e.repo_id ?? repoId }
+      this.entities.set(entity.id, entity)
+    }
+    return {
+      entitiesWritten: toWrite.length,
+      tombstonesCreated: delta.deletedKeys.length,
+      edgesWritten: delta.addedEdges.length + delta.modifiedEdges.length,
+    }
+  }
+
+  // Phase 13: Delete all scoped entities
+  async deleteScopedEntities(_orgId: string, repoId: string, scope: string): Promise<number> {
+    let removed = 0
+    for (const [key, e] of this.entities) {
+      if (e.repo_id === repoId && (e as { scope?: string }).scope === scope) {
+        this.entities.delete(key)
+        removed++
+      }
+    }
+    return removed
   }
 }
 
@@ -1557,6 +1608,13 @@ export class InMemoryStorageProvider implements IStorageProvider {
     this.store.delete(`${bucket}/${path}`)
   }
 
+  async listFiles(bucket: string, prefix: string): Promise<string[]> {
+    const fullPrefix = `${bucket}/${prefix}`
+    return Array.from(this.store.keys())
+      .filter((key) => key.startsWith(fullPrefix))
+      .map((key) => key.slice(bucket.length + 1))
+  }
+
   async healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }> {
     return { status: "up", latencyMs: 0 }
   }
@@ -1564,5 +1622,108 @@ export class InMemoryStorageProvider implements IStorageProvider {
   /** Test helper: put a file directly into the in-memory store */
   putFile(bucket: string, path: string, data: Buffer): void {
     this.store.set(`${bucket}/${path}`, data)
+  }
+}
+
+// ─── Phase 13: Internal Git Server ──────────────────────────────────────────
+
+/**
+ * In-memory fake for IInternalGitServer.
+ * Simulates bare repos as Map<ref, sha> per orgId/repoId.
+ * No actual git operations — purely for unit testing workflow/activity logic.
+ */
+export class FakeInternalGitServer implements IInternalGitServer {
+  /** key = "orgId/repoId", value = Map<refName, commitSha> */
+  private repos = new Map<string, Map<string, string>>()
+  /** key = worktree path, value = metadata */
+  private worktrees = new Map<string, { orgId: string; repoId: string; sha: string }>()
+  private worktreeCounter = 0
+
+  private repoKey(orgId: string, repoId: string): string {
+    return `${orgId}/${repoId}`
+  }
+
+  private getRepoRefs(orgId: string, repoId: string): Map<string, string> {
+    const key = this.repoKey(orgId, repoId)
+    const refs = this.repos.get(key)
+    if (!refs) throw new Error(`[FakeGitServer] Repo not found: ${key}`)
+    return refs
+  }
+
+  async ensureCloned(orgId: string, repoId: string, _cloneUrl: string): Promise<void> {
+    const key = this.repoKey(orgId, repoId)
+    if (!this.repos.has(key)) {
+      // Simulate a freshly cloned repo with a HEAD ref
+      const refs = new Map<string, string>()
+      refs.set("refs/heads/main", "fake-sha-" + Date.now().toString(36))
+      this.repos.set(key, refs)
+    }
+  }
+
+  async syncFromRemote(orgId: string, repoId: string): Promise<string> {
+    const refs = this.getRepoRefs(orgId, repoId)
+    // Return whatever HEAD/main points to
+    return refs.get("refs/heads/main") ?? refs.values().next().value ?? "0000000000000000000000000000000000000000"
+  }
+
+  async createWorktree(orgId: string, repoId: string, ref: string): Promise<WorktreeHandle> {
+    const refs = this.getRepoRefs(orgId, repoId)
+    // Resolve ref: check exact match first, then try as a raw SHA
+    const sha = refs.get(ref) ?? refs.get(`refs/heads/${ref}`) ?? ref
+    this.worktreeCounter++
+    const path = `/tmp/unerr-worktrees/fake-wt-${this.worktreeCounter}`
+    this.worktrees.set(path, { orgId, repoId, sha })
+    return { path, commitSha: sha }
+  }
+
+  async removeWorktree(worktreePath: string): Promise<void> {
+    // Idempotent: silently succeeds even if the worktree doesn't exist
+    this.worktrees.delete(worktreePath)
+  }
+
+  async diffFiles(_orgId: string, _repoId: string, _fromSha: string, _toSha: string): Promise<GitChangedFile[]> {
+    // Fake returns empty diff by default — tests can override via setDiffResult()
+    return this._pendingDiff ?? []
+  }
+
+  async resolveRef(orgId: string, repoId: string, ref: string): Promise<string> {
+    const refs = this.getRepoRefs(orgId, repoId)
+    const sha = refs.get(ref) ?? refs.get(`refs/heads/${ref}`)
+    if (!sha) throw new Error(`[FakeGitServer] Ref not found: ${ref} in ${orgId}/${repoId}`)
+    return sha
+  }
+
+  async pushWorkspaceRef(orgId: string, repoId: string, userId: string, commitSha: string): Promise<void> {
+    const refs = this.getRepoRefs(orgId, repoId)
+    refs.set(`refs/unerr/users/${userId}/workspace`, commitSha)
+  }
+
+  async deleteRef(orgId: string, repoId: string, ref: string): Promise<void> {
+    const key = this.repoKey(orgId, repoId)
+    const refs = this.repos.get(key)
+    if (refs) {
+      refs.delete(ref)
+    }
+    // Idempotent: no error if repo or ref doesn't exist
+  }
+
+  // ─── Test Helpers ────────────────────────────────────────────────────────
+
+  private _pendingDiff: GitChangedFile[] | undefined
+
+  /** Pre-configure the diff result for the next diffFiles() call */
+  setDiffResult(files: GitChangedFile[]): void {
+    this._pendingDiff = files
+  }
+
+  /** Seed a repo with known refs (for test setup) */
+  seedRepo(orgId: string, repoId: string, refs: Record<string, string>): void {
+    const key = this.repoKey(orgId, repoId)
+    this.repos.set(key, new Map(Object.entries(refs)))
+  }
+
+  /** Check how many worktrees are currently "alive" (not removed) */
+  get activeWorktreeCount(): number {
+    return this.worktrees.size
   }
 }

@@ -63,7 +63,7 @@ Managed by **Prisma** (ORM) and Supabase migrations (raw SQL). All models use `@
 
 | Table | Purpose | Key Relations |
 |---|---|---|
-| `repos` | Connected repositories | FK to many child tables |
+| `repos` | Connected repositories. Phase 13 adds `branch_tracking_enabled` and `workspace_tracking_enabled` boolean columns (both default `false`). | FK to many child tables |
 | `github_installations` | GitHub App installations per org | — |
 | `deletion_logs` | Async deletion tracking | — |
 | `api_keys` | MCP API keys (org or repo-scoped) | FK → `repos` |
@@ -77,6 +77,10 @@ Managed by **Prisma** (ORM) and Supabase migrations (raw SQL). All models use `@
 | `ledger_snapshots` | Prompt ledger file snapshots | FK → `repos` |
 | `rule_embeddings` | Anti-pattern rule embeddings (pgvector 768d) | — |
 | `pipeline_runs` | Pipeline run history & per-step tracking | FK → `repos` |
+| `scip_indexes` | SCIP index artifact tracking (commit_sha, scope, storage_path, size_bytes, indexer) | FK → `repos` |
+| `branch_refs` | Tracked branch heads (branch_name, commit_sha, indexed_at) | FK → `repos` |
+| `workspace_syncs` | Per-user workspace sync state (user_id, workspace_ref, last_synced_sha, merkle_root_hash) | FK → `repos` |
+| `nearest_indexed_commits` | Visible Uploads algorithm support (commit_sha, nearest_sha, distance) | FK → `repos` |
 
 **Vector indexes** (HNSW, cosine distance):
 - `entity_embeddings.embedding` — m=16, ef_construction=64
@@ -85,6 +89,7 @@ Managed by **Prisma** (ORM) and Supabase migrations (raw SQL). All models use `@
 **Storage buckets** (Supabase Storage):
 - `graph-snapshots` — Msgpack graph exports (100 MB limit)
 - `cli_uploads` — CLI file uploads (500 MB limit)
+- `scip-indexes` — SCIP index artifacts (100 MB limit)
 
 ## Tenant Isolation
 
@@ -108,6 +113,10 @@ organization (public.organization)
         │     └── pr_review_comments (unerr.pr_review_comments)
         ├── ledger_snapshots (unerr.ledger_snapshots)
         ├── pipeline_runs (unerr.pipeline_runs)
+        ├── scip_indexes (unerr.scip_indexes)
+        ├── branch_refs (unerr.branch_refs)
+        ├── workspace_syncs (unerr.workspace_syncs)
+        ├── nearest_indexed_commits (unerr.nearest_indexed_commits)
         └── active_vector_versions (unerr.active_vector_versions)
 ```
 

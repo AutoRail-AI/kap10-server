@@ -11,6 +11,10 @@ export interface EntityDoc {
   name: string
   file_path: string
   index_version?: string
+  /** Phase 13: Scope tag — "primary", "branch:{name}", or "workspace:{userId}" */
+  scope?: string
+  /** Phase 13: Commit SHA this entity was extracted from */
+  commit_sha?: string | null
   /** Pre-computed blast radius: number of inbound `calls` edges */
   fan_in?: number
   /** Pre-computed blast radius: number of outbound `calls` edges */
@@ -27,6 +31,10 @@ export interface EdgeDoc {
   repo_id: string
   kind: string
   index_version?: string
+  /** Phase 13: Scope tag — "primary", "branch:{name}", or "workspace:{userId}" */
+  scope?: string
+  /** Phase 13: Commit SHA this edge was extracted from */
+  commit_sha?: string | null
   [key: string]: unknown
 }
 
@@ -410,6 +418,17 @@ export interface EntityDiff {
   added: EntityDoc[]
   updated: EntityDoc[]
   deleted: EntityDoc[]
+}
+
+/** Phase 13 D-05: Delta between two entity sets (base vs branch) for atomic graph swap */
+export interface EntityDelta {
+  added: EntityDoc[]
+  modified: EntityDoc[]
+  /** Entity keys that exist in base but not in branch — will be tombstoned */
+  deletedKeys: string[]
+  addedEdges: EdgeDoc[]
+  modifiedEdges: EdgeDoc[]
+  deletedEdgeKeys: string[]
 }
 
 // Phase I-01: Negative Knowledge — entity-level warnings from reverted AI changes

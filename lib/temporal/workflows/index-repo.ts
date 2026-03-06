@@ -4,6 +4,7 @@ import { embedRepoWorkflow } from "./embed-repo"
 import { syncLocalGraphWorkflow } from "./sync-local-graph"
 import type * as graphAnalysis from "../activities/graph-analysis"
 import type * as heavy from "../activities/indexing-heavy"
+import type * as ingestSourceMod from "../activities/ingest-source"
 import type * as light from "../activities/indexing-light"
 import type * as pipelineLogs from "../activities/pipeline-logs"
 import type * as pipelineRun from "../activities/pipeline-run"
@@ -18,6 +19,14 @@ const heavyActivities = proxyActivities<typeof heavy>({
 })
 
 const lightActivities = proxyActivities<typeof light>({
+  taskQueue: "light-llm-queue",
+  startToCloseTimeout: "5m",
+  heartbeatTimeout: "1m",
+  retry: { maximumAttempts: 3 },
+})
+
+// Phase 13: ingestSource runs on light queue (network-bound, not CPU-bound)
+const ingestActivities = proxyActivities<typeof ingestSourceMod>({
   taskQueue: "light-llm-queue",
   startToCloseTimeout: "5m",
   heartbeatTimeout: "1m",
@@ -58,14 +67,28 @@ const cleanupActivities = proxyActivities<typeof workspaceCleanup>({
 
 export const getProgressQuery = defineQuery<number>("getProgress")
 
+/**
+ * Phase 13 input — provider-based, not clone-URL-based.
+ * The workflow calls ingestSource to normalize into a SourceSpec, then
+ * uses worktrees for all SCIP/tree-sitter operations.
+ */
 export interface IndexRepoInput {
   orgId: string
   repoId: string
-  installationId: number
-  cloneUrl: string
+  provider: "github" | "local_cli"
+  /** GitHub repos: installation ID for GitHub App auth */
+  installationId?: number
+  /** GitHub repos: HTTPS clone URL */
+  cloneUrl?: string
   defaultBranch: string
+  /** Local CLI repos: Supabase Storage path (legacy zip upload, pre-Phase 13) */
+  uploadPath?: string
+  /** Shadow reindex version tag */
   indexVersion?: string
+  /** Pipeline run tracking ID */
   runId?: string
+  /** Phase 13: Entity scope (default "primary") */
+  scope?: string
 }
 
 /** Workflow-safe log helper (Temporal sandbox — no require/import of Node modules) */
@@ -81,7 +104,6 @@ function wfLog(level: string, msg: string, ctx: Record<string, unknown>, step?: 
   const extraStr = Object.keys(extra).length > 0 ? ` ${JSON.stringify(extra)}` : ""
   console.log(`[${ts}] [${level.padEnd(5)}] [wf:index-repo] [${orgId}/${repoId}] ${msg}${extraStr}`)
 
-  // Fire-and-forget pipeline log to Redis
   logActivities
     .appendPipelineLog({
       timestamp: ts,
@@ -94,7 +116,6 @@ function wfLog(level: string, msg: string, ctx: Record<string, unknown>, step?: 
     .catch(() => {})
 }
 
-/** Format milliseconds into a human-readable duration string. */
 function formatMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
@@ -111,10 +132,10 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
   classCount: number
 }> {
   const ctx = { organizationId: input.orgId, repoId: input.repoId, runId: input.runId }
+  const scope = input.scope ?? "primary"
   let progress = 0
   setHandler(getProgressQuery, () => progress)
 
-  // Initialize pipeline run tracking if runId is present
   const wfInfo = workflowInfo()
   if (input.runId) {
     await runActivities.initPipelineRun({
@@ -129,28 +150,75 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     })
   }
 
-  wfLog("INFO", "Indexing workflow started", { ...ctx, cloneUrl: input.cloneUrl, defaultBranch: input.defaultBranch }, "Start")
+  wfLog("INFO", "Indexing workflow started", { ...ctx, provider: input.provider, defaultBranch: input.defaultBranch, scope }, "Start")
 
   const pipelineStart = Date.now()
+
+  // Track worktree path so we can clean it up in finally{} if the activity created one
+  let worktreePath: string | null = null
+  let worktreeIsActive = false
+
   try {
     const stepDurations: Record<string, number> = {}
     let t0 = Date.now()
 
-    // Step 1: Clone repo, detect languages, detect monorepo roots
+    // ── Step 0: Ingest source into bare Git object store ────────────────
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "clone", status: "running" })
-    wfLog("INFO", "Step 1/7: Preparing repo intelligence space (clone + scan)", ctx, "Step 1/7")
+    wfLog("INFO", "Step 0/7: Ingesting source into gitserver", ctx, "Step 0/7")
+
+    let commitSha: string | undefined
+    let ref: string | undefined
+
+    try {
+      const ingestResult = await ingestActivities.ingestSource({
+        orgId: input.orgId,
+        repoId: input.repoId,
+        runId: input.runId,
+        provider: input.provider,
+        installationId: input.installationId,
+        cloneUrl: input.cloneUrl,
+        defaultBranch: input.defaultBranch,
+      })
+      commitSha = ingestResult.commitSha
+      ref = ingestResult.ref
+      wfLog("INFO", `Step 0 complete: source ingested — ${commitSha.slice(0, 8)}`, { ...ctx, commitSha, ref }, "Step 0/7")
+    } catch (ingestErr: unknown) {
+      // Gitea may not be available yet — fall through to legacy clone path
+      const msg = ingestErr instanceof Error ? ingestErr.message : String(ingestErr)
+      wfLog("WARN", `ingestSource failed, falling back to legacy clone: ${msg}`, ctx, "Step 0/7")
+    }
+
+    stepDurations.ingest = Date.now() - t0
+
+    // ── Step 1: Create worktree (or legacy clone) and scan ──────────────
+    t0 = Date.now()
+    wfLog("INFO", "Step 1/7: Preparing repo intelligence space", ctx, "Step 1/7")
     const workspace = await heavyActivities.prepareRepoIntelligenceSpace({
       orgId: input.orgId,
       repoId: input.repoId,
       runId: input.runId,
+      commitSha,
+      ref,
+      defaultBranch: input.defaultBranch,
+      provider: input.provider,
       installationId: input.installationId,
       cloneUrl: input.cloneUrl,
-      defaultBranch: input.defaultBranch,
+      uploadPath: input.uploadPath,
     })
+
+    // Track worktree for cleanup
+    if (workspace.isWorktree) {
+      worktreePath = workspace.indexDir
+      worktreeIsActive = true
+    }
+
     progress = 25
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "clone", status: "completed" })
     stepDurations.clone = Date.now() - t0
-    wfLog("INFO", `Step 1 complete: repo intelligence space ready (${formatMs(stepDurations.clone)})`, { ...ctx, languages: workspace.languages, lastSha: workspace.lastSha, durationMs: stepDurations.clone }, "Step 1/7")
+    wfLog("INFO", `Step 1 complete: repo intelligence space ready (${formatMs(stepDurations.clone)})`, { ...ctx, languages: workspace.languages, lastSha: workspace.lastSha, isWorktree: workspace.isWorktree, durationMs: stepDurations.clone }, "Step 1/7")
+
+    // Use resolved commitSha from worktree if available
+    const resolvedSha = workspace.lastSha ?? commitSha ?? null
 
     // Step 1b: Wipe existing graph data so reindex is a clean replace
     t0 = Date.now()
@@ -173,6 +241,8 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
       languages: workspace.languages,
       packageRoots: workspace.packageRoots,
       indexVersion: input.indexVersion,
+      scope,
+      commitSha: resolvedSha,
     })
     progress = 50
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "scip", status: "completed" })
@@ -190,28 +260,31 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
       runId: input.runId,
       coveredFiles: scip.coveredFiles,
       indexVersion: input.indexVersion,
+      scope,
+      commitSha: resolvedSha,
     })
     progress = 75
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "parse", status: "completed" })
     stepDurations.parse = Date.now() - t0
     wfLog("INFO", `Step 3 complete: parsing done (${formatMs(stepDurations.parse)})`, { ...ctx, extraEntities: parse.entityCount, extraEdges: parse.edgeCount, durationMs: stepDurations.parse }, "Step 3/7")
 
-    // Aggregate per-kind counts from both steps (entities already in ArangoDB)
+    // Aggregate per-kind counts
     const fileCount = scip.fileCount + parse.fileCount
     const functionCount = scip.functionCount + parse.functionCount
     const classCount = scip.classCount + parse.classCount
     const totalEntities = scip.entityCount + parse.entityCount
     const totalEdges = scip.edgeCount + parse.edgeCount
 
-    wfLog("INFO", `Entity/edge totals: ${totalEntities} entities (SCIP: ${scip.entityCount}, tree-sitter: ${parse.entityCount}), ${totalEdges} edges (SCIP: ${scip.edgeCount}, tree-sitter: ${parse.edgeCount}) | ${fileCount} files, ${functionCount} functions, ${classCount} classes`, {
-      ...ctx,
-      totalEntities, totalEdges, fileCount, functionCount, classCount,
-      scipEntities: scip.entityCount, treeSitterEntities: parse.entityCount,
-      scipEdges: scip.edgeCount, treeSitterEdges: parse.edgeCount,
-      scipCoveredFiles: scip.coveredFiles.length,
+    wfLog("INFO", `Entity/edge totals: ${totalEntities} entities, ${totalEdges} edges | ${fileCount} files, ${functionCount} functions, ${classCount} classes`, {
+      ...ctx, totalEntities, totalEdges, fileCount, functionCount, classCount,
     }, "Step 3/7")
 
-    // Step 4: Finalize indexing (shadow cleanup + status update — no entity data)
+    // ── Phase 13: Remove worktree ASAP after SCIP/tree-sitter are done ──
+    // Pattern detection (Step 7) also needs the workspace, so we keep it until
+    // after temporal analysis. But the worktree GC cron is the safety net.
+    // For now we leave cleanup to the finally{} block + workspace-cleanup activity.
+
+    // Step 4: Finalize indexing
     t0 = Date.now()
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "finalize", status: "running" })
     wfLog("INFO", "Step 4/7: Finalizing index", ctx, "Step 4/7")
@@ -230,7 +303,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     wfLog("INFO", `Step 4 complete: finalized (${formatMs(stepDurations.finalize)})`, { ...ctx, durationMs: stepDurations.finalize }, "Step 4/7")
     const result = { entitiesWritten: totalEntities, edgesWritten: totalEdges, fileCount, functionCount, classCount }
 
-    // Step 4b: Pre-compute blast radius (fan-in/fan-out for god function detection)
+    // Step 4b: Pre-compute blast radius
     t0 = Date.now()
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "blastRadius", status: "running" })
     wfLog("INFO", "Step 4b: Pre-computing blast radius", ctx, "Step 4b")
@@ -243,7 +316,7 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     stepDurations.blastRadius = Date.now() - t0
     wfLog("INFO", `Step 4b complete: blast radius computed (${formatMs(stepDurations.blastRadius)})`, { ...ctx, updated: blastRadius.updatedCount, highRisk: blastRadius.highRiskCount, durationMs: stepDurations.blastRadius }, "Step 4b")
 
-    // Step 4c: L-24 temporal analysis (git co-change mining)
+    // Step 4c: Temporal analysis
     t0 = Date.now()
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "temporalAnalysis", status: "running" })
     wfLog("INFO", "Step 4c: Mining temporal intent vectors", ctx, "Step 4c")
@@ -255,15 +328,9 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     })
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "temporalAnalysis", status: "completed", meta: { coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated } })
     stepDurations.temporalAnalysis = Date.now() - t0
-    wfLog("INFO", `Step 4c complete: temporal analysis done (${formatMs(stepDurations.temporalAnalysis)})`, { ...ctx, coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated, filesAnalyzed: temporal.filesAnalyzed, durationMs: stepDurations.temporalAnalysis }, "Step 4c")
+    wfLog("INFO", `Step 4c complete: temporal analysis done (${formatMs(stepDurations.temporalAnalysis)})`, { ...ctx, coChangeEdges: temporal.coChangeEdgesStored, entitiesUpdated: temporal.entitiesUpdated, durationMs: stepDurations.temporalAnalysis }, "Step 4c")
 
-    // Child workflow IDs use stable orgId+repoId (no runId suffix).
-    // Previously we used wfInfo.runId.slice(0,8) as suffix, which changes
-    // on every Temporal retry, spawning duplicate child workflows that
-    // process the same batches in parallel. With stable IDs, Temporal
-    // rejects the duplicate if one is already running.
-
-    // Step 5: Fire-and-forget the embedding workflow (Phase 3)
+    // Step 5: Fire-and-forget embed workflow
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "embed", status: "running" })
     wfLog("INFO", "Step 5/7: Starting embed workflow", ctx, "Step 5/7")
     try {
@@ -274,19 +341,16 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
         parentClosePolicy: ParentClosePolicy.ABANDON,
       })
     } catch (childErr: unknown) {
-      // If workflow already exists (from a previous attempt), that's fine — it's
-      // already processing the same data. Log and continue.
       const msg = childErr instanceof Error ? childErr.message : String(childErr)
       if (msg.includes("already started") || msg.includes("already exists")) {
-        wfLog("WARN", "Embed workflow already running, skipping duplicate", { ...ctx, existingWorkflowId: `embed-${input.orgId}-${input.repoId}` }, "Step 5/7")
+        wfLog("WARN", "Embed workflow already running, skipping duplicate", ctx, "Step 5/7")
       } else {
         throw childErr
       }
     }
-
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "embed", status: "completed" })
 
-    // Step 6: Fire-and-forget the local graph sync workflow (Phase 10a)
+    // Step 6: Fire-and-forget graph sync
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "graphSync", status: "running" })
     wfLog("INFO", "Step 6/7: Starting graph sync workflow", ctx, "Step 6/7")
     try {
@@ -299,15 +363,14 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     } catch (childErr: unknown) {
       const msg = childErr instanceof Error ? childErr.message : String(childErr)
       if (msg.includes("already started") || msg.includes("already exists")) {
-        wfLog("WARN", "Sync workflow already running, skipping duplicate", { ...ctx, existingWorkflowId: `sync-${input.orgId}-${input.repoId}` }, "Step 6/7")
+        wfLog("WARN", "Sync workflow already running, skipping duplicate", ctx, "Step 6/7")
       } else {
         throw childErr
       }
     }
-
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "graphSync", status: "completed" })
 
-    // Step 7: Fire-and-forget pattern detection workflow (Phase 6)
+    // Step 7: Fire-and-forget pattern detection
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "patternDetection", status: "running" })
     wfLog("INFO", "Step 7/7: Starting pattern detection workflow", ctx, "Step 7/7")
     try {
@@ -326,25 +389,19 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     } catch (childErr: unknown) {
       const msg = childErr instanceof Error ? childErr.message : String(childErr)
       if (msg.includes("already started") || msg.includes("already exists")) {
-        wfLog("WARN", "Pattern detection workflow already running, skipping duplicate", { ...ctx, existingWorkflowId: `detect-patterns-${input.orgId}-${input.repoId}` }, "Step 7/7")
+        wfLog("WARN", "Pattern detection workflow already running, skipping duplicate", ctx, "Step 7/7")
       } else {
         throw childErr
       }
     }
-
     if (input.runId) await runActivities.updatePipelineStep({ runId: input.runId, stepName: "patternDetection", status: "completed" })
 
-    // K-01: Best-effort workspace cleanup. Pattern detection will also clean up
-    // after it finishes. This is a fallback in case pattern detection fails before cleanup.
-    // Uses fire-and-forget so it doesn't block the main workflow completion.
+    // Best-effort workspace cleanup (worktree or legacy clone dir)
     cleanupActivities.cleanupWorkspaceFilesystem({ orgId: input.orgId, repoId: input.repoId }).catch(() => {})
 
     progress = 100
     const totalDurationMs = Date.now() - pipelineStart
 
-    // Signal quality: ratio of high-fidelity SCIP coverage vs tree-sitter fallback.
-    // fileCount (scip.fileCount + parse.fileCount) is the authoritative total since
-    // parseRest creates file entities for every scanned file and the graph deduplicates.
     const totalFilesDiscovered = fileCount
     const scipCoveragePercent = totalFilesDiscovered > 0
       ? Math.min(100, Math.round((scip.coveredFiles.length / totalFilesDiscovered) * 100))
@@ -352,25 +409,17 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     const treeSitterOnlyPercent = 100 - scipCoveragePercent
 
     const completionSummary = {
-      fileCount,
-      functionCount,
-      classCount,
-      entitiesWritten: result.entitiesWritten,
-      edgesWritten: result.edgesWritten,
-      scipCoveragePercent,
-      treeSitterOnlyPercent,
+      fileCount, functionCount, classCount,
+      entitiesWritten: result.entitiesWritten, edgesWritten: result.edgesWritten,
+      scipCoveragePercent, treeSitterOnlyPercent,
       highRiskNodes: blastRadius.highRiskCount,
       coChangeEdges: temporal.coChangeEdgesStored,
       totalDuration: formatMs(totalDurationMs),
-      totalDurationMs,
-      stepDurations,
+      totalDurationMs, stepDurations,
       repoId: input.repoId,
       ...(input.runId && { runId: input.runId }),
     }
 
-    // Await final log calls so they complete before the workflow finishes.
-    // Fire-and-forget causes "Activity not found on completion" warnings
-    // because the workflow ends before the activity can report back.
     await logActivities.appendPipelineLog({
       timestamp: new Date().toISOString(),
       level: "info",
@@ -381,14 +430,11 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     })
     await logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId, runId: input.runId })
 
-    // Complete pipeline run tracking
     if (input.runId) {
       await runActivities.completePipelineRun({
         runId: input.runId,
         status: "completed",
-        fileCount,
-        functionCount,
-        classCount,
+        fileCount, functionCount, classCount,
         entitiesWritten: result.entitiesWritten,
         edgesWritten: result.edgesWritten,
       })
@@ -401,7 +447,6 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
     const elapsedMs = Date.now() - pipelineStart
     wfLog("ERROR", `Indexing workflow failed after ${formatMs(elapsedMs)}`, { ...ctx, errorMessage: message, elapsedMs }, "Error")
 
-    // Mark current step as failed + complete the run as failed
     if (input.runId) {
       await runActivities.completePipelineRun({
         runId: input.runId,
@@ -410,9 +455,22 @@ export async function indexRepoWorkflow(input: IndexRepoInput): Promise<{
       })
     }
 
-    // Best-effort archive on failure — don't block the error throw
     logActivities.archivePipelineLogs({ orgId: input.orgId, repoId: input.repoId, runId: input.runId }).catch(() => {})
     await lightActivities.updateRepoError(input.repoId, message)
     throw err
+  } finally {
+    // Phase 13: Worktree cleanup safety net.
+    // If prepareRepoIntelligenceSpace created a worktree but the workflow failed
+    // before pattern detection's cleanup could run, remove it here.
+    // This is the "try/finally" defense — the GC cron is the second safety net.
+    if (worktreeIsActive && worktreePath) {
+      try {
+        // Use the cleanup activity to remove the worktree on the heavy worker
+        await cleanupActivities.cleanupWorkspaceFilesystem({ orgId: input.orgId, repoId: input.repoId })
+      } catch {
+        // Non-critical: worktree GC cron will handle orphans
+        wfLog("WARN", "Worktree cleanup in finally{} failed — GC cron will handle", ctx, "Cleanup")
+      }
+    }
   }
 }

@@ -28,6 +28,10 @@ vi.mock("@/lib/di/container", () => ({
       updateRepoStatus: mockUpdateRepoStatus,
       deleteRepo: mockDeleteRepo,
     },
+    cacheStore: {
+      invalidate: vi.fn().mockResolvedValue(undefined),
+      invalidateByPrefix: vi.fn().mockResolvedValue(0),
+    },
   }),
 }))
 

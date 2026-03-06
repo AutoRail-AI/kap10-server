@@ -23,6 +23,7 @@
     "mcp:server": "tsx mcp-server/index.ts",
     "temporal:worker:heavy": "tsx scripts/temporal-worker-heavy.ts",
     "temporal:worker:light": "tsx scripts/temporal-worker-light.ts",
+    "temporal:schedules": "tsx scripts/register-temporal-schedules.ts",
     "seed": "tsx scripts/seed.ts",
     "migrate": "tsx scripts/migrate.ts",
     "reset-db": "tsx scripts/reset-db.ts",

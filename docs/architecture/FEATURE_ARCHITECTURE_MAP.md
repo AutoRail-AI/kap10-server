@@ -740,6 +740,47 @@ Key page files:
 
 ---
 
+## 13. Multi-Branch & Workspace Intelligence (Phase 13)
+
+### 13.1 Internal Git Object Store
+
+| | |
+|---|---|
+| **Architecture Doc** | [PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md) |
+| **Design Decisions** | Bare git repos (not Gitea/forge) following Sourcegraph's gitserver pattern. 6 operations: ensureCloned, syncFromRemote, createWorktree, removeWorktree, diffFiles, resolveRef. Persistent volume on worker host. LRU eviction under disk pressure. |
+| **Key Code** | `lib/ports/internal-git-server.ts`, `lib/adapters/bare-git-server.ts`, `docker/gitserver/` |
+| **Data Stores** | Filesystem (bare git repos on persistent volume) |
+
+### 13.2 SCIP Index Artifact Caching
+
+| | |
+|---|---|
+| **Architecture Doc** | [PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md) |
+| **Design Decisions** | SCIP indexes (not source tarballs) as the cache unit. Cache key: `(repo, commit, indexerRoot)`. SCIP artifacts are 5-10x smaller than source tarballs. Cache hit = skip SCIP entirely, proceed to graph upload. |
+| **Key Code** | `lib/temporal/activities/scip-artifact.ts`, `lib/temporal/activities/ingest-source.ts` |
+| **Data Stores** | Supabase Storage (`scip-indexes` bucket), PostgreSQL (`unerr.scip_indexes`) |
+
+### 13.3 Per-User Workspace Sync
+
+| | |
+|---|---|
+| **Architecture Doc** | [PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md) |
+| **Design Decisions** | Merkle-tree change detection (Cursor pattern) captures uncommitted changes. Each user diffs against their own last synced state. File-level dependency DAG drives incremental re-indexing with early cutoff. |
+| **Data Flow** | CLI → Merkle tree → server diff → upload changed files → gitserver commit → incremental SCIP → graph update |
+| **Key Code** | `packages/cli/src/commands/sync.ts`, `packages/cli/src/merkle.ts`, `app/api/repos/[repoId]/sync/route.ts`, `lib/temporal/workflows/sync-workspace.ts` |
+| **Data Stores** | PostgreSQL (`unerr.workspace_syncs`), Filesystem (gitserver bare repo), ArangoDB (scoped entities) |
+
+### 13.4 Branch-Aware Graph Queries
+
+| | |
+|---|---|
+| **Architecture Doc** | [PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md) |
+| **Design Decisions** | Scope-tagged entities (`scope: "primary" | "branch:X" | "workspace:Y"`). Application-layer fallback from branch → primary scope. Tombstone documents for branch-deleted entities. Visible Uploads algorithm for cross-commit query resolution via git-diff position adjustment. |
+| **Key Code** | `lib/adapters/arango-graph-store.ts` (scope-first queries), `lib/temporal/activities/commit-graph.ts` |
+| **Data Stores** | ArangoDB (scoped entities + tombstones), PostgreSQL (`unerr.nearest_indexed_commits`, `unerr.branch_refs`) |
+
+---
+
 ## Cross-Cutting Architecture
 
 These design decisions affect multiple features:

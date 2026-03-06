@@ -4,6 +4,7 @@ import {
   Activity,
   Brain,
   Code,
+  GitBranch,
   HeartPulse,
   History,
   Home,
@@ -22,6 +23,7 @@ const tabs = [
   { label: "Guardrails", href: "/guardrails", icon: Shield },
   { label: "Intelligence", href: "/intelligence", icon: Brain },
   { label: "Activity", href: "/activity", icon: Activity },
+  { label: "Branches", href: "/branches", icon: GitBranch },
   { label: "Controls", href: "/controls", icon: Settings2 },
   { label: "Ledger", href: "/ledger", icon: History },
 ] as const

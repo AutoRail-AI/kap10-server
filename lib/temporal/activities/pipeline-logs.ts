@@ -25,6 +25,8 @@ export interface PipelineLogEntry {
     | "graph-analysis"
     | "temporal-analysis"
     | "pattern-detection"
+    | "workspace-sync"
+    | "commit-graph"
   step: string
   message: string
   meta?: Record<string, unknown>

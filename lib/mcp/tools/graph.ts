@@ -4,6 +4,7 @@
 
 import type { Container } from "@/lib/di/container"
 import { resolveEntityWithOverlay } from "./dirty-buffer"
+import { resolveScope } from "./scope-resolver"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
 
@@ -24,13 +25,17 @@ export const GET_CALLERS_SCHEMA = {
         type: "number",
         description: "Maximum traversal depth (default 1, max 5)",
       },
+      scope: {
+        type: "string",
+        description: "Entity scope: 'primary' (default), 'branch:{name}', or 'workspace:{keyId}'",
+      },
     },
     required: ["name"],
   },
 }
 
 export async function handleGetCallers(
-  args: { name: string; depth?: number },
+  args: { name: string; depth?: number; scope?: string },
   ctx: McpAuthContext,
   container: Container
 ) {
@@ -43,6 +48,7 @@ export async function handleGetCallers(
     return formatToolError("name parameter is required")
   }
 
+  const scope = resolveScope(args, ctx)
   const depth = Math.min(Math.max(args.depth ?? 1, 1), 5)
 
   // P5.6-ADV-05: Check dirty buffer for entity metadata
@@ -75,6 +81,8 @@ export async function handleGetCallers(
     return formatToolError(`Entity "${args.name}" not found`)
   }
 
+  // Graph traversal methods don't support scope yet (V1) — callers/callees
+  // operate on the full graph. The scope is noted in the response.
   const callers = await container.graphStore.getCallersOf(ctx.orgId, entity.id, depth)
 
   return formatToolResponse({
@@ -93,6 +101,7 @@ export async function handleGetCallers(
     })),
     depth,
     count: callers.length,
+    ...(scope !== "primary" && { scope }),
   })
 }
 
@@ -113,13 +122,17 @@ export const GET_CALLEES_SCHEMA = {
         type: "number",
         description: "Maximum traversal depth (default 1, max 5)",
       },
+      scope: {
+        type: "string",
+        description: "Entity scope: 'primary' (default), 'branch:{name}', or 'workspace:{keyId}'",
+      },
     },
     required: ["name"],
   },
 }
 
 export async function handleGetCallees(
-  args: { name: string; depth?: number },
+  args: { name: string; depth?: number; scope?: string },
   ctx: McpAuthContext,
   container: Container
 ) {
@@ -132,6 +145,7 @@ export async function handleGetCallees(
     return formatToolError("name parameter is required")
   }
 
+  const scope = resolveScope(args, ctx)
   const depth = Math.min(Math.max(args.depth ?? 1, 1), 5)
 
   // P5.6-ADV-05: Check dirty buffer for entity metadata
@@ -180,6 +194,7 @@ export async function handleGetCallees(
     })),
     depth,
     count: callees.length,
+    ...(scope !== "primary" && { scope }),
   })
 }
 
@@ -200,13 +215,17 @@ export const GET_IMPORTS_SCHEMA = {
         type: "number",
         description: "Maximum traversal depth (default 1, max 5)",
       },
+      scope: {
+        type: "string",
+        description: "Entity scope: 'primary' (default), 'branch:{name}', or 'workspace:{keyId}'",
+      },
     },
     required: ["file"],
   },
 }
 
 export async function handleGetImports(
-  args: { file: string; depth?: number },
+  args: { file: string; depth?: number; scope?: string },
   ctx: McpAuthContext,
   container: Container
 ) {

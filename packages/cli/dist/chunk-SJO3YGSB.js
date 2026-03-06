@@ -1,8 +1,8 @@
 // src/commands/auth.ts
-import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
-var CONFIG_DIR = join(homedir(), ".kap10");
+var CONFIG_DIR = join(homedir(), ".unerr");
 var CREDENTIALS_PATH = join(CONFIG_DIR, "credentials.json");
 function getCredentials() {
   if (!existsSync(CREDENTIALS_PATH)) return null;
@@ -70,7 +70,7 @@ async function deviceAuthFlow(serverUrl) {
     if (tokenBody.access_token) {
       if (tokenBody.key_already_existed) {
         const existing = getCredentials();
-        if (existing?.apiKey?.startsWith("kap10_sk_")) {
+        if (existing?.apiKey?.startsWith("unerr_sk_")) {
           return {
             serverUrl,
             apiKey: existing.apiKey,
@@ -94,7 +94,7 @@ async function deviceAuthFlow(serverUrl) {
 }
 function registerAuthCommand(program) {
   const auth = program.command("auth").description("Manage authentication");
-  auth.command("login").description("Authenticate with kap10 server").option("--server <url>", "Server URL", "https://app.kap10.dev").option("--key <apiKey>", "API key (skip browser login)").action(async (opts) => {
+  auth.command("login").description("Authenticate with unerr server").option("--server <url>", "Server URL", "https://app.unerr.dev").option("--key <apiKey>", "API key (skip browser login)").action(async (opts) => {
     if (opts.key) {
       saveCredentials({ serverUrl: opts.server, apiKey: opts.key });
       console.log("Credentials saved.");
@@ -104,7 +104,7 @@ function registerAuthCommand(program) {
       const creds = await deviceAuthFlow(opts.server);
       saveCredentials(creds);
       console.log(`Authenticated as ${creds.orgName ?? "your organization"}.`);
-      console.log("Credentials saved to ~/.kap10/credentials.json");
+      console.log("Credentials saved to ~/.unerr/credentials.json");
     } catch (error) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
@@ -125,14 +125,76 @@ function registerAuthCommand(program) {
       console.log(`Organization: ${creds.orgName ?? "unknown"}`);
       console.log(`API Key: ${creds.apiKey.slice(0, 14)}****`);
     } else {
-      console.log("Not authenticated. Run: kap10 auth login");
+      console.log("Not authenticated. Run: unerr auth login");
     }
   });
+}
+
+// src/ignore.ts
+import fs from "fs";
+import path from "path";
+var ALWAYS_IGNORE = [
+  // Version control
+  ".git",
+  ".svn",
+  ".hg",
+  // JavaScript / TypeScript
+  "node_modules",
+  ".next",
+  ".turbo",
+  ".yarn",
+  ".pnp",
+  // Python
+  "__pycache__",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".tox",
+  ".venv",
+  "venv",
+  ".eggs",
+  // Rust
+  "target",
+  // Java / Kotlin / Scala
+  ".gradle",
+  ".mvn",
+  // C# / .NET
+  "bin",
+  "obj",
+  ".nuget",
+  // Ruby
+  ".bundle",
+  // Generic build / tooling
+  "dist",
+  "build",
+  "out",
+  "vendor",
+  ".cache",
+  "coverage",
+  ".idea",
+  ".vscode",
+  // CLI-specific
+  ".unerr"
+];
+async function createIgnoreFilter(cwd) {
+  const { default: ignore } = await import("ignore");
+  const ig = ignore();
+  ig.add(ALWAYS_IGNORE.map((d) => `${d}/`));
+  const gitignorePath = path.join(cwd, ".gitignore");
+  if (fs.existsSync(gitignorePath)) {
+    ig.add(fs.readFileSync(gitignorePath, "utf-8"));
+  }
+  const unerrignorePath = path.join(cwd, ".unerrignore");
+  if (fs.existsSync(unerrignorePath)) {
+    ig.add(fs.readFileSync(unerrignorePath, "utf-8"));
+  }
+  return ig;
 }
 
 export {
   getCredentials,
   saveCredentials,
   deviceAuthFlow,
-  registerAuthCommand
+  registerAuthCommand,
+  createIgnoreFilter
 };

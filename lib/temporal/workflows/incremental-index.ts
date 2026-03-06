@@ -192,6 +192,7 @@ export async function incrementalIndexWorkflow(input: IncrementalIndexInput): Pr
           args: [{
             orgId: input.orgId,
             repoId: input.repoId,
+            provider: "github" as const,
             installationId: input.installationId,
             cloneUrl: input.cloneUrl,
             defaultBranch: input.defaultBranch,

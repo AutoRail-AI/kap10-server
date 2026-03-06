@@ -20,6 +20,22 @@
 | **Workspace Volume** | Docker volume `workspaces` mounted at `/data/repo-indices/{orgId}/{repoId}`. Contains cloned repos and SCIP output files. | Shared between the heavy worker container and the Rust binary. Both read/write to the same filesystem paths. |
 | **Streaming Parse** | Processing SCIP index data without loading the entire file into memory. Rust uses `mmap` (memory-mapped I/O) + `prost` streaming decode. | Replaces the TypeScript pattern of `fs.readFileSync()` into a `Buffer` → manual varint walk. Eliminates V8 heap pressure. |
 
+### Phase 13 Impact: gitserver Replaces Ephemeral Clones
+
+Phase 13 ([PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](./PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md)) changes the heavy worker's code access pattern, which directly affects the Rust rewrite scope:
+
+**Before Phase 13:** `prepareRepoIntelligenceSpace` clones the repo to `/data/repo-indices/{orgId}/{repoId}/` (ephemeral, deleted after pipeline). The Rust binary needs to replicate `git clone --depth 1` logic.
+
+**After Phase 13:** The internal gitserver maintains persistent bare clones at `/data/repos/{orgId}/{repoId}.git`. The heavy worker uses `git worktree add --detach /tmp/wt-{uuid} {commitSha}` for instant checkout. The Rust binary only needs to:
+1. Call `git worktree add` (trivial subprocess call)
+2. Read files from the worktree directory (unchanged from current)
+3. Call `git worktree remove` after parsing (trivial subprocess call)
+
+**Impact on migration priority:**
+- `prepareRepoIntelligenceSpace` becomes much simpler to rewrite — no network I/O, no git protocol negotiation, just local filesystem operations
+- The SCIP cache check (check Supabase Storage for existing `{sha}.scip.gz`) should be done *before* worktree creation to avoid unnecessary disk operations
+- The Workspace Volume mount point changes from `/data/repo-indices/` to `/data/repos/` (bare clones) + `/tmp/wt-*/` (ephemeral worktrees)
+
 ---
 
 ## Part 1: Architectural Deep Dive

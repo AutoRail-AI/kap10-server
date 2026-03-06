@@ -185,6 +185,51 @@ Workers are stateless and horizontally scalable — run N replicas on ECS/EKS. E
 
 ---
 
+## 25. Phase 13 — New Workflows
+
+The following workflows are added by Phase 13 ([PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](./PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md)):
+
+### syncWorkspaceWorkflow
+
+| | |
+|---|---|
+| **Queue** | `heavy-compute-queue` (worktree creation + SCIP parsing) |
+| **Trigger** | `POST /api/repos/{repoId}/sync` (CLI workspace sync) |
+| **workflowId** | `sync-{orgId}-{repoId}-{userId}` |
+| **Activities** | `ingestSource` (light) → `createWorktree` (heavy) → `runIncrementalSCIP` (heavy) → `mergeScipArtifact` (heavy) → `updateScopedGraph` (light) → `removeWorktree` (heavy) |
+| **Input** | `SourceSpec { orgId, repoId, commitSha, ref, baseSha, incrementalHint }` |
+| **Child workflows** | None |
+| **Signals** | None |
+| **Conflict** | `USE_EXISTING` — concurrent syncs from same user are deduplicated |
+
+### evictArtifactsWorkflow (Cron)
+
+| | |
+|---|---|
+| **Queue** | `light-llm-queue` |
+| **Schedule** | Daily at 02:00 UTC |
+| **workflowId** | `evict-artifacts-daily` |
+| **Activities** | `evictStaleScipIndexes` (light) → `pruneWorkspaceRefs` (light) → `pruneBranchRefs` (light) |
+| **Eviction rules** | SCIP indexes: 30 days (primary), 7 days (workspace). Workspace refs: 30 days after last sync. Branch refs: 30 days after branch deletion. |
+
+### commitGraphUpdateWorkflow
+
+| | |
+|---|---|
+| **Queue** | `light-llm-queue` |
+| **Trigger** | After each new SCIP index upload |
+| **workflowId** | `commit-graph-{orgId}-{repoId}` |
+| **Activities** | `walkCommitGraph` (light) → `updateNearestIndexedCommits` (light) |
+| **Purpose** | Pre-computes the `nearest_indexed_commits` table for the Visible Uploads algorithm |
+
+### Worker Registration
+
+New activity files must be registered in worker scripts:
+- `scripts/temporal-worker-heavy.ts`: Add `import * as ingestSource from '../lib/temporal/activities/ingest-source'`, `import * as scipArtifact from '../lib/temporal/activities/scip-artifact'`, `import * as workspaceSync from '../lib/temporal/activities/workspace-sync'`
+- `scripts/temporal-worker-light.ts`: Add `import * as commitGraph from '../lib/temporal/activities/commit-graph'`
+
+---
+
 ## 4. indexRepoWorkflow
 
 > Full repository indexing: clone, SCIP, parse, graph write, fan out to embed + sync + patterns.

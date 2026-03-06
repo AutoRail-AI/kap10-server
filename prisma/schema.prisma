@@ -107,6 +107,9 @@ model Repo {
   ephemeralExpiresAt DateTime? @map("ephemeral_expires_at")
   // Context seeding: user-provided docs for anchoring LLM taxonomy
   contextDocuments   String?  @map("context_documents")
+  // Phase 13: Branch & workspace tracking
+  branchTrackingEnabled   Boolean @default(false) @map("branch_tracking_enabled")
+  workspaceTrackingEnabled Boolean @default(false) @map("workspace_tracking_enabled")
   // Phase 2: Relations
   apiKeys                 ApiKey[]
   // Phase 3: Embeddings relation
@@ -117,6 +120,11 @@ model Repo {
   ledgerSnapshots         LedgerSnapshot[]
   // Pipeline run tracking
   pipelineRuns            PipelineRun[]
+  // Phase 13: SCIP indexes, branch refs, workspace syncs
+  scipIndexes             ScipIndex[]
+  branchRefs              BranchRef[]
+  workspaceSyncs          WorkspaceSync[]
+  nearestIndexedCommits   NearestIndexedCommit[]
   // Workspaces, snapshots
   workspaces              Workspace[]
   graphSnapshotMeta       GraphSnapshotMeta?
@@ -351,5 +359,82 @@ model PipelineRun {
   @@index([status])
   @@index([repoId, startedAt(sort: Desc)])
   @@map("pipeline_runs")
+  @@schema("unerr")
+}
+
+// Phase 13: SCIP index artifact cache — keyed by (repo, commit, indexerRoot)
+model ScipIndex {
+  id            String    @id @default(uuid())
+  orgId         String    @map("org_id")
+  repoId        String    @map("repo_id")
+  commitSha     String    @map("commit_sha")
+  indexerRoot   String    @default(".") @map("indexer_root")
+  storagePath   String    @map("storage_path")
+  sizeBytes     Int       @default(0) @map("size_bytes")
+  languageStats Json      @default("{}") @map("language_stats")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  repo          Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  @@unique([repoId, commitSha, indexerRoot])
+  @@index([orgId, repoId])
+  @@map("scip_indexes")
+  @@schema("unerr")
+}
+
+// Phase 13: Branch ref tracking — which branches are indexed and at what commit
+model BranchRef {
+  id              String    @id @default(uuid())
+  orgId           String    @map("org_id")
+  repoId          String    @map("repo_id")
+  branchName      String    @map("branch_name")
+  headSha         String    @map("head_sha")
+  lastIndexedSha  String?   @map("last_indexed_sha")
+  lastIndexedAt   DateTime? @map("last_indexed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  repo            Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  @@unique([repoId, branchName])
+  @@index([orgId, repoId])
+  @@map("branch_refs")
+  @@schema("unerr")
+}
+
+// Phase 13: Workspace sync tracking — per-user push history
+model WorkspaceSync {
+  id            String    @id @default(uuid())
+  orgId         String    @map("org_id")
+  repoId        String    @map("repo_id")
+  userId        String    @map("user_id")
+  commitSha     String    @map("commit_sha")
+  baseSha       String?   @map("base_sha")
+  fileCount     Int       @default(0) @map("file_count")
+  syncedAt      DateTime  @default(now()) @map("synced_at")
+
+  repo          Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, repoId, userId])
+  @@index([repoId, userId, syncedAt(sort: Desc)])
+  @@map("workspace_syncs")
+  @@schema("unerr")
+}
+
+// Phase 13: Nearest indexed commit cache — maps any commit to nearest commit with a SCIP index
+model NearestIndexedCommit {
+  id              String    @id @default(uuid())
+  orgId           String    @map("org_id")
+  repoId          String    @map("repo_id")
+  querySha        String    @map("query_sha")
+  nearestSha      String    @map("nearest_sha")
+  distance        Int       @default(0)
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  repo            Repo      @relation(fields: [repoId], references: [id], onDelete: Cascade)
+
+  @@unique([repoId, querySha])
+  @@index([orgId, repoId])
+  @@map("nearest_indexed_commits")
   @@schema("unerr")
 }

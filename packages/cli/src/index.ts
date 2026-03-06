@@ -14,7 +14,9 @@
  *   unerr push             — Upload local repository for indexing
  *   unerr pull             — Download graph snapshot for a repo
  *   unerr serve            — Start local MCP server with graph queries
- *   unerr watch            — Watch for file changes and sync to unerr server
+ *   unerr sync             — Push workspace state to unerr server (isomorphic-git)
+ *   unerr sync --watch     — Watch for changes and sync continuously
+ *   unerr watch            — Watch for file changes and sync to unerr server (legacy)
  *   unerr rewind           — Revert ledger to a previous working state
  *   unerr timeline         — Show the prompt ledger timeline
  *   unerr mark-working     — Mark a ledger entry as a known-good working state
@@ -37,6 +39,7 @@ import { registerPullCommand } from "./commands/pull.js"
 import { registerPushCommand } from "./commands/push.js"
 import { registerRewindCommand } from "./commands/rewind.js"
 import { registerServeCommand } from "./commands/serve.js"
+import { registerSyncCommand } from "./commands/sync.js"
 import { registerTimelineCommand } from "./commands/timeline.js"
 import { registerWatchCommand } from "./commands/watch.js"
 
@@ -66,6 +69,7 @@ registerPushCommand(program)
 registerPullCommand(program)
 registerRewindCommand(program)
 registerServeCommand(program)
+registerSyncCommand(program)
 registerTimelineCommand(program)
 registerWatchCommand(program)
 

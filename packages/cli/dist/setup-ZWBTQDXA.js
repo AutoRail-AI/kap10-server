@@ -1,21 +1,22 @@
 import {
+  createIgnoreFilter,
   deviceAuthFlow,
   getCredentials,
   saveCredentials
-} from "./chunk-T6GFTYJX.js";
+} from "./chunk-SJO3YGSB.js";
 import {
   __require
 } from "./chunk-3RG5ZIWI.js";
 
 // src/commands/setup.ts
-import { existsSync as existsSync2, readFileSync, writeFileSync, mkdirSync as mkdirSync2, appendFileSync as appendFileSync2 } from "fs";
-import { join as join3 } from "path";
 import { execSync as execSync2 } from "child_process";
+import { appendFileSync as appendFileSync2, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync, writeFileSync } from "fs";
+import { join as join3 } from "path";
 
 // src/utils/detect.ts
+import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
-import { execSync } from "child_process";
 function classifyHost(remote) {
   const lower = remote.toLowerCase();
   if (lower.includes("github.com")) return "github";
@@ -110,10 +111,56 @@ var IDE_CHOICES = [
   { title: "Windsurf", value: "windsurf" }
 ];
 
+// src/utils/log.ts
+import { appendFileSync, mkdirSync } from "fs";
+import { join as join2 } from "path";
+var logFilePath = null;
+function ensureLogDir(cwd) {
+  const logsDir = join2(cwd, ".unerr", "logs");
+  mkdirSync(logsDir, { recursive: true });
+  return logsDir;
+}
+function timestamp() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function datestamp() {
+  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+}
+function initLogFile(cwd) {
+  const logsDir = ensureLogDir(cwd);
+  logFilePath = join2(logsDir, `setup-${datestamp()}.log`);
+  write("info", "=== unerr setup started ===");
+  write("info", `cwd: ${cwd}`);
+  write("info", `node: ${process.version}`);
+  write("info", `platform: ${process.platform} ${process.arch}`);
+  return logFilePath;
+}
+function write(level, message, data) {
+  if (!logFilePath) return;
+  const line = data ? `[${timestamp()}] [${level}] ${message} ${JSON.stringify(data)}` : `[${timestamp()}] [${level}] ${message}`;
+  try {
+    appendFileSync(logFilePath, line + "\n");
+  } catch {
+  }
+}
+function logInfo(message, data) {
+  write("info", message, data);
+}
+function logError(message, data) {
+  write("error", message, data);
+}
+function logApi(method, url, status, body) {
+  const statusStr = status !== void 0 ? ` \u2192 ${status}` : "";
+  write("api", `${method} ${url}${statusStr}`, body);
+}
+function getLogFilePath() {
+  return logFilePath;
+}
+
 // src/utils/ui.ts
 import pc from "picocolors";
 var brand = {
-  name: "kap10",
+  name: "unerr",
   tagline: "Code intelligence for AI agents"
 };
 function banner() {
@@ -148,54 +195,8 @@ function done(label) {
   console.log("");
 }
 
-// src/utils/log.ts
-import { mkdirSync, appendFileSync } from "fs";
-import { join as join2 } from "path";
-var logFilePath = null;
-function ensureLogDir(cwd) {
-  const logsDir = join2(cwd, ".kap10", "logs");
-  mkdirSync(logsDir, { recursive: true });
-  return logsDir;
-}
-function timestamp() {
-  return (/* @__PURE__ */ new Date()).toISOString();
-}
-function datestamp() {
-  return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-}
-function initLogFile(cwd) {
-  const logsDir = ensureLogDir(cwd);
-  logFilePath = join2(logsDir, `setup-${datestamp()}.log`);
-  write("info", "=== kap10 setup started ===");
-  write("info", `cwd: ${cwd}`);
-  write("info", `node: ${process.version}`);
-  write("info", `platform: ${process.platform} ${process.arch}`);
-  return logFilePath;
-}
-function write(level, message, data) {
-  if (!logFilePath) return;
-  const line = data ? `[${timestamp()}] [${level}] ${message} ${JSON.stringify(data)}` : `[${timestamp()}] [${level}] ${message}`;
-  try {
-    appendFileSync(logFilePath, line + "\n");
-  } catch {
-  }
-}
-function logInfo(message, data) {
-  write("info", message, data);
-}
-function logError(message, data) {
-  write("error", message, data);
-}
-function logApi(method, url, status, body) {
-  const statusStr = status !== void 0 ? ` \u2192 ${status}` : "";
-  write("api", `${method} ${url}${statusStr}`, body);
-}
-function getLogFilePath() {
-  return logFilePath;
-}
-
 // src/commands/setup.ts
-var DEFAULT_SERVER = "https://app.kap10.dev";
+var DEFAULT_SERVER = "https://app.unerr.dev";
 async function stepAuthenticate(serverUrl, apiKey) {
   section("Authenticating...");
   const existing = getCredentials();
@@ -264,7 +265,7 @@ function stepDetectGit() {
   if (!isGitRepo()) {
     logInfo("Not a git repository");
     warn("Not inside a git repository.");
-    info("You can still use kap10 with local upload (kap10 init + kap10 push).");
+    info("You can still use unerr with local upload (unerr init + unerr push).");
     return null;
   }
   const git = detectGitContext();
@@ -279,7 +280,7 @@ function stepDetectGit() {
   return git;
 }
 async function stepCheckRepo(ctx) {
-  section("Checking kap10...");
+  section("Checking unerr...");
   if (!ctx.git) return null;
   try {
     const url = `${ctx.serverUrl}/api/cli/context?remote=${encodeURIComponent(ctx.git.remote)}`;
@@ -290,7 +291,7 @@ async function stepCheckRepo(ctx) {
     logApi("GET", url, res.status);
     if (res.ok) {
       const data = await res.json();
-      logInfo("Repo found on kap10", data);
+      logInfo("Repo found on unerr", data);
       if (data.indexed) {
         success(`Already indexed: ${pc.bold(data.repoName)}`);
       } else {
@@ -302,8 +303,8 @@ async function stepCheckRepo(ctx) {
       return { repoId: data.repoId, status: data.status, indexed: data.indexed };
     }
     if (res.status === 404) {
-      logInfo("Repo not found on kap10");
-      info("This repo isn't on kap10 yet.");
+      logInfo("Repo not found on unerr");
+      info("This repo isn't on unerr yet.");
       return null;
     }
     logError("Unexpected status checking repo", { status: res.status });
@@ -339,7 +340,7 @@ async function stepGitHubInstall(ctx) {
   const confirm = await prompts({
     type: "confirm",
     name: "install",
-    message: "Install kap10 GitHub App to connect your repos?",
+    message: "Install unerr GitHub App to connect your repos?",
     initial: true
   });
   if (!confirm.install) {
@@ -364,7 +365,7 @@ async function stepGitHubInstall(ctx) {
     return false;
   }
   const installData = await installRes.json();
-  info("Opening browser to install kap10 GitHub App...");
+  info("Opening browser to install unerr GitHub App...");
   logInfo("Opening browser", { url: installData.installUrl });
   try {
     const platform = process.platform;
@@ -499,7 +500,7 @@ async function stepSelectAndAddRepos(ctx) {
     success(`Added ${addData.created.length} repo(s) \u2014 indexing started`);
   } else if (addData.alreadyExisting.length > 0) {
     logInfo("Repos already existed", { existing: addData.alreadyExisting.length });
-    success(`Repo(s) already on kap10`);
+    success(`Repo(s) already on unerr`);
   }
   return { repoId: currentRepo.id, fullName: currentRepo.fullName };
 }
@@ -531,10 +532,10 @@ async function stepLocalFlow(ctx) {
   }
   const initData = await initRes.json();
   logInfo("Repo registered", initData);
-  const kap10Dir = join3(cwd, ".kap10");
-  mkdirSync2(kap10Dir, { recursive: true });
+  const unerrDir = join3(cwd, ".unerr");
+  mkdirSync2(unerrDir, { recursive: true });
   writeFileSync(
-    join3(kap10Dir, "config.json"),
+    join3(unerrDir, "config.json"),
     JSON.stringify({
       repoId: initData.repoId,
       serverUrl: ctx.serverUrl,
@@ -545,11 +546,11 @@ async function stepLocalFlow(ctx) {
   const gitignorePath = join3(cwd, ".gitignore");
   if (existsSync2(gitignorePath)) {
     const content = readFileSync(gitignorePath, "utf-8");
-    if (!content.includes(".kap10")) {
-      appendFileSync2(gitignorePath, "\n# kap10 local config\n.kap10/\n");
+    if (!content.includes(".unerr")) {
+      appendFileSync2(gitignorePath, "\n# unerr local config\n.unerr/\n");
     }
   } else {
-    writeFileSync(gitignorePath, "# kap10 local config\n.kap10/\n");
+    writeFileSync(gitignorePath, "# unerr local config\n.unerr/\n");
   }
   success(`Registered: ${pc.bold(repoName)}`);
   info("Preparing upload...");
@@ -574,15 +575,9 @@ async function stepLocalFlow(ctx) {
   }
   const { uploadUrl, uploadPath } = await uploadRes.json();
   const archiver = (await import("archiver")).default;
-  const ignore = (await import("ignore")).default;
   const path = await import("path");
   const fs = await import("fs");
-  const gitignoreFilePath = path.join(cwd, ".gitignore");
-  const ig = ignore();
-  ig.add([".git", ".kap10", "node_modules"]);
-  if (fs.existsSync(gitignoreFilePath)) {
-    ig.add(fs.readFileSync(gitignoreFilePath, "utf-8"));
-  }
+  const ig = await createIgnoreFilter(cwd);
   const archive = archiver("zip", { zlib: { level: 6 } });
   const chunks = [];
   archive.on("data", (chunk) => chunks.push(chunk));
@@ -666,7 +661,7 @@ async function stepPollIndexing(ctx, repoId) {
           spinner.stop();
           logError("Indexing failed", { error: data.errorMessage });
           fail(`Analysis failed: ${data.errorMessage ?? "Unknown error"}`);
-          info("You can retry from the dashboard or run: kap10 push");
+          info("You can retry from the dashboard or run: unerr push");
           return;
         }
         if (data.progress !== null) {
@@ -701,7 +696,7 @@ function stepConfigureMcp(ctx) {
       }
     }
     const mcpServers = config.mcpServers ?? {};
-    mcpServers["kap10"] = {
+    mcpServers["unerr"] = {
       url: `${ctx.serverUrl}/mcp`,
       headers: { Authorization: `Bearer ${ctx.apiKey}` }
     };
@@ -722,7 +717,7 @@ function stepConfigureMcp(ctx) {
       }
     }
     const mcpServers = settings["mcp.servers"] ?? {};
-    mcpServers["kap10"] = {
+    mcpServers["unerr"] = {
       url: `${ctx.serverUrl}/mcp`,
       headers: { Authorization: `Bearer ${ctx.apiKey}` }
     };
@@ -743,7 +738,7 @@ function stepConfigureMcp(ctx) {
       }
     }
     const mcpServers = config.mcpServers ?? {};
-    mcpServers["kap10"] = {
+    mcpServers["unerr"] = {
       url: `${ctx.serverUrl}/mcp`,
       headers: { Authorization: `Bearer ${ctx.apiKey}` }
     };
@@ -754,7 +749,7 @@ function stepConfigureMcp(ctx) {
   } else if (ctx.ide === "claude-code") {
     info("Run this command to configure Claude Code:");
     blank();
-    console.log(`    ${pc.cyan("claude mcp add kap10 --transport http")} ${pc.dim(`"${ctx.serverUrl}/mcp"`)} \\`);
+    console.log(`    ${pc.cyan("claude mcp add unerr --transport http")} ${pc.dim(`"${ctx.serverUrl}/mcp"`)} \\`);
     console.log(`      ${pc.cyan("--header")} ${pc.dim(`"Authorization: Bearer ${ctx.apiKey}"`)}`);
     blank();
     logInfo("Claude Code MCP command printed");
@@ -770,7 +765,7 @@ function stepInstallHooks() {
     const hooksDir = join3(gitDir, "hooks");
     mkdirSync2(hooksDir, { recursive: true });
     const hookScript = `#!/bin/sh
-kap10 config verify --silent 2>/dev/null || true
+unerr config verify --silent 2>/dev/null || true
 `;
     let installed = 0;
     for (const hook of ["post-checkout", "post-merge"]) {
@@ -780,7 +775,7 @@ kap10 config verify --silent 2>/dev/null || true
         installed++;
       } else {
         const content = readFileSync(hookPath, "utf-8");
-        if (!content.includes("kap10 config verify")) {
+        if (!content.includes("unerr config verify")) {
           appendFileSync2(hookPath, `
 ${hookScript}`);
           installed++;
@@ -835,7 +830,7 @@ async function runSetup(opts) {
       }
     } else {
       info("Run these commands to set up a local repo:");
-      info(`  ${pc.cyan("kap10 init")} && ${pc.cyan("kap10 push")}`);
+      info(`  ${pc.cyan("unerr init")} && ${pc.cyan("unerr push")}`);
       blank();
     }
   }

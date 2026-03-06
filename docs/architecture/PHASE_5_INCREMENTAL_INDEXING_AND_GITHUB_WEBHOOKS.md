@@ -18,6 +18,7 @@
   - [1.3 Reliability & Resilience](#13-reliability--resilience)
   - [1.4 Performance Considerations](#14-performance-considerations)
   - [1.5 Phase Bridge → Phase 5.5 & Phase 6](#15-phase-bridge--phase-55--phase-6)
+  - [1.6 Phase 13 Evolution: Upgraded Incremental Architecture](#16-phase-13-evolution-upgraded-incremental-architecture)
 - [Part 2: Implementation & Tracing Tracker](#part-2-implementation--tracing-tracker)
   - [2.1 Infrastructure Layer](#21-infrastructure-layer)
   - [2.2 Database & Schema Layer](#22-database--schema-layer)
@@ -1127,6 +1128,49 @@ Phase 5 establishes the real-time indexing pipeline that Phase 5.5 (Prompt Ledge
 - **Temporal workflow IDs:** Phase 5.5 reuses `incr-{orgId}-{repoId}-{identifier}` pattern. For local repos, `identifier` is a content hash, not a git SHA.
 - **heavy-compute-queue:** Phase 5's extraction activities share the queue with Phase 1. Phase 6's ast-grep/Semgrep activities also run here. Queue is pre-configured.
 - **light-llm-queue:** Cascade re-justification runs here. Phase 6's LLM rule synthesis also runs here. No changes needed.
+
+---
+
+## 1.6 Phase 13 Evolution: Upgraded Incremental Architecture
+
+Phase 13 ([PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](./PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md)) upgrades several concepts from this phase:
+
+### Branch Shadow Graph → Visible Uploads Algorithm
+
+The **Branch Shadow Graph** concept (storing delta graphs per branch in ArangoDB) is replaced by the **Visible Uploads Algorithm** — the same technique Sourcegraph uses at production scale. Instead of maintaining a separate overlay graph per branch:
+
+1. SCIP index artifacts are stored **keyed by `(repo, commit SHA)`** in Supabase Storage
+2. A pre-computed `nearest_indexed_commits` table maps every commit to its closest indexed ancestor
+3. Queries on un-indexed commits use `git diff` to **adjust file paths and line ranges** between the requested commit and the nearest indexed commit
+4. This provides constant-time query resolution without indexing every commit
+
+### Persistent Repo Index Dir → Bare Git Object Store
+
+The **Persistent Repo Index Dir** (`/data/repo-indices/{orgId}/{repoId}/`) is replaced by a **bare Git clone** managed by the internal gitserver (`/data/repos/{orgId}/{repoId}.git`). Benefits:
+- `git fetch` replaces `git pull` (no working tree to merge into)
+- `git worktree add --detach` provides instant parallel checkouts
+- Multiple branches indexed simultaneously from the same object store
+
+### Push Webhook Flow Update
+
+The push webhook flow (Flow 1 in §1.1) changes:
+- **Before:** `git pull` on the persistent clone directory
+- **After:** `git fetch` on the bare clone, then `git worktree add` for the new HEAD
+
+The rest of the incremental flow (entity diff, cascade re-justification, signal debouncing) remains unchanged.
+
+### File-Level Dependency DAG + Early Cutoff
+
+The incremental re-indexing scope is now determined by a **file-level dependency DAG** extracted from the SCIP index (not just the git diff file list). When a file changes:
+1. Compute the **affected set** = changed files + their transitive dependents (from the DAG)
+2. Re-index only the affected set
+3. Apply **early cutoff**: if a file's exported signature hash is unchanged (body-only edit), skip its dependents entirely
+
+This reduces re-indexing compute by 70-90% for typical edits (function body changes).
+
+### Semantic Drift Alert Enhancement
+
+Drift alerts now operate on **scoped entities**. When a workspace sync changes a high-centrality entity's signature, the drift alert checks whether the change conflicts with other users' workspaces (Phase 12 collision detection).
 
 ---
 

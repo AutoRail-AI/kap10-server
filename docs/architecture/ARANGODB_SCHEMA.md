@@ -82,6 +82,12 @@ The indexer emits **singular** entity kinds. ArangoDB collections are **plural**
 - Field: `created_at`
 - Expiry: 90 days (7,776,000 seconds)
 
+### Scope Index (Phase 13 — entity collections only)
+- Type: `persistent`
+- Fields: `["org_id", "repo_id", "scope"]`
+- Collections: `files`, `functions`, `classes`, `interfaces`, `variables`
+- Purpose: Fast filtering for branch/workspace-specific entity queries
+
 ## Document Shape
 
 All documents include:
@@ -98,6 +104,32 @@ Entity documents (`files`, `functions`, `classes`, `interfaces`, `variables`) ad
 - `fan_in`: (optional) Number of inbound `calls` edges — pre-computed by `precomputeBlastRadius` activity
 - `fan_out`: (optional) Number of outbound `calls` edges — pre-computed by `precomputeBlastRadius` activity
 - `risk_level`: (optional) `"high"` (≥10), `"medium"` (≥5), or `"normal"` — pre-computed by `precomputeBlastRadius` activity
+
+### Phase 13: Multi-Branch & Workspace Fields
+
+Entity documents (`files`, `functions`, `classes`, `interfaces`, `variables`) gain two optional fields for multi-branch code intelligence (Phase 13):
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `scope` | `string` | `"primary"` | Identifies the branch/workspace variant: `"primary"` (default branch), `"branch:feature/auth"`, `"workspace:user-001"` |
+| `commit_sha` | `string \| null` | `null` | The commit SHA from which this entity was extracted |
+
+**Backward compatibility:** All existing entities have `scope = "primary"` (the default). Queries that don't filter by `scope` continue to work unchanged.
+
+### Tombstone Documents
+
+When an entity exists in the primary scope but has been deleted on a branch, a **tombstone document** is inserted:
+
+| Field | Type | Description |
+|---|---|---|
+| `kind` | `"tombstone"` | Identifies this as a deletion marker |
+| `original_key` | `string` | The `_key` of the entity in the primary scope |
+| `scope` | `string` | The branch/workspace scope (e.g., `"branch:feature/auth"`) |
+| `repo_id` | `string` | Repository ID |
+| `org_id` | `string` | Organization ID |
+| `commit_sha` | `string` | The commit SHA when the deletion was detected |
+
+Tombstones prevent primary-scope entities from appearing in branch-aware queries.
 
 Edge documents additionally include:
 - `_from`: Source vertex (`collection/key` format)

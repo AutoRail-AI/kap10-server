@@ -10,6 +10,8 @@ export interface IStorageProvider {
   downloadFile(bucket: string, path: string): Promise<Buffer>
   /** Delete a file */
   deleteFile(bucket: string, path: string): Promise<void>
+  /** List file paths under a prefix in a bucket (for eviction scans) */
+  listFiles(bucket: string, prefix: string): Promise<string[]>
   /** Health check */
   healthCheck(): Promise<{ status: "up" | "down"; latencyMs?: number }>
 }

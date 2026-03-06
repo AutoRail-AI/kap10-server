@@ -20,6 +20,7 @@ import * as review from "@/lib/temporal/activities/review"
 import * as ruleSimulation from "@/lib/temporal/activities/rule-simulation"
 import * as temporalAnalysis from "@/lib/temporal/activities/temporal-analysis"
 import * as workspaceCleanup from "@/lib/temporal/activities/workspace-cleanup"
+import * as workspaceSync from "@/lib/temporal/activities/workspace-sync"
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233"
 const TASK_QUEUE = "heavy-compute-queue"
@@ -61,6 +62,8 @@ async function createWorkerWithRetry(): Promise<Worker> {
           ...temporalAnalysis,
           // Workspace cleanup (K-01)
           ...workspaceCleanup,
+          // Phase 13 (B-08): Workspace sync (incremental re-indexing)
+          ...workspaceSync,
         },
       })
       return worker

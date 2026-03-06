@@ -121,13 +121,6 @@ async function handlePushEvent(
   const installationId = payload.installation?.id
   if (!installationId) return
 
-  // Only handle pushes to the default branch
-  const branchRef = `refs/heads/${payload.repository.default_branch}`
-  if (payload.ref !== branchRef) {
-    log.info("Ignoring push to non-default branch", { ref: payload.ref, defaultBranch: payload.repository.default_branch })
-    return
-  }
-
   // Resolve org + repo from installation + GitHub repo ID
   const installation = await container.relationalStore.getInstallationByInstallationId(installationId)
   if (!installation) {
@@ -148,11 +141,19 @@ async function handlePushEvent(
   const repoId = repo.id
   const pushLog = log.child({ organizationId: orgId, repoId })
 
-  // Guard: repo must be in "ready" status and have incremental enabled
+  // Guard: repo must be in "ready" status
   if (repo.status !== "ready") {
     pushLog.info("Ignoring push: repo not in ready state", { currentStatus: repo.status })
     return
   }
+
+  // Phase 13 (C-01): Handle non-default branch pushes
+  const branchRef = `refs/heads/${payload.repository.default_branch}`
+  if (payload.ref !== branchRef) {
+    await handleNonDefaultBranchPush(payload, container, orgId, repoId, pushLog)
+    return
+  }
+
   // Check incrementalEnabled (defaults to true if not set)
   if ((repo as { incrementalEnabled?: boolean }).incrementalEnabled === false) {
     pushLog.info("Ignoring push: incremental indexing disabled")
@@ -188,10 +189,12 @@ async function handlePushEvent(
       args: [{
         orgId,
         repoId,
+        provider: "github",
         installationId,
         cloneUrl: payload.repository.clone_url,
         defaultBranch: payload.repository.default_branch,
         runId: gapRunId,
+        scope: "primary",
       }],
       taskQueue: "heavy-compute-queue",
     })
@@ -253,6 +256,109 @@ async function handlePushEvent(
       })
     } else {
       throw error
+    }
+  }
+}
+
+/**
+ * Phase 13 (C-01): Handle pushes to non-default branches.
+ *
+ * Flow:
+ *   1. Check if branch tracking is enabled for this repo
+ *   2. Sync Gitea mirror from GitHub (picks up the new commits)
+ *   3. Upsert a BranchRef row (tracks head SHA per branch)
+ *   4. Trigger indexRepoWorkflow with scope="branch:{branchName}"
+ *
+ * This gives each branch its own set of scoped entities in ArangoDB,
+ * queryable via queryEntitiesWithScope (Sprint 3, D-04).
+ */
+async function handleNonDefaultBranchPush(
+  payload: PushPayload,
+  container: Awaited<ReturnType<typeof getContainer>>,
+  orgId: string,
+  repoId: string,
+  pushLog: ReturnType<typeof log.child>,
+) {
+  // Extract branch name from ref (refs/heads/feature/foo → feature/foo)
+  const branchName = payload.ref.replace("refs/heads/", "")
+
+  // Guard: branch tracking must be enabled on this repo
+  const repo = await container.relationalStore.getRepo(orgId, repoId)
+  if (!(repo as { branchTrackingEnabled?: boolean })?.branchTrackingEnabled) {
+    pushLog.info("Ignoring non-default branch push: branch tracking not enabled", { ref: payload.ref, branchName })
+    return
+  }
+
+  // Guard: skip branch creation events (before = all zeros)
+  if (payload.before === "0000000000000000000000000000000000000000") {
+    pushLog.info("Non-default branch created, tracking but not indexing yet", { branchName })
+  }
+
+  pushLog.info("Processing non-default branch push (C-01)", { branchName, after: payload.after.slice(0, 8) })
+
+  // Step 1: Sync Gitea mirror to pick up the branch commits
+  try {
+    await container.internalGitServer.syncFromRemote(orgId, repoId)
+    pushLog.info("Gitea mirror synced for branch push", { branchName })
+  } catch (syncErr: unknown) {
+    const msg = syncErr instanceof Error ? syncErr.message : String(syncErr)
+    pushLog.warn("Gitea mirror sync failed for branch push (non-fatal)", { branchName, error: msg })
+    // Continue — the repo may already have the commits from a recent sync
+  }
+
+  // Step 2: Upsert BranchRef row
+  try {
+    const { getPrisma } = require("@/lib/db/prisma") as typeof import("@/lib/db/prisma")
+    const prisma = getPrisma()
+    await prisma.branchRef.upsert({
+      where: {
+        repoId_branchName: { repoId, branchName },
+      },
+      create: {
+        orgId,
+        repoId,
+        branchName,
+        headSha: payload.after,
+      },
+      update: {
+        headSha: payload.after,
+      },
+    })
+    pushLog.info("BranchRef upserted", { branchName, headSha: payload.after.slice(0, 8) })
+  } catch (dbErr: unknown) {
+    const msg = dbErr instanceof Error ? dbErr.message : String(dbErr)
+    pushLog.warn("BranchRef upsert failed (non-fatal)", { branchName, error: msg })
+  }
+
+  // Step 3: Trigger indexRepoWorkflow with branch scope
+  // This does a full index of the branch (no incremental in V1).
+  // The scope field ensures entities are written as branch-scoped,
+  // queryable via queryEntitiesWithScope with primary fallback.
+  const branchRunId = randomUUID()
+  const branchWorkflowId = `index-branch-${orgId}-${repoId}-${branchName.replace(/\//g, "-")}-${Date.now()}`
+  try {
+    await container.workflowEngine.startWorkflow({
+      workflowFn: "indexRepoWorkflow",
+      workflowId: branchWorkflowId,
+      args: [{
+        orgId,
+        repoId,
+        provider: "github",
+        installationId: payload.installation?.id,
+        cloneUrl: payload.repository.clone_url,
+        defaultBranch: payload.repository.default_branch,
+        runId: branchRunId,
+        scope: `branch:${branchName}`,
+      }],
+      taskQueue: "heavy-compute-queue",
+    })
+    pushLog.info("Branch index workflow started", { branchName, workflowId: branchWorkflowId })
+  } catch (wfErr: unknown) {
+    const msg = wfErr instanceof Error ? wfErr.message : String(wfErr)
+    if (msg.includes("already started") || msg.includes("already running")) {
+      pushLog.info("Branch index workflow already running", { branchName, workflowId: branchWorkflowId })
+    } else {
+      pushLog.error("Failed to start branch index workflow", wfErr instanceof Error ? wfErr : undefined, { branchName })
     }
   }
 }

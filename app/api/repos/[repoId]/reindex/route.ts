@@ -90,11 +90,13 @@ export const POST = withAuth(async (req: NextRequest) => {
         {
           orgId,
           repoId,
+          provider: "github",
           installationId: Number(installation.installationId),
           cloneUrl,
           defaultBranch: repo.defaultBranch ?? "main",
           indexVersion,
           runId,
+          scope: "primary",
         },
       ],
       taskQueue: "heavy-compute-queue",

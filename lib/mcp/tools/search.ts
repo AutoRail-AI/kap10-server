@@ -4,6 +4,7 @@
 
 import type { Container } from "@/lib/di/container"
 import { resolveEntityWithOverlay } from "./dirty-buffer"
+import { isPrimaryScope, resolveScope } from "./scope-resolver"
 import type { McpAuthContext } from "../auth"
 import { formatToolError, formatToolResponse } from "../formatter"
 
@@ -22,13 +23,17 @@ export const SEARCH_CODE_SCHEMA = {
         type: "number",
         description: "Maximum results to return (default 20, max 50)",
       },
+      scope: {
+        type: "string",
+        description: "Entity scope: 'primary' (default), 'branch:{name}', or 'workspace:{keyId}'",
+      },
     },
     required: ["query"],
   },
 }
 
 export async function handleSearchCode(
-  args: { query: string; limit?: number },
+  args: { query: string; limit?: number; scope?: string },
   ctx: McpAuthContext,
   container: Container
 ) {
@@ -41,14 +46,19 @@ export async function handleSearchCode(
     return formatToolError("No repository context. This API key is not scoped to a repository.")
   }
 
+  const scope = resolveScope(args, ctx)
   const limit = Math.min(Math.max(args.limit ?? 20, 1), 50)
 
-  const results = await container.graphStore.searchEntities(
-    ctx.orgId,
-    repoId,
-    args.query.trim(),
-    limit
-  )
+  // For non-primary scopes, use scope-aware query then filter by name match
+  const results = !isPrimaryScope(scope)
+    ? (await container.graphStore.queryEntitiesWithScope(
+        ctx.orgId, repoId, scope, { limit }
+      )).filter((e) => {
+        const q = args.query.trim().toLowerCase()
+        return e.name.toLowerCase().includes(q) ||
+          (e.signature && String(e.signature).toLowerCase().includes(q))
+      }).map((e) => ({ ...e, score: 1 }))
+    : await container.graphStore.searchEntities(ctx.orgId, repoId, args.query.trim(), limit)
 
   // P5.6-ADV-05: Check dirty buffer overlay for search results
   try {

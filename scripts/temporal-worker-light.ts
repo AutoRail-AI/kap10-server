@@ -33,6 +33,9 @@ import * as pipelineLogs from "@/lib/temporal/activities/pipeline-logs"
 import * as pipelineRun from "@/lib/temporal/activities/pipeline-run"
 import * as review from "@/lib/temporal/activities/review"
 import * as ruleDecay from "@/lib/temporal/activities/rule-decay"
+import * as ingestSource from "@/lib/temporal/activities/ingest-source"
+import * as commitGraph from "@/lib/temporal/activities/commit-graph"
+import * as artifactEviction from "@/lib/temporal/activities/artifact-eviction"
 import * as workspaceCleanup from "@/lib/temporal/activities/workspace-cleanup"
 
 const TEMPORAL_ADDRESS = process.env.TEMPORAL_ADDRESS ?? "localhost:7233"
@@ -93,8 +96,14 @@ async function createWorkerWithRetry(): Promise<Worker> {
           ...graphUpload,
           // Workspace cleanup
           ...workspaceCleanup,
+          // Phase 13 (A-17): Artifact eviction
+          ...artifactEviction,
           // Onboarding
           ...onboarding,
+          // Phase 13: Source ingestion (Gitea mirror-sync)
+          ...ingestSource,
+          // Phase 13: Commit graph pre-computation
+          ...commitGraph,
           // Pipeline logging & run tracking
           ...pipelineLogs,
           ...pipelineRun,

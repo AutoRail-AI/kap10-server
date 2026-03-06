@@ -12,6 +12,7 @@ import PrismaRelationalStore from "@/lib/adapters/prisma-relational-store"
 import {
   FakeCodeIntelligence,
   FakeGitHost,
+  FakeInternalGitServer,
   FakePatternEngine,
   InlineWorkflowEngine,
   InMemoryCacheStore,
@@ -27,6 +28,7 @@ import type { IBillingProvider } from "@/lib/ports/billing-provider"
 import type { ICacheStore } from "@/lib/ports/cache-store"
 import type { ICodeIntelligence } from "@/lib/ports/code-intelligence"
 import type { IGitHost } from "@/lib/ports/git-host"
+import type { IInternalGitServer } from "@/lib/ports/internal-git-server"
 import type { IGraphStore } from "@/lib/ports/graph-store"
 import type { ILLMProvider } from "@/lib/ports/llm-provider"
 import type { IObservability } from "@/lib/ports/observability"
@@ -51,6 +53,8 @@ export interface Container {
   codeIntelligence: ICodeIntelligence
   patternEngine: IPatternEngine
   storageProvider: IStorageProvider
+  /** Phase 13: Internal bare-repo Git server (Gitea in prod, in-memory for tests) */
+  internalGitServer: IInternalGitServer
 }
 
 let productionContainer: Container | null = null
@@ -146,6 +150,13 @@ function createLazyProductionContainer(): Container {
       }
       return cache.storageProvider
     },
+    get internalGitServer(): IInternalGitServer {
+      if (!cache.internalGitServer) {
+        const { GiteaGitServerAdapter } = require("../adapters/gitea-git-server") as typeof import("../adapters/gitea-git-server")
+        cache.internalGitServer = new GiteaGitServerAdapter()
+      }
+      return cache.internalGitServer
+    },
   }
 }
 
@@ -170,6 +181,7 @@ export function createTestContainer(overrides?: Partial<Container>): Container {
     codeIntelligence: new FakeCodeIntelligence(),
     patternEngine: new FakePatternEngine(),
     storageProvider: new InMemoryStorageProvider(),
+    internalGitServer: new FakeInternalGitServer(),
     ...overrides,
   }
 }

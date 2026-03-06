@@ -730,3 +730,45 @@ Edge Cases:
 | 2026-02-21 | — | Added Section 7 "Advanced Architectural Enhancements": Decentralized AST Extraction (local MapReduce), Ephemeral Sandbox Mode, Self-Healing MCP Configuration. Section 8 tracker: 4 implementation items (P5.6-ADV-01..04), 3 test items (P5.6-TEST-ADV-01..03). |
 | 2026-02-21 | — | Added Dirty State Overlay (in-memory uncommitted context via Redis). New: P5.6-ADV-05 (dirty buffer MCP tool + overlay merge), P5.6-TEST-ADV-03 (dirty state tests), renumbered self-healing config test to P5.6-TEST-ADV-04. Total advanced tracker items: **10** (5 impl + 4 test + 1 renumbered). |
 | 2026-02-23 | — | Magic default command: `npx @autorail/unerr` now runs full setup wizard (auth → IDE detect → GitHub flow → indexing → MCP config). Added 6 new CLI API endpoints for GitHub App install, repo listing, repo addition, and indexing status. Modified callback to support CLI-initiated GitHub installs. Added interactive IDE prompt, branded terminal output (picocolors, ora, prompts), and file logging to `.unerr/logs/`. |
+
+---
+
+## 7. Phase 13 Evolution: CLI Workspace Sync
+
+Phase 13 ([PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](./PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md)) introduces a new CLI command that supersedes the zip-upload model for ongoing workspace tracking:
+
+### `unerr sync` (replaces repeated `unerr push`)
+
+While `unerr push` remains for initial repo bootstrap (creating the bare clone + first SCIP index), ongoing workspace tracking moves to `unerr sync`:
+
+| Aspect | `unerr push` (current) | `unerr sync` (Phase 13) |
+|--------|----------------------|------------------------|
+| **Upload method** | Zip entire directory → Supabase Storage | Merkle-tree diff → upload only changed files |
+| **Change detection** | None (full upload every time) | SHA-256 per file, tree-structured comparison |
+| **Uncommitted changes** | Requires files on disk (ignores git state) | Captures uncommitted, staged, and untracked files |
+| **Server storage** | Supabase Storage blob | Committed to gitserver bare clone under `refs/unerr/users/{userId}/workspace` |
+| **Incremental indexing** | Full re-index every push | File-level dependency DAG → re-index only affected files |
+
+### Merkle-Tree Sync Protocol
+
+```
+CLI (unerr sync):
+1. Scan working directory (respecting .gitignore + .unerrignore)
+2. Compute SHA-256 hash per file
+3. Build Merkle tree (directory hashes = H(sorted child hashes))
+4. POST /api/repos/{repoId}/sync with Merkle tree (hashes only, NOT file contents)
+5. Server responds with list of changed file paths
+6. CLI uploads only changed files
+7. Server commits files to gitserver under user's workspace ref
+8. Server triggers incremental indexing workflow
+```
+
+### `unerr sync --watch` (continuous mode)
+
+Watches the filesystem for changes (fsevents on macOS, inotify on Linux) and syncs incrementally on each save. Debounced to avoid thrashing (2-second quiet period after last change before syncing).
+
+### Backward Compatibility
+
+- `unerr push` continues to work for initial bootstrap and non-git directories
+- `unerr sync` is the recommended command for ongoing development
+- Both commands produce consistent state in the gitserver bare clone

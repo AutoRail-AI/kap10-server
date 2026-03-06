@@ -31,6 +31,8 @@ Developer's IDE                        unerr Cloud
     │  unerr push  │─────────────────►│  │ Supabase Storage (cli_uploads)  │       │
     │  (zip upload)│                  │  └─────────────────┬───────────────┘       │
     └──────────────┘                  │                    ▼                        │
+    Note: Phase 13 replaces cli_uploads/zip with an internal gitserver (bare Git   │
+    repos) for workspace tracking and multi-branch indexing. See Phase 13 below.   │
                                       │  ┌─────────────────────────────────┐       │
                                       │  │ Temporal (Workflow Orchestration) │       │
                                       │  │  ├─ heavy-compute-queue          │       │
@@ -5063,6 +5065,27 @@ packages/jetbrains-plugin/src/main/kotlin/com/unerr/plugin/
 |---------|---------|
 | `livekit-server-sdk` | LiveKit server SDK for real-time data channels (future migration target) |
 | `ws` | WebSocket server for real-time collision broadcast (initial implementation) |
+
+---
+
+### Phase 13 — Immutable Source Artifacts & Multi-Branch Code Intelligence
+
+**Feature statement:** _"Every indexing run pulls code from a bare Git object store. Workers use git worktrees for parallel branch indexing. Multi-user workspaces are tracked via Merkle-tree sync. Cross-commit queries use the Visible Uploads algorithm."_
+
+**Prerequisites:** Phase 1, Phase 5, Phase 5.6
+
+**What it delivers:**
+- Internal gitserver (bare Git repos, no GitHub dependency during indexing)
+- Git worktree-based parallel branch indexing
+- SCIP index artifacts as cached intelligence units (commit-keyed)
+- Per-user workspace tracking with Merkle-tree change detection
+- Visible Uploads algorithm for cross-commit query resolution
+- File-level dependency DAG for incremental re-indexing with early cutoff
+- Scope-tagged graph entities for branch/workspace-aware queries
+
+**Makes Phase 12 possible:** Phase 12 (Multiplayer) depends on Phase 13's `scope` and `workspace_syncs` for per-user entity tracking and collision detection.
+
+**Architecture doc:** [PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](./PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md)
 
 ---
 

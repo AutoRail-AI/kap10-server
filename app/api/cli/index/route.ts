@@ -90,6 +90,7 @@ export async function POST(request: Request) {
         provider: "local_cli",
         uploadPath: body.uploadPath,
         runId,
+        scope: "primary",
       }],
       taskQueue: "heavy-compute-queue",
     })

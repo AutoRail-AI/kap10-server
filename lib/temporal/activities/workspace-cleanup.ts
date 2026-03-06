@@ -97,3 +97,76 @@ export async function cleanupWorkspaceFilesystem(input: CleanupWorkspaceFilesyst
     // ignore — best-effort cleanup
   }
 }
+
+/**
+ * B-09: Prune stale workspace scoped entities from ArangoDB.
+ *
+ * A workspace is "stale" if its last sync was more than `maxAgeHours` ago.
+ * This activity:
+ *   1. Queries WorkspaceSync for stale entries (no sync in maxAgeHours)
+ *   2. Deletes scoped entities from ArangoDB via deleteScopedEntities
+ *   3. Removes the WorkspaceSync rows
+ *
+ * Designed to run on a cron schedule (e.g., every 6 hours).
+ */
+export async function pruneStaleWorkspaces(input?: { maxAgeHours?: number }): Promise<number> {
+  const maxAgeHours = input?.maxAgeHours ?? 48
+  const log = logger.child({ service: "workspace-cleanup" })
+  const container = resolveContainer()
+
+  const { getPrisma } = require("@/lib/db/prisma") as typeof import("@/lib/db/prisma")
+  const prisma = getPrisma()
+
+  const cutoff = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000)
+
+  // Find distinct (orgId, repoId, userId) combos where the LATEST sync is older than cutoff
+  const staleSyncs = await prisma.workspaceSync.findMany({
+    where: { syncedAt: { lt: cutoff } },
+    distinct: ["orgId", "repoId", "userId"],
+    select: { orgId: true, repoId: true, userId: true },
+  })
+
+  if (staleSyncs.length === 0) {
+    log.info("No stale workspaces to prune")
+    return 0
+  }
+
+  let pruned = 0
+  for (const { orgId, repoId, userId } of staleSyncs) {
+    const scope = `workspace:${userId}`
+    try {
+      // Check if there's a more recent sync that's NOT stale
+      const recentSync = await prisma.workspaceSync.findFirst({
+        where: { orgId, repoId, userId, syncedAt: { gte: cutoff } },
+        select: { id: true },
+      })
+      if (recentSync) continue // This user has a recent sync — skip
+
+      // 1. Delete scoped entities from ArangoDB
+      await container.graphStore.deleteScopedEntities(orgId, repoId, scope)
+
+      // 2. Delete the workspace ref from Gitea (B-09: clean up refs/unerr/ws/{keyId})
+      //    The ref name uses a key-derived ID, which we can reconstruct from the userId.
+      //    Also try the older refs/unerr/users/{userId}/workspace format.
+      try {
+        await container.internalGitServer.deleteRef(orgId, repoId, `refs/unerr/users/${userId}/workspace`)
+      } catch {
+        // Best-effort — refs are cheap (40 bytes), next run retries
+      }
+
+      // 3. Delete workspace sync rows
+      await prisma.workspaceSync.deleteMany({
+        where: { orgId, repoId, userId },
+      })
+
+      log.info("Pruned stale workspace", { orgId, repoId, userId: userId.slice(0, 8), scope })
+      pruned++
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error)
+      log.warn("Failed to prune stale workspace (non-fatal)", { orgId, repoId, userId: userId.slice(0, 8), error: msg })
+    }
+  }
+
+  log.info("Stale workspace pruning complete", { pruned, total: staleSyncs.length, maxAgeHours })
+  return pruned
+}

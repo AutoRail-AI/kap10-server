@@ -12,18 +12,19 @@
     "test": "vitest"
   },
   "dependencies": {
-    "commander": "^12.1.0",
-    "cozo-node": "^0.7.6",
-    "msgpackr": "^1.11.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "archiver": "^7.0.0",
-    "ignore": "^6.0.0",
     "chokidar": "^4.0.0",
     "cli-progress": "^3.12.0",
-    "web-tree-sitter": "^0.24.3",
-    "picocolors": "^1.1.1",
+    "commander": "^12.1.0",
+    "cozo-node": "^0.7.6",
+    "ignore": "^6.0.0",
+    "isomorphic-git": "^1.37.2",
+    "msgpackr": "^1.11.0",
     "ora": "^8.2.0",
-    "prompts": "^2.4.2"
+    "picocolors": "^1.1.1",
+    "prompts": "^2.4.2",
+    "web-tree-sitter": "^0.24.3"
   },
   "devDependencies": {
     "@types/archiver": "^6.0.0",

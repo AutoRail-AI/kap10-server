@@ -95,6 +95,8 @@ indexRepoWorkflow (heavy-compute-queue)
 | `heavy-compute-queue` | CPU-bound work | Git clone, SCIP parsing, tree-sitter, Semgrep, temporal analysis |
 | `light-llm-queue` | Network-bound work | LLM calls, embedding, storage uploads, cache ops |
 
+> **Phase 13 Note:** In Phase 13, the `heavy-compute-queue` "Git clone" step changes to **"Git worktree (from bare clone on gitserver volume)"** — eliminating network-dependent clones in favor of instant local worktree checkouts.
+
 **Orchestration:** Temporal workflows. Each stage is a Temporal activity with heartbeats, timeouts, and retry policies. Pipeline progress is tracked in PostgreSQL (`PipelineRun` table with 11 discrete steps plus metadata) and streamed to the dashboard via SSE. Each step records start/complete/fail timestamps, enabling per-stage latency analysis and bottleneck identification. The main `indexRepoWorkflow` tracks per-step wall-clock durations (`stepDurations` record) and computes a **signal quality score** — the ratio of files covered by high-fidelity SCIP vs tree-sitter fallback — emitted in the completion summary alongside total duration and enriched metrics.
 
 **Signal Convergence Model:**
@@ -153,6 +155,8 @@ Generates a `runId` (UUID) and `indexVersion` (UUID for shadow re-indexing). If 
 
 **Features that depend on this:** 1.3 Local CLI Upload, 1.4 Ephemeral Sandbox.
 
+> **Phase 13 Evolution:** All trigger paths above will be unified through the **Ingestion Gateway** (Phase 13). GitHub webhooks trigger a `git fetch` on the internal bare git clone instead of a fresh `git clone --depth 1`. CLI uploads bootstrap the bare clone. A new trigger path — **CLI workspace sync** (`unerr sync`) — uses Merkle-tree change detection to track per-user uncommitted changes. See [PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md](./PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md) for the full architecture.
+
 ---
 
 ## 4. Stage 1: Prepare Repo Intelligence Space
@@ -191,6 +195,15 @@ Generates a `runId` (UUID) and `indexVersion` (UUID for shadow re-indexing). If 
    - Maven multi-module and Gradle multi-project detection for Java monorepos
 
 6. **Workspace cleanup** — after all downstream workflows complete, a `cleanupWorkspaceFilesystem` activity deletes the cloned directory. A safety-net cron cleans orphaned workspaces older than 24 hours.
+
+> **Phase 13 Evolution:** Stage 1 replaces `git clone --depth 1` with the internal **gitserver** bare clone + git worktree pattern:
+> 1. **gitserver** maintains a persistent bare clone per repo on a shared volume (`/data/repos/{orgId}/{repoId}.git`)
+> 2. `git worktree add --detach /tmp/wt-{uuid} {commitSha}` creates an instant, zero-network checkout
+> 3. Multiple branches can be indexed **simultaneously** from the same bare clone (parallel worktrees)
+> 4. Before running SCIP, the worker checks for a cached SCIP artifact (`scip-indexes/{orgId}/{repoId}/{sha}.scip.gz` in Supabase Storage). Cache hit = skip SCIP entirely, proceed to graph upload.
+> 5. Worktree is removed after pipeline completes (`git worktree remove`)
+>
+> This eliminates GitHub API dependency during indexing, enables deterministic retries (same commit = same worktree), and reduces clone time from 10-60s to sub-second.
 
 ### Output
 
@@ -1242,6 +1255,14 @@ The workflow waits **60 seconds** for additional `pushSignal` signals before pro
 **Completion: ~95%**
 
 **Features that directly depend on incremental indexing:** Real-time graph freshness after every push, MCP tool accuracy, PR review data currency.
+
+> **Phase 13 Evolution:** Incremental indexing is upgraded with three techniques from Phase 13:
+> 1. **File-Level Dependency DAG:** Instead of re-indexing all changed files + their callers blindly, the pipeline extracts a dependency DAG from the SCIP index. Only files that *import from* the changed file are re-indexed — not the entire repo.
+> 2. **Early Cutoff (Salsa Pattern):** If a changed file's exported *signature hash* is identical before and after the change (body-only edit), dependent files are skipped entirely. This eliminates 70-90% of unnecessary re-indexing for typical edits.
+> 3. **Visible Uploads Algorithm:** For commits between indexed SHAs, the system uses `git diff` to adjust file paths and line numbers instead of re-indexing. Queries on un-indexed commits resolve to the nearest SCIP index artifact.
+> 4. **Webhook path:** Push webhooks now trigger `git fetch` on the bare clone (not a new ephemeral clone), followed by worktree creation for the new HEAD.
+>
+> See [PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md §7](./PHASE_13_IMMUTABLE_SOURCE_ARTIFACTS.md#7-incremental-re-indexing-via-file-level-dependency-dag) for full details.
 
 ---
 

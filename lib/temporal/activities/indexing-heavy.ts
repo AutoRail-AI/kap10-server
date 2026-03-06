@@ -25,10 +25,17 @@ import { pipelineLogger } from "@/lib/temporal/activities/pipeline-logs"
 import { logger } from "@/lib/utils/logger"
 
 export interface PrepareRepoIntelligenceSpaceInput extends PipelineContext {
-  installationId: number
-  cloneUrl: string
+  /** Phase 13: Resolved commit SHA from ingestSource */
+  commitSha?: string
+  /** Phase 13: Git ref (e.g., "refs/heads/main") */
+  ref?: string
   defaultBranch: string
   provider?: "github" | "local_cli"
+  /** @deprecated Phase 13 — only used as fallback when commitSha is not provided */
+  installationId?: number
+  /** @deprecated Phase 13 — only used as fallback when commitSha is not provided */
+  cloneUrl?: string
+  /** @deprecated Phase 13 — only used as fallback when commitSha is not provided */
   uploadPath?: string
 }
 
@@ -39,35 +46,85 @@ export interface PrepareRepoIntelligenceSpaceResult {
   /** A-05: Dominant language per package root for polyglot SCIP indexing */
   languagePerRoot?: Record<string, string>
   lastSha?: string
+  /** Phase 13: true if this used worktree-based checkout (needs removeWorktree in finally) */
+  isWorktree: boolean
 }
 
+/**
+ * Phase 13: Worktree-based repo preparation.
+ *
+ * When commitSha is provided (from ingestSource), creates a git worktree from the
+ * bare clone on the shared Gitea volume. Zero network I/O — purely local filesystem.
+ *
+ * CRITICAL: If isWorktree=true in the result, the caller MUST call removeWorktree()
+ * in a finally block. The workflow enforces this — see indexRepoWorkflow.
+ */
 export async function prepareRepoIntelligenceSpace(input: PrepareRepoIntelligenceSpaceInput): Promise<PrepareRepoIntelligenceSpaceResult> {
   const log = logger.child({ service: "indexing-heavy", organizationId: input.orgId, repoId: input.repoId })
   const plog = pipelineLogger(input, "indexing")
   const activityStart = Date.now()
-  const provider = input.provider ?? "github"
-  log.info("Preparing repo index directory", { cloneUrl: input.cloneUrl, defaultBranch: input.defaultBranch, provider })
-  plog.log("info", "Step 1/7", `Cloning repository (${provider}) and scanning index directory...`)
   const container = getContainer()
+
+  // Phase 13: Worktree-based checkout when commitSha is available
+  if (input.commitSha) {
+    const ref = input.ref ?? input.commitSha
+    log.info("Creating worktree from bare clone", { commitSha: input.commitSha, ref })
+    plog.log("info", "Step 1/7", `Creating worktree at ${input.commitSha.slice(0, 8)}...`)
+
+    const worktreeStart = Date.now()
+    const handle = await container.internalGitServer.createWorktree(
+      input.orgId, input.repoId, input.commitSha
+    )
+    const worktreeMs = Date.now() - worktreeStart
+    log.info("Worktree created", { path: handle.path, commitSha: handle.commitSha, durationMs: worktreeMs })
+
+    heartbeat("scanning worktree")
+
+    const scanStart = Date.now()
+    const files = await scanIndexDir(handle.path)
+    const languageStats = detectLanguages(files)
+    const languages = languageStats.map((l) => l.language)
+    const scanMs = Date.now() - scanStart
+
+    const indexInfo = detectPackageRoots(handle.path)
+    const packageRoots = indexInfo.roots
+    const languagePerRoot = packageRoots.length > 1
+      ? detectLanguagePerRoot(handle.path, packageRoots)
+      : undefined
+
+    const totalMs = Date.now() - activityStart
+    log.info("Worktree index dir prepared", {
+      indexDir: handle.path, languages, lastSha: handle.commitSha,
+      fileCount: files.length, rootCount: packageRoots.length,
+      timing: { worktreeMs, scanMs, totalMs },
+    })
+    plog.log("info", "Step 1/7", `Worktree ready — ${files.length} files, ${languages.length} languages [${languages.join(", ") || "none"}], ${packageRoots.length} roots | Worktree: ${worktreeMs}ms, Scan: ${scanMs}ms, Total: ${totalMs}ms`)
+    return { indexDir: handle.path, languages, packageRoots, languagePerRoot, lastSha: handle.commitSha, isWorktree: true }
+  }
+
+  // Legacy fallback: git clone (for repos not yet on Gitea)
+  const provider = input.provider ?? "github"
+  log.info("Preparing repo index directory (legacy clone)", { cloneUrl: input.cloneUrl, defaultBranch: input.defaultBranch, provider })
+  plog.log("info", "Step 1/7", `Cloning repository (${provider}) — legacy path...`)
   const indexDir = `/data/repo-indices/${input.orgId}/${input.repoId}`
 
-  // Remove existing clone dir to ensure no stale files from previous index runs
   if (existsSync(indexDir)) {
     rmSync(indexDir, { recursive: true, force: true })
     log.info("Removed stale clone dir for fresh clone", { indexDir })
   }
 
   const cloneStart = Date.now()
-  if (provider === "local_cli") {
-    await prepareLocalCliIndexDir(container, indexDir, input.uploadPath!)
-  } else {
+  if (provider === "local_cli" && input.uploadPath) {
+    await prepareLocalCliIndexDir(container, indexDir, input.uploadPath)
+  } else if (input.cloneUrl) {
     await container.gitHost.cloneRepo(input.cloneUrl, indexDir, {
       ref: input.defaultBranch,
-      installationId: input.installationId,
+      installationId: input.installationId ?? 0,
     })
+  } else {
+    throw new Error("[prepareRepoIntelligenceSpace] Neither commitSha nor cloneUrl provided")
   }
   const cloneMs = Date.now() - cloneStart
-  log.info("Clone/extract complete", { provider, durationMs: cloneMs })
 
   heartbeat("index dir ready, reading HEAD SHA")
 
@@ -91,26 +148,22 @@ export async function prepareRepoIntelligenceSpace(input: PrepareRepoIntelligenc
 
   const indexInfo = detectPackageRoots(indexDir)
   const packageRoots = indexInfo.roots
-
   const languagePerRoot = packageRoots.length > 1
     ? detectLanguagePerRoot(indexDir, packageRoots)
     : undefined
 
   const totalMs = Date.now() - activityStart
-  log.info("Repo index dir prepared", {
-    indexDir, languages, lastSha,
-    fileCount: files.length,
-    rootCount: packageRoots.length,
-    languagePerRoot,
-    timing: { cloneMs, scanMs, totalMs },
+  log.info("Repo index dir prepared (legacy)", {
+    indexDir, languages, lastSha, fileCount: files.length,
+    rootCount: packageRoots.length, timing: { cloneMs, scanMs, totalMs },
   })
-  plog.log("info", "Step 1/7", `Index dir ready — ${files.length} files, ${languages.length} languages [${languages.join(", ") || "none"}], ${packageRoots.length} roots | Clone: ${cloneMs}ms, Scan: ${scanMs}ms, Total: ${totalMs}ms`, { fileCount: files.length, languages, rootCount: packageRoots.length, cloneMs, scanMs, totalMs })
-  return { indexDir, languages, packageRoots, languagePerRoot, lastSha }
+  plog.log("info", "Step 1/7", `Index dir ready — ${files.length} files, ${languages.length} languages [${languages.join(", ") || "none"}], ${packageRoots.length} roots | Clone: ${cloneMs}ms, Scan: ${scanMs}ms, Total: ${totalMs}ms`)
+  return { indexDir, languages, packageRoots, languagePerRoot, lastSha, isWorktree: false }
 }
 
 /**
- * Download a zip from Supabase Storage and extract it to the index directory.
- * Used for local_cli repos uploaded via `unerr push`.
+ * @deprecated Legacy path — download a zip from Supabase Storage and extract it.
+ * Used for local_cli repos uploaded via `unerr push` (pre-Phase 13).
  */
 async function prepareLocalCliIndexDir(
   container: { storageProvider: import("@/lib/ports/storage-provider").IStorageProvider },
@@ -138,13 +191,8 @@ async function prepareLocalCliIndexDir(
     writeFileSync(zipPath, zipBuffer)
     execSync(`unzip -o "${zipPath}" -d "${indexDir}"`, { stdio: "pipe" })
 
-    // Clean up the temporary zip file
     const { unlinkSync } = require("node:fs") as typeof import("node:fs")
-    try {
-      unlinkSync(zipPath)
-    } catch {
-      // Non-critical: ignore cleanup failures
-    }
+    try { unlinkSync(zipPath) } catch { /* Non-critical */ }
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error)
     throw new Error(`[prepareRepoIntelligenceSpace] Failed to extract local_cli upload: ${message}`)
@@ -156,6 +204,9 @@ export interface RunSCIPInput extends PipelineContext {
   languages: string[]
   packageRoots: string[]
   indexVersion?: string
+  /** Phase 13: scope + commitSha stamped on entities written to ArangoDB */
+  scope?: string
+  commitSha?: string | null
 }
 
 /** @deprecated Use RunSCIPLightResult instead — full arrays no longer cross Temporal. */
@@ -297,6 +348,8 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
   heartbeat("writing SCIP results to graph store")
   const writeStart = Date.now()
   const container = getContainer()
+  // Phase 13: Pass scope info so entities are stamped with scope + commit_sha
+  const scopeInfo = input.scope ? { scope: input.scope, commitSha: input.commitSha ?? null } : undefined
   const writeResult = await writeEntitiesToGraph(
     container,
     input.orgId,
@@ -304,6 +357,7 @@ export async function runSCIP(input: RunSCIPInput): Promise<RunSCIPLightResult> 
     toEntityDocs(allEntities, input.orgId, input.repoId),
     toEdgeDocs(allEdges, input.orgId, input.repoId),
     input.indexVersion,
+    scopeInfo,
   )
   const writeMs = Date.now() - writeStart
 
@@ -328,6 +382,9 @@ export interface ParseRestInput extends PipelineContext {
   indexDir: string
   coveredFiles: string[]
   indexVersion?: string
+  /** Phase 13: scope + commitSha stamped on entities written to ArangoDB */
+  scope?: string
+  commitSha?: string | null
 }
 
 /** @deprecated Use ParseRestLightResult instead — full arrays no longer cross Temporal. */
@@ -444,6 +501,8 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestLightRe
   heartbeat("writing parse results to graph store")
   const writeStart = Date.now()
   const container = getContainer()
+  // Phase 13: Pass scope info so entities are stamped with scope + commit_sha
+  const parseScopeInfo = input.scope ? { scope: input.scope, commitSha: input.commitSha ?? null } : undefined
   const writeResult = await writeEntitiesToGraph(
     container,
     input.orgId,
@@ -451,6 +510,7 @@ export async function parseRest(input: ParseRestInput): Promise<ParseRestLightRe
     toEntityDocs(allEntities, input.orgId, input.repoId),
     toEdgeDocs(allEdges, input.orgId, input.repoId),
     input.indexVersion,
+    parseScopeInfo,
   )
   const writeMs = Date.now() - writeStart
 
